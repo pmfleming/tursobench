@@ -1,6 +1,8 @@
 mod editing;
 #[cfg(test)]
 mod interaction_tests;
+mod smoke;
+mod usability;
 use eframe::egui;
 use tursobench_core::*;
 use tursobench_db::{Operation, Request, Session};
@@ -13,6 +15,10 @@ enum View {
 }
 pub struct App {
     path: String,
+    smoke: Option<smoke::Smoke>,
+    preferences: crate::storage::Preferences,
+    store: crate::storage::Store,
+    export_job: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     picker: Option<std::sync::mpsc::Receiver<Option<std::path::PathBuf>>>,
     discard_ticket: Option<Ticket>,
     exclusive: bool,
@@ -33,6 +39,7 @@ pub struct App {
     sql: String,
     params: String,
     status: String,
+    activity: std::collections::VecDeque<String>,
     filter: String,
     filter_column: usize,
     inspect: Option<(usize, usize)>,
@@ -48,9 +55,21 @@ pub struct App {
     first_cell_rect: Option<egui::Rect>,
 }
 impl App {
-    pub fn new(_ctx: &egui::Context) -> Self {
+    pub fn new(ctx: &egui::Context) -> Self {
+        let wake = ctx.clone();
+        let (store, preferences, load_error) =
+            crate::storage::Store::start(move || wake.request_repaint());
+        let args: Vec<_> = std::env::args().collect();
+        let smoke = args.get(1).is_some_and(|a| a == "--smoke-test");
         Self {
-            path: std::env::args().nth(1).unwrap_or_default(),
+            smoke: smoke.then(smoke::Smoke::new),
+            preferences,
+            store,
+            export_job: None,
+            path: args
+                .get(if smoke { 2 } else { 1 })
+                .cloned()
+                .unwrap_or_default(),
             picker: None,
             discard_ticket: None,
             exclusive: false,
@@ -70,8 +89,10 @@ impl App {
             browse: None,
             sql: "SELECT name, type FROM sqlite_schema ORDER BY name".into(),
             params: "[]".into(),
-            status: "Open a trusted local Turso database. Linux preview; exclusive use only."
-                .into(),
+            activity: std::collections::VecDeque::new(),
+            status: load_error.unwrap_or_else(|| {
+                "Open a trusted local Turso database. Linux preview; exclusive use only.".into()
+            }),
             filter: "{\"type\":\"Text\",\"value\":\"\"}".into(),
             filter_column: 0,
             inspect: None,
@@ -88,8 +109,12 @@ impl App {
         }
     }
     fn open(&mut self, ctx: &egui::Context) {
+        if self.has_drafts() {
+            self.status = "Drafts retained after disconnect; inspect the database and discard drafts before reopening".into();
+            return;
+        }
         let wake = ctx.clone();
-        match Session::open(
+        match Session::open_with_settings(
             self.path.clone().into(),
             if self.writable {
                 Access::ReadWrite
@@ -97,6 +122,9 @@ impl App {
                 Access::ReadOnly
             },
             self.exclusive,
+            ConnectionSettings {
+                busy_timeout_ms: self.preferences.busy_timeout_ms,
+            },
             move || wake.request_repaint(),
         ) {
             Ok(s) => {
@@ -155,10 +183,15 @@ impl App {
                     Operation::Execute {
                         sql: self.sql.clone(),
                         parameters,
-                        budget: Budget::default(),
+                        budget: Budget {
+                            rows: self.preferences.row_limit,
+                            ..Budget::default()
+                        },
                     },
                     View::Query,
                 );
+                self.preferences.record(&self.sql);
+                self.store.save(&self.preferences);
             }
             Err(e) => self.status = format!("Typed parameter JSON: {e}"),
         }
@@ -184,6 +217,7 @@ impl App {
         }
     }
     fn poll(&mut self, ctx: &egui::Context) {
+        self.poll_storage(ctx);
         if let Some(rx) = &self.picker {
             match rx.try_recv() {
                 Ok(path) => {
@@ -225,6 +259,10 @@ impl App {
             }
             match event.kind {
                 EventKind::EditsCommitted(outcome) if self.commit_ticket == Some(event.ticket) => {
+                    self.log_outcome(format!(
+                        "Request {} staged commit: {outcome:?}",
+                        event.ticket.request
+                    ));
                     self.commit_ticket = None;
                     match outcome {
                         CommitOutcome::Committed { operations } => {
@@ -256,6 +294,7 @@ impl App {
                         self.transaction = TransactionState::Unknown;
                     }
                     self.status = match rollback {
+                        Ok(()) if self.uncertain_edit => "Closed; editor cleanup confirmed, but the earlier staged commit outcome remains UNKNOWN".into(),
                         Ok(()) => "Closed; transaction cleanup confirmed".into(),
                         Err(e) => format!("Close outcome uncertain: {e}"),
                     };
@@ -263,16 +302,18 @@ impl App {
                     self.ready = false;
                     self.active = None;
                     self.closing = false;
-                    if self.quit {
+                    if self.quit && self.export_job.is_none() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 }
                 EventKind::Failed(e) => {
-                    self.status = e.to_string();
+                    self.log_outcome(format!("Request {} ERROR: {e}", event.ticket.request));
                     if event.ticket.request == 0 {
+                        self.status = e.to_string();
                         self.session = None;
                         self.ready = false;
                     } else if self.active == Some(event.ticket) {
+                        self.status = e.to_string();
                         self.active = None;
                     }
                 }
@@ -280,6 +321,17 @@ impl App {
                     self.table = Some(t);
                 }
                 EventKind::Finished(ref c) => {
+                    self.log_outcome(format!(
+                        "Request {}: {:?}, {} rows seen, {} changes, editor {:?}{}",
+                        event.ticket.request,
+                        c.delivery,
+                        c.rows_seen,
+                        c.changed,
+                        c.transaction,
+                        c.error
+                            .as_ref()
+                            .map_or(String::new(), |e| format!("; ERROR {e}"))
+                    ));
                     self.transaction = c.transaction;
                     if self.result.current == Some(event.ticket) {
                         self.status = format!(
@@ -317,6 +369,10 @@ impl App {
             }
         }
         if disconnected && self.session.is_some() {
+            self.uncertain_edit |= self.commit_ticket.take().is_some();
+            self.log_outcome(
+                "Worker disconnected unexpectedly; execution and rollback outcome UNKNOWN".into(),
+            );
             self.session = None;
             self.ready = false;
             self.closing = false;
@@ -325,6 +381,12 @@ impl App {
             self.transaction = TransactionState::Unknown;
             self.status =
                 "Worker disconnected unexpectedly; execution and rollback outcome UNKNOWN".into();
+        }
+    }
+    fn log_outcome(&mut self, message: String) {
+        self.activity.push_back(message);
+        while self.activity.len() > 100 {
+            self.activity.pop_front();
         }
     }
     fn request_close(&mut self) {
@@ -425,6 +487,15 @@ impl App {
         });
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.label(&self.status);
+            ui.collapsing("Execution outcomes (including replaced queries)", |ui| {
+                egui::ScrollArea::vertical()
+                    .max_height(150.0)
+                    .show(ui, |ui| {
+                        for message in self.activity.iter().rev() {
+                            ui.label(message);
+                        }
+                    });
+            });
         });
         egui::Panel::left("schema").default_size(200.0).show(ui, |ui| {
             ui.heading("Schema");
@@ -433,6 +504,7 @@ impl App {
                 for (kind, name) in self.schema.clone() { if ui.button(format!("{kind}: {name}")).clicked() { self.browse_table(name); } }
             });
             ui.small("Browsing uses a separate connection. Uncommitted editor changes are not visible.");
+            self.history_controls(ui);
         });
         egui::CentralPanel::default().show(ui, |ui| {
             ui.heading("SQL editor — one statement");
@@ -452,6 +524,7 @@ impl App {
             });
             ui.separator();
             if self.view == View::Browse { self.browse_controls(ui); }
+            self.usability_controls(ui);
             self.edit_controls(ui);
             self.grid(ui);
         });
@@ -469,7 +542,10 @@ impl App {
                 .open(&mut open)
                 .show(&ctx, |ui| {
                     if let Some(v) = self.result.rows.get(row).and_then(|r| r.get(col)) {
-                        let mut text = serde_json::to_string_pretty(v).unwrap_or_default();
+                        let mut text = match v {
+                            Value::Real(n) if !n.is_finite() => format!("Real({n}) — non-finite values are inspectable/exportable but cannot be edited as JSON"),
+                            _ => serde_json::to_string_pretty(v).unwrap_or_default(),
+                        };
                         egui::ScrollArea::both().max_height(400.0).show(ui, |ui| {
                             ui.add(
                                 egui::TextEdit::multiline(&mut text)
@@ -614,6 +690,13 @@ impl App {
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll(ctx);
+        self.smoke_tick(ctx);
+        if ctx.input(|i| i.viewport().close_requested()) && self.export_job.is_some() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.quit = true;
+            self.status = "Waiting for the export job before exiting…".into();
+            return;
+        }
         if ctx.input(|i| i.viewport().close_requested()) && self.session.is_some() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.quit = true;

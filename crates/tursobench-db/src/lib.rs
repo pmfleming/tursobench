@@ -47,6 +47,24 @@ impl Session {
         exclusive_use_confirmed: bool,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Result<Self, Failure> {
+        Self::open_with_settings(
+            path,
+            access,
+            exclusive_use_confirmed,
+            ConnectionSettings::default(),
+            wake,
+        )
+    }
+    pub fn open_with_settings(
+        path: PathBuf,
+        access: Access,
+        exclusive_use_confirmed: bool,
+        settings: ConnectionSettings,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Result<Self, Failure> {
+        if settings.busy_timeout_ms > 5000 {
+            return Err(Failure::input("Busy timeout must be 0–5000 ms"));
+        }
         if !exclusive_use_confirmed {
             return Err(Failure::input(
                 "Only databases not in use by other applications are supported",
@@ -70,7 +88,7 @@ impl Session {
                     .enable_time()
                     .build()
                     .expect("worker runtime");
-                runtime.block_on(worker(id, path, access, rx, output));
+                runtime.block_on(worker(id, path, access, settings, rx, output));
             })
             .map_err(|e| Failure {
                 kind: ErrorKind::Io,
@@ -93,6 +111,9 @@ impl Session {
         }
     }
     pub fn submit(&self, request: Request) -> Result<(), Failure> {
+        if self.closing.load(Ordering::Acquire) {
+            return Err(Failure::input("Session is closing"));
+        }
         if request.ticket.session != self.id || request.ticket.database != self.id {
             return Err(Failure::input("Wrong session identity"));
         }
@@ -209,6 +230,7 @@ fn from_engine(v: turso::Value) -> Value {
 async fn open(
     path: PathBuf,
     access: Access,
+    settings: ConnectionSettings,
 ) -> Result<(turso::Database, Connection, Connection), Failure> {
     let path = std::fs::canonicalize(path).map_err(|e| Failure {
         kind: ErrorKind::Io,
@@ -235,7 +257,7 @@ async fn open(
     let editor = db.connect().map_err(failure)?;
     let browse = db.connect().map_err(failure)?;
     for c in [&editor, &browse] {
-        configure(c).await?;
+        configure(c, settings).await?;
     }
     // Force schema validation before reporting successful open.
     let mut rows = browse
@@ -246,8 +268,8 @@ async fn open(
     drop(rows);
     Ok((db, editor, browse))
 }
-async fn configure(c: &Connection) -> Result<(), Failure> {
-    c.busy_timeout(Duration::from_millis(250))
+async fn configure(c: &Connection, settings: ConnectionSettings) -> Result<(), Failure> {
+    c.busy_timeout(Duration::from_millis(settings.busy_timeout_ms))
         .map_err(failure)?;
     c.execute("PRAGMA foreign_keys = ON", ())
         .await
@@ -274,14 +296,21 @@ async fn rollback(c: &Connection) -> Result<(), Failure> {
         _ => c.execute("ROLLBACK", ()).await.map(|_| ()).map_err(failure),
     }
 }
-async fn worker(id: u64, path: PathBuf, access: Access, rx: Receiver<Request>, output: Output) {
+async fn worker(
+    id: u64,
+    path: PathBuf,
+    access: Access,
+    settings: ConnectionSettings,
+    rx: Receiver<Request>,
+    output: Output,
+) {
     let ticket = Ticket {
         database: id,
         session: id,
         request: 0,
         generation: 0,
     };
-    let (_db, editor, browse) = match open(path, access).await {
+    let (_db, editor, browse) = match open(path, access, settings).await {
         Ok(v) => v,
         Err(e) => {
             output.send(ticket, EventKind::Failed(e));
@@ -298,13 +327,16 @@ async fn worker(id: u64, path: PathBuf, access: Access, rx: Receiver<Request>, o
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(_) => break,
         };
+        if output.closing.load(Ordering::Acquire) {
+            break;
+        }
         match request.operation {
             Operation::Close => break,
             Operation::CommitEdits(batch) => {
                 let outcome = if uncertain_edit {
                     CommitOutcome::Unknown(Failure { kind: ErrorKind::Unknown, message: "A previous edit commit has an uncertain outcome; close and inspect before retrying".into() })
                 } else {
-                    edits::commit(&_db, access, batch).await
+                    edits::commit(&_db, access, settings, batch).await
                 };
                 uncertain_edit |= matches!(outcome, CommitOutcome::Unknown(_));
                 output.send(request.ticket, EventKind::EditsCommitted(outcome));

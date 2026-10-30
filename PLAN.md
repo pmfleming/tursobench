@@ -267,11 +267,24 @@ query result, or complete dataset; never silently label truncated data complete.
 - Do not import the old `AppState`, dispatcher, terminal components, or outdated
   engine-compatibility claims.
 
-## 6. Next action
+## 6. Implementation status
 
-Implement **Phase 0**, then scaffold the production workspace based on its results.
-Do not start with a bulk upstream import or a GUI feature-parity port.
+Phases 0–5 now have a Linux preview implementation, with a separate commit for
+each phase. No upstream backend or GUI feature-parity import was performed.
 
-This change is a plan only. No TursoBench implementation or 0.8.3 runtime validation
-has been performed yet. Prior successful tursotui tests exercised its old backend,
-not the new target engine.
+- Phase 0: reproducible disposable 0.8.3 harness and recorded safety decisions.
+- Phase 1: pinned workspace, CI, typed core and bounded session backend.
+- Phase 2: read-only egui workbench, table pages, typed queries and inspection.
+- Phase 3: opt-in writes, persistent editor transactions and managed close.
+- Phase 4: typed staged edits, preview, atomic commits and optimistic conflicts.
+- Phase 5: local history/bookmarks/settings, typed displayed-result exports,
+  Linux preview packaging, license inventory and real desktop smoke automation.
+
+Implementation does **not** mean all original acceptance gates are satisfied.
+See `docs/release.md` for exercised tests, measurements, scope reductions and
+outstanding production gates, and `contracts/engine-compatibility.md` for runtime
+evidence. In particular, live multiprocess access is unsupported, file/engine
+memory safety is not certified, cancellation does not interrupt execution,
+paging uses OFFSET, and fault-injected transaction failures, legacy-engine
+fixtures, complete license review and cross-host reproducibility remain open.
+No stable production release or support for another database engine is claimed.

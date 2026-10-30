@@ -45,6 +45,17 @@ pub struct Ticket {
     pub request: u64,
     pub generation: u64,
 }
+#[derive(Debug, Clone, Copy)]
+pub struct ConnectionSettings {
+    pub busy_timeout_ms: u64,
+}
+impl Default for ConnectionSettings {
+    fn default() -> Self {
+        Self {
+            busy_timeout_ms: 250,
+        }
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Access {
     ReadOnly,

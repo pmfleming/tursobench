@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=TursoBench
+Comment=Turso-only local database workbench
+Exec=tursobench %f
+Icon=tursobench
+Terminal=false
+Categories=Development;Database;
+StartupWMClass=tursobench

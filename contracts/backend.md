@@ -24,11 +24,15 @@ may take arbitrarily long, but preserves statement completion semantics for
 writes with RETURNING. Limits apply to delivery, not execution. No SQL rewriting
 for arbitrary queries. Completion reports Complete/Limited/Discarded independently
 of error and observed autocommit. An error is never displayed as full success.
+The UI keeps the last 100 execution outcomes, including replaced/discarded queries,
+so a late write/error is not silently hidden when the current result changes.
 
 Closing waits for the active operation, rejects queued work, explicitly rolls
 back transactions, and reports cleanup errors. The UI must consume events until
 Closed; dropping Session is best-effort cleanup, not a rollback acknowledgement.
-No timeout or discard is proof of rollback. Busy timeout is 250 ms, without retry.
+No timeout or discard is proof of rollback. Busy timeout defaults to 250 ms,
+configurable from 0–5000 ms at open, without retry. Submissions after close begins
+are rejected, and queued commands are checked again before execution.
 
 Read/write mode is opt-in before open. Changing mode requires close (with explicit
 rollback confirmation for writable sessions), waiting for Closed, then reopening.
@@ -44,7 +48,9 @@ multiple statements and malformed suffixes are rejected before execution.
 
 Table browsing uses a separate connection and controlled generated SELECTs: 100
 rows/page, typed equality filters (`IS`, including NULL), quoted identifiers,
-column sorting followed by primary-key tie breakers. Tables without a primary
+column sorting followed by primary-key and full-row tie breakers. Full-row
+suffixes handle nullable primary keys; binary text collation and storage-class
+tie breakers distinguish case and numeric storage types. Tables without a primary
 key sort by all columns; identical duplicate rows are indistinguishable and not
 editable. Paging currently uses bounded OFFSET (maximum 1,000,000), not keyset;
 it may be slower at deep offsets. Concurrent local editor commits can shift page

@@ -108,6 +108,26 @@ impl Harness {
 #[test]
 fn composite_changed_keys_null_blob_and_defaults() {
     let mut h = Harness::new();
+    h.sql(
+        "CREATE TABLE nullable_keys(a TEXT, b INTEGER, data TEXT COLLATE NOCASE, PRIMARY KEY(a,b))",
+    );
+    h.sql("INSERT INTO nullable_keys VALUES('x',NULL,'a'),('x',NULL,'A')");
+    let nullable = h.request(Operation::Browse(Browse {
+        table: "nullable_keys".into(),
+        offset: 0,
+        sort: None,
+        descending: false,
+        filter: None,
+    }));
+    let ordered: Vec<_> = nullable
+        .into_iter()
+        .flat_map(|e| match e {
+            EventKind::Rows(r) => r,
+            _ => vec![],
+        })
+        .collect();
+    assert_eq!(ordered[0][2], Value::Text("A".into()));
+    assert_eq!(ordered[1][2], Value::Text("a".into()));
     let (table, rows) = h.browse();
     assert!(table.editable());
     assert!(matches!(

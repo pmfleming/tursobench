@@ -83,11 +83,9 @@ pub(crate) fn browse_sql(table: &Table, spec: &Browse) -> Result<(String, Vec<Va
         order.push(i);
     }
     let keys = table.keys();
-    for i in if keys.is_empty() {
-        (0..table.columns.len()).collect()
-    } else {
-        keys
-    } {
+    // Primary keys can contain NULL in rowid tables. Full-row suffixes keep
+    // distinguishable rows ordered even when such keys are not unique.
+    for i in keys.into_iter().chain(0..table.columns.len()) {
         if !order.contains(&i) {
             order.push(i);
         }
@@ -95,7 +93,9 @@ pub(crate) fn browse_sql(table: &Table, spec: &Browse) -> Result<(String, Vec<Va
     let direction = if spec.descending { " DESC" } else { " ASC" };
     let order = order
         .into_iter()
-        .map(|i| column(i).map(|c| c + direction))
+        .map(|i| {
+            column(i).map(|c| format!("{c} COLLATE BINARY{direction}, typeof({c}){direction}"))
+        })
         .collect::<Result<Vec<_>, _>>()?
         .join(", ");
     let names = (0..table.columns.len())

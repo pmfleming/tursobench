@@ -120,6 +120,82 @@ fn discard_unblocks_backpressure() {
     }
 }
 #[test]
+fn close_discards_queued_work_and_rejects_new_submissions() {
+    let (_dir, path) = fixture();
+    let s = Session::open(path.clone(), Access::ReadWrite, true, || {}).unwrap();
+    assert!(matches!(
+        s.events.recv_timeout(Duration::from_secs(5)).unwrap().kind,
+        EventKind::Opened
+    ));
+    s.submit(Request { ticket: s.ticket(1, 0), operation: Operation::Execute {
+        sql: "WITH RECURSIVE x(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM x WHERE n<100000) SELECT n FROM x".into(), parameters: vec![], budget: Budget::default()
+    } }).unwrap();
+    assert!(matches!(
+        s.events.recv_timeout(Duration::from_secs(5)).unwrap().kind,
+        EventKind::Columns(_)
+    ));
+    s.submit(Request {
+        ticket: s.ticket(2, 0),
+        operation: Operation::Execute {
+            sql: "DELETE FROM items".into(),
+            parameters: vec![],
+            budget: Budget::default(),
+        },
+    })
+    .unwrap();
+    s.close();
+    assert!(
+        s.submit(Request {
+            ticket: s.ticket(3, 0),
+            operation: Operation::Schema
+        })
+        .is_err()
+    );
+    loop {
+        if let EventKind::Closed { rollback } =
+            s.events.recv_timeout(Duration::from_secs(10)).unwrap().kind
+        {
+            assert!(rollback.is_ok());
+            break;
+        }
+    }
+    let s = opened(path);
+    assert_eq!(
+        run(&s, 1, "SELECT count(*) FROM items", Budget::default()).rows,
+        vec![vec![Value::Integer(2)]]
+    );
+}
+#[test]
+fn returning_is_drained_even_when_delivery_is_limited() {
+    let (_dir, path) = fixture();
+    let s = Session::open(path, Access::ReadWrite, true, || {}).unwrap();
+    assert!(matches!(
+        s.events.recv_timeout(Duration::from_secs(5)).unwrap().kind,
+        EventKind::Opened
+    ));
+    let r = run(
+        &s,
+        1,
+        "UPDATE items SET value='written' RETURNING id",
+        Budget {
+            rows: 1,
+            ..Budget::default()
+        },
+    );
+    assert_eq!(r.rows.len(), 1);
+    assert_eq!(r.completion.unwrap().delivery, Delivery::Limited);
+    assert_eq!(
+        run(
+            &s,
+            2,
+            "SELECT count(*) FROM items WHERE value='written'",
+            Budget::default()
+        )
+        .rows,
+        vec![vec![Value::Integer(2)]]
+    );
+}
+#[test]
 fn missing_path_never_created() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("typo.db");

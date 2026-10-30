@@ -3,6 +3,7 @@ use super::*;
 pub(crate) async fn commit(
     db: &turso::Database,
     access: Access,
+    settings: ConnectionSettings,
     batch: DraftBatch,
 ) -> CommitOutcome {
     if access != Access::ReadWrite {
@@ -19,7 +20,7 @@ pub(crate) async fn commit(
         Ok(c) => c,
         Err(e) => return CommitOutcome::Rejected(failure(e)),
     };
-    if let Err(e) = configure(&c).await {
+    if let Err(e) = configure(&c, settings).await {
         return CommitOutcome::Rejected(e);
     }
     if let Err(e) = c.execute("BEGIN IMMEDIATE", ()).await {
