@@ -29,6 +29,16 @@ Closing waits for the active operation, rejects queued work, explicitly rolls
 back transactions, and reports cleanup errors. The UI must consume events until
 Closed; dropping Session is best-effort cleanup, not a rollback acknowledgement.
 No timeout or discard is proof of rollback. Busy timeout is 250 ms, without retry.
+
+Read/write mode is opt-in before open. Changing mode requires close (with explicit
+rollback confirmation for writable sessions), waiting for Closed, then reopening.
+Closed is emitted after connection/database handles are dropped. Foreign keys are
+enabled and verified on connection setup. Editor SQL deliberately remains powerful;
+users can change connection-local PRAGMAs themselves. Generated edit connections
+will always re-enable/verify foreign keys independently. Editor transaction state
+is reported even on browse completions; browse state never overwrites it. Unexpected
+worker disconnection is an unknown outcome, not a successful close. Native window
+close waits for acknowledged cleanup and stays open on cleanup failure.
 Single-statement validation uses Turso 0.8.3's parser, including trigger bodies;
 multiple statements and malformed suffixes are rejected before execution.
 

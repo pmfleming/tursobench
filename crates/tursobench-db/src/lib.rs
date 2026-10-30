@@ -50,10 +50,6 @@ impl Session {
                 "Only databases not in use by other applications are supported",
             ));
         }
-        // Phase 1 exposes read-only only; writable lifecycle is added in phase 3.
-        if access != Access::ReadOnly {
-            return Err(Failure::input("Read/write access is not enabled"));
-        }
         let id = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
         let (commands, rx) = mpsc::sync_channel(COMMAND_CAPACITY);
         let (tx, events) = mpsc::sync_channel(EVENT_CAPACITY);
@@ -237,8 +233,7 @@ async fn open(
     let editor = db.connect().map_err(failure)?;
     let browse = db.connect().map_err(failure)?;
     for c in [&editor, &browse] {
-        c.busy_timeout(Duration::from_millis(250))
-            .map_err(failure)?;
+        configure(c).await?;
     }
     // Force schema validation before reporting successful open.
     let mut rows = browse
@@ -248,6 +243,28 @@ async fn open(
     while rows.next().await.map_err(failure)?.is_some() {}
     drop(rows);
     Ok((db, editor, browse))
+}
+async fn configure(c: &Connection) -> Result<(), Failure> {
+    c.busy_timeout(Duration::from_millis(250))
+        .map_err(failure)?;
+    c.execute("PRAGMA foreign_keys = ON", ())
+        .await
+        .map_err(failure)?;
+    let mut rows = c.query("PRAGMA foreign_keys", ()).await.map_err(failure)?;
+    let enabled = rows
+        .next()
+        .await
+        .map_err(failure)?
+        .ok_or_else(|| Failure::input("Foreign key status unavailable"))?
+        .get_value(0)
+        .map_err(failure)?;
+    while rows.next().await.map_err(failure)?.is_some() {}
+    if enabled != turso::Value::Integer(1) {
+        return Err(Failure::input(
+            "Foreign key enforcement could not be enabled",
+        ));
+    }
+    Ok(())
 }
 async fn rollback(c: &Connection) -> Result<(), Failure> {
     match state(c) {
@@ -284,7 +301,7 @@ async fn worker(id: u64, path: PathBuf, access: Access, rx: Receiver<Request>, o
                 Ok(table) => match browse_sql(&table, &spec) {
                     Ok((sql, params)) => {
                         output.send(request.ticket, EventKind::Table(table));
-                        execute(
+                        let mut completion = execute(
                             &browse,
                             request.ticket,
                             &sql,
@@ -293,6 +310,8 @@ async fn worker(id: u64, path: PathBuf, access: Access, rx: Receiver<Request>, o
                             &output,
                         )
                         .await;
+                        completion.transaction = state(&editor);
+                        output.send(request.ticket, EventKind::Finished(completion));
                     }
                     Err(e) => {
                         output.send(request.ticket, EventKind::Failed(e));
@@ -303,19 +322,26 @@ async fn worker(id: u64, path: PathBuf, access: Access, rx: Receiver<Request>, o
                 }
             },
             Operation::Schema => {
-                execute(&browse, request.ticket, "SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name", vec![], Budget::default(), &output).await;
+                let mut completion = execute(&browse, request.ticket, "SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name", vec![], Budget::default(), &output).await;
+                completion.transaction = state(&editor);
+                output.send(request.ticket, EventKind::Finished(completion));
             }
             Operation::Execute {
                 sql,
                 parameters,
                 budget,
             } => {
-                execute(&editor, request.ticket, &sql, parameters, budget, &output).await;
+                let completion =
+                    execute(&editor, request.ticket, &sql, parameters, budget, &output).await;
+                output.send(request.ticket, EventKind::Finished(completion));
             }
         }
     }
     let result = rollback(&editor).await;
     let browse_result = rollback(&browse).await;
+    drop(browse);
+    drop(editor);
+    drop(_db);
     output.send(
         ticket,
         EventKind::Closed {
@@ -330,7 +356,7 @@ async fn execute(
     parameters: Vec<Value>,
     budget: Budget,
     out: &Output,
-) {
+) -> Completion {
     let mut completion = Completion {
         delivery: Delivery::Complete,
         rows_seen: 0,
@@ -416,5 +442,5 @@ async fn execute(
     if out.discarded(ticket) {
         completion.delivery = Delivery::Discarded;
     }
-    out.send(ticket, EventKind::Finished(completion));
+    completion
 }

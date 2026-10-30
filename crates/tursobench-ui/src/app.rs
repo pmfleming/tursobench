@@ -13,6 +13,8 @@ pub struct App {
     picker: Option<std::sync::mpsc::Receiver<Option<std::path::PathBuf>>>,
     discard_ticket: Option<Ticket>,
     exclusive: bool,
+    writable: bool,
+    confirm_close: bool,
     session: Option<Session>,
     ready: bool,
     closing: bool,
@@ -40,6 +42,8 @@ impl App {
             picker: None,
             discard_ticket: None,
             exclusive: false,
+            writable: false,
+            confirm_close: false,
             session: None,
             ready: false,
             closing: false,
@@ -66,11 +70,20 @@ impl App {
         let wake = ctx.clone();
         match Session::open(
             self.path.clone().into(),
-            Access::ReadOnly,
+            if self.writable {
+                Access::ReadWrite
+            } else {
+                Access::ReadOnly
+            },
             self.exclusive,
             move || wake.request_repaint(),
         ) {
             Ok(s) => {
+                self.result = ResultSet::default();
+                self.schema.clear();
+                self.table = None;
+                self.browse = None;
+                self.transaction = TransactionState::Autocommit;
                 self.session = Some(s);
                 self.status = "Opening…".into();
                 self.closing = false;
@@ -148,11 +161,20 @@ impl App {
                 Err(_) => {}
             }
         }
-        let events: Vec<_> = self
-            .session
-            .as_ref()
-            .map(|s| s.events.try_iter().collect())
-            .unwrap_or_default();
+        let mut events = Vec::new();
+        let mut disconnected = false;
+        if let Some(s) = &self.session {
+            loop {
+                match s.events.try_recv() {
+                    Ok(e) => events.push(e),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        break;
+                    }
+                }
+            }
+        }
         for event in events {
             if self
                 .session
@@ -172,6 +194,10 @@ impl App {
                     self.submit(Operation::Schema, View::Schema);
                 }
                 EventKind::Closed { rollback } => {
+                    if rollback.is_err() {
+                        self.quit = false;
+                        self.transaction = TransactionState::Unknown;
+                    }
                     self.status = match rollback {
                         Ok(()) => "Closed; transaction cleanup confirmed".into(),
                         Err(e) => format!("Close outcome uncertain: {e}"),
@@ -233,8 +259,26 @@ impl App {
                 }
             }
         }
+        if disconnected && self.session.is_some() {
+            self.session = None;
+            self.ready = false;
+            self.closing = false;
+            self.quit = false;
+            self.active = None;
+            self.transaction = TransactionState::Unknown;
+            self.status =
+                "Worker disconnected unexpectedly; execution and rollback outcome UNKNOWN".into();
+        }
+    }
+    fn request_close(&mut self) {
+        if self.writable && !self.closing {
+            self.confirm_close = true;
+        } else {
+            self.close();
+        }
     }
     fn close(&mut self) {
+        self.confirm_close = false;
         if let Some(s) = &self.session {
             s.close();
             self.closing = true;
@@ -246,7 +290,11 @@ impl App {
         egui::Panel::top("connection").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("TursoBench");
-                ui.label("Turso 0.8.3 · READ ONLY");
+                ui.label(if self.writable {
+                    "Turso 0.8.3 · READ / WRITE"
+                } else {
+                    "Turso 0.8.3 · READ ONLY"
+                });
                 if ui
                     .add_enabled(
                         self.session.is_none() && self.picker.is_none(),
@@ -287,9 +335,16 @@ impl App {
                     )
                     .clicked()
                 {
-                    self.close();
+                    self.request_close();
                 }
             });
+            ui.add_enabled(
+                self.session.is_none(),
+                egui::Checkbox::new(
+                    &mut self.writable,
+                    "Enable read/write access (close before changing mode)",
+                ),
+            );
             ui.checkbox(
                 &mut self.exclusive,
                 "I confirm this file is not in use by another application (including SQLite tools)",
@@ -323,10 +378,25 @@ impl App {
                 if ui.add_enabled(self.ready && !self.closing, egui::Button::new("Run SQL")).clicked() { self.run_sql(); }
             });
             ui.small("Example: [{\"type\":\"Integer\",\"value\":42}, {\"type\":\"Null\"}]. Bind as ?1, ?2.");
+            ui.horizontal(|ui| {
+                ui.label(format!("Editor transaction: {:?}", self.transaction));
+                for (label, sql) in [("BEGIN", "BEGIN"), ("COMMIT", "COMMIT"), ("ROLLBACK", "ROLLBACK")] {
+                    if ui.add_enabled(self.ready && self.active.is_none() && !self.closing, egui::Button::new(label)).clicked() {
+                        self.submit(Operation::Execute { sql: sql.into(), parameters: vec![], budget: Budget::default() }, View::Query);
+                    }
+                }
+            });
             ui.separator();
             if self.view == View::Browse { self.browse_controls(ui); }
             self.grid(ui);
         });
+        if self.confirm_close {
+            egui::Window::new("Close writable database?").collapsible(false).show(&ctx, |ui| {
+                ui.label("Active execution will finish. Any remaining editor transaction will be explicitly rolled back. Discard does not undo committed writes.");
+                if ui.button("Wait, roll back transaction, and close").clicked() { self.close(); }
+                if ui.button("Keep open").clicked() { self.confirm_close = false; self.quit = false; }
+            });
+        }
         if let Some((row, col)) = self.inspect {
             let mut open = true;
             egui::Window::new("Cell inspector — typed value")
@@ -461,7 +531,7 @@ impl eframe::App for App {
         if ctx.input(|i| i.viewport().close_requested()) && self.session.is_some() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.quit = true;
-            self.close();
+            self.request_close();
         }
     }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
