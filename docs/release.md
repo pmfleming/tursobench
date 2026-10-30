@@ -11,12 +11,32 @@ not a declaration that every production release gate in PLAN.md has passed.
 - Opt-in writes, persistent editor transactions, separate browsing, safe close.
 - Staged atomic editing with conflict detection, constraint rollback and draft retention.
 - History/bookmarks/settings, typed displayed-result export, Linux packaging scripts.
-- Formatting, warning-free Clippy, 19 workspace unit/integration tests.
+- Native Turso FTS and experimental index methods enabled, including read-only
+  opening and generated edits of FTS-indexed tables. See `docs/fts.md`.
+- A tursotui workbench gap-closing pass: schema/DDL/index/FK inspection and navigation,
+  SQL highlighting/completion/selection, named parameters, EXPLAIN, read-only
+  diagnostics, typed editing/undo tools, richer exports/copying, timed scoped history
+  and named bookmarks. See `docs/tursotui-review.md` for evidence and remaining gaps.
+- Responsive SQL/Data/Diagram workspaces, activity rail, docked/pop-out inspector,
+  readable grid and staged review, system-font fallback, and bounded native schema
+  diagrams. See `docs/ui-redesign.md` for the capability map and limits.
+- Formatting, warning-free Clippy, 43 workspace unit/integration tests.
+- Four exact local-project schema fixtures (scratchpad, agenda, notifications,
+  clip-daemon): synthetic Turso-created data, read-only byte preservation, paging,
+  typed edits, FTS transaction consistency, rendering/exports, and native Xvfb smoke.
 - Native eframe/OpenGL smoke under Xvfb/Mesa against a closed 100,000-row fixture:
   open, schema, browse first page, typed blob query, engine read-only write rejection,
-  acknowledged close. On this Linux x86_64 Nix host the debug sequence took ~270 ms;
-  optimized runs took ~96–149 ms (latest ~149 ms), including a temporary-prefix install smoke test. This is a single-host
-  measurement, not a general performance guarantee.
+  acknowledged close. The redesign adds actual data/diagram render frames to this
+  sequence; debug runs observed ~0.90–2.56 s for the main smoke and ~0.41–1.31 s
+  for project smokes on this host. Both-theme egui layout tests cover laptops, widescreens and 1.5× UI scale;
+  native Xvfb screenshot review covers schema/data, diagram and compact panes.
+  Earlier, after the workbench additions, this Linux x86_64 Nix host's
+  debug sequence took ~814 ms; the four local-project desktop smokes took ~207–234 ms.
+  An optimized workbench-validation run took ~133 ms; local-project smokes took
+  ~95–98 ms. That pre-redesign preview package was rebuilt; rebuild the archive
+  to include the subsequent UI redesign. Earlier phase-5 validation also
+  included a temporary-prefix install smoke. These are single-host observations,
+  not performance guarantees.
 - Engine-only 100,000-row drain measured ~0.95 s in debug. Application retention
   budgets are tested; total engine/process memory is not bounded or certified.
 
@@ -26,8 +46,13 @@ not a declaration that every production release gate in PLAN.md has passed.
 - No interrupt/timeout stop guarantee. Discard is delivery suppression only.
 - OFFSET paging, not keyset; no snapshot consistency or deep-page latency guarantee.
 - Exports stream retained results to disk, not unlimited complete-table queries.
-- No scripts, custom types, WITHOUT ROWID, generated-column editing or other
-  experimental features. No other database engines, ever.
+- No script execution (multi-statement buffers can run one selection/statement at
+  a time), custom types, WITHOUT ROWID or generated-column editing. Experimental
+  index methods are enabled for native FTS; other experimental flags remain off.
+  No other database engines, ever.
+- FTS dependency audit: the scoped zstd patch removes three vulnerability findings.
+  `cargo audit` passes but reports upstream `lru` panic-safety warning
+  RUSTSEC-2026-0253; no advisory is suppressed. This is still a release-review item.
 - Fault-injected commit/rollback I/O failure and resource exhaustion remain untested.
   Unknown-outcome handling is implemented conservatively, not empirically certified.
 - No old tursotui-engine fixture coverage or broad file-format compatibility claim.
@@ -39,8 +64,9 @@ not a declaration that every production release gate in PLAN.md has passed.
   supplied. Repeated archive assembly with the same binary produced matching SHA-256
   hashes locally. Cross-host/bit-for-bit binary reproducibility has not been established.
 - License inventory includes verbatim bundled/upstream texts, font notices, and
-  immutable URL/hash provenance. Four crates omit license texts in inspected
-  releases/upstream trees (`crc32c`, `genawaiter`, `genawaiter-macro`, `pack1`);
+  immutable URL/hash provenance. Five crates omit license texts in inspected
+  releases/upstream trees (`crc32c`, `genawaiter`, `genawaiter-macro`, `htmlescape`,
+  `pack1`);
   `MISSING-LICENSE-TEXTS.txt` flags them for manual review before public release.
   License collection is not legal review or permission to ignore missing notices.
 

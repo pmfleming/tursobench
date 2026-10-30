@@ -8,10 +8,15 @@ Read/write opt-in and exclusive-use acknowledgement are deliberately not persist
 Busy timeout defaults to 250 ms, configurable 0–5000 ms after reopen. Query row
 retention is configurable 1–10,000; fixed byte/cell budgets still apply.
 
-History and bookmarks are capped at 100 statements and 512 KiB each, with a
-64 KiB per-statement maximum. SQL literals may be sensitive. Parameter values,
-query results, drafts and database paths are not persisted. Clear history and
-bookmarks from the sidebar. Preferences use a private temporary file, flush/sync,
+History and bookmarks are capped at 100 entries and 512 KiB each (including names
+and scope paths), with a 64 KiB per-statement maximum. History records the last
+outcome/time per distinct SQL + database path; bookmarks have editable names.
+Absolute database path spellings **are persisted** for scoping (relative input is
+resolved against the working directory); aliases can have separate histories. Legacy statement lists migrate to visibly unscoped entries. SQL literals
+and paths may be sensitive. Parameter values, query results, editor buffers and
+drafts are not persisted. Loading history/bookmarks clears bindings. Clear history
+or delete bookmarks from the sidebar. Dark/light theme, NULL marker and slow-query
+threshold are also stored. Preferences use a private temporary file, flush/sync,
 then atomic replacement in the application directory. Saves run on a background
 worker with coalescing. This is best-effort convenience storage, not durable draft
 recovery; abrupt process shutdown can lose the most recent preference change.
@@ -19,7 +24,8 @@ Invalid/oversized preferences produce a visible error and safe defaults.
 
 ## Typed JSONL v1
 
-Export streams the **already retained displayed result** to a new `.jsonl` file
+Export streams the **already retained engine result**, not local staged overlays,
+to a new `.jsonl` file
 on a background thread, without re-running SQL (and thus without accidentally
 repeating writes). A bounded copy of displayed rows is made for the job. It does
 not stream an unlimited table from the database; for now export pages separately.
@@ -29,6 +35,8 @@ column names/declared types, expected row count and an explicit scope:
 
 - `complete-query-result`: all rows from a completed, unlimited delivery;
 - `table-page`: only the displayed 100-row-or-smaller page, not the table;
+- `related-row-lookup`: a bounded related-row lookup (up to 100), not the table;
+- `single-retained-row`: one retained row copied to the clipboard;
 - `limited-query-result`: a budget-limited retained prefix;
 - `failed-query-partial-result` / `discarded-query-partial-result`: not complete.
 
@@ -49,3 +57,34 @@ an incomplete/corrupt export. A same-directory private temporary file is flushed
 and synced, then published atomically without overwriting an existing destination.
 A failure never relabels partial data as complete or overwrites a user database.
 The export file format differs deliberately from the editor's tagged input JSON.
+
+## Other retained-result formats
+
+All disk formats use the same atomic, no-overwrite publication and explicit scope.
+The file extension must match the selected format. Clipboard result/row exports
+are limited to 2 MiB; exceeding the limit leaves the clipboard unchanged.
+
+- **Typed JSON** (`.json`): one object with `header`, `rows` (arrays of the same
+  typed cells as JSONL), and `end: {"rows": N}`. Header format is
+  `tursobench-typed-json`. Duplicate column aliases remain separate array entries.
+- **Annotated CSV/TSV** (`.csv` / `.tsv`): the first line is a `# TursoBench ...`
+  scope/row-count/convention notice. **Skip that metadata line** before parsing
+  the header and records as CSV/tab-delimited CSV. Quoting doubles embedded quotes
+  and preserves delimiters/newlines. NULL is unquoted `\N`; blobs are `X'hex'`.
+  Text whose first non-whitespace character is `=`, `+`, `-` or `@` gets an
+  apostrophe prefix as spreadsheet-formula mitigation. These are convenience
+  formats, **not lossless typed interchange**: consumers can infer unwanted types,
+  and NULL-like text can be ambiguous after parsing. Prefer typed JSON/JSONL for
+  fidelity; do not treat quoting as a security boundary for untrusted spreadsheets.
+- **SQL INSERTs** (`.sql`): a scope comment followed by INSERT statements into an
+  explicitly chosen, quoted target table/columns. Integers, finite reals (including
+  a real decimal point), escaped text, NULL and hex blobs retain their SQL kinds.
+  NUL-containing text uses `CAST(X'utf8hex' AS TEXT)`. Non-finite reals and duplicate
+  result column names are rejected before publication. The target schema must
+  already exist and its affinities/constraints still apply. No DDL is inferred,
+  no transaction is implicitly opened, and the file is never automatically run.
+
+Record detail pretty-prints valid JSON objects/arrays in TEXT using the original
+number/string/key tokens, so large numeric literals and duplicate keys are not
+rounded or dropped. Invalid or over-budget formatting falls back to original text.
+Cell copying preserves original TEXT; NULL is `NULL`, blobs are `X'hex'`.

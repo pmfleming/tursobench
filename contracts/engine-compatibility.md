@@ -4,8 +4,11 @@
 
 Run `nix-shell --run 'cargo run --locked -p engine-spike'` (or use Rust and
 Python 3 directly). The harness creates and deletes only disposable fixtures.
-No reference project code was copied. `turso = "=0.8.3"`, default Cargo features
-OFF, all experimental builder flags OFF in production. Turso is the only engine.
+No tursotui backend code is imported. `turso = "=0.8.3"`, default Cargo features
+OFF, `fts` explicitly ON, and `experimental_index_method(true)` enabled on every
+production database open, including read-only opens. Other experimental builder
+flags remain OFF. Turso is the only engine. See `docs/fts.md` for syntax, the
+scoped compression dependency patch, and local-project validation.
 
 Observed on Linux x86_64, Rust 1.95.0:
 
@@ -27,6 +30,9 @@ Observed on Linux x86_64, Rust 1.95.0:
 | Read-only missing path | Error, no file created |
 | Corrupt file / Unix permissions | NotAdb / PermissionDenied |
 | Closed standard SQLite fixture | Basic schema/row read through Turso passes |
+| Local scratchpad/agenda/notification schemas | All-table browse, paging/filtering, typed edits and close rollback pass on synthetic Turso fixtures |
+| Local clip-daemon native n-gram FTS schema | Open/reopen, indexed queries, generated edits, conflicts, constraint rollback and read-only byte preservation pass |
+| Native FTS creation through the editor | Prepared CREATE INDEX/RETURNING/fts_match work; index creation and updates rejected in read-only mode |
 
 ## Decisions
 
@@ -54,6 +60,8 @@ Observed on Linux x86_64, Rust 1.95.0:
 Fault-injected I/O commit/rollback failure, resource exhaustion, multiprocess
 writer stress, old tursotui-engine fixtures, full file-format coverage, and
 cross-platform behavior are **not validated**. No old engine compatibility claim.
-Generated columns, WITHOUT ROWID, custom types, sync, encryption and other
-experimental features are disabled. This implementation is a Linux preview,
+Generated columns, WITHOUT ROWID, custom types, sync, encryption and experimental
+features other than index methods are disabled. Only native FTS index methods
+have been qualified here; enabling the flag is not a blanket compatibility claim
+for every possible index method. Existing live application stores were not used. This implementation is a Linux preview,
 not a production-safety certification. New evidence must update this document.

@@ -1,0 +1,1418 @@
+<title>TursoBench UI Redesign</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: proposal header → full desktop-window prototype in its own scroll box → before/after rationale and egui build notes */
+:root{
+  --bg:#e9edee; --chrome:#dfe5e7; --panel:#f4f7f7; --surface:#fcfdfd; --raised:#ffffff;
+  --line:#cdd6d9; --line-soft:#e3e9eb; --fg:#162024; --fg-2:#46555b; --fg-3:#6d7c82;
+  --accent:#0b7480; --accent-strong:#075c66; --accent-soft:#d3ecee; --on-accent:#ffffff;
+  --sel:rgba(11,116,128,.10); --sel-line:#0b7480;
+  --warn:#94580a; --warn-soft:#f9e8c9; --warn-line:#e0b067;
+  --danger:#ad2f2a; --danger-soft:#f6dad8;
+  --ok:#2c7646; --ok-soft:#d8eedf;
+  --tk-key:#3550c0; --tk-str:#2c7646; --tk-num:#94580a; --tk-com:#84949a; --tk-fn:#87399f; --tk-par:#ad2f2a;
+  --shadow:0 18px 50px -12px rgba(16,32,38,.35); --shadow-sm:0 6px 18px -6px rgba(16,32,38,.28);
+  --ui:"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono:"IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --display:"IBM Plex Sans Condensed", "IBM Plex Sans", system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0b1012; --chrome:#11181b; --panel:#141d20; --surface:#172125; --raised:#1d292e;
+    --line:#2b393e; --line-soft:#1f2b2f; --fg:#dce6e8; --fg-2:#a3b3b8; --fg-3:#76898f;
+    --accent:#4cb8c2; --accent-strong:#86d3da; --accent-soft:#163a3f; --on-accent:#05181b;
+    --sel:rgba(76,184,194,.13); --sel-line:#4cb8c2;
+    --warn:#e3a54a; --warn-soft:#3a2a12; --warn-line:#8a6120;
+    --danger:#ef7d76; --danger-soft:#3d1c1b;
+    --ok:#6cc68a; --ok-soft:#173222;
+    --tk-key:#8ea6ff; --tk-str:#7fcf98; --tk-num:#e3a54a; --tk-com:#66797f; --tk-fn:#d29bea; --tk-par:#ef7d76;
+    --shadow:0 18px 50px -12px rgba(0,0,0,.75); --shadow-sm:0 6px 18px -6px rgba(0,0,0,.6);
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0b1012; --chrome:#11181b; --panel:#141d20; --surface:#172125; --raised:#1d292e;
+  --line:#2b393e; --line-soft:#1f2b2f; --fg:#dce6e8; --fg-2:#a3b3b8; --fg-3:#76898f;
+  --accent:#4cb8c2; --accent-strong:#86d3da; --accent-soft:#163a3f; --on-accent:#05181b;
+  --sel:rgba(76,184,194,.13); --sel-line:#4cb8c2;
+  --warn:#e3a54a; --warn-soft:#3a2a12; --warn-line:#8a6120;
+  --danger:#ef7d76; --danger-soft:#3d1c1b;
+  --ok:#6cc68a; --ok-soft:#173222;
+  --tk-key:#8ea6ff; --tk-str:#7fcf98; --tk-num:#e3a54a; --tk-com:#66797f; --tk-fn:#d29bea; --tk-par:#ef7d76;
+  --shadow:0 18px 50px -12px rgba(0,0,0,.75); --shadow-sm:0 6px 18px -6px rgba(0,0,0,.6);
+  color-scheme:dark;
+}
+*,*::before,*::after{box-sizing:border-box}
+[hidden]{display:none!important}
+body{background:var(--bg);color:var(--fg);font-family:var(--ui);font-size:14px;line-height:1.5;padding-left:max(16px, env(safe-area-inset-left, 0px));padding-right:max(16px, env(safe-area-inset-right, 0px));padding-block:28px 56px}
+table{font:inherit;color:inherit;border-collapse:collapse}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+@media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
+
+/* ---------- Proposal framing ---------- */
+.wrap{max-width:1320px;margin:0 auto}
+.intro{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px 32px;align-items:end;margin-bottom:20px}
+.eyebrow{font-family:var(--mono);font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--fg-3)}
+h1{font-family:var(--display);font-weight:600;font-size:clamp(28px,4vw,40px);line-height:1.1;margin:4px 0 8px;text-wrap:balance;letter-spacing:-.01em}
+.lede{max-width:66ch;color:var(--fg-2);margin:0}
+.tries{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end;max-width:420px}
+.try{font-size:12px;color:var(--fg-2);background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:3px 10px;white-space:nowrap}
+.try kbd{font-family:var(--mono);font-size:11px}
+@media (max-width:820px){.intro{grid-template-columns:1fr}.tries{justify-content:flex-start}}
+.stage{overflow-x:auto;border-radius:10px;box-shadow:var(--shadow);border:1px solid var(--line)}
+.stage-note{font-size:12px;color:var(--fg-3);margin:8px 2px 0}
+
+/* ---------- App shell ---------- */
+.app{position:relative;min-width:1180px;height:780px;display:grid;grid-template-rows:38px minmax(0,1fr) 26px;background:var(--surface);font-size:13px;line-height:1.4;overflow:hidden;border-radius:10px}
+.ic{width:16px;height:16px;flex:none;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.btn{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 9px;border:1px solid var(--line);background:var(--raised);border-radius:5px;font-size:12.5px;white-space:nowrap;color:var(--fg)}
+.btn:hover:not(:disabled){border-color:var(--fg-3)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent);font-weight:500}
+.btn.primary:hover:not(:disabled){background:var(--accent-strong);border-color:var(--accent-strong)}
+.btn.warn{background:var(--warn);border-color:var(--warn);color:var(--surface);font-weight:500}
+.btn.danger{color:var(--danger)}
+.btn.ghost{border-color:transparent;background:transparent}
+.btn.ghost:hover:not(:disabled){background:var(--line-soft);border-color:transparent}
+.btn.icon{width:26px;padding:0;justify-content:center}
+.btn kbd,.kbd{font-family:var(--mono);font-size:10.5px;color:var(--fg-3);border:1px solid var(--line);border-radius:3px;padding:0 4px;line-height:15px;background:var(--panel)}
+.btn.primary kbd{color:var(--on-accent);border-color:color-mix(in srgb,var(--on-accent) 40%,transparent);background:transparent}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:5px;overflow:hidden;background:var(--raised)}
+.seg button{border:0;background:transparent;height:24px;padding:0 9px;font-size:12px;color:var(--fg-2);border-right:1px solid var(--line)}
+.seg button:last-child{border-right:0}
+.seg button[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent-strong);font-weight:500}
+.seg button:disabled{opacity:.45;cursor:not-allowed}
+.chip{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 7px;border-radius:4px;font-size:11.5px;background:var(--line-soft);color:var(--fg-2);white-space:nowrap}
+.chip.mono{font-family:var(--mono);font-size:11px}
+.chip.ok{background:var(--ok-soft);color:var(--ok)}
+.chip.warn{background:var(--warn-soft);color:var(--warn)}
+.chip.danger{background:var(--danger-soft);color:var(--danger)}
+.chip.accent{background:var(--accent-soft);color:var(--accent-strong)}
+.tag{font-family:var(--mono);font-size:9.5px;font-weight:500;letter-spacing:.04em;padding:0 3px;border-radius:2px;line-height:14px;border:1px solid currentColor;opacity:.85}
+.tag.pk{color:var(--warn)} .tag.ix{color:var(--accent)} .tag.fk{color:var(--tk-fn)} .tag.fts{color:var(--ok)}
+input.field,select.field,textarea.field{height:28px;border:1px solid var(--line);background:var(--raised);border-radius:5px;padding:0 8px;font-size:12.5px;width:100%;min-width:0}
+textarea.field{height:auto;padding:6px 8px;font-family:var(--mono);font-size:12px;resize:vertical}
+input.field.mono{font-family:var(--mono);font-size:12px}
+.muted{color:var(--fg-3)}
+.mono{font-family:var(--mono)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+
+/* Title bar */
+.titlebar{display:flex;align-items:center;gap:10px;padding:0 10px 0 12px;background:var(--chrome);border-bottom:1px solid var(--line);min-width:0}
+.mark{display:flex;align-items:center;gap:8px;font-family:var(--display);font-weight:600;font-size:14px;letter-spacing:.01em}
+.mark i{width:16px;height:16px;border-radius:3px;background:var(--accent);position:relative;flex:none}
+.mark i::before,.mark i::after{content:"";position:absolute;left:3px;right:3px;height:2px;background:var(--on-accent);border-radius:1px}
+.mark i::before{top:5px}.mark i::after{top:9px;right:6px}
+.vsep{width:1px;height:18px;background:var(--line)}
+.dbchip{display:flex;align-items:center;gap:7px;height:26px;padding:0 8px;border:1px solid transparent;border-radius:5px;background:transparent;min-width:0;max-width:420px}
+.dbchip:hover{background:var(--line-soft)}
+.dbchip b{font-weight:500}
+.dbchip span{color:var(--fg-3);font-family:var(--mono);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.access{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:4px;font-family:var(--mono);font-size:10.5px;font-weight:500;letter-spacing:.06em}
+.access.ro{background:var(--line-soft);color:var(--fg-2)}
+.access.rw{background:var(--warn-soft);color:var(--warn);box-shadow:inset 0 0 0 1px var(--warn-line)}
+.access .ic{width:13px;height:13px}
+.engine{font-size:11.5px;color:var(--fg-3);white-space:nowrap}
+.spacer{flex:1}
+.cmdk{display:flex;align-items:center;gap:8px;height:26px;width:290px;padding:0 6px 0 9px;border:1px solid var(--line);border-radius:5px;background:var(--surface);color:var(--fg-3);font-size:12px}
+.cmdk:hover{border-color:var(--fg-3)}
+.cmdk span{flex:1;text-align:left}
+.txn{display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 8px;border-radius:999px;font-size:11.5px;background:var(--line-soft);color:var(--fg-2)}
+.txn::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--fg-3)}
+.txn.active{background:var(--warn-soft);color:var(--warn)}
+.txn.active::before{background:var(--warn)}
+.txn.unknown{background:var(--danger-soft);color:var(--danger)}
+.txn.unknown::before{background:var(--danger)}
+
+/* Body grid */
+.body{display:grid;grid-template-columns:46px 248px minmax(0,1fr) 312px;min-height:0}
+.rail{display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 0;background:var(--chrome);border-right:1px solid var(--line)}
+.rail button{position:relative;width:34px;height:34px;display:grid;place-items:center;border:0;border-radius:6px;background:transparent;color:var(--fg-3)}
+.rail button .ic{width:19px;height:19px}
+.rail button:hover:not(:disabled){color:var(--fg);background:var(--line-soft)}
+.rail button[aria-pressed="true"]{color:var(--accent-strong);background:var(--accent-soft)}
+.rail button[aria-pressed="true"]::before{content:"";position:absolute;left:-6px;top:8px;bottom:8px;width:2px;border-radius:2px;background:var(--accent)}
+.rail button:disabled{opacity:.35;cursor:not-allowed}
+.rail .grow{flex:1}
+
+.sidebar{display:flex;flex-direction:column;min-height:0;background:var(--panel);border-right:1px solid var(--line)}
+.side-head{display:flex;align-items:center;gap:6px;padding:10px 10px 8px 12px}
+.side-head h2{flex:1;margin:0;font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--fg-2);font-weight:600}
+.side-tools{padding:0 10px 8px 12px;display:grid;gap:6px}
+.side-list{flex:1;overflow:auto;padding:0 6px 10px;min-height:0}
+.side-foot{padding:8px 12px;border-top:1px solid var(--line-soft);font-size:11.5px;color:var(--fg-3);display:flex;gap:6px}
+.side-foot .ic{width:14px;height:14px;margin-top:1px}
+.grp{margin-top:4px}
+.grp-h{display:flex;align-items:center;gap:6px;width:100%;border:0;background:transparent;padding:4px 6px;font-size:11.5px;font-weight:600;color:var(--fg-2);border-radius:4px}
+.grp-h:hover{background:var(--line-soft)}
+.grp-h .ic{width:12px;height:12px;transition:transform .12s}
+.grp-h[aria-expanded="true"] .ic{transform:rotate(90deg)}
+.grp-h em{font-style:normal;font-weight:400;color:var(--fg-3);margin-left:auto;font-family:var(--mono);font-size:11px}
+.obj{display:flex;align-items:center;gap:7px;width:100%;border:0;background:transparent;padding:3px 6px 3px 20px;border-radius:4px;text-align:left;min-width:0;color:var(--fg)}
+.obj:hover{background:var(--line-soft)}
+.obj[aria-current="true"]{background:var(--sel);box-shadow:inset 2px 0 0 var(--sel-line)}
+.obj .ic{width:14px;height:14px;color:var(--fg-3)}
+.obj .nm{font-family:var(--mono);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.obj .on{color:var(--fg-3);font-size:11px;margin-left:auto;font-family:var(--mono);white-space:nowrap}
+.obj .dot{width:6px;height:6px;border-radius:50%;background:var(--warn);margin-left:auto;flex:none}
+.empty-row{padding:2px 6px 6px 20px;font-size:11.5px;color:var(--fg-3)}
+.hitem{position:relative;display:block;width:100%;text-align:left;border:0;background:transparent;border-radius:5px;padding:7px 8px;color:var(--fg)}
+.hitem:hover{background:var(--line-soft)}
+.hitem code{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-family:var(--mono);font-size:11.5px;line-height:1.45;word-break:break-word}
+.hitem .meta{display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin-top:4px;font-size:11px;color:var(--fg-3)}
+.hitem .meta .chip{height:16px;font-size:10.5px;padding:0 5px}
+.hitem .nm{font-weight:500;font-size:12.5px;margin-bottom:2px}
+.hitem .del{position:absolute;top:5px;right:5px;opacity:0}
+.hitem:hover .del,.hitem:focus-within .del{opacity:1}
+.toggles{display:flex;gap:6px;flex-wrap:wrap}
+.tgl{height:22px;border:1px solid var(--line);background:var(--raised);border-radius:999px;padding:0 9px;font-size:11.5px;color:var(--fg-2)}
+.tgl[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent);color:var(--accent-strong)}
+.diag{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 8px;align-items:center;padding:8px;border-radius:5px}
+.diag:hover{background:var(--line-soft)}
+.diag b{font-weight:500;font-size:12.5px}
+.diag code{grid-column:1;font-family:var(--mono);font-size:11px;color:var(--fg-3)}
+.diag .btn{grid-row:1 / span 2;grid-column:2}
+.form{display:grid;gap:12px;padding:4px 6px}
+.form label{display:grid;gap:4px;font-size:12px;color:var(--fg-2)}
+.form small{font-size:11px;color:var(--fg-3)}
+.note{font-size:11.5px;color:var(--fg-3);padding:8px 6px;line-height:1.45}
+
+/* Main + tabs */
+.main{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--surface)}
+.tabs{display:flex;align-items:stretch;height:34px;background:var(--panel);border-bottom:1px solid var(--line);overflow-x:auto;flex:none}
+.tab{position:relative;display:flex;align-items:center;gap:7px;padding:0 6px 0 12px;border:0;border-right:1px solid var(--line-soft);background:transparent;color:var(--fg-2);font-size:12.5px;max-width:220px;white-space:nowrap}
+.tab .ic{width:14px;height:14px}
+.tab .t{overflow:hidden;text-overflow:ellipsis}
+.tab .t.mono{font-size:12px}
+.tab[aria-selected="true"]{background:var(--surface);color:var(--fg)}
+.tab[aria-selected="true"]::after{content:"";position:absolute;left:0;right:0;top:0;height:2px;background:var(--accent)}
+.tab .x{display:grid;place-items:center;width:18px;height:18px;border-radius:3px;color:var(--fg-3)}
+.tab .x:hover{background:var(--line-soft);color:var(--fg)}
+.tab .x .ic{width:12px;height:12px}
+.tab .dirty{width:7px;height:7px;border-radius:50%;background:var(--warn)}
+.tabs .add{border:0;background:transparent;width:32px;color:var(--fg-3);display:grid;place-items:center}
+.tabs .add:hover{color:var(--fg)}
+.toolbar{display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid var(--line-soft);flex:none;min-width:0;flex-wrap:nowrap}
+.toolbar .lbl{font-size:11.5px;color:var(--fg-3);margin-left:6px}
+.qedit{display:grid;grid-template-columns:minmax(0,1fr) 250px;min-height:90px;flex:none;border-bottom:1px solid var(--line-soft)}
+.editor{display:grid;grid-template-columns:40px minmax(0,1fr);min-height:0;overflow:hidden;background:var(--surface)}
+.gutter{padding:10px 8px 10px 0;text-align:right;font-family:var(--mono);font-size:12.5px;line-height:20px;color:var(--fg-3);background:var(--panel);border-right:1px solid var(--line-soft);user-select:none;white-space:pre;overflow:hidden}
+.code{position:relative;min-width:0;overflow:hidden}
+.code pre,.code textarea{position:absolute;inset:0;margin:0;padding:10px 12px;font-family:var(--mono);font-size:12.5px;line-height:20px;white-space:pre-wrap;word-break:break-word;tab-size:4;border:0;overflow:auto}
+.code pre,.code textarea{scrollbar-gutter:stable}
+.code pre{pointer-events:none;color:var(--fg);overflow:hidden}
+.code textarea{background:transparent;color:transparent;caret-color:var(--fg);resize:none;outline:none}
+.code textarea::selection{background:color-mix(in srgb,var(--accent) 30%,transparent);color:transparent}
+.k{color:var(--tk-key);font-weight:500}.s{color:var(--tk-str)}.n{color:var(--tk-num)}.c{color:var(--tk-com);font-style:italic}.f{color:var(--tk-fn)}.p{color:var(--tk-par);font-weight:500}
+.params{border-left:1px solid var(--line-soft);background:var(--panel);display:flex;flex-direction:column;min-height:0}
+.params-h{display:flex;align-items:center;gap:6px;padding:7px 10px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--fg-2);font-weight:600}
+.params-h .btn{margin-left:auto;text-transform:none;letter-spacing:0;font-weight:400;height:22px;font-size:11.5px}
+.params-b{flex:1;overflow:auto;padding:0 10px 10px;display:grid;gap:8px;align-content:start}
+.prow{display:grid;grid-template-columns:auto 84px;gap:4px 6px;align-items:center}
+.prow .nm{font-family:var(--mono);font-size:12px;color:var(--tk-par)}
+.prow select{height:24px;font-size:11.5px;padding:0 4px}
+.prow input{grid-column:1 / span 2;height:26px}
+.split{height:6px;cursor:row-resize;background:var(--panel);border-block:1px solid var(--line-soft);flex:none;position:relative}
+.split::after{content:"";position:absolute;left:50%;top:1px;width:28px;height:2px;margin-left:-14px;border-radius:2px;background:var(--line)}
+.reshead{display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid var(--line-soft);flex:none;min-width:0}
+.reshead .sum{font-size:12px;color:var(--fg-2);white-space:nowrap}
+.reshead .sum b{font-weight:600;color:var(--fg)}
+.resbody{flex:1;min-height:0;position:relative;display:flex;flex-direction:column}
+.empty{margin:auto;text-align:center;color:var(--fg-3);font-size:12.5px;max-width:42ch;padding:24px}
+.empty b{display:block;color:var(--fg-2);font-weight:500;margin-bottom:4px;font-size:13px}
+.errbox{margin:14px;border:1px solid var(--danger);background:var(--danger-soft);color:var(--danger);border-radius:6px;padding:10px 12px;font-size:12.5px}
+.errbox code{font-family:var(--mono);display:block;margin-top:4px;color:var(--fg)}
+
+/* Grid */
+.gridwrap{flex:1;overflow:auto;min-height:0;background:var(--surface)}
+.grid{table-layout:fixed;border-collapse:separate;border-spacing:0;font-size:12.5px}
+.grid th{position:sticky;top:0;z-index:2;background:var(--panel);border-bottom:1px solid var(--line);border-right:1px solid var(--line-soft);text-align:left;font-weight:500;padding:0;height:40px;vertical-align:top}
+.grid th .hd{display:flex;flex-direction:column;justify-content:center;gap:1px;height:40px;padding:0 8px;width:100%;border:0;background:transparent;text-align:left;cursor:default}
+.grid th .hd.sortable{cursor:pointer}
+.grid th .hd.sortable:hover{background:var(--line-soft)}
+.grid th .r1{display:flex;align-items:center;gap:5px;min-width:0}
+.grid th .r1 .nm{font-family:var(--mono);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+.grid th .r1 .ar{margin-left:auto;color:var(--accent);font-size:10px}
+.grid th .r2{font-family:var(--mono);font-size:10px;color:var(--fg-3);letter-spacing:.03em}
+.grid th .rz{position:absolute;right:-3px;top:0;bottom:0;width:6px;cursor:col-resize;z-index:3}
+.grid th .rz:hover{background:var(--accent)}
+.grid th.rn,.grid td.rn{position:sticky;left:0;z-index:1;width:52px;background:var(--panel);text-align:right;padding:0 8px;color:var(--fg-3);font-family:var(--mono);font-size:11px;border-right:1px solid var(--line)}
+.grid th.rn{z-index:3}
+.grid td{height:26px;padding:0 8px;border-bottom:1px solid var(--line-soft);border-right:1px solid var(--line-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:default}
+.grid tbody tr:hover td{background:color-mix(in srgb,var(--line-soft) 55%,transparent)}
+.grid tbody tr:hover td.rn{background:var(--panel)}
+.grid td.num{text-align:right;font-family:var(--mono);font-size:12px;font-variant-numeric:tabular-nums}
+.grid td.txt.monoish{font-family:var(--mono);font-size:12px}
+.v-null{color:var(--fg-3);font-style:italic;font-size:11.5px}
+.v-empty{color:var(--fg-3);font-size:11.5px}
+.v-blob{display:inline-flex;align-items:center;height:17px;padding:0 5px;border-radius:3px;background:var(--line-soft);color:var(--fg-2);font-family:var(--mono);font-size:10.5px}
+.grid td.sel{box-shadow:inset 0 0 0 2px var(--sel-line);background:var(--sel)!important}
+.grid tr.rowsel td{background:color-mix(in srgb,var(--sel) 60%,transparent)}
+.grid td.mod{background:var(--warn-soft)!important;color:var(--fg)}
+.grid td.mod::before{content:"";display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--warn);margin-right:6px;vertical-align:middle}
+.grid tr.del td:not(.rn){text-decoration:line-through;text-decoration-color:var(--danger);color:var(--fg-3);background:var(--danger-soft)!important}
+.grid tr.ins td:not(.rn){background:var(--ok-soft)!important}
+.grid td.rn .mk{display:inline-block;font-family:var(--mono);font-size:10px;font-weight:600;margin-right:4px}
+.grid tr.del td.rn{box-shadow:inset 3px 0 0 var(--danger)}
+.grid tr.ins td.rn{box-shadow:inset 3px 0 0 var(--ok)}
+.grid tr.modrow td.rn{box-shadow:inset 3px 0 0 var(--warn)}
+.pager{display:flex;align-items:center;gap:8px;padding:5px 10px;border-top:1px solid var(--line-soft);background:var(--panel);font-size:12px;color:var(--fg-2);flex:none}
+.pager .mono{font-size:11.5px}
+.staged{display:flex;align-items:center;gap:10px;padding:8px 10px 8px 12px;background:var(--warn-soft);border-top:1px solid var(--warn-line);color:var(--fg);flex:none}
+.staged .ic{color:var(--warn)}
+.staged b{font-weight:600}
+.staged .bk{font-size:12px;color:var(--fg-2)}
+.crumbs{display:flex;align-items:center;gap:4px;font-family:var(--mono);font-size:12px;min-width:0;white-space:nowrap;overflow:hidden}
+.crumbs button{border:0;background:transparent;color:var(--accent);padding:2px 4px;border-radius:3px;font-family:var(--mono);font-size:12px}
+.crumbs button:hover{background:var(--line-soft)}
+.crumbs .cur{font-weight:500;padding:2px 4px}
+.crumbs .sep{color:var(--fg-3)}
+.fchip{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 4px 0 8px;border-radius:5px;background:var(--accent-soft);color:var(--accent-strong);font-family:var(--mono);font-size:11.5px}
+.fchip button{border:0;background:transparent;color:inherit;display:grid;place-items:center;width:18px;height:18px;border-radius:3px}
+.fchip button:hover{background:color-mix(in srgb,var(--accent) 20%,transparent)}
+.fchip .ic{width:12px;height:12px}
+.fform{display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--panel);border-bottom:1px solid var(--line-soft);flex:none;flex-wrap:wrap}
+.fform select,.fform input{height:26px;width:auto}
+.fform .eq{font-family:var(--mono);color:var(--fg-3)}
+.scan{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--warn)}
+.plan{padding:12px 14px;overflow:auto;flex:1;font-family:var(--mono);font-size:12.5px}
+.plan .pn{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:5px;margin:2px 0}
+.plan .pn .op{font-weight:500}
+.plan .pn.scan{background:var(--warn-soft)}
+.plan .pn.scan .op{color:var(--warn)}
+.plan .pn.search .op{color:var(--ok)}
+.plan .pn .why{margin-left:auto;font-family:var(--ui);font-size:11.5px;color:var(--fg-3)}
+.plannote{font-family:var(--ui);font-size:12px;color:var(--fg-2);margin:0 0 10px;max-width:70ch}
+.menu-wrap{position:relative}
+.menu{position:absolute;right:0;top:30px;z-index:30;min-width:230px;background:var(--raised);border:1px solid var(--line);border-radius:7px;box-shadow:var(--shadow-sm);padding:5px}
+.menu button{display:flex;align-items:center;gap:8px;width:100%;border:0;background:transparent;padding:6px 8px;border-radius:4px;font-size:12.5px;text-align:left;color:var(--fg)}
+.menu button:hover{background:var(--line-soft)}
+.menu button .muted{margin-left:auto;font-family:var(--mono);font-size:10.5px}
+.menu hr{border:0;border-top:1px solid var(--line-soft);margin:4px 2px}
+.menu .mh{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--fg-3);padding:4px 8px 2px}
+.menu .mf{font-size:11px;color:var(--fg-3);padding:4px 8px;max-width:250px}
+
+/* Inspector */
+.inspector{display:flex;flex-direction:column;min-height:0;background:var(--panel);border-left:1px solid var(--line)}
+.itabs{display:flex;height:34px;border-bottom:1px solid var(--line);flex:none}
+.itabs button{flex:1;border:0;background:transparent;font-size:12px;color:var(--fg-3);position:relative}
+.itabs button[aria-selected="true"]{color:var(--fg);font-weight:500}
+.itabs button[aria-selected="true"]::after{content:"";position:absolute;left:12px;right:12px;bottom:-1px;height:2px;background:var(--accent)}
+.ibody{flex:1;overflow:auto;padding:12px;display:grid;gap:14px;align-content:start;min-height:0}
+.ihead{display:grid;gap:3px}
+.ihead .path{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12.5px;font-weight:500;min-width:0}
+.ihead .path span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ihead .path .chip{margin-left:auto}
+.ihead .sub{font-size:11.5px;color:var(--fg-3);font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.valbox{font-family:var(--mono);font-size:12px;line-height:1.5;background:var(--surface);border:1px solid var(--line-soft);border-radius:6px;padding:8px 10px;white-space:pre-wrap;word-break:break-all;max-height:170px;overflow:auto}
+.valbox.was{opacity:.7;text-decoration:line-through;text-decoration-color:var(--fg-3)}
+.isec{display:grid;gap:8px}
+.isec h3{margin:0;font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--fg-3);font-weight:600;display:flex;align-items:center;gap:6px}
+.isec h3::after{content:"";flex:1;height:1px;background:var(--line-soft)}
+.row-actions{display:flex;flex-wrap:wrap;gap:6px}
+.kv{display:grid;gap:0}
+.kv .it{display:grid;grid-template-columns:minmax(0,1fr);gap:2px;padding:7px 0;border-bottom:1px solid var(--line-soft)}
+.kv .it .k{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11.5px;color:var(--fg-2);font-weight:500}
+.kv .it .k .chip{margin-left:auto;height:16px;font-size:10px}
+.kv .it .v{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:break-all;color:var(--fg)}
+.kv .it.mod{background:linear-gradient(90deg,var(--warn-soft),transparent 80%)}
+.cols{width:100%;font-size:12px}
+.cols td{padding:4px 4px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+.cols td:first-child{font-family:var(--mono);font-weight:500}
+.cols td.ty{font-family:var(--mono);color:var(--fg-3);font-size:11px}
+.cols td.fl{text-align:right;white-space:nowrap}
+.idx{display:grid;gap:2px;padding:6px 8px;border-radius:5px;background:var(--surface);border:1px solid var(--line-soft)}
+.idx.hl{border-color:var(--accent);box-shadow:0 0 0 2px var(--sel)}
+.idx .t{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12px;font-weight:500}
+.idx .c{font-family:var(--mono);font-size:11px;color:var(--fg-3)}
+.ddl{font-family:var(--mono);font-size:11.5px;line-height:1.55;background:var(--surface);border:1px solid var(--line-soft);border-radius:6px;padding:8px 10px;white-space:pre-wrap;word-break:break-word;margin:0}
+.fklink{display:flex;align-items:center;gap:8px;width:100%;text-align:left;border:1px solid var(--line-soft);background:var(--surface);border-radius:5px;padding:6px 8px;font-family:var(--mono);font-size:11.5px;color:var(--fg)}
+.fklink:hover:not(:disabled){border-color:var(--accent)}
+.fklink:disabled{opacity:.55;cursor:not-allowed}
+.fklink .ic{color:var(--tk-fn);width:14px;height:14px}
+.fklink .go{margin-left:auto;color:var(--accent);font-family:var(--ui);font-size:11.5px}
+.lockmsg{display:flex;gap:8px;font-size:12px;color:var(--fg-2);background:var(--surface);border:1px dashed var(--line);border-radius:6px;padding:8px 10px}
+.lockmsg .ic{flex:none;margin-top:2px;color:var(--fg-3)}
+
+/* Status bar + drawer */
+.statusbar{display:flex;align-items:center;gap:14px;padding:0 10px;background:var(--chrome);border-top:1px solid var(--line);font-size:11.5px;color:var(--fg-2);white-space:nowrap;min-width:0}
+.statusbar .it{display:flex;align-items:center;gap:6px}
+.statusbar .led{width:7px;height:7px;border-radius:50%;background:var(--ok)}
+.statusbar .led.off{background:var(--fg-3)}
+.statusbar .led.busy{background:var(--accent);animation:pulse 1s infinite}
+@keyframes pulse{50%{opacity:.3}}
+.statusbar .msg{overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1;color:var(--fg-3)}
+.statusbar button{border:0;background:transparent;font-size:11.5px;color:var(--fg-2);display:flex;align-items:center;gap:5px;height:20px;padding:0 6px;border-radius:4px}
+.statusbar button:hover{background:var(--line-soft)}
+.drawer{position:absolute;left:46px;right:0;bottom:26px;height:180px;background:var(--raised);border-top:1px solid var(--line);box-shadow:0 -10px 30px -16px rgba(0,0,0,.35);z-index:20;display:flex;flex-direction:column}
+.drawer-h{display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid var(--line-soft);font-size:11px;letter-spacing:.08em;text-transform:uppercase;font-weight:600;color:var(--fg-2)}
+.drawer-h .btn{margin-left:auto}
+.drawer-b{flex:1;overflow:auto;padding:4px 0;font-family:var(--mono);font-size:11.5px}
+.drawer-b div{display:grid;grid-template-columns:70px minmax(0,1fr);gap:10px;padding:2px 12px}
+.drawer-b div span:first-child{color:var(--fg-3)}
+.drawer-b div.err span:last-child{color:var(--danger)}
+.drawer-b div.unk span:last-child{color:var(--warn)}
+
+/* Overlays */
+.overlay{position:absolute;inset:0;background:color-mix(in srgb,var(--bg) 55%,transparent);backdrop-filter:blur(1.5px);z-index:50;display:flex;align-items:flex-start;justify-content:center;padding-top:70px}
+.dialog{width:560px;max-width:calc(100% - 40px);background:var(--raised);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);display:flex;flex-direction:column;max-height:calc(100% - 100px)}
+.dialog.wide{width:720px}
+.dialog-h{display:flex;align-items:center;gap:8px;padding:14px 16px 6px}
+.dialog-h h2{margin:0;font-size:15px;font-weight:600;flex:1}
+.dialog-b{padding:4px 16px 12px;overflow:auto;display:grid;gap:12px;font-size:13px;color:var(--fg-2)}
+.dialog-b p{margin:0}
+.dialog-f{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--line-soft)}
+.dialog-f .muted{margin-right:auto;font-size:11.5px}
+.op{border:1px solid var(--line-soft);border-radius:6px;overflow:hidden}
+.op-h{display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--panel);font-size:12px}
+.op-h .chip{font-family:var(--mono);font-weight:500}
+.op pre{margin:0;padding:8px 10px;font-family:var(--mono);font-size:11.5px;white-space:pre-wrap;word-break:break-word;color:var(--fg)}
+.op .bind{padding:0 10px 8px;font-family:var(--mono);font-size:11px;color:var(--fg-3);word-break:break-all}
+.palette{width:560px;background:var(--raised);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);overflow:hidden}
+.palette input{width:100%;height:44px;border:0;border-bottom:1px solid var(--line-soft);background:transparent;padding:0 16px;font-size:14px;outline:none}
+.palette ul{list-style:none;margin:0;padding:6px;max-height:330px;overflow:auto}
+.palette li{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:5px;font-size:13px;cursor:pointer}
+.palette li .grpn{font-size:11px;color:var(--fg-3);width:56px}
+.palette li[aria-selected="true"]{background:var(--accent-soft);color:var(--accent-strong)}
+.palette li .kbd{margin-left:auto}
+.palette .none{padding:16px;color:var(--fg-3);font-size:12.5px}
+.keys{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 24px}
+.keys div{display:flex;justify-content:space-between;gap:10px;padding:4px 0;border-bottom:1px solid var(--line-soft);font-size:12.5px}
+.keys div span:last-child{display:flex;gap:3px}
+.safety{display:grid;gap:6px;font-size:12.5px;margin:0;padding-left:18px}
+.radio-cards{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.rc{display:grid;gap:2px;text-align:left;border:1px solid var(--line);border-radius:7px;padding:10px 12px;background:var(--surface);color:var(--fg)}
+.rc b{font-weight:500;font-size:13px;display:flex;align-items:center;gap:6px}
+.rc span{font-size:11.5px;color:var(--fg-3)}
+.rc[aria-pressed="true"]{border-color:var(--accent);box-shadow:0 0 0 2px var(--sel)}
+.rc.rw[aria-pressed="true"]{border-color:var(--warn);box-shadow:0 0 0 2px var(--warn-soft)}
+.ack{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--line);border-radius:7px;background:var(--surface);font-size:12.5px;color:var(--fg)}
+.ack input{margin-top:3px;accent-color:var(--accent)}
+.ack small{display:block;color:var(--fg-3);font-size:11.5px}
+.connect{margin:auto;width:520px;display:grid;gap:14px;padding:24px}
+.connect h2{font-family:var(--display);font-weight:600;font-size:22px;margin:0}
+.connect p{margin:0;color:var(--fg-2);font-size:12.5px}
+.connect .pathrow{display:flex;gap:6px}
+.toasts{position:absolute;right:14px;bottom:38px;display:grid;gap:8px;z-index:60;justify-items:end;pointer-events:none}
+.toast{background:var(--fg);color:var(--surface);border-radius:7px;padding:8px 12px;font-size:12.5px;box-shadow:var(--shadow-sm);max-width:420px;animation:tin .18s ease-out}
+.toast.warn{background:var(--warn);color:var(--surface)}
+@keyframes tin{from{transform:translateY(6px);opacity:0}}
+
+/* ---------- Rationale ---------- */
+.notes{margin-top:44px;display:grid;gap:36px}
+.notes h2{font-family:var(--display);font-weight:600;font-size:24px;margin:0 0 4px;text-wrap:balance}
+.notes .sub{color:var(--fg-2);margin:0 0 16px;max-width:66ch}
+.pairs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.pair{display:grid;grid-template-columns:minmax(0,1fr);background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.pair h3{margin:0;padding:10px 14px 0;font-size:14px;font-weight:600}
+.pair dl{margin:0;padding:8px 14px 12px;display:grid;grid-template-columns:62px minmax(0,1fr);gap:6px 10px;font-size:13px}
+.pair dt{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding-top:3px}
+.pair dt.b{color:var(--fg-3)} .pair dt.a{color:var(--accent)}
+.pair dd{margin:0;color:var(--fg-2)}
+.pair dd code,.prose code{font-family:var(--mono);font-size:12px;background:var(--line-soft);padding:0 4px;border-radius:3px}
+@media (max-width:820px){.pairs{grid-template-columns:1fr}}
+.two{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:32px}
+@media (max-width:820px){.two{grid-template-columns:1fr}}
+.prose{color:var(--fg-2);max-width:66ch}
+.prose ul,.prose ol{padding-left:20px;margin:0;display:grid;gap:8px}
+.prose li b{color:var(--fg);font-weight:600}
+.phases{list-style:none;padding:0;margin:0;display:grid;gap:10px;counter-reset:ph}
+.phases li{display:grid;grid-template-columns:34px minmax(0,1fr);gap:10px;counter-increment:ph}
+.phases li::before{content:counter(ph);font-family:var(--mono);font-size:12px;font-weight:500;width:26px;height:26px;border-radius:50%;display:grid;place-items:center;background:var(--accent-soft);color:var(--accent-strong)}
+.phases b{color:var(--fg);font-weight:600;display:block}
+.phases span{color:var(--fg-2);font-size:13.5px}
+</style>
+
+<div class="wrap">
+  <header class="intro">
+    <div>
+      <div class="eyebrow">Proposal · tursobench-ui · egui 0.36</div>
+      <h1>TursoBench UI Redesign</h1>
+      <p class="lede">A new layout for the desktop workbench. The connection settles into a title bar, the crowded schema sidebar splits into an activity rail, queries and tables open as tabs, and the floating windows become one docked inspector. The prototype below works: it runs on sample rows shaped like the clip-daemon fixture.</p>
+    </div>
+    <div class="tries" aria-label="Things to try">
+      <span class="try">Click a table or a cell</span>
+      <span class="try">Review the 3 staged changes</span>
+      <span class="try"><kbd>Ctrl K</kbd> commands</span>
+      <span class="try"><kbd>F1</kbd> shortcuts</span>
+      <span class="try">Commit, then run a query</span>
+    </div>
+  </header>
+
+  <div class="stage">
+    <div class="app" id="app">
+      <div class="titlebar" id="titlebar"></div>
+      <div class="body">
+        <nav class="rail" id="rail" aria-label="Panels"></nav>
+        <aside class="sidebar" id="sidebar"></aside>
+        <main class="main" id="main"></main>
+        <aside class="inspector" id="inspector" aria-label="Inspector"></aside>
+      </div>
+      <footer class="statusbar" id="statusbar"></footer>
+      <div class="drawer" id="drawer" hidden></div>
+      <div class="overlay" id="overlay" hidden></div>
+      <div class="toasts" id="toasts" aria-live="polite"></div>
+    </div>
+  </div>
+  <p class="stage-note">Sample data only. Nothing here touches a database. Sized as a 1180 px wide desktop window; scroll sideways on narrow screens.</p>
+
+  <section class="notes">
+    <div>
+      <h2>What changes</h2>
+      <p class="sub">Every feature in the current build stays. The redesign moves each one to the place where it is used, so the screen shows less at once.</p>
+      <div class="pairs">
+        <article class="pair"><h3>Connection</h3><dl>
+          <dt class="b">Before</dt><dd>A permanent top panel with the path field, Open/Close and two checkboxes, visible even while connected.</dd>
+          <dt class="a">After</dt><dd>An Open sheet before connecting: access mode cards plus the exclusive-use acknowledgement. Once open, a slim title bar shows the file, a <code>READ ONLY</code> or <code>READ / WRITE</code> badge and the editor transaction state.</dd></dl></article>
+        <article class="pair"><h3>Sidebar</h3><dl>
+          <dt class="b">Before</dt><dd>Schema, table actions, diagnostics, bookmarks, history, settings and help stacked in one 260 px column with collapsing headers.</dd>
+          <dt class="a">After</dt><dd>An activity rail with Schema, History, Saved, Diagnostics and Settings. One panel shows at a time, so the schema tree gets the full height.</dd></dl></article>
+        <article class="pair"><h3>Floating windows</h3><dl>
+          <dt class="b">Before</dt><dd>Cell inspector, record detail, DDL and table metadata each open a window that covers the grid.</dd>
+          <dt class="a">After</dt><dd>A docked inspector with Cell, Record and Structure tabs. It follows the selection and holds staging, references and DDL.</dd></dl></article>
+        <article class="pair"><h3>Workspace</h3><dl>
+          <dt class="b">Before</dt><dd>Editor, bindings, BEGIN/COMMIT/ROLLBACK, browse paging, filters, export and the grid all in one column, one result at a time.</dd>
+          <dt class="a">After</dt><dd>Tabs for each query and each table. A query tab has editor and results; a table tab has filter, grid and pager. Each tab carries only its own controls.</dd></dl></article>
+        <article class="pair"><h3>Bindings</h3><dl>
+          <dt class="b">Before</dt><dd>One line of tagged JSON, with a button that fills in NULLs.</dd>
+          <dt class="a">After</dt><dd>A parameter form built from the placeholders in the SQL, with a type and a value per parameter. Edit as JSON stays available and round-trips.</dd></dl></article>
+        <article class="pair"><h3>Staged edits</h3><dl>
+          <dt class="b">Before</dt><dd>Text prefixes <code>✎</code> and <code>[delete]</code> inside cells, and a preview window.</dd>
+          <dt class="a">After</dt><dd>Tinted cells and a gutter stripe per row state, a staged-changes bar that names the count, and a review sheet with the exact SQL and bindings before commit.</dd></dl></article>
+        <article class="pair"><h3>Status</h3><dl>
+          <dt class="b">Before</dt><dd>One long status sentence, plus outcomes in a collapsing header.</dd>
+          <dt class="a">After</dt><dd>A status bar with separate fields for connection, editor transaction, timing and the slow-query badge. Outcomes open in a drawer.</dd></dl></article>
+        <article class="pair"><h3>Grid</h3><dl>
+          <dt class="b">Before</dt><dd>A button per cell, a <code>·</code> suffix for indexed columns, and column width set from a right-click slider.</dd>
+          <dt class="a">After</dt><dd>A real table with <code>PK</code>/<code>IX</code>/<code>FK</code> tags and the declared type in each header, sort arrows, drag-to-resize, type-aware alignment and a NULL style.</dd></dl></article>
+      </div>
+    </div>
+
+    <div class="two">
+      <div>
+        <h2>Safety rules that stay</h2>
+        <div class="prose"><ul>
+          <li><b>Read-only by default.</b> Read/write is a separate card in the Open sheet and shows as an amber badge for the whole session.</li>
+          <li><b>Exclusive use is still confirmed, not enforced.</b> The acknowledgement says so, and Open stays disabled until it is ticked.</li>
+          <li><b>Discard is not cancel.</b> The Discard button appears only while a request runs, and its tooltip says writes continue.</li>
+          <li><b>Browsing uses its own connection.</b> The schema panel footer says so, and table tabs never show uncommitted editor work.</li>
+          <li><b>Exports use retained rows.</b> The export menu names the scope and states that staged overlays are left out and SQL never reruns.</li>
+          <li><b>Counting is explicit.</b> The schema tree shows no row counts. Count rows sits in Structure and warns that it scans.</li>
+        </ul></div>
+      </div>
+      <div>
+        <h2>Building it in egui</h2>
+        <ol class="phases">
+          <li><div><b>Shell and theme</b><span>Replace the stock visuals with a <code>Visuals</code> built from these tokens. Add the title bar and status bar with the existing <code>Panel::top</code>/<code>bottom</code>, and move the connect form into a <code>Modal</code>.</span></div></li>
+          <li><div><b>Rail and inspector</b><span>Add a <code>SidebarView</code> enum behind a 46 px rail panel. Fold <code>inspector_windows</code> and <code>schema_windows</code> into a right panel with three tabs.</span></div></li>
+          <li><div><b>Grid</b><span>Swap the button-per-cell grid for <code>egui_extras::TableBuilder</code>: virtualized rows, sticky header and resizable columns come with it.</span></div></li>
+          <li><div><b>Tabs</b><span>The largest change: split <code>App</code>'s single <code>result</code>, <code>browse</code> and <code>active</code> ticket into per-tab state, keyed by ticket so late events land in the right tab.</span></div></li>
+          <li><div><b>Palette and parameters</b><span>A command list over existing actions, and a parameter form driven by <code>sql::parameter_names</code> that writes the same <code>Bindings</code>.</span></div></li>
+        </ol>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+(() => {
+'use strict';
+/* ---------- helpers ---------- */
+const $ = (s, r = document) => r.querySelector(s);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const PATHS = {
+  schema:'<ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/>',
+  history:'<circle cx="12" cy="12" r="8"/><path d="M12 7.5V12l3 2"/>',
+  saved:'<path d="M7 4h10v16l-5-3.5L7 20z"/>',
+  diag:'<path d="M3 12h4l2-5 4 10 2-5h6"/>',
+  settings:'<path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/>',
+  help:'<circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.6a2.5 2.5 0 1 1 3.4 2.3c-.6.3-1 .8-1 1.5v.4"/><path d="M12 16.8v.2"/>',
+  table:'<rect x="4" y="5" width="16" height="14" rx="1.5"/><path d="M4 10h16M10 10v9"/>',
+  view:'<path d="M2.5 12S6 6 12 6s9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z"/><circle cx="12" cy="12" r="2.5"/>',
+  index:'<path d="M6 4v16M6 8h8M6 14h12"/>',
+  trigger:'<path d="M13 3L5 14h6l-1 7 8-11h-6z"/>',
+  play:'<path d="M8 5.5l10 6.5-10 6.5z" fill="currentColor"/>',
+  search:'<circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/>',
+  lock:'<rect x="5" y="11" width="14" height="9" rx="1.5"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+  pen:'<path d="M4 20l4-1 11-11-3-3L5 16z"/>',
+  moon:'<path d="M19.5 14.5A8 8 0 1 1 9.5 4.5a6.5 6.5 0 0 0 10 10z"/>',
+  sun:'<circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4L7 17M17 7l1.4-1.4"/>',
+  auto:'<circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor"/>',
+  x:'<path d="M6 6l12 12M18 6L6 18"/>',
+  plus:'<path d="M12 5v14M5 12h14"/>',
+  chev:'<path d="M9 6l6 6-6 6"/>',
+  left:'<path d="M15 6l-6 6 6 6"/>',
+  down:'<path d="M6 9l6 6 6-6"/>',
+  refresh:'<path d="M19.5 10A8 8 0 0 0 5.6 7.2L4 9M4 4v5h5M4.5 14a8 8 0 0 0 13.9 2.8L20 15M20 20v-5h-5"/>',
+  link:'<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
+  copy:'<rect x="8" y="8" width="12" height="12" rx="1.5"/><path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8"/>',
+  download:'<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
+  filter:'<path d="M4 5h16l-6 7v6l-4 2v-8z"/>',
+  star:'<path d="M12 4l2.5 5 5.5.8-4 3.9.9 5.5L12 16.6l-4.9 2.6.9-5.5-4-3.9 5.5-.8z"/>',
+  file:'<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/>',
+  info:'<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8v.2"/>',
+  warn:'<path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17v.2"/>',
+  stack:'<path d="M12 4l8 4-8 4-8-4z"/><path d="M4 12l8 4 8-4M4 16l8 4 8-4"/>',
+  undo:'<path d="M9 7L4 12l5 5"/><path d="M4 12h10a6 6 0 0 1 0 12h-2" transform="translate(0 -6)"/>',
+  trash:'<path d="M5 7h14M10 7V5h4v2M7 7l1 13h8l1-13"/>',
+  terminal:'<rect x="3" y="5" width="18" height="14" rx="1.5"/><path d="M7 10l3 2-3 2M12 15h5"/>',
+};
+const ic = (n, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 24 24" aria-hidden="true">${PATHS[n] || ''}</svg>`;
+function rng(seed){ return () => { seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const R0 = rng(20261030);
+const pick = a => a[Math.floor(R0() * a.length)];
+const between = (a, b) => a + Math.floor(R0() * (b - a + 1));
+const B32 = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+const ulid = () => '01JB' + Array.from({length: 22}, () => B32[Math.floor(R0() * 32)]).join('');
+const hexOf = n => Array.from({length: Math.min(n, 48)}, () => Math.floor(R0() * 256).toString(16).padStart(2, '0')).join('');
+
+/* typed values */
+const N = () => ({t:'N'});
+const I = v => ({t:'I', v});
+const T = v => ({t:'T', v});
+const B = n => ({t:'B', n, hex: hexOf(n)});
+const TYPE = {N:'NULL', I:'INTEGER', R:'REAL', T:'TEXT', B:'BLOB'};
+const TAG = {N:'Null', I:'Integer', R:'Real', T:'Text', B:'Blob'};
+const fmtBytes = n => n < 1024 ? `${n} B` : n < 1048576 ? `${(n/1024).toFixed(1)} KiB` : `${(n/1048576).toFixed(1)} MiB`;
+const eqv = (a, b) => a.t === b.t && (a.t === 'N' || (a.t === 'B' ? a.hex === b.hex : a.v === b.v));
+const rank = {N:0, I:1, R:1, T:2, B:3};
+function cmpv(a, b){ if (rank[a.t] !== rank[b.t]) return rank[a.t] - rank[b.t]; if (a.t === 'N') return 0; if (a.t === 'B') return a.n - b.n; if (a.t === 'T') return a.v < b.v ? -1 : a.v > b.v ? 1 : 0; return a.v - b.v; }
+function sqlLit(v){ return v.t === 'N' ? 'NULL' : v.t === 'T' ? `'${v.v.replace(/'/g, "''")}'` : v.t === 'B' ? `X'${v.hex}${v.n > 48 ? '…' : ''}'` : String(v.v); }
+function tagged(v){ return v.t === 'N' ? '{"type":"Null"}' : v.t === 'B' ? `{"type":"Blob","value":[${v.hex.match(/../g).slice(0, 4).map(h => parseInt(h, 16)).join(',')}${v.n > 4 ? ',…' : ''}]}` : `{"type":"${TAG[v.t]}","value":${JSON.stringify(v.v)}}`; }
+function hexdump(v){ const bytes = v.hex.match(/../g) || []; const lines = []; for (let i = 0; i < bytes.length; i += 16) lines.push(i.toString(16).padStart(4, '0') + '  ' + bytes.slice(i, i + 16).join(' ')); if (v.n > bytes.length) lines.push(`… ${fmtBytes(v.n)} total`); return lines.join('\n'); }
+
+/* ---------- schema (from tests/fixtures/local-projects/clipboard.sql) ---------- */
+const c = (name, type, o = {}) => ({name, type, pk: o.pk || 0, nn: !!o.nn, ix: !!o.ix, fk: o.fk || null, dflt: o.dflt || null});
+const TABLES = {
+  entries: {strict:true, cols:[c('id','TEXT',{pk:1,nn:1}), c('revision','INTEGER',{nn:1}), c('favorite','INTEGER',{nn:1,ix:1}), c('recency','INTEGER',{nn:1,ix:1}), c('mime','TEXT',{nn:1}), c('resolved_mime','TEXT',{nn:1}), c('echo_source_id','TEXT',{ix:1,fk:'entries.id'}), c('byte_size','INTEGER',{nn:1}), c('digest','BLOB',{nn:1,ix:1}), c('preview','TEXT',{nn:1}), c('kind','TEXT',{nn:1})],
+    fks:[{cols:['echo_source_id'], target:'entries', tcols:['id'], onDelete:'SET NULL', onUpdate:'NO ACTION'}],
+    ddl:`CREATE TABLE entries(id TEXT PRIMARY KEY, revision INTEGER NOT NULL CHECK(revision>0), favorite INTEGER NOT NULL CHECK(favorite IN (0,1)), recency INTEGER NOT NULL CHECK(recency>0), mime TEXT NOT NULL CHECK(length(mime)<=255), resolved_mime TEXT NOT NULL CHECK(length(resolved_mime)<=255), echo_source_id TEXT REFERENCES entries(id) ON DELETE SET NULL, byte_size INTEGER NOT NULL CHECK(byte_size BETWEEN 0 AND 67108864), digest BLOB NOT NULL CHECK(length(digest)=32), preview TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('Text','Link','Image','Files','Html','Json','Color','Binary'))) STRICT;`},
+  payloads: {strict:true, cols:[c('entry_id','TEXT',{pk:1,fk:'entries.id'}), c('bytes','BLOB',{nn:1})], fks:[{cols:['entry_id'], target:'entries', tcols:['id'], onDelete:'CASCADE', onUpdate:'NO ACTION'}],
+    ddl:`CREATE TABLE payloads(entry_id TEXT PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE, bytes BLOB NOT NULL CHECK(length(bytes)<=67108864)) STRICT;`},
+  search_content: {strict:true, cols:[c('entry_id','TEXT',{pk:1,fk:'entries.id'}), c('content','TEXT',{nn:1}), c('indexed_content','TEXT',{nn:1,ix:1}), c('indexed_complete','INTEGER',{nn:1,ix:1})], fks:[{cols:['entry_id'], target:'entries', tcols:['id'], onDelete:'CASCADE', onUpdate:'NO ACTION'}],
+    ddl:`CREATE TABLE search_content(entry_id TEXT PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE, content TEXT NOT NULL, indexed_content TEXT NOT NULL, indexed_complete INTEGER NOT NULL CHECK(indexed_complete IN (0,1))) STRICT;`},
+  artifacts: {strict:true, cols:[c('path','TEXT',{pk:1}), c('source_entry_id','TEXT',{nn:1,ix:1}), c('image_identity','TEXT',{nn:1}), c('created_at','INTEGER',{nn:1}), c('device','INTEGER',{nn:1}), c('inode','INTEGER',{nn:1}), c('owner','INTEGER',{nn:1})], fks:[],
+    ddl:`CREATE TABLE artifacts(path TEXT PRIMARY KEY, source_entry_id TEXT NOT NULL, image_identity TEXT NOT NULL, created_at INTEGER NOT NULL CHECK(created_at>=0), device INTEGER NOT NULL, inode INTEGER NOT NULL, owner INTEGER NOT NULL CHECK(owner>=0)) STRICT;`},
+  entry_artifacts: {strict:true, cols:[c('entry_id','TEXT',{pk:1,nn:1,fk:'entries.id'}), c('path','TEXT',{pk:2,nn:1,ix:1})], fks:[{cols:['entry_id'], target:'entries', tcols:['id'], onDelete:'CASCADE', onUpdate:'NO ACTION'}],
+    ddl:`CREATE TABLE entry_artifacts(entry_id TEXT NOT NULL REFERENCES entries(id) ON DELETE CASCADE, path TEXT NOT NULL, PRIMARY KEY(entry_id,path)) STRICT;`},
+  inline_echoes: {strict:true, cols:[c('image_identity','TEXT',{pk:1}), c('source_entry_id','TEXT',{nn:1,ix:1}), c('created_at','INTEGER',{nn:1})], fks:[],
+    ddl:`CREATE TABLE inline_echoes(image_identity TEXT PRIMARY KEY, source_entry_id TEXT NOT NULL, created_at INTEGER NOT NULL CHECK(created_at>=0)) STRICT;`},
+  store_meta: {strict:true, cols:[c('id','INTEGER',{pk:1}), c('identity','TEXT',{nn:1}), c('revision','INTEGER',{nn:1}), c('sequence','INTEGER',{nn:1})], fks:[],
+    ddl:`CREATE TABLE store_meta(id INTEGER PRIMARY KEY CHECK(id=1), identity TEXT NOT NULL CHECK(identity='clip-daemon-history-v1'), revision INTEGER NOT NULL CHECK(revision>=0 AND revision<9007199254740991), sequence INTEGER NOT NULL CHECK(sequence>=0)) STRICT;`},
+  effective_policy: {strict:true, cols:[c('id','INTEGER',{pk:1}), c('admission','INTEGER',{nn:1}), c('max_entries','INTEGER',{nn:1}), c('max_favorites','INTEGER',{nn:1}), c('max_entry_bytes','INTEGER',{nn:1}), c('max_total_bytes','INTEGER',{nn:1})], fks:[],
+    ddl:`CREATE TABLE effective_policy(id INTEGER PRIMARY KEY CHECK(id=1), admission INTEGER NOT NULL CHECK(admission IN (0,1)), max_entries INTEGER NOT NULL CHECK(max_entries BETWEEN 0 AND 100000), max_favorites INTEGER NOT NULL CHECK(max_favorites BETWEEN 0 AND 10000), max_entry_bytes INTEGER NOT NULL CHECK(max_entry_bytes BETWEEN 1 AND 67108864), max_total_bytes INTEGER NOT NULL CHECK(max_total_bytes>0)) STRICT;`},
+};
+const INDEXES = [
+  {name:'entries_order', table:'entries', cols:['recency DESC','id']},
+  {name:'entries_favorite_order', table:'entries', cols:['favorite','recency DESC','id']},
+  {name:'entries_dedup', table:'entries', cols:['digest','mime','byte_size']},
+  {name:'entries_echo_source', table:'entries', cols:['echo_source_id']},
+  {name:'search_grams', table:'search_content', cols:['indexed_content'], method:"fts · tokenizer='ngram', min_gram=3, max_gram=3"},
+  {name:'search_unindexed', table:'search_content', cols:['indexed_complete','entry_id']},
+  {name:'artifacts_source', table:'artifacts', cols:['source_entry_id']},
+  {name:'entry_artifacts_path', table:'entry_artifacts', cols:['path','entry_id']},
+  {name:'inline_echoes_source', table:'inline_echoes', cols:['source_entry_id']},
+];
+const TABLE_ORDER = ['entries','payloads','search_content','artifacts','entry_artifacts','inline_echoes','store_meta','effective_policy'];
+
+/* ---------- sample data ---------- */
+const KINDS = [['Text',30],['Link',18],['Json',10],['Image',12],['Files',8],['Html',8],['Color',8],['Binary',6]];
+function pickKind(){ let x = R0() * 100; for (const [k, w] of KINDS){ if ((x -= w) < 0) return k; } return 'Text'; }
+const PREVIEWS = {
+  Text:['cargo run --locked -p tursobench-ui -- ~/data/clip-daemon/history.db','nix develop -c cargo test --workspace','Thanks, merging after CI passes.','SELECT count(*) FROM entries WHERE favorite = 1;','Standup moved to Thursday 09:30','rustup component add clippy rust-src','git rebase -i origin/main','export RUST_LOG=tursobench_db=debug','Turso 0.8.3 · STRICT tables only','direnv allow','python3 tests/fixtures/generate.py /tmp/sample.db',''],
+  Link:['https://crates.io/crates/eframe','https://docs.rs/egui_extras/latest/egui_extras/struct.TableBuilder.html','https://example.org/notes/fts-ngram-tokenizer','https://github.com/emilk/egui/releases','https://wiki.archlinux.org/title/XDG_Desktop_Portal'],
+  Json:['{"daemon":"bar","version":3,"modules":["clock","battery","workspaces"]}','{"id":42,"tags":["inbox","work"],"pinned":false}','{"policy":{"max_entries":1000,"admission":true}}','[{"op":"update","table":"entries","rows":2}]'],
+  Image:['image/png 1920×1080 · screenshot','image/png 640×480 · region capture','image/jpeg 3024×4032 · photo','image/png 256×256 · icon'],
+  Files:['report-q3.pdf (+2 files)','~/Downloads/turso-0.8.3.tar.gz','~/Pictures/wallpaper.png','notes.md, plan.md'],
+  Html:['<p>Release notes <b>v0.4</b>: typed exports…</p>','<a href="#fts">FTS support</a>','<table><tr><td>42</td></tr></table>'],
+  Color:['#0b7480','#e3a54a','rgb(220, 230, 232)','#1d292e'],
+  Binary:['application/octet-stream · 4.2 KiB','application/x-protobuf · 912 B'],
+};
+const MIME = {Text:['text/plain;charset=utf-8','text/plain'], Link:['text/uri-list','text/uri-list'], Json:['text/plain;charset=utf-8','application/json'], Image:['image/png','image/png'], Files:['text/uri-list','x-special/gnome-copied-files'], Html:['text/html','text/html'], Color:['text/plain','application/x-color'], Binary:['application/octet-stream','application/octet-stream']};
+function mkRow(cols, vals){ const r = vals; r.key = String(vals[0].t === 'B' ? vals[0].hex : vals[0].v) + (cols[1] && cols[1].pk === 2 ? '|' + vals[1].v : ''); return r; }
+const DATA = {};
+(() => {
+  const ents = [];
+  for (let i = 0; i < 240; i++){
+    const k = pickKind(); const prev = pick(PREVIEWS[k]); const [m, rm] = MIME[k];
+    const size = k === 'Image' ? between(40000, 2600000) : k === 'Binary' ? between(800, 65000) : k === 'Files' ? between(60, 420) : new TextEncoder().encode(prev).length;
+    ents.push([T(ulid()), I(between(1, 3)), I(R0() < .22 ? 1 : 0), I(4812 - i * 3 - between(0, 2)), T(m), T(rm), N(), I(size), B(32), T(prev), T(k)]);
+  }
+  ents.forEach((r, i) => { if (R0() < .08 && i < 230) r[6] = T(ents[between(i + 1, Math.min(239, i + 25))][0].v); });
+  ents[1][2] = I(0); ents[1][10] = T('Link'); ents[1][9] = T('https://crates.io/crates/eframe'); ents[1][4] = T('text/uri-list'); ents[1][5] = T('text/uri-list');
+  ents[3][9] = T('cargo run --locked -p tursobench-ui'); ents[3][10] = T('Text');
+  ents[4][6] = T(ents[17][0].v);
+  DATA.entries = ents.map(v => mkRow(TABLES.entries.cols, v));
+  DATA.payloads = DATA.entries.filter((_, i) => i % 4 !== 3).map(e => mkRow(TABLES.payloads.cols, [T(e[0].v), B(Math.max(1, e[7].v))]));
+  DATA.search_content = DATA.entries.filter(e => ['Text','Link','Json','Html'].includes(e[10].v)).map(e => mkRow(TABLES.search_content.cols, [T(e[0].v), T(e[9].v), T(e[9].v.toLowerCase()), I(R0() < .93 ? 1 : 0)]));
+  const imgs = DATA.entries.filter(e => e[10].v === 'Image');
+  DATA.artifacts = imgs.map((e, i) => mkRow(TABLES.artifacts.cols, [T(`/run/user/1000/clip-daemon/artifacts/${e[8].hex.slice(0, 16)}.png`), T(e[0].v), T('sha256:' + e[8].hex.slice(0, 24)), I(1730264400 + i * 731), I(66306), I(between(400000, 900000)), I(1000)]));
+  DATA.entry_artifacts = DATA.artifacts.map(a => mkRow(TABLES.entry_artifacts.cols, [T(a[1].v), T(a[0].v)]));
+  DATA.inline_echoes = imgs.slice(0, 6).map((e, i) => mkRow(TABLES.inline_echoes.cols, [T('sha256:' + e[8].hex.slice(24, 48)), T(e[0].v), I(1730268000 + i * 97)]));
+  DATA.store_meta = [mkRow(TABLES.store_meta.cols, [I(1), T('clip-daemon-history-v1'), I(412), I(4812)])];
+  DATA.effective_policy = [mkRow(TABLES.effective_policy.cols, [I(1), I(1), I(1000), I(100), I(16777216), I(268435456)])];
+})();
+
+/* ---------- state ---------- */
+const DB_PATH = '/home/laufan/data/clip-daemon/history.db';
+const DEFAULT_SQL = `-- Recent favourites of one kind\nSELECT id, kind, preview, byte_size\nFROM entries\nWHERE favorite = :fav AND kind = :kind\nORDER BY recency DESC\nLIMIT 50;`;
+let seq = 1;
+const now = () => new Date().toTimeString().slice(0, 8);
+const S = {
+  connected:true, writable:true, exclusive:true, path:DB_PATH,
+  pendingWritable:false, pendingAck:false,
+  txn:'Autocommit', running:null, request:6,
+  rail:'schema', schemaFilter:'', groups:{table:true, view:false, index:true, trigger:false},
+  tabs:[
+    {id:'q1', kind:'query', title:'Recent favourites', sql:DEFAULT_SQL, params:{':fav':{type:'Integer', value:'1'}, ':kind':{type:'Text', value:'Link'}}, json:false, editorH:176, result:null},
+    {id:'t-entries', kind:'table', table:'entries', page:0, sort:null, filter:null, related:null, trail:[], widths:{}},
+  ],
+  active:'t-entries',
+  sel:null, inspTab:'cell', structTable:'entries', hlIndex:null, cellEdit:null,
+  drafts:{}, menu:null, fform:false,
+  history:[
+    {sql:'SELECT id, kind, preview FROM entries WHERE favorite = :fav AND kind = :kind ORDER BY recency DESC LIMIT 50', ms:3, at:'14:02', failed:false},
+    {sql:"SELECT entry_id, content FROM search_content WHERE fts_match(indexed_content, 'cargo') LIMIT 100", ms:18, at:'13:57', failed:false},
+    {sql:'SELECT count(*) FROM entries', ms:412, at:'13:51', failed:false},
+    {sql:'SELECT * FROM payload', ms:null, at:'13:50', failed:true},
+    {sql:'PRAGMA journal_mode', ms:1, at:'13:48', failed:false},
+    {sql:"EXPLAIN QUERY PLAN SELECT * FROM entries WHERE kind = 'Link'", ms:2, at:'13:46', failed:false},
+  ],
+  hSearch:'', slowOnly:false, slowFirst:false,
+  saved:[
+    {name:'Favourites by kind', sql:DEFAULT_SQL},
+    {name:'FTS search (ngram)', sql:"SELECT entry_id, content\nFROM search_content\nWHERE fts_match(indexed_content, :q)\nLIMIT 100;"},
+    {name:'Rows waiting for indexing', sql:'SELECT entry_id, content FROM search_content WHERE indexed_complete = 0;'},
+  ],
+  bSearch:'', bName:'',
+  outcomes:[
+    {at:'13:44:10', msg:'Request 1: schema loaded · 8 tables, 9 indexes'},
+    {at:'13:44:11', msg:'Request 3: Complete, 50 rows seen, 0 changes, editor Autocommit'},
+    {at:'13:45:02', msg:'Request 6: Complete, 100 rows seen · entries page 1'},
+  ],
+  drawer:false, overlay:null, palQ:'', palI:0,
+  settings:{rowLimit:500, busy:1000, slow:200, nullMark:'NULL'},
+  theme:'system', lastMs:4, lastSlow:false,
+};
+S.drafts.entries = {upd:{}, del:new Set(), ins:[]};
+S.drafts.entries.upd[DATA.entries[1].key] = {2: I(1)};
+S.drafts.entries.upd[DATA.entries[3].key] = {9: T('cargo run --locked -p tursobench-ui -- --smoke-test')};
+S.drafts.entries.del.add(DATA.entries[6].key);
+S.sel = {tab:'t-entries', key:DATA.entries[3].key, row:3, col:9};
+
+const tabById = id => S.tabs.find(t => t.id === id);
+const activeTab = () => tabById(S.active);
+const draftsFor = t => S.drafts[t] || (S.drafts[t] = {upd:{}, del:new Set(), ins:[]});
+function draftCount(t){ const d = S.drafts[t]; if (!d) return {n:0, upd:0, del:0, ins:0}; const upd = Object.keys(d.upd).filter(k => !d.del.has(k)).length; return {upd, del:d.del.size, ins:d.ins.length, n: upd + d.del.size + d.ins.length}; }
+const anyDrafts = () => Object.keys(S.drafts).some(t => draftCount(t).n > 0);
+const isIndexedLeading = (table, col) => { const tc = TABLES[table].cols.find(x => x.name === col); return (tc && tc.pk === 1) || INDEXES.some(ix => ix.table === table && ix.cols[0].split(' ')[0] === col); };
+const editable = tab => S.writable && S.connected && tab.kind === 'table' && !tab.related && TABLES[tab.table].cols.some(x => x.pk) && !S.running;
+
+/* ---------- SQL highlighting ---------- */
+const KW = new Set('SELECT FROM WHERE AND OR NOT ORDER BY GROUP LIMIT OFFSET JOIN LEFT INNER OUTER ON AS INSERT INTO VALUES UPDATE SET DELETE RETURNING NULL IS IN LIKE GLOB DESC ASC WITH CREATE INDEX TABLE USING BEGIN COMMIT ROLLBACK EXPLAIN QUERY PLAN PRAGMA DISTINCT HAVING CASE WHEN THEN ELSE END PRIMARY KEY REFERENCES CHECK STRICT BETWEEN DEFAULT CASCADE'.split(' '));
+function hl(s){
+  return s.replace(/(--[^\n]*)|('(?:[^']|'')*'?)|("(?:[^"]|"")*"?)|([:@$][A-Za-z_]\w*|\?\d*)|(\b\d+(?:\.\d+)?\b)|([A-Za-z_]\w*)(?=\s*\()|([A-Za-z_]\w*)|([^\w'"\-:@$?]+|[\s\S])/g,
+    (m, com, str, qid, par, num, fn, word, other) => {
+      if (com) return `<span class="c">${esc(com)}</span>`;
+      if (str) return `<span class="s">${esc(str)}</span>`;
+      if (qid) return esc(qid);
+      if (par) return `<span class="p">${esc(par)}</span>`;
+      if (num) return `<span class="n">${num}</span>`;
+      if (fn) return KW.has(fn.toUpperCase()) ? `<span class="k">${fn}</span>` : `<span class="f">${fn}</span>`;
+      if (word) return KW.has(word.toUpperCase()) ? `<span class="k">${word}</span>` : word;
+      return esc(other);
+    });
+}
+function stripSql(sql){ return sql.replace(/--[^\n]*/g, ' ').replace(/'(?:[^']|'')*'/g, "''"); }
+function detectParams(sql){ const out = []; const s = stripSql(sql); const re = /([:@$][A-Za-z_]\w*|\?\d*)/g; let m; while ((m = re.exec(s))) if (!out.includes(m[1])) out.push(m[1]); return out; }
+
+/* ---------- query execution (sample-data interpreter) ---------- */
+function paramValue(tab, name){ const p = tab.params[name]; if (!p) return null; if (p.type === 'Null') return N(); if (p.type === 'Integer'){ const n = Number(p.value); return Number.isInteger(n) && p.value.trim() !== '' ? I(n) : {err:`${name}: "${p.value}" is not an integer`}; } if (p.type === 'Real'){ const n = Number(p.value); return isFinite(n) ? {t:'R', v:n} : {err:`${name}: "${p.value}" is not a finite real`}; } if (p.type === 'Blob') return /^([0-9a-f]{2})*$/i.test(p.value.replace(/\s/g, '')) ? {t:'B', n:p.value.replace(/\s/g, '').length / 2, hex:p.value.replace(/\s/g, '').toLowerCase()} : {err:`${name}: blob needs hex digit pairs`}; return T(p.value); }
+function execute(tab, mode){
+  const raw = tab.sql;
+  const s = raw.replace(/--[^\n]*/g, ' ').trim().replace(/;\s*$/, '');
+  if (!s) return {kind:'error', error:'Nothing to run: the editor is empty.'};
+  if (s.split(';').filter(x => x.trim()).length > 1) return {kind:'error', error:'Only one statement runs per execution. Use Run statement at cursor (Ctrl+Shift+Enter) to pick one.'};
+  if (/^(begin|commit|rollback)\b/i.test(s)) return txnStatement(s.split(/\s+/)[0].toUpperCase());
+  const m = s.match(/^select\s+([\s\S]+?)\s+from\s+"?(\w+)"?([\s\S]*)$/i);
+  if (!m) return {kind:'error', error:'This prototype runs SELECT … FROM statements against the sample rows.', code:s.slice(0, 80)};
+  const table = m[2]; const rest = m[3];
+  if (!TABLES[table]) return {kind:'error', error:`no such table: ${table}`, code:`Request ${S.request + 1} · prepare failed`};
+  const tcols = TABLES[table].cols;
+  const isCount = /^count\(\s*\*\s*\)(\s+as\s+\w+)?$/i.test(m[1].trim());
+  let proj = isCount ? [] : m[1].trim() === '*' ? tcols.map((_, i) => i) : m[1].split(',').map(x => x.trim().split(/\s+as\s+|\s+/i)[0].replace(/"/g, ''));
+  if (!isCount && m[1].trim() !== '*'){ for (const p of proj){ if (!tcols.some(x => x.name === p)) return {kind:'error', error:`no such column: ${p}`, code:`Request ${S.request + 1} · prepare failed`}; } proj = proj.map(p => tcols.findIndex(x => x.name === p)); }
+  const tokVal = tok => { if (/^[:@$?]/.test(tok)){ const v = paramValue(tab, tok); if (!v) return {err:`Missing binding for ${tok}`}; if (v.err) return {err:'Typed bindings: ' + v.err}; return v; } if (/^'.*'$/.test(tok)) return T(tok.slice(1, -1).replace(/''/g, "'")); if (/^-?\d+$/.test(tok)) return I(Number(tok)); if (/^null$/i.test(tok)) return N(); return {err:`Unsupported term: ${tok}`}; };
+  const conds = []; const wm = rest.match(/\bwhere\s+([\s\S]+?)(?=\border\s+by\b|\blimit\b|$)/i);
+  if (wm){ for (const part of wm[1].split(/\s+and\s+/i)){
+    const fm = part.trim().match(/^fts_match\(\s*"?(\w+)"?\s*,\s*(.+?)\s*\)$/i);
+    const cm = fm || part.trim().match(/^"?(\w+)"?\s*=\s*(.+)$/);
+    if (!cm) return {kind:'error', error:'This prototype filters with col = value or fts_match(col, term), joined by AND.', code:part.trim()};
+    const ci = tcols.findIndex(x => x.name === cm[1]); if (ci < 0) return {kind:'error', error:`no such column: ${cm[1]}`};
+    const v = tokVal(cm[2].trim()); if (v.err) return {kind:'error', error:v.err};
+    conds.push([ci, v, cm[1], fm ? 'fts' : 'eq']); } }
+  const om = rest.match(/\border\s+by\s+"?(\w+)"?(\s+desc|\s+asc)?/i);
+  const lm = rest.match(/\blimit\s+(\d+)/i);
+  if (mode === 'plan') return planFor(table, conds, om);
+  if (mode === 'bytecode') return bytecodeFor(table, Math.max(1, proj.length), conds.length);
+  let rows = DATA[table].filter(r => conds.every(([ci, v, , kind]) => kind === 'fts' ? r[ci].t === 'T' && r[ci].v.toLowerCase().includes(String(v.v ?? '').toLowerCase()) : eqv(r[ci], v)));
+  if (isCount) return {kind:'rows', table, cols:[{name:'count(*)', type:'INTEGER'}], rows:[[I(rows.length)]], delivery:'Complete', scope:'complete-query-result', ms: 6 + Math.round(DATA[table].length / 40), counted:true};
+  if (om){ const oi = tcols.findIndex(x => x.name === om[1]); if (oi < 0) return {kind:'error', error:`no such column: ${om[1]}`}; const d = om[2] && /desc/i.test(om[2]) ? -1 : 1; rows = rows.slice().sort((a, b) => cmpv(a[oi], b[oi]) * d); }
+  let limited = false; const lim = lm ? Number(lm[1]) : Infinity;
+  rows = rows.slice(0, lim);
+  if (rows.length > S.settings.rowLimit){ rows = rows.slice(0, S.settings.rowLimit); limited = true; }
+  return {kind:'rows', table, cols: proj.map(i => tcols[i]), rows: rows.map(r => proj.map(i => r[i])), delivery: limited ? 'Limited' : 'Complete', scope: limited ? 'limited-query-result' : 'complete-query-result', ms: 2 + Math.floor(rows.length / 30) + (conds.some(([ci]) => !isIndexedLeading(table, tcols[ci].name)) ? 9 : 0)};
+}
+function txnStatement(kw){
+  if (kw === 'BEGIN'){ if (S.txn === 'Active') return {kind:'error', error:'cannot start a transaction within a transaction'}; S.txn = 'Active'; }
+  else { if (S.txn !== 'Active') return {kind:'error', error:`cannot ${kw.toLowerCase()} - no transaction is active`}; S.txn = 'Autocommit'; }
+  return {kind:'rows', cols:[], rows:[], delivery:'Complete', scope:'complete-query-result', ms:1, note:`${kw} ran. Editor transaction: ${S.txn === 'Active' ? 'Active' : 'Autocommit'}.`};
+}
+function planFor(table, conds, om){
+  const nodes = [];
+  const fts = conds.find(x => x[3] === 'fts');
+  if (fts){ const ix = INDEXES.find(ix => ix.table === table && ix.method && ix.cols[0] === fts[2]); nodes.push(ix ? {op:'SEARCH', detail:`${table} USING INDEX METHOD ${ix.name} (fts_match)`, cls:'search', why:'native FTS index'} : {op:'SCAN', detail:table, cls:'scan', why:'no FTS index on this column'}); return {kind:'plan', table, nodes, ms:1, scope:'complete-query-result', delivery:'Complete'}; }
+  const idxCond =conds.find(([, , name]) => INDEXES.some(ix => ix.table === table && ix.cols[0].split(' ')[0] === name)) || conds.find(([, , name]) => TABLES[table].cols.find(x => x.name === name).pk === 1);
+  if (idxCond){ const ix = INDEXES.find(ix => ix.table === table && ix.cols[0].split(' ')[0] === idxCond[2]); nodes.push({op:'SEARCH', detail:`${table} USING ${ix ? 'INDEX ' + ix.name : 'PRIMARY KEY'} (${idxCond[2]}=?)`, cls:'search', why:'uses a declared leading key'}); }
+  else if (om && INDEXES.some(ix => ix.table === table && ix.cols[0].split(' ')[0] === om[1])){ const ix = INDEXES.find(ix => ix.table === table && ix.cols[0].split(' ')[0] === om[1]); nodes.push({op:'SCAN', detail:`${table} USING INDEX ${ix.name}`, cls:'scan', why:'reads every row in index order'}); }
+  else nodes.push({op:'SCAN', detail:table, cls:'scan', why:'reads every row'});
+  if (om && !(idxCond && INDEXES.some(ix => ix.table === table && ix.cols.some(c2 => c2.split(' ')[0] === om[1]) && ix.cols[0].split(' ')[0] === idxCond[2])) && !nodes[0].detail.includes('INDEX')) nodes.push({op:'USE TEMP B-TREE', detail:'FOR ORDER BY', cls:'scan', why:'sorts after reading'});
+  return {kind:'plan', table, nodes, ms:1, scope:'complete-query-result', delivery:'Complete'};
+}
+function bytecodeFor(table, ncols, nconds){
+  const ops = [['Init',0,10+ncols,0,'',0,'Start at '+(10+ncols)],['OpenRead',0,2,0,String(TABLES[table].cols.length),0,`root=2 iDb=0; ${table}`],['Rewind',0,9+ncols,0,'',0,'']];
+  for (let i = 0; i < nconds; i++) ops.push(['Column',0,i+2,i+1,'',0,`r[${i+1}]=${table}.col${i+2}`],['Ne',i+1,8+ncols,10+i,'BINARY-8',81,`if r[${i+1}]!=r[${10+i}] goto ${8+ncols}`]);
+  for (let i = 0; i < ncols; i++) ops.push(['Column',0,i,20+i,'',0,`r[${20+i}]=${table}.col${i}`]);
+  ops.push(['ResultRow',20,ncols,0,'',0,`output=r[20..${19+ncols}]`],['Next',0,3,0,'',1,''],['Halt',0,0,0,'',0,''],['Transaction',0,0,1,'0',1,'iDb=0 tx_mode=Read'],['Goto',0,1,0,'',0,'']);
+  const colsDef = ['addr','opcode','p1','p2','p3','p4','p5','comment'].map((n, i) => ({name:n, type: i === 0 || (i >= 2 && i <= 4) || i === 6 ? 'INTEGER' : 'TEXT'}));
+  return {kind:'rows', cols:colsDef, rows: ops.map((o, i) => [I(i), T(o[0]), I(o[1]), I(o[2]), I(o[3]), T(o[4]), I(o[5]), T(o[6])]), delivery:'Complete', scope:'complete-query-result', ms:1, bytecode:true};
+}
+
+/* ---------- table views ---------- */
+function viewRows(tab){
+  const table = tab.related ? tab.related.table : tab.table; const cols = TABLES[table].cols;
+  let rows = DATA[table];
+  if (tab.related) rows = rows.filter(r => tab.related.keys.every(([cn, v]) => eqv(r[cols.findIndex(x => x.name === cn)], v)));
+  if (tab.filter) rows = rows.filter(r => eqv(r[tab.filter.col], tab.filter.value));
+  if (tab.sort) rows = rows.slice().sort((a, b) => cmpv(a[tab.sort.col], b[tab.sort.col]) * (tab.sort.desc ? -1 : 1));
+  const total = rows.length; const offset = tab.related ? 0 : tab.page * 100;
+  const page = rows.slice(offset, offset + 100);
+  const d = S.drafts[table];
+  const out = [];
+  if (d && !tab.related && tab.page === 0) d.ins.forEach((r, i) => out.push({key:'ins:' + i, base:r, vals:r, mod:new Set(), del:false, ins:true, insIdx:i}));
+  for (const r of page){
+    const u = d && d.upd[r.key]; const vals = u ? r.map((v, i) => u[i] ?? v) : r;
+    out.push({key:r.key, base:r, vals, mod:new Set(u ? Object.keys(u).map(Number) : []), del: !!(d && d.del.has(r.key)), ins:false});
+  }
+  return {table, cols, rows:out, total, offset};
+}
+
+/* ---------- rendering: shared ---------- */
+function cellHTML(v){
+  switch (v.t){
+    case 'N': return `<span class="v-null">${esc(S.settings.nullMark)}</span>`;
+    case 'T': return v.v === '' ? '<span class="v-empty">(empty text)</span>' : esc(v.v.length > 200 ? v.v.slice(0, 200) + '…' : v.v);
+    case 'B': return `<span class="v-blob">BLOB · ${fmtBytes(v.n)}</span>`;
+    default: return esc(String(v.v));
+  }
+}
+const isNum = v => v.t === 'I' || v.t === 'R';
+function headerTags(table, col){ if (!table) return ''; let t = ''; if (col.pk) t += '<span class="tag pk">PK</span>'; else if (col.ix && isIndexedLeading(table, col.name)) t += '<span class="tag ix">IX</span>'; if (col.fk) t += '<span class="tag fk">FK</span>'; return t; }
+function defaultWidth(col){ const t = (col.type || '').toUpperCase(); if (col.name === 'preview' || col.name === 'content' || col.name === 'indexed_content' || col.name === 'comment' || col.name === 'path') return 280; if (col.name === 'id' || col.name.endsWith('_id')) return 236; if (t === 'INTEGER') return 104; if (t === 'BLOB') return 120; return 150; }
+function gridHTML({tab, cols, rows, offset, table, sortable}){
+  const w = tab.widths || (tab.widths = {});
+  const colg = `<colgroup><col style="width:52px">${cols.map((col, j) => `<col data-c="${j}" style="width:${w[j] || defaultWidth(col)}px">`).join('')}</colgroup>`;
+  const totalW = 52 + cols.reduce((a, col, j) => a + (w[j] || defaultWidth(col)), 0);
+  const head = `<thead><tr><th class="rn">#</th>${cols.map((col, j) => {
+    const s = tab.sort && tab.sort.col === j ? (tab.sort.desc ? '▼' : '▲') : '';
+    return `<th style="position:sticky"><button class="hd ${sortable ? 'sortable' : ''}" ${sortable ? `data-act="sort" data-c="${j}"` : 'tabindex="-1"'} title="${esc(col.name)}${col.type ? ' · ' + esc(col.type) : ''}${sortable ? ' · click to sort' : ''}"><span class="r1"><span class="nm">${esc(col.name)}</span>${headerTags(table, col)}${s ? `<span class="ar">${s}</span>` : ''}</span><span class="r2">${esc((col.type || '').toUpperCase() || '—')}${col.nn ? ' · NOT NULL' : ''}</span></button><span class="rz" data-rz="${j}" title="Drag to resize"></span></th>`;
+  }).join('')}</tr></thead>`;
+  const sel = S.sel && S.sel.tab === tab.id ? S.sel : null;
+  const body = rows.map((r, i) => {
+    const cls = [r.del ? 'del' : '', r.ins ? 'ins' : '', r.mod && r.mod.size ? 'modrow' : '', sel && sel.key === r.key ? 'rowsel' : ''].join(' ');
+    const mk = r.del ? '<span class="mk" style="color:var(--danger)">D</span>' : r.ins ? '<span class="mk" style="color:var(--ok)">+</span>' : r.mod && r.mod.size ? '<span class="mk" style="color:var(--warn)">M</span>' : '';
+    return `<tr class="${cls}" data-key="${esc(r.key)}" data-i="${i}"><td class="rn">${mk}${r.ins ? 'new' : offset + i + 1 - (rows.filter(x => x.ins).length)}</td>${r.vals.map((v, j) => `<td class="${isNum(v) ? 'num' : 'txt'}${r.mod && r.mod.has(j) ? ' mod' : ''}${sel && sel.key === r.key && sel.col === j ? ' sel' : ''}" data-c="${j}">${cellHTML(v)}</td>`).join('')}</tr>`;
+  }).join('');
+  return `<div class="gridwrap" data-scroll="grid-${tab.id}"><table class="grid" style="width:${totalW}px">${colg}${head}<tbody>${body}</tbody></table></div>`;
+}
+
+/* ---------- title bar ---------- */
+function renderTitle(){
+  const themeIc = S.theme === 'dark' ? 'moon' : S.theme === 'light' ? 'sun' : 'auto';
+  const txnCls = S.txn === 'Active' ? 'active' : S.txn === 'Unknown' ? 'unknown' : '';
+  $('#titlebar').innerHTML = `
+    <div class="mark"><i></i>TursoBench</div><div class="vsep"></div>
+    ${S.connected ? `
+      <button class="dbchip" data-act="connInfo" title="${esc(S.path)}">${ic('file')}<b>${esc(S.path.split('/').pop())}</b><span>${esc(S.path.replace(/\/[^/]+$/, '/').replace('/home/laufan', '~'))}</span></button>
+      <span class="access ${S.writable ? 'rw' : 'ro'}" title="${S.writable ? 'Opened with read/write access. Close to change mode.' : 'Engine-enforced read-only. Close and reopen to enable writes.'}">${ic(S.writable ? 'pen' : 'lock')}${S.writable ? 'READ / WRITE' : 'READ ONLY'}</span>
+      <span class="engine" title="Native FTS and experimental index methods are enabled. Other experimental engine features stay disabled.">Turso 0.8.3 · FTS</span>`
+    : `<span class="engine">No database open</span>`}
+    <span class="spacer"></span>
+    <button class="cmdk" data-act="palette">${ic('search')}<span>Search tables and commands</span><kbd class="kbd">Ctrl K</kbd></button>
+    ${S.connected ? `<span class="txn ${txnCls}" title="SQL-editor connection. Writable SQL autocommits unless you BEGIN.">Editor · ${S.txn === 'Active' ? 'transaction open' : S.txn === 'Unknown' ? 'state unknown' : 'autocommit'}</span>` : ''}
+    <button class="btn ghost icon" data-act="theme" title="Theme: ${S.theme} (Ctrl+T)">${ic(themeIc)}</button>
+    <button class="btn ghost icon" data-act="help" title="Shortcuts and safety (F1)">${ic('help')}</button>
+    ${S.connected ? `<button class="btn" data-act="close">Close</button>` : `<button class="btn primary" data-act="openSheet">Open…</button>`}`;
+}
+
+/* ---------- rail + sidebar ---------- */
+const RAIL = [['schema','Schema'],['history','History'],['saved','Saved queries'],['diag','Diagnostics'],['settings','Settings']];
+function renderRail(){
+  $('#rail').innerHTML = RAIL.map(([k, l]) => `<button aria-pressed="${S.rail === k}" data-act="rail" data-k="${k}" title="${l}" ${!S.connected && k !== 'settings' && k !== 'history' && k !== 'saved' ? 'disabled' : ''}>${ic(k)}<span class="sr">${l}</span></button>`).join('') +
+    `<span class="grow"></span><button data-act="help" title="Shortcuts and safety · F1">${ic('help')}<span class="sr">Help</span></button>`;
+}
+function renderSidebar(){
+  const sb = $('#sidebar');
+  if (S.rail === 'schema'){
+    sb.innerHTML = `<div class="side-head"><h2>Schema</h2><button class="btn ghost icon" data-act="refreshSchema" title="Reload schema" ${S.connected ? '' : 'disabled'}>${ic('refresh')}</button></div>
+      <div class="side-tools"><input class="field" id="schema-q" placeholder="Filter tables, indexes…" value="${esc(S.schemaFilter)}" ${S.connected ? '' : 'disabled'}></div>
+      <div class="side-list" id="side-list"></div>
+      <div class="side-foot">${ic('info')}<span>Table tabs read through a separate connection. Uncommitted editor transactions don't show there.</span></div>`;
+    renderSchemaList();
+  } else if (S.rail === 'history'){
+    sb.innerHTML = `<div class="side-head"><h2>History</h2><button class="btn ghost" data-act="clearHistory" style="height:22px;font-size:11.5px">Clear…</button></div>
+      <div class="side-tools"><input class="field" id="hist-q" placeholder="Search this database's history" value="${esc(S.hSearch)}"><div class="toggles"><button class="tgl" aria-pressed="${S.slowOnly}" data-act="slowOnly">Slow only</button><button class="tgl" aria-pressed="${S.slowFirst}" data-act="slowFirst">Slowest first</button></div></div>
+      <div class="side-list" id="side-list"></div>
+      <div class="side-foot">${ic('lock')}<span>SQL may contain secrets. Bindings are never saved; loading an entry clears them.</span></div>`;
+    renderHistoryList();
+  } else if (S.rail === 'saved'){
+    sb.innerHTML = `<div class="side-head"><h2>Saved queries</h2></div>
+      <div class="side-tools"><div style="display:flex;gap:6px"><input class="field" id="bm-name" placeholder="Name for the current query" maxlength="64" value="${esc(S.bName)}"><button class="btn" data-act="saveQuery" title="Save the active query tab's SQL">${ic('star')}Save</button></div><input class="field" id="bm-q" placeholder="Search saved queries" value="${esc(S.bSearch)}"></div>
+      <div class="side-list" id="side-list"></div>
+      <div class="side-foot">${ic('info')}<span>Saved per database file. Bindings are not stored.</span></div>`;
+    renderSavedList();
+  } else if (S.rail === 'diag'){
+    const D = [['Database files','PRAGMA database_list'],['Journal mode','PRAGMA journal_mode'],['Page count','PRAGMA page_count'],['Free pages','PRAGMA freelist_count'],['Integrity check','PRAGMA integrity_check','may be slow'],['Foreign-key check','PRAGMA foreign_key_check','may be slow']];
+    sb.innerHTML = `<div class="side-head"><h2>Diagnostics</h2></div>
+      <div class="side-list">${D.map(([l, p, w], i) => `<div class="diag"><b>${l}${w ? ` <span class="chip warn" style="height:16px;font-size:10px">${w}</span>` : ''}</b><code>${p}</code><button class="btn" data-act="diag" data-i="${i}" ${S.connected && !S.running ? '' : 'disabled'}>Run</button></div>`).join('')}
+      <p class="note">Read-only checks. There are no repair, VACUUM, checkpoint or writable PRAGMA shortcuts. A running check can't be interrupted.</p></div>`;
+    sb.dataset.diag = JSON.stringify(D);
+  } else {
+    const st = S.settings;
+    sb.innerHTML = `<div class="side-head"><h2>Settings</h2></div>
+      <div class="side-list"><div class="form">
+        <label>Theme<span class="seg" style="width:max-content">${['system','light','dark'].map(t => `<button aria-pressed="${S.theme === t}" data-act="setTheme" data-k="${t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</span></label>
+        <label for="set-rows">Rows kept per query result<input class="field" id="set-rows" type="number" min="1" max="10000" value="${st.rowLimit}" data-set="rowLimit"><small>Rows past this limit are not retained. The result is marked Limited.</small></label>
+        <label for="set-busy">Busy timeout (ms)<input class="field" id="set-busy" type="number" min="0" max="5000" value="${st.busy}" data-set="busy"><small>Applies the next time a database opens.</small></label>
+        <label for="set-slow">Slow query threshold (ms)<input class="field" id="set-slow" type="number" min="1" max="60000" value="${st.slow}" data-set="slow"></label>
+        <label for="set-null">NULL marker<input class="field mono" id="set-null" maxlength="32" value="${esc(st.nullMark)}" data-set="nullMark"><small>Display only. Stored values and exports keep their type.</small></label>
+      </div></div>
+      <div class="side-foot">${ic('info')}<span>Settings save to the application's own preferences file.</span></div>`;
+  }
+}
+function renderSchemaList(){
+  const el = $('#side-list'); if (!el) return;
+  if (!S.connected){ el.innerHTML = '<p class="note">Open a database to see its tables, views, indexes and triggers.</p>'; return; }
+  const q = S.schemaFilter.toLowerCase(); const at = activeTab();
+  const curTable = at && at.kind === 'table' ? (at.related ? at.related.table : at.table) : null;
+  const tables = TABLE_ORDER.filter(t => t.includes(q));
+  const idx = INDEXES.filter(ix => ix.name.includes(q) || ix.table.includes(q));
+  const grp = (k, label, n, inner, emptyMsg) => `<div class="grp"><button class="grp-h" aria-expanded="${S.groups[k]}" data-act="grp" data-k="${k}">${ic('chev')}${label}<em>${n}</em></button>${S.groups[k] ? (n ? inner : `<div class="empty-row">${emptyMsg}</div>`) : ''}</div>`;
+  el.innerHTML =
+    grp('table', 'Tables', tables.length, tables.map(t => `<button class="obj" data-act="openTable" data-t="${t}" aria-current="${curTable === t}" title="Open ${t} in a tab">${ic('table')}<span class="nm">${t}</span>${draftCount(t).n ? '<span class="dot" title="Staged changes"></span>' : ''}</button>`).join(''), 'No tables match.') +
+    grp('view', 'Views', 0, '', 'This database has no views.') +
+    grp('index', 'Indexes', idx.length, idx.map(ix => `<button class="obj" data-act="showIndex" data-t="${ix.table}" data-i="${ix.name}" title="Show in Structure">${ic('index')}<span class="nm">${ix.name}</span>${ix.method ? '<span class="tag fts" style="margin-left:auto">FTS</span>' : `<span class="on">${ix.table}</span>`}</button>`).join(''), 'No indexes match.') +
+    grp('trigger', 'Triggers', 0, '', 'This database has no triggers.');
+}
+function renderHistoryList(){
+  const el = $('#side-list'); if (!el) return;
+  const q = S.hSearch.toLowerCase();
+  let items = S.history.map((h, i) => ({...h, i})).filter(h => h.sql.toLowerCase().includes(q) && (!S.slowOnly || (h.ms ?? 0) >= S.settings.slow));
+  if (S.slowFirst) items.sort((a, b) => (b.ms ?? -1) - (a.ms ?? -1));
+  el.innerHTML = items.length ? items.map(h => `<div style="position:relative"><button class="hitem" data-act="loadHistory" data-i="${h.i}" title="Load into the query tab"><code>${hl(h.sql)}</code><span class="meta"><span>${h.at}</span><span>·</span><span class="mono">${h.ms == null ? 'untimed' : h.ms + ' ms'}</span>${h.failed ? '<span class="chip danger">failed</span>' : ''}${(h.ms ?? 0) >= S.settings.slow ? '<span class="chip warn">slow</span>' : ''}</span></button><button class="btn ghost icon del" data-act="delHistory" data-i="${h.i}" title="Delete entry" style="position:absolute;top:4px;right:4px;width:22px;height:22px">${ic('x')}</button></div>`).join('') : '<p class="note">No history matches.</p>';
+}
+function renderSavedList(){
+  const el = $('#side-list'); if (!el) return;
+  const q = S.bSearch.toLowerCase();
+  const items = S.saved.map((b, i) => ({...b, i})).filter(b => (b.name + ' ' + b.sql).toLowerCase().includes(q));
+  el.innerHTML = items.length ? items.map(b => `<div style="position:relative"><button class="hitem" data-act="loadSaved" data-i="${b.i}"><div class="nm">${esc(b.name)}</div><code>${hl(b.sql.replace(/^--[^\n]*\n/, ''))}</code></button><button class="btn ghost icon del" data-act="delSaved" data-i="${b.i}" title="Delete" style="position:absolute;top:4px;right:4px;width:22px;height:22px">${ic('x')}</button></div>`).join('') : '<p class="note">No saved queries match.</p>';
+}
+
+/* ---------- main ---------- */
+function renderMain(){
+  const el = $('#main');
+  if (!S.connected){ el.innerHTML = connectHTML(); return; }
+  const tabsH = `<div class="tabs" role="tablist">${S.tabs.map(t => {
+    const dc = t.kind === 'table' ? draftCount(t.table).n : 0;
+    const title = t.kind === 'query' ? t.title : t.kind === 'diag' ? t.title : (t.related ? `${t.related.table} (lookup)` : t.table);
+    return `<button class="tab" role="tab" aria-selected="${t.id === S.active}" data-act="tab" data-id="${t.id}" title="${esc(title)}">${ic(t.kind === 'query' ? 'terminal' : t.kind === 'diag' ? 'diag' : 'table')}<span class="t ${t.kind !== 'query' ? 'mono' : ''}">${esc(title)}</span>${dc ? '<span class="dirty" title="Staged changes"></span>' : ''}<span class="x" data-act="closeTab" data-id="${t.id}" title="Close tab">${ic('x')}</span></button>`;
+  }).join('')}<button class="add" data-act="newQuery" title="New query tab">${ic('plus')}</button></div>`;
+  const t = activeTab();
+  let inner = '';
+  if (!t) inner = `<div class="empty"><b>No tabs open</b>Pick a table in Schema or start a new query with the + button.</div>`;
+  else if (t.kind === 'query') inner = queryHTML(t);
+  else if (t.kind === 'diag') inner = diagHTML(t);
+  else inner = tableHTML(t);
+  el.innerHTML = tabsH + `<div style="display:flex;flex-direction:column;flex:1;min-height:0">${inner}</div>`;
+  if (t && t.kind === 'query') syncEditor();
+}
+function exportMenu(t, scope, rowsN){
+  const open = S.menu === 'export-' + t.id;
+  return `<div class="menu-wrap"><button class="btn" data-act="menu" data-k="export-${t.id}" ${rowsN == null || S.running ? 'disabled' : ''}>${ic('download')}Export<svg class="ic" viewBox="0 0 24 24" style="width:12px;height:12px">${PATHS.down}</svg></button>${open ? `<div class="menu" role="menu">
+    <div class="mh">Save to a new file</div>
+    ${[['Typed JSONL','jsonl'],['Typed JSON','json'],['Annotated CSV','csv'],['Annotated TSV','tsv'],['SQL INSERTs','sql']].map(([l, e]) => `<button data-act="export" data-k="${e}" data-scope="${scope}" data-n="${rowsN}">${l}<span class="muted">.${e}</span></button>`).join('')}
+    <hr><div class="mh">Copy</div>
+    <button data-act="copyRes" data-k="TSV" data-scope="${scope}" data-n="${rowsN}">Copy as annotated TSV<span class="muted">Ctrl⇧C</span></button>
+    <button data-act="copyRes" data-k="typed JSON" data-scope="${scope}" data-n="${rowsN}">Copy as typed JSON</button>
+    <hr><div class="mf">Scope <span class="mono">${scope}</span>. Uses retained engine rows; staged changes are left out and SQL never reruns.</div>
+  </div>` : ''}</div>`;
+}
+function queryHTML(t){
+  const params = detectParams(t.sql);
+  for (const p of params) if (!t.params[p]) t.params[p] = {type:'Text', value:''};
+  const ready = S.connected && !S.running;
+  const r = t.result;
+  const lines = t.sql.split('\n').length;
+  const txnBtns = `<span class="lbl">Editor transaction</span><span class="seg">${['BEGIN','COMMIT','ROLLBACK'].map(k => `<button data-act="txn" data-k="${k}" ${!ready || (k === 'BEGIN' ? S.txn === 'Active' : S.txn !== 'Active') ? 'disabled' : ''} title="${k === 'BEGIN' ? 'Start an explicit transaction on the editor connection' : k === 'COMMIT' ? 'Commit the editor transaction' : 'Roll back the editor transaction'}">${k}</button>`).join('')}</span>`;
+  const top = `<div class="toolbar">
+      <button class="btn primary" data-act="run" ${ready ? '' : 'disabled'}>${ic('play')}Run<kbd>Ctrl ↵</kbd></button>
+      <button class="btn" data-act="runSel" ${ready ? '' : 'disabled'} title="Run the selection, or the statement under the cursor (Ctrl+Shift+Enter)">Run at cursor</button>
+      <div class="vsep"></div>
+      <button class="btn" data-act="plan" ${ready ? '' : 'disabled'} title="EXPLAIN QUERY PLAN">Plan</button>
+      <button class="btn" data-act="bytecode" ${ready ? '' : 'disabled'} title="EXPLAIN (bytecode)">Bytecode</button>
+      <div class="vsep"></div>
+      <button class="btn ghost" data-act="quickSave" title="Save to Saved queries">${ic('star')}Save</button>
+      <span class="spacer"></span>${txnBtns}</div>`;
+  const pRows = params.length ? params.map(p => { const v = t.params[p]; return `<div class="prow"><span class="nm">${esc(p)}</span><select class="field" data-param-type="${esc(p)}" aria-label="Type of ${esc(p)}">${['Text','Integer','Real','Null','Blob'].map(k => `<option ${v.type === k ? 'selected' : ''}>${k}</option>`).join('')}</select><input class="field mono" data-param-val="${esc(p)}" value="${esc(v.value)}" ${v.type === 'Null' ? 'disabled placeholder="NULL"' : v.type === 'Blob' ? 'placeholder="hex pairs, e.g. 00ff"' : ''} aria-label="Value of ${esc(p)}"></div>`; }).join('') : '<p class="note" style="padding:0">No placeholders. Use <span class="mono">:name</span>, <span class="mono">?1</span>, <span class="mono">@name</span> or <span class="mono">$name</span>.</p>';
+  const jsonText = paramsJSON(t, params);
+  const paramsPane = `<div class="params"><div class="params-h">Parameters <span class="chip" style="height:16px;font-size:10px;text-transform:none;letter-spacing:0">${params.length}</span><button class="btn ghost" data-act="toggleJson">${t.json ? 'Form' : 'Edit as JSON'}</button></div><div class="params-b" id="params-b">${t.json ? `<textarea class="field" id="params-json" rows="6" spellcheck="false">${esc(jsonText)}</textarea><p class="note" style="padding:0">Tagged JSON, as the engine receives it. Values are never interpolated or saved.</p>` : pRows}</div></div>`;
+  const editor = `<div class="qedit" style="height:${t.editorH}px"><div class="editor"><div class="gutter" id="gutter">${Array.from({length:lines}, (_, i) => i + 1).join('\n')}</div><div class="code"><pre id="hl" aria-hidden="true"></pre><textarea id="sql" spellcheck="false" aria-label="SQL editor">${esc(t.sql)}</textarea></div></div>${paramsPane}</div><div class="split" data-split="${t.id}" title="Drag to resize"></div>`;
+  let head = '', body = '';
+  if (S.running && S.running.tab === t.id){
+    head = `<div class="reshead"><span class="chip accent">Running…</span><span class="sum">Request ${S.request}</span><span class="spacer"></span><button class="btn" data-act="discard" title="Stops delivering rows. The statement keeps running; writes are not cancelled or rolled back.">Discard results</button></div>`;
+    body = `<div class="empty"><b>Waiting for rows</b>Discard stops delivery only. It doesn't interrupt execution or undo writes.</div>`;
+  } else if (!r){
+    head = `<div class="reshead"><span class="sum muted">No result yet</span></div>`;
+    body = `<div class="empty"><b>Run a statement to see results</b>One statement per run. Use Run at cursor to pick one from several.</div>`;
+  } else if (r.kind === 'error'){
+    head = `<div class="reshead"><span class="chip danger">Error</span><span class="sum">${r.ms ? r.ms + ' ms' : ''}</span></div>`;
+    body = `<div class="errbox"><b>${esc(r.error)}</b>${r.code ? `<code>${esc(r.code)}</code>` : ''}</div>`;
+  } else if (r.kind === 'plan'){
+    const scans = r.nodes.filter(n => n.cls === 'scan').length;
+    head = `<div class="reshead"><span class="chip ok">Complete</span><span class="sum"><b>Query plan</b> · ${r.ms} ms</span>${scans ? `<span class="chip warn">${scans} scan step${scans > 1 ? 's' : ''}</span>` : '<span class="chip ok">no scans</span>'}<span class="spacer"></span>${exportMenu(t, 'complete-query-result', r.nodes.length)}</div>`;
+    body = `<div class="plan"><p class="plannote">Planner output for the statement as written. A scan can be intentional; this is not a runtime profile.</p>${r.nodes.map((n, i) => `<div class="pn ${n.cls}" style="margin-left:${i * 22}px">${i ? '└─ ' : ''}<span class="op">${n.op}</span><span>${esc(n.detail)}</span><span class="why">${n.why}</span></div>`).join('')}</div>`;
+  } else {
+    const slow = r.ms >= S.settings.slow;
+    head = `<div class="reshead"><span class="chip ${r.delivery === 'Complete' ? 'ok' : 'warn'}">${r.delivery}</span><span class="sum"><b>${r.rows.length}</b> row${r.rows.length === 1 ? '' : 's'} · ${r.ms} ms${r.bytecode ? ' · bytecode' : ''}</span>${slow ? '<span class="chip warn">slow</span>' : ''}<span class="chip mono" title="Export scope">${r.scope}</span>${r.note ? `<span class="sum muted">${esc(r.note)}</span>` : ''}<span class="spacer"></span>${r.cols.length ? exportMenu(t, r.scope, r.rows.length) : ''}</div>`;
+    body = r.cols.length ? gridHTML({tab:t, cols:r.cols, rows:r.rows.map((v, i) => ({key:'r' + i, vals:v})), offset:0, table:r.table, sortable:false}) : `<div class="empty"><b>Statement finished</b>${esc(r.note || 'No rows returned.')}</div>`;
+  }
+  return top + editor + head + `<div class="resbody">${body}</div>`;
+}
+function paramsJSON(t, params){
+  if (!params.length) return '[]';
+  const val = p => { const v = t.params[p]; if (v.type === 'Null') return {type:'Null'}; if (v.type === 'Integer' || v.type === 'Real') return {type:v.type, value:Number(v.value)}; if (v.type === 'Blob') return {type:'Blob', value:(v.value.replace(/\s/g, '').match(/../g) || []).map(h => parseInt(h, 16))}; return {type:'Text', value:v.value}; };
+  if (params.every(p => p[0] === '?')) return JSON.stringify(params.map(val), null, 1).replace(/\n\s*/g, ' ');
+  const o = {}; params.forEach(p => o[p] = val(p)); return JSON.stringify(o, null, 1).replace(/\n\s*/g, ' ');
+}
+function tableHTML(t){
+  const v = viewRows(t); const dc = draftCount(v.table); const locked = dc.n > 0;
+  const lockTip = locked ? 'title="Commit or discard staged changes first"' : '';
+  const crumbs = `<div class="crumbs">${t.trail.length ? `<button class="btn ghost icon" data-act="back" title="Back (Alt+←)" style="color:var(--fg-2)">${ic('left')}</button>` : ''}${t.trail.map((d, i) => `<button data-act="crumb" data-i="${i}">${esc(d.related ? d.related.table : d.table)}</button><span class="sep">›</span>`).join('')}<span class="cur">${esc(v.table)}</span>${t.related ? `<span class="chip mono">${t.related.keys.map(([k, val]) => `${k} = ${sqlLit(val).slice(0, 18)}${sqlLit(val).length > 18 ? '…' : ''}`).join(', ')}</span>` : ''}</div>`;
+  const f = t.filter;
+  const filterCtl = t.related ? '<span class="chip">Bounded lookup · up to 100 rows</span>' : f ? `<span class="fchip">${esc(v.cols[f.col].name)} = ${esc(sqlLit(f.value))}<button data-act="clearFilter" title="Clear filter" ${locked ? 'disabled' : ''}>${ic('x')}</button></span>` : `<button class="btn ghost" data-act="fform" ${locked ? 'disabled' : ''} ${lockTip}>${ic('filter')}Filter</button>`;
+  const head = `<div class="toolbar">${crumbs}${filterCtl}<span class="spacer"></span><button class="btn ghost icon" data-act="reload" title="Reload page" ${locked ? 'disabled' : ''} ${lockTip}>${ic('refresh')}</button>${exportMenu(t, t.related ? 'related-row-lookup' : 'table-page', v.rows.filter(r => !r.ins).length)}</div>`;
+  let ff = '';
+  if (S.fform && !f && !t.related){
+    const ci = S.fform.col ?? 0; const scan = !isIndexedLeading(v.table, v.cols[ci].name);
+    ff = `<div class="fform"><select class="field" id="ff-col" aria-label="Column">${v.cols.map((col, j) => `<option value="${j}" ${j === ci ? 'selected' : ''}>${esc(col.name)}</option>`).join('')}</select><span class="eq">IS</span><select class="field" id="ff-type" aria-label="Value type">${['Text','Integer','Real','Null','Blob'].map(k => `<option ${(S.fform.type || (v.cols[ci].type === 'INTEGER' ? 'Integer' : 'Text')) === k ? 'selected' : ''}>${k}</option>`).join('')}</select><input class="field mono" id="ff-val" placeholder="value" style="width:220px" value="${esc(S.fform.value || '')}"><button class="btn primary" data-act="applyFilter">Apply</button><button class="btn ghost" data-act="fformCancel">Cancel</button>${scan ? `<span class="scan" title="No declared leading index or primary key covers this column. Check with Plan.">${ic('warn')}May scan the table</span>` : `<span class="scan" style="color:var(--ok)">Indexed</span>`}</div>`;
+  }
+  const grid = gridHTML({tab:t, cols:v.cols, rows:v.rows, offset:v.offset, table:v.table, sortable:!locked && !t.related});
+  const pages = Math.max(1, Math.ceil(v.total / 100));
+  const pager = t.related ? `<div class="pager"><span>${v.rows.length} related row${v.rows.length === 1 ? '' : 's'}</span><span class="spacer"></span><span class="muted">Lookup by declared foreign key. No inferred relationships.</span></div>`
+    : `<div class="pager"><button class="btn icon" data-act="page" data-k="-1" ${t.page === 0 || locked ? 'disabled' : ''} ${lockTip} title="Previous page">${ic('left')}</button><span class="mono">${v.total ? v.offset + 1 : 0}–${Math.min(v.offset + 100, v.total)}</span><button class="btn icon" data-act="page" data-k="1" ${t.page >= pages - 1 || locked ? 'disabled' : ''} ${lockTip} title="Next page">${ic('chev')}</button><span>Page ${t.page + 1}</span><span class="muted">· 100 rows per page · live reads, not a snapshot</span><span class="spacer"></span>${t.sort ? `<span class="chip mono">ORDER BY ${esc(v.cols[t.sort.col].name)} ${t.sort.desc ? 'DESC' : 'ASC'}</span>` : ''}</div>`;
+  const staged = dc.n ? `<div class="staged">${ic('pen')}<div><b>${dc.n} staged change${dc.n > 1 ? 's' : ''} in ${esc(v.table)}</b><div class="bk">${[dc.upd && `${dc.upd} update${dc.upd > 1 ? 's' : ''}`, dc.del && `${dc.del} delete${dc.del > 1 ? 's' : ''}`, dc.ins && `${dc.ins} insert${dc.ins > 1 ? 's' : ''}`].filter(Boolean).join(' · ')} · nothing is written until you commit</div></div><span class="spacer"></span><button class="btn" data-act="discardDrafts">Discard all</button><button class="btn warn" data-act="review">Review and commit…</button></div>` : '';
+  return head + ff + grid + pager + staged;
+}
+function diagHTML(t){
+  const r = t.result;
+  return `<div class="toolbar"><span class="crumbs"><span class="cur">${esc(t.pragma)}</span></span><span class="chip ok">Complete</span><span class="sum muted" style="font-size:12px">${r.rows.length} row${r.rows.length === 1 ? '' : 's'} · ${r.ms} ms</span><span class="spacer"></span>${exportMenu(t, 'complete-query-result', r.rows.length)}</div>` + gridHTML({tab:t, cols:r.cols, rows:r.rows.map((v, i) => ({key:'d' + i, vals:v})), offset:0, table:null, sortable:false});
+}
+function connectHTML(){
+  return `<div class="connect">
+    <div><div class="eyebrow">No database open</div><h2>Open a Turso database</h2></div>
+    <p>Use a trusted local file that no other program has open. Open never creates a database.</p>
+    <label class="form" style="padding:0"><span style="font-size:12px;color:var(--fg-2)">Database file</span><span class="pathrow"><input class="field mono" id="conn-path" value="${esc(S.path)}" placeholder="/path/to/existing.db"><button class="btn" data-act="choose">Choose file…<kbd>Ctrl O</kbd></button></span></label>
+    <div class="radio-cards">
+      <button class="rc" aria-pressed="${!S.pendingWritable}" data-act="mode" data-k="ro"><b>${ic('lock')}Read only</b><span>Default. The engine refuses every write.</span></button>
+      <button class="rc rw" aria-pressed="${S.pendingWritable}" data-act="mode" data-k="rw"><b>${ic('pen')}Read and write</b><span>Allows SQL writes and staged edits. Back up first, including the WAL.</span></button>
+    </div>
+    <label class="ack"><input type="checkbox" id="conn-ack" ${S.pendingAck ? 'checked' : ''}><span>No other application has this file open, including SQLite tools.<small>TursoBench does not lock the file. This box records your confirmation.</small></span></label>
+    <div style="display:flex;gap:8px;align-items:center"><button class="btn primary" data-act="doOpen" ${S.pendingAck ? '' : 'disabled'} style="height:30px;padding:0 16px">Open</button><span class="muted" style="font-size:11.5px">Live multi-process use, sync and encryption are not supported.</span></div>
+  </div>`;
+}
+
+/* ---------- inspector ---------- */
+function selection(){
+  const t = activeTab(); if (!t || !S.sel || S.sel.tab !== t.id) return null;
+  if (t.kind === 'table'){ const v = viewRows(t); const r = v.rows.find(x => x.key === S.sel.key); if (!r) return null; return {t, table:v.table, cols:v.cols, r, col:S.sel.col, row:v.rows.indexOf(r)}; }
+  const res = t.result; if (!res || !res.rows) return null; const i = Number(S.sel.key.slice(1)); const vals = res.rows[i]; if (!vals) return null;
+  return {t, table:res.table, cols:res.cols, r:{key:S.sel.key, vals, base:vals, mod:new Set(), del:false, ins:false}, col:S.sel.col, row:i, readonlySource:true};
+}
+function renderInspector(){
+  const el = $('#inspector');
+  const tabs = ['cell','record','structure'];
+  const lab = {cell:'Cell', record:'Record', structure:'Structure'};
+  let body = '';
+  const sel = selection();
+  if (!S.connected) body = '<p class="note">Open a database to inspect cells, records and table structure.</p>';
+  else if (S.inspTab === 'structure') body = structureHTML();
+  else if (!sel) body = `<div class="empty" style="margin:40px auto"><b>Nothing selected</b>Click a cell to inspect its typed value. Double-click for the whole record.</div>`;
+  else if (S.inspTab === 'cell') body = cellInspHTML(sel);
+  else body = recordHTML(sel);
+  el.innerHTML = `<div class="itabs" role="tablist">${tabs.map(k => `<button role="tab" aria-selected="${S.inspTab === k}" data-act="itab" data-k="${k}">${lab[k]}</button>`).join('')}</div><div class="ibody" data-scroll="insp">${body}</div>`;
+}
+function prettyJSON(s){ try { const v = JSON.parse(s); if (typeof v === 'object' && v) return JSON.stringify(v, null, 2); } catch (e) {} return null; }
+function valueText(v){ if (v.t === 'N') return 'NULL'; if (v.t === 'B') return hexdump(v); if (v.t === 'T') return prettyJSON(v.v) || v.v; return String(v.v); }
+function cellInspHTML(s){
+  const col = s.cols[s.col]; const v = s.r.vals[s.col]; const orig = s.r.base[s.col]; const changed = s.r.mod.has(s.col);
+  const pk = s.cols.findIndex(x => x.pk === 1);
+  const canEdit = !s.readonlySource && editable(s.t) && !s.r.del;
+  if (!S.cellEdit || S.cellEdit.key !== s.r.key || S.cellEdit.col !== s.col) S.cellEdit = {key:s.r.key, col:s.col, type:TAG[v.t], text: v.t === 'N' ? '' : v.t === 'B' ? v.hex : String(v.v)};
+  const ce = S.cellEdit;
+  const fks = s.table ? (TABLES[s.table].fks || []) : [];
+  const refs = fks.length && s.t.kind === 'table' ? `<div class="isec"><h3>References</h3>${fks.map((fk, i) => { const ci = s.cols.findIndex(x => x.name === fk.cols[0]); const val = s.r.vals[ci]; const nul = !val || val.t === 'N'; return `<button class="fklink" data-act="follow" data-i="${i}" ${nul || anyDrafts() ? 'disabled' : ''} title="${nul ? 'NULL foreign key has no referenced row' : anyDrafts() ? 'Commit or discard staged changes first' : 'Open the referenced row'}">${ic('link')}<span>${esc(fk.cols.join(', '))} → ${esc(fk.target)}.${esc(fk.tcols.join(', '))}</span><span class="go">${nul ? 'NULL' : 'Follow'}</span></button>`; }).join('')}</div>` : '';
+  return `<div class="ihead"><div class="path"><span>${esc(s.table || 'result')}.${esc(col.name)}</span><span class="chip mono">${TYPE[v.t]}</span></div><div class="sub">${s.r.ins ? 'new row (staged insert)' : pk >= 0 && s.table ? `${esc(s.cols[pk].name)} = ${esc(sqlLit(s.r.base[pk]))}` : 'row ' + (s.row + 1)}</div></div>
+    ${changed ? `<div class="isec"><h3>Staged value</h3><div class="valbox">${esc(valueText(v))}</div><h3>Stored value</h3><div class="valbox was">${esc(valueText(orig))}</div></div>` : `<div class="valbox">${esc(valueText(v))}</div>`}
+    <div class="row-actions"><button class="btn" data-act="copyCell">${ic('copy')}Copy stored value</button><button class="btn" data-act="itab" data-k="record">Record</button></div>
+    ${canEdit ? `<div class="isec"><h3>Change value · staged locally</h3>
+      <span class="seg">${['Null','Integer','Real','Text','Blob'].map(k => `<button aria-pressed="${ce.type === k}" data-act="ceType" data-k="${k}">${k === 'Null' ? 'NULL' : k}</button>`).join('')}</span>
+      ${ce.type !== 'Null' ? `<textarea class="field" id="ce-text" rows="3" spellcheck="false" placeholder="${ce.type === 'Blob' ? 'hex pairs, no prefix' : ''}">${esc(ce.text)}</textarea>` : '<p class="note" style="padding:0">Stages SQL NULL for this cell.</p>'}
+      <div class="row-actions"><button class="btn warn" data-act="stageCell">Stage change</button>${changed ? `<button class="btn" data-act="revertCell">${ic('undo')}Revert cell</button>` : ''}</div>
+      </div>
+      <div class="isec"><h3>Row</h3><div class="row-actions">${s.r.ins ? `<button class="btn danger" data-act="dropInsert">${ic('trash')}Remove new row</button>` : `<button class="btn" data-act="cloneRow">${ic('copy')}Clone as new row</button><button class="btn danger" data-act="deleteRow">${ic('trash')}Stage deletion</button>`}${s.r.mod.size ? `<button class="btn" data-act="revertRow">${ic('undo')}Revert row</button>` : ''}</div></div>`
+    : s.r.del ? `<div class="lockmsg">${ic('trash')}<span>This row is staged for deletion. <button class="btn" data-act="undelete" style="margin-top:6px">Keep row</button></span></div>`
+    : `<div class="lockmsg">${ic('lock')}<span>${s.readonlySource ? 'Query results are read-only. Open the table in a tab to stage edits.' : !S.writable ? 'Read-only session. Close and reopen with read and write access to edit.' : s.t.related ? 'Lookups are read-only. Open the table itself to edit.' : 'Editing is unavailable while a request runs.'}</span></div>`}
+    ${refs}`;
+}
+function recordHTML(s){
+  return `<div class="ihead"><div class="path"><span>${esc(s.table || 'result')} · record</span><button class="btn ghost" data-act="copyRow" style="margin-left:auto;height:22px">${ic('copy')}Copy row</button></div><div class="sub">${s.r.mod.size ? `${s.r.mod.size} staged change${s.r.mod.size > 1 ? 's' : ''}` : 'Retained engine values'}</div></div>
+    <div class="kv">${s.cols.map((col, j) => { const v = s.r.vals[j]; return `<div class="it ${s.r.mod.has(j) ? 'mod' : ''}"><span class="k">${esc(col.name)}${s.table ? headerTags(s.table, col) : ''}<span class="chip mono">${TYPE[v.t]}</span></span><span class="v">${v.t === 'N' ? `<span class="v-null">${esc(S.settings.nullMark)}</span>` : esc(v.t === 'B' ? `BLOB · ${fmtBytes(v.n)} · ${v.hex.slice(0, 24)}…` : valueText(v))}</span></div>`; }).join('')}</div>
+    <p class="note" style="padding:0">JSON text is pretty-printed for reading. Copying keeps the original bytes.</p>`;
+}
+function structureHTML(){
+  const at = activeTab();
+  let table = S.structTable;
+  if (at && at.kind === 'table') table = at.related ? at.related.table : at.table;
+  else if (at && at.kind === 'query' && at.result && at.result.table) table = at.result.table;
+  if (!table || !TABLES[table]) return `<div class="empty"><b>No table in focus</b>Open a table or pick an index in Schema.</div>`;
+  const T0 = TABLES[table]; const idx = INDEXES.filter(ix => ix.table === table);
+  return `<div class="ihead"><div class="path">${ic('table')}<span>${esc(table)}</span>${T0.strict ? '<span class="chip">STRICT</span>' : ''}</div><div class="sub">${T0.cols.length} columns · ${idx.length} indexes · ${T0.fks.length} foreign keys</div></div>
+    <div class="row-actions"><button class="btn" data-act="count" data-t="${table}" title="Runs a full COUNT(*). It may scan the whole table and can't be interrupted.">Count rows</button><button class="btn" data-act="openTable" data-t="${table}">Open table</button></div>
+    <div class="isec"><h3>Columns</h3><table class="cols"><tbody>${T0.cols.map(col => `<tr><td>${esc(col.name)}</td><td class="ty">${col.type}${col.nn ? ' · NOT NULL' : ''}</td><td class="fl">${col.pk ? '<span class="tag pk">PK</span> ' : ''}${col.fk ? '<span class="tag fk">FK</span>' : ''}</td></tr>`).join('')}</tbody></table></div>
+    <div class="isec"><h3>Indexes</h3>${idx.length ? idx.map(ix => `<div class="idx ${S.hlIndex === ix.name ? 'hl' : ''}"><span class="t">${esc(ix.name)}${ix.method ? '<span class="tag fts">FTS</span>' : ''}</span><span class="c">(${esc(ix.cols.join(', '))})${ix.method ? '<br>' + esc(ix.method) : ''}</span></div>`).join('') : '<p class="note" style="padding:0">No indexes returned.</p>'}</div>
+    <div class="isec"><h3>Foreign keys</h3>${T0.fks.length ? T0.fks.map(fk => `<div class="idx"><span class="t">${esc(fk.cols.join(', '))} → ${esc(fk.target)}(${esc(fk.tcols.join(', '))})</span><span class="c">ON UPDATE ${fk.onUpdate} · ON DELETE ${fk.onDelete}</span></div>`).join('') : '<p class="note" style="padding:0">None declared.</p>'}</div>
+    <div class="isec"><h3>DDL <button class="btn ghost" data-act="copyDDL" data-t="${table}" style="height:20px;font-size:11px;margin-left:auto;text-transform:none;letter-spacing:0">${ic('copy')}Copy</button></h3><pre class="ddl">${hl(formatDDL(T0.ddl))}</pre>${idx.map(ix => `<pre class="ddl">${hl(`CREATE INDEX ${ix.name} ON ${table}${ix.method ? ' USING fts' : ''}(${ix.cols.join(',')})${ix.method ? " WITH (tokenizer='ngram', min_gram=3, max_gram=3)" : ''};`)}</pre>`).join('')}</div>`;
+}
+function formatDDL(d){ const m = d.match(/^(CREATE TABLE \w+)\(([\s\S]*)\)(\s*STRICT)?;$/); if (!m) return d; let depth = 0, cur = '', parts = []; for (const ch of m[2]){ if (ch === '(') depth++; if (ch === ')') depth--; if (ch === ',' && depth === 0){ parts.push(cur.trim()); cur = ''; } else cur += ch; } parts.push(cur.trim()); return `${m[1]} (\n  ${parts.join(',\n  ')}\n)${m[3] || ''};`; }
+
+/* ---------- status bar + drawer ---------- */
+function renderStatus(){
+  const led = !S.connected ? 'off' : S.running ? 'busy' : '';
+  const errs = S.outcomes.filter(o => /ERROR|UNKNOWN/.test(o.msg)).length;
+  $('#statusbar').innerHTML = `<span class="it"><span class="led ${led}"></span>${S.connected ? (S.running ? 'Executing…' : 'Connected') : 'Not connected'}</span>
+    ${S.connected ? `<span class="it muted">Editor: ${S.txn === 'Active' ? '<b style="color:var(--warn);font-weight:500">transaction open</b>' : S.txn.toLowerCase()}</span><span class="it muted">Busy timeout ${S.settings.busy} ms</span>` : ''}
+    <span class="msg" id="status-msg">${esc(S.statusMsg || '')}</span>
+    ${S.connected && S.lastMs != null ? `<span class="it mono">${S.lastMs} ms</span>` : ''}${S.lastSlow ? '<span class="chip warn" style="height:16px;font-size:10.5px">slow result</span>' : ''}
+    <button data-act="drawer" aria-expanded="${S.drawer}">Outcomes <span class="chip ${errs ? 'danger' : ''}" style="height:16px;font-size:10.5px;padding:0 5px">${S.outcomes.length}</span>${ic(S.drawer ? 'down' : 'chev')}</button>`;
+  const d = $('#drawer'); d.hidden = !S.drawer;
+  if (S.drawer) d.innerHTML = `<div class="drawer-h">Execution outcomes · including replaced and discarded requests<button class="btn ghost icon" data-act="drawer" title="Close">${ic('x')}</button></div><div class="drawer-b">${S.outcomes.slice().reverse().map(o => `<div class="${/ERROR/.test(o.msg) ? 'err' : /UNKNOWN|Discard/.test(o.msg) ? 'unk' : ''}"><span>${o.at}</span><span>${esc(o.msg)}</span></div>`).join('')}</div>`;
+}
+
+/* ---------- overlays ---------- */
+function renderOverlay(){
+  const ov = $('#overlay');
+  if (!S.overlay){ ov.hidden = true; ov.innerHTML = ''; return; }
+  ov.hidden = false;
+  if (S.overlay === 'palette'){
+    ov.innerHTML = `<div class="palette" role="dialog" aria-label="Command palette"><input id="pal-q" placeholder="Type a command or table name" value="${esc(S.palQ)}" autocomplete="off"><ul id="pal-list" role="listbox"></ul></div>`;
+    renderPalette(); const i = $('#pal-q'); i.focus(); i.setSelectionRange(i.value.length, i.value.length);
+  } else if (S.overlay === 'help'){
+    const K = [['Run editor','Ctrl','↵'],['Run at cursor','Ctrl','⇧','↵'],['Command palette','Ctrl','K'],['Complete identifier','Ctrl','Space'],['Back from reference','Alt','←'],['Copy result as TSV','Ctrl','⇧','C'],['Toggle theme','Ctrl','T'],['Open file','Ctrl','O'],['Shortcuts','F1'],['Close overlay','Esc']];
+    ov.innerHTML = `<div class="dialog wide" role="dialog" aria-label="Shortcuts"><div class="dialog-h"><h2>Shortcuts and safety</h2><button class="btn ghost icon" data-act="closeOverlay">${ic('x')}</button></div><div class="dialog-b">
+      <div class="keys">${K.map(([l, ...ks]) => `<div><span>${l}</span><span>${ks.map(k => `<kbd class="kbd">${k}</kbd>`).join('')}</span></div>`).join('')}</div>
+      <ul class="safety"><li>Click a cell to inspect it; double-click opens the record. Click a table header to sort.</li><li>Discard stops delivery. It does not interrupt execution or undo writes.</li><li>Writable SQL autocommits unless you BEGIN. Staged edits need review and an explicit commit.</li><li>Exports and copies use retained rows. They never rerun SQL and leave staged changes out.</li></ul>
+    </div></div>`;
+  } else if (S.overlay === 'review'){
+    const t = activeTab(); const table = t.table; const d = draftsFor(table); const cols = TABLES[table].cols; const pk = cols.findIndex(x => x.pk === 1);
+    const ops = [];
+    for (const [k, u] of Object.entries(d.upd)){ if (d.del.has(k)) continue; const base = DATA[table].find(r => r.key === k); if (!base) continue; const sets = Object.keys(u).map(Number); let n = 0; const binds = []; const sql = `UPDATE "${table}"\nSET ${sets.map(ci => { binds.push(u[ci]); return `"${cols[ci].name}" = ?${++n}`; }).join(', ')}\nWHERE "${cols[pk].name}" = ?${++n}${sets.map(ci => { binds.push(base[ci]); return ` AND "${cols[ci].name}" IS ?${++n + 0}`; }).join('')};`; binds.splice(sets.length, 0, base[pk]); ops.push({kind:'UPDATE', cls:'warn', sql, binds}); }
+    for (const k of d.del){ const base = DATA[table].find(r => r.key === k); if (!base) continue; ops.push({kind:'DELETE', cls:'danger', sql:`DELETE FROM "${table}"\nWHERE "${cols[pk].name}" = ?1;`, binds:[base[pk]]}); }
+    for (const r of d.ins) ops.push({kind:'INSERT', cls:'ok', sql:`INSERT INTO "${table}" (${cols.map(x => `"${x.name}"`).join(', ')})\nVALUES (${cols.map((_, i) => '?' + (i + 1)).join(', ')});`, binds:r});
+    ov.innerHTML = `<div class="dialog wide" role="dialog" aria-label="Review staged changes"><div class="dialog-h"><h2>Review ${ops.length} staged change${ops.length === 1 ? '' : 's'} to ${esc(table)}</h2><button class="btn ghost icon" data-act="closeOverlay">${ic('x')}</button></div>
+      <div class="dialog-b"><p>These statements run in one transaction. Each update and delete checks that the row still holds the values you read. If any row changed, nothing is written and your drafts stay.</p>
+      ${ops.map(o => `<div class="op"><div class="op-h"><span class="chip ${o.cls}">${o.kind}</span></div><pre>${hl(o.sql)}</pre><div class="bind">bindings: [${o.binds.map(tagged).join(', ')}]</div></div>`).join('')}</div>
+      <div class="dialog-f"><span class="muted">Commit goes to the browse connection, separate from the editor transaction.</span><button class="btn" data-act="closeOverlay">Keep editing</button><button class="btn warn" data-act="commit">Commit ${ops.length} change${ops.length === 1 ? '' : 's'}</button></div></div>`;
+  } else if (S.overlay === 'confirmClose'){
+    const n = Object.keys(S.drafts).reduce((a, t) => a + draftCount(t).n, 0);
+    ov.innerHTML = `<div class="dialog" role="dialog" aria-label="Close database"><div class="dialog-h"><h2>Close ${esc(S.path.split('/').pop())}?</h2></div><div class="dialog-b">
+      ${n ? `<p><b style="color:var(--warn)">${n} staged change${n > 1 ? 's' : ''} will be discarded.</b></p>` : ''}
+      <p>Any running statement finishes first. ${S.txn === 'Active' ? '<b>The open editor transaction will be rolled back.</b>' : 'If an editor transaction is open, it is rolled back.'} Committed writes stay committed.</p></div>
+      <div class="dialog-f"><button class="btn" data-act="closeOverlay">Keep open</button><button class="btn primary" data-act="doClose">${S.txn === 'Active' ? 'Roll back and close' : 'Close'}</button></div></div>`;
+  } else if (S.overlay === 'connInfo'){
+    ov.innerHTML = `<div class="dialog" role="dialog" aria-label="Connection"><div class="dialog-h"><h2>Connection</h2><button class="btn ghost icon" data-act="closeOverlay">${ic('x')}</button></div><div class="dialog-b">
+      <div class="kv"><div class="it"><span class="k">File</span><span class="v">${esc(S.path)}</span></div><div class="it"><span class="k">Access</span><span class="v">${S.writable ? 'Read and write' : 'Read only (engine-enforced)'}</span></div><div class="it"><span class="k">Engine</span><span class="v">Turso 0.8.3 · native FTS and index methods on</span></div><div class="it"><span class="k">Connections</span><span class="v">Editor (holds explicit transactions) · Browse (table tabs, staged commits)</span></div><div class="it"><span class="k">Busy timeout</span><span class="v">${S.settings.busy} ms</span></div></div>
+      <p>To change access mode, close the database and open it again.</p></div><div class="dialog-f"><button class="btn" data-act="closeOverlay">Done</button><button class="btn" data-act="close">Close database…</button></div></div>`;
+  }
+}
+function commands(){
+  const cmds = [];
+  const t = activeTab();
+  if (S.connected){
+    cmds.push({g:'Query', l:'Run editor', k:'Ctrl ↵', run(){ ensureQueryTab(); runQuery('run'); }});
+    cmds.push({g:'Query', l:'Show query plan', run(){ ensureQueryTab(); runQuery('plan'); }});
+    cmds.push({g:'Query', l:'Show bytecode', run(){ ensureQueryTab(); runQuery('bytecode'); }});
+    cmds.push({g:'Query', l:'New query tab', run(){ newQuery(); }});
+    TABLE_ORDER.forEach(n => cmds.push({g:'Table', l:`Open ${n}`, mono:true, run(){ openTable(n); }}));
+    if (t && t.kind === 'table') cmds.push({g:'Table', l:'Count rows (full scan)', run(){ countRows(t.table); }});
+    if (t && (t.result || t.kind === 'table')) cmds.push({g:'Result', l:'Copy result as TSV', k:'Ctrl ⇧ C', run(){ toast('Copied retained rows as annotated TSV'); }});
+    if (anyDrafts()) cmds.push({g:'Edits', l:'Review staged changes', run(){ const tt = S.tabs.find(x => x.kind === 'table' && draftCount(x.table).n); if (tt){ S.active = tt.id; S.overlay = 'review'; render(); } }});
+    cmds.push({g:'Panel', l:'Show history', run(){ S.rail = 'history'; }});
+    cmds.push({g:'Panel', l:'Run a diagnostic', run(){ S.rail = 'diag'; }});
+    cmds.push({g:'Database', l:'Close database', run(){ requestClose(); }});
+  } else cmds.push({g:'Database', l:'Open a database', k:'Ctrl O', run(){}});
+  cmds.push({g:'View', l:'Toggle theme', k:'Ctrl T', run(){ cycleTheme(); }});
+  cmds.push({g:'View', l:'Shortcuts and safety', k:'F1', run(){ S.overlay = 'help'; }});
+  cmds.push({g:'View', l:'Show outcomes', run(){ S.drawer = true; }});
+  return cmds;
+}
+let palList = [];
+function renderPalette(){
+  const q = S.palQ.toLowerCase().trim();
+  palList = commands().filter(c2 => !q || (c2.g + ' ' + c2.l).toLowerCase().includes(q));
+  if (S.palI >= palList.length) S.palI = Math.max(0, palList.length - 1);
+  $('#pal-list').innerHTML = palList.length ? palList.map((c2, i) => `<li role="option" aria-selected="${i === S.palI}" data-pi="${i}"><span class="grpn">${c2.g}</span><span class="${c2.mono ? 'mono' : ''}">${esc(c2.l)}</span>${c2.k ? `<span class="kbd">${c2.k}</span>` : ''}</li>`).join('') : '<li class="none">No matching command.</li>';
+}
+function runPalette(i){ const c2 = palList[i]; if (!c2) return; S.overlay = null; S.palQ = ''; S.palI = 0; c2.run(); render(); }
+
+/* ---------- toasts / log ---------- */
+function toast(msg, cls = ''){ const el = document.createElement('div'); el.className = 'toast ' + cls; el.textContent = msg; $('#toasts').appendChild(el); setTimeout(() => el.remove(), 3200); S.statusMsg = msg; const m = $('#status-msg'); if (m) m.textContent = msg; }
+function log(msg){ S.outcomes.push({at:now(), msg}); if (S.outcomes.length > 100) S.outcomes.shift(); }
+
+/* ---------- render all, keeping scroll ---------- */
+function render(){
+  const keep = {}; document.querySelectorAll('#app [data-scroll]').forEach(e => keep[e.dataset.scroll] = [e.scrollTop, e.scrollLeft]);
+  const sl = $('#side-list'); const sideTop = sl ? sl.scrollTop : 0;
+  document.documentElement.toggleAttribute('data-theme', S.theme !== 'system');
+  if (S.theme !== 'system') document.documentElement.dataset.theme = S.theme;
+  renderTitle(); renderRail(); renderSidebar(); renderMain(); renderInspector(); renderStatus(); renderOverlay();
+  document.querySelectorAll('#app [data-scroll]').forEach(e => { const k = keep[e.dataset.scroll]; if (k){ e.scrollTop = k[0]; e.scrollLeft = k[1]; } });
+  const sl2 = $('#side-list'); if (sl2) sl2.scrollTop = sideTop;
+}
+function syncEditor(){
+  const ta = $('#sql'); const pre = $('#hl'); if (!ta || !pre) return;
+  pre.innerHTML = hl(ta.value) + '\n';
+  const g = $('#gutter'); if (g) g.textContent = Array.from({length: ta.value.split('\n').length}, (_, i) => i + 1).join('\n');
+  pre.scrollTop = ta.scrollTop; if (g) g.scrollTop = ta.scrollTop;
+}
+
+/* ---------- actions ---------- */
+function openTable(name){
+  let t = S.tabs.find(x => x.kind === 'table' && x.table === name && !x.related);
+  if (!t){ t = {id:'t-' + name + '-' + (seq++), kind:'table', table:name, page:0, sort:null, filter:null, related:null, trail:[], widths:{}}; S.tabs.push(t); S.request++; log(`Request ${S.request}: Complete, ${Math.min(100, DATA[name].length)} rows seen · ${name} page 1`); }
+  S.active = t.id; S.structTable = name; S.fform = false; S.lastMs = 3; S.lastSlow = false;
+}
+function newQuery(sql){ const t = {id:'q' + (seq++), kind:'query', title:'Query ' + (S.tabs.filter(x => x.kind === 'query').length + 1), sql: sql ?? '', params:{}, json:false, editorH:176, result:null}; S.tabs.push(t); S.active = t.id; return t; }
+function ensureQueryTab(){ const t = activeTab(); if (t && t.kind === 'query') return t; const q = S.tabs.find(x => x.kind === 'query'); if (q){ S.active = q.id; return q; } return newQuery(DEFAULT_SQL); }
+function runQuery(mode, sqlOverride){
+  const t = ensureQueryTab(); if (S.running) return;
+  if (anyDrafts()){ toast('Commit or discard staged changes before running SQL', 'warn'); return; }
+  const original = t.sql; if (sqlOverride != null) t.sql = sqlOverride;
+  S.request++; const req = S.request; S.running = {tab:t.id, req, mode}; S.sel = null; render();
+  setTimeout(() => {
+    if (!S.running || S.running.req !== req){ t.sql = original; return; }
+    const res = execute(t, mode); t.sql = original; S.running = null;
+    if (res.counted) res.ms += 400;
+    t.result = res;
+    const shown = mode === 'plan' ? 'EXPLAIN QUERY PLAN ' : mode === 'bytecode' ? 'EXPLAIN ' : '';
+    S.history.unshift({sql: shown + (sqlOverride ?? t.sql).replace(/^--[^\n]*\n/, '').replace(/\s+/g, ' ').trim(), ms: res.kind === 'error' ? null : res.ms, at: now().slice(0, 5), failed: res.kind === 'error'});
+    if (res.kind === 'error'){ log(`Request ${req} ERROR: ${res.error}`); S.statusMsg = res.error; S.lastMs = null; S.lastSlow = false; }
+    else { const n = res.rows ? res.rows.length : res.nodes.length; log(`Request ${req}: ${res.delivery}, ${n} rows seen, 0 changes, editor ${S.txn}`); S.lastMs = res.ms; S.lastSlow = res.ms >= S.settings.slow; S.statusMsg = `${res.ms} ms · ${res.delivery}: ${n} rows`; }
+    render();
+  }, 520);
+}
+function currentStatement(sql, pos){ let start = 0; const parts = []; const s = sql; let inStr = false; for (let i = 0; i < s.length; i++){ const ch = s[i]; if (ch === "'") inStr = !inStr; if (ch === ';' && !inStr){ parts.push([start, i + 1]); start = i + 1; } } parts.push([start, s.length]); const p = parts.find(([a, b]) => pos >= a && pos <= b) || parts[0]; return s.slice(p[0], p[1]).trim(); }
+function countRows(table){ if (anyDrafts() && false) return; S.request++; const n = DATA[table].length; const ms = Math.max(4, Math.round(n / 40)); log(`Request ${S.request}: COUNT(*) ${table} = ${n} · ${ms} ms (full scan)`); S.lastMs = ms; toast(`${table}: ${n.toLocaleString()} rows · ${ms} ms, full scan`); }
+function requestClose(){ if (S.writable) S.overlay = 'confirmClose'; else doClose(); }
+function doClose(){ const rolled = S.txn === 'Active'; S.overlay = null; S.connected = false; S.drafts = {}; S.txn = 'Autocommit'; S.running = null; S.sel = null; S.pendingAck = false; S.pendingWritable = false; log(`Closed; ${rolled ? 'editor transaction rolled back, ' : ''}cleanup confirmed`); S.statusMsg = 'Closed. Transaction cleanup confirmed.'; S.lastMs = null; }
+function cycleTheme(){ S.theme = S.theme === 'system' ? 'dark' : S.theme === 'dark' ? 'light' : 'system'; }
+function stage(f){ const t = activeTab(); if (!t || t.kind !== 'table' || !editable(t)) return; f(draftsFor(t.table), t); toast('Staged locally. Review and commit to write.'); }
+function cellValueFromEdit(ce){
+  const s2 = ce.text;
+  switch (ce.type){
+    case 'Null': return N();
+    case 'Integer': { if (!/^-?\d+$/.test(s2.trim())) throw new Error('Integer needs whole digits, like 42.'); const n = Number(s2.trim()); if (!Number.isSafeInteger(n)) throw new Error('Integer is out of the 64-bit range this prototype checks.'); return I(n); }
+    case 'Real': { const n = Number(s2.trim()); if (s2.trim() === '' || !isFinite(n)) throw new Error('Real needs a finite number, like 1.5.'); return {t:'R', v:n}; }
+    case 'Blob': { const h = s2.replace(/\s/g, ''); if (h.length % 2 || !/^[0-9a-f]*$/i.test(h)) throw new Error('Blob needs pairs of hex digits, with no 0x prefix.'); return {t:'B', n:h.length / 2, hex:h.toLowerCase()}; }
+    default: return T(s2);
+  }
+}
+
+const ACT = {
+  rail(e){ S.rail = e.dataset.k; },
+  grp(e){ S.groups[e.dataset.k] = !S.groups[e.dataset.k]; },
+  openTable(e){ openTable(e.dataset.t); },
+  showIndex(e){ S.structTable = e.dataset.t; S.hlIndex = e.dataset.i; openTable(e.dataset.t); S.inspTab = 'structure'; },
+  refreshSchema(){ S.request++; log(`Request ${S.request}: schema loaded · 8 tables, 9 indexes`); toast('Schema reloaded'); },
+  tab(e, ev){ if (ev.target.closest('[data-act="closeTab"]')) return ACT.closeTab(ev.target.closest('[data-act="closeTab"]')); S.active = e.dataset.id; S.menu = null; S.fform = false; },
+  closeTab(e){ const id = e.dataset.id; const t = tabById(id); if (t && t.kind === 'table' && draftCount(t.table).n){ toast('Commit or discard staged changes before closing this tab', 'warn'); return; } const i = S.tabs.findIndex(x => x.id === id); S.tabs.splice(i, 1); if (S.active === id) S.active = (S.tabs[i] || S.tabs[i - 1] || {}).id; if (S.sel && S.sel.tab === id) S.sel = null; },
+  newQuery(){ newQuery(''); },
+  run(){ runQuery('run'); },
+  runSel(){ const ta = $('#sql'); const t = activeTab(); if (!t || t.kind !== 'query' || !ta) return runQuery('run'); const sel = ta && ta.selectionStart !== ta.selectionEnd ? ta.value.slice(ta.selectionStart, ta.selectionEnd) : currentStatement(t.sql, ta ? ta.selectionStart : 0); runQuery('run', sel); },
+  plan(){ runQuery('plan'); },
+  bytecode(){ runQuery('bytecode'); },
+  quickSave(){ const t = activeTab(); S.saved.unshift({name: t.title, sql: t.sql}); S.rail = 'saved'; toast(`Saved "${t.title}"`); },
+  txn(e){ if (anyDrafts()){ toast('Commit or discard staged changes first', 'warn'); return; } const t = ensureQueryTab(); runQuery('run', e.dataset.k); },
+  discard(){ if (!S.running) return; log(`Request ${S.running.req}: Discarded. Execution continues; writes are not rolled back`); const t = tabById(S.running.tab); S.running = null; if (t) t.result = {kind:'rows', cols:[], rows:[], delivery:'Discarded', scope:'discarded-query-partial-result', ms:0, note:'Delivery stopped. The statement ran to completion on the engine.'}; toast('Discarded. The statement was not cancelled.', 'warn'); },
+  toggleJson(){ const t = activeTab(); t.json = !t.json; },
+  menu(e){ S.menu = S.menu === e.dataset.k ? null : e.dataset.k; },
+  export(e){ S.menu = null; toast(`Exported ${e.dataset.n} rows (${e.dataset.scope}) to tursobench-${e.dataset.scope}.${e.dataset.k}`); log(`Export: ${e.dataset.n} retained rows → new .${e.dataset.k} file (no SQL rerun)`); },
+  copyRes(e){ S.menu = null; toast(`Copied ${e.dataset.n} rows as ${e.dataset.k} with scope ${e.dataset.scope}`); },
+  sort(e){ const t = activeTab(); const ci = Number(e.dataset.c); t.sort = t.sort && t.sort.col === ci ? (t.sort.desc ? null : {col:ci, desc:true}) : {col:ci, desc:false}; t.page = 0; S.request++; },
+  page(e){ const t = activeTab(); t.page = Math.max(0, t.page + Number(e.dataset.k)); S.sel = null; S.request++; log(`Request ${S.request}: Complete · ${t.table} page ${t.page + 1}`); },
+  reload(){ S.request++; log(`Request ${S.request}: page reloaded`); toast('Page reloaded'); },
+  fform(){ S.fform = {col:0}; },
+  fformCancel(){ S.fform = false; },
+  applyFilter(){ const t = activeTab(); const ci = Number($('#ff-col').value); const ty = $('#ff-type').value; const raw = $('#ff-val').value; try { const v = cellValueFromEdit({type:ty, text:raw}); t.filter = {col:ci, value:v}; t.page = 0; S.fform = false; S.request++; } catch (err){ toast(err.message, 'warn'); } },
+  clearFilter(){ activeTab().filter = null; },
+  back(){ navBack(); },
+  crumb(e){ const t = activeTab(); const i = Number(e.dataset.i); const d = t.trail[i]; t.trail = t.trail.slice(0, i); Object.assign(t, {table:d.table, related:d.related, page:d.page, filter:d.filter, sort:d.sort}); S.sel = null; },
+  discardDrafts(){ const t = activeTab(); S.drafts[t.table] = {upd:{}, del:new Set(), ins:[]}; S.cellEdit = null; toast('Staged changes discarded'); },
+  review(){ S.overlay = 'review'; },
+  commit(){ const t = activeTab(); const table = t.table; const d = draftsFor(table); const n = draftCount(table).n; for (const [k, u] of Object.entries(d.upd)){ const r = DATA[table].find(x => x.key === k); if (r) for (const [ci, v] of Object.entries(u)) r[ci] = v; } DATA[table] = DATA[table].filter(r => !d.del.has(r.key)); d.ins.forEach(r => DATA[table].unshift(mkRow(TABLES[table].cols, r))); S.drafts[table] = {upd:{}, del:new Set(), ins:[]}; S.overlay = null; S.cellEdit = null; S.request++; log(`Request ${S.request} staged commit: Committed { operations: ${n} }`); toast(`Committed ${n} change${n > 1 ? 's' : ''}. Page refreshed.`); },
+  itab(e){ S.inspTab = e.dataset.k; },
+  copyCell(){ toast('Copied stored value'); },
+  copyRow(){ toast('Copied row as annotated TSV'); },
+  copyDDL(e){ const txt = TABLES[e.dataset.t].ddl; try { navigator.clipboard.writeText(txt).then(() => toast('DDL copied'), () => toast('Copy blocked here. Select the DDL text instead.', 'warn')); } catch (err){ toast('Copy blocked here. Select the DDL text instead.', 'warn'); } },
+  ceType(e){ S.cellEdit.type = e.dataset.k; },
+  stageCell(){ const s = selection(); if (!s) return; let v; try { v = cellValueFromEdit(S.cellEdit); } catch (err){ toast(err.message, 'warn'); return; }
+    const col = s.cols[s.col]; if (col.nn && v.t === 'N'){ toast(`${col.name} is NOT NULL. Choose a value.`, 'warn'); return; }
+    stage(d => { if (s.r.ins){ d.ins[s.r.insIdx][s.col] = v; return; } const base = s.r.base[s.col]; const u = d.upd[s.r.key] || (d.upd[s.r.key] = {}); if (eqv(base, v)) delete u[s.col]; else u[s.col] = v; if (!Object.keys(u).length) delete d.upd[s.r.key]; }); S.cellEdit = null; },
+  revertCell(){ const s = selection(); const d = draftsFor(s.table); const u = d.upd[s.r.key]; if (u){ delete u[s.col]; if (!Object.keys(u).length) delete d.upd[s.r.key]; } S.cellEdit = null; toast('Cell reverted'); },
+  revertRow(){ const s = selection(); delete draftsFor(s.table).upd[s.r.key]; S.cellEdit = null; toast('Row reverted'); },
+  deleteRow(){ const s = selection(); stage(d => d.del.add(s.r.key)); },
+  undelete(){ const s = selection(); draftsFor(s.table).del.delete(s.r.key); toast('Deletion removed from staged changes'); },
+  cloneRow(){ const s = selection(); const t = activeTab(); if (t.page !== 0 || t.filter || t.sort){ t.page = 0; t.filter = null; t.sort = null; } const pk = s.cols.findIndex(x => x.pk === 1); const copy = s.r.vals.slice(); if (pk >= 0 && s.cols[pk].type === 'TEXT') copy[pk] = T(ulid()); stage(d => d.ins.push(copy)); S.sel = {tab:t.id, key:'ins:' + (draftsFor(s.table).ins.length - 1), col:0}; },
+  dropInsert(){ const s = selection(); draftsFor(s.table).ins.splice(s.r.insIdx, 1); S.sel = null; toast('New row removed'); },
+  follow(e){ const s = selection(); const fk = TABLES[s.table].fks[Number(e.dataset.i)]; const t = activeTab(); const keys = fk.cols.map((cn, i) => [fk.tcols[i], s.r.vals[s.cols.findIndex(x => x.name === cn)]]);
+    t.trail.push({table:t.table, related:t.related, page:t.page, filter:t.filter, sort:t.sort}); if (t.trail.length > 32) t.trail.shift(); t.related = {table:fk.target, keys}; t.filter = null; t.sort = null; S.sel = null; S.request++; log(`Request ${S.request}: Lookup ${fk.target} by ${keys.map(k => k[0]).join(', ')} · bounded to 100 rows`); },
+  count(e){ countRows(e.dataset.t); },
+  diag(e){ const D = JSON.parse($('#sidebar').dataset.diag); const [label, pragma] = D[Number(e.dataset.i)]; const R2 = {
+      'Database files':[[{name:'seq',type:'INTEGER'},{name:'name',type:'TEXT'},{name:'file',type:'TEXT'}],[[I(0),T('main'),T(S.path)]]],
+      'Journal mode':[[{name:'journal_mode',type:'TEXT'}],[[T('wal')]]],
+      'Page count':[[{name:'page_count',type:'INTEGER'}],[[I(1873)]]],
+      'Free pages':[[{name:'freelist_count',type:'INTEGER'}],[[I(12)]]],
+      'Integrity check':[[{name:'integrity_check',type:'TEXT'}],[[T('ok')]]],
+      'Foreign-key check':[[{name:'table',type:'TEXT'},{name:'rowid',type:'INTEGER'},{name:'parent',type:'TEXT'},{name:'fkid',type:'INTEGER'}],[]] }[label];
+    const t = {id:'d' + (seq++), kind:'diag', title:label, pragma, result:{cols:R2[0], rows:R2[1], ms: /check/i.test(pragma) ? 140 : 1}, widths:{}}; S.tabs.push(t); S.active = t.id; S.request++; log(`Request ${S.request}: ${pragma} · ${R2[1].length} rows`); if (!R2[1].length) toast(`${label}: no problems found`); },
+  loadHistory(e){ const h = S.history[Number(e.dataset.i)]; const t = ensureQueryTab(); t.sql = h.sql.replace(/^EXPLAIN (QUERY PLAN )?/, ''); t.params = {}; toast('Loaded into the editor. Bindings cleared.'); },
+  delHistory(e){ S.history.splice(Number(e.dataset.i), 1); },
+  clearHistory(){ if (S._confirmClear){ S.history = []; S._confirmClear = false; toast('History cleared'); } else { S._confirmClear = true; toast('Click Clear… again to delete all history for this database', 'warn'); setTimeout(() => S._confirmClear = false, 4000); } },
+  slowOnly(){ S.slowOnly = !S.slowOnly; },
+  slowFirst(){ S.slowFirst = !S.slowFirst; },
+  saveQuery(){ const t = S.tabs.find(x => x.id === S.active && x.kind === 'query') || S.tabs.find(x => x.kind === 'query'); if (!t){ toast('Open a query tab first', 'warn'); return; } const name = S.bName.trim() || t.sql.replace(/--[^\n]*\n/g, '').trim().slice(0, 60) || 'Untitled'; S.saved.unshift({name, sql:t.sql}); S.bName = ''; toast(`Saved "${name}"`); },
+  loadSaved(e){ const b = S.saved[Number(e.dataset.i)]; const t = ensureQueryTab(); t.sql = b.sql; t.title = b.name; t.result = null; toast(`Loaded "${b.name}"`); },
+  delSaved(e){ S.saved.splice(Number(e.dataset.i), 1); },
+  setTheme(e){ S.theme = e.dataset.k; },
+  theme(){ cycleTheme(); },
+  help(){ S.overlay = 'help'; },
+  palette(){ S.overlay = 'palette'; S.palQ = ''; S.palI = 0; },
+  closeOverlay(){ S.overlay = null; },
+  close(){ S.overlay = null; requestClose(); },
+  doClose(){ doClose(); },
+  connInfo(){ S.overlay = 'connInfo'; },
+  openSheet(){ const i = $('#conn-path'); if (i) i.focus(); },
+  choose(){ toast('The native file dialog opens here (XDG portal). Typing a path also works.'); },
+  mode(e){ S.pendingWritable = e.dataset.k === 'rw'; },
+  doOpen(){ const p = $('#conn-path').value.trim(); if (!p){ toast('Enter the path of an existing database file', 'warn'); return; } S.path = p; S.connected = true; S.writable = S.pendingWritable; S.request = 1; log(`Opened ${p} ${S.writable ? 'read/write' : 'read-only'} · schema loaded`); S.statusMsg = 'Opened. Schema loaded.'; S.rail = 'schema'; S.tabs = S.tabs.filter(t => t.kind === 'query'); S.tabs.forEach(t => t.result = null); openTable('entries'); },
+  drawer(){ S.drawer = !S.drawer; },
+};
+function navBack(){ const t = activeTab(); if (!t || t.kind !== 'table' || !t.trail.length) return; const d = t.trail.pop(); Object.assign(t, {table:d.table, related:d.related, page:d.page, filter:d.filter, sort:d.sort}); S.sel = null; }
+
+/* ---------- events ---------- */
+const app = $('#app');
+app.addEventListener('click', ev => {
+  const pal = ev.target.closest('[data-pi]'); if (pal){ runPalette(Number(pal.dataset.pi)); return; }
+  if (ev.target === $('#overlay')){ S.overlay = null; render(); return; }
+  const cell = ev.target.closest('.grid td[data-c]');
+  if (cell){ const tr = cell.parentElement; const t = activeTab(); S.sel = {tab:t.id, key:tr.dataset.key, col:Number(cell.dataset.c)}; S.cellEdit = null; if (S.inspTab === 'structure') S.inspTab = 'cell';
+    app.querySelectorAll('.grid td.sel').forEach(x => x.classList.remove('sel')); app.querySelectorAll('.grid tr.rowsel').forEach(x => x.classList.remove('rowsel')); cell.classList.add('sel'); tr.classList.add('rowsel'); renderInspector(); return; }
+  const a = ev.target.closest('[data-act]');
+  if (!a){ if (S.menu && !ev.target.closest('.menu')){ S.menu = null; render(); } return; }
+  if (a.disabled) return;
+  const fn = ACT[a.dataset.act]; if (!fn) return;
+  if (a.dataset.act !== 'menu' && !a.closest('.menu')) S.menu = S.menu && a.closest('.menu-wrap') ? S.menu : null;
+  fn(a, ev); render();
+});
+app.addEventListener('dblclick', ev => { const cell = ev.target.closest('.grid td[data-c]'); if (cell){ S.inspTab = 'record'; renderInspector(); } });
+app.addEventListener('input', ev => {
+  const el = ev.target; const t = activeTab();
+  if (el.id === 'sql'){ t.sql = el.value; syncEditor(); const names = detectParams(t.sql); const known = Object.keys(t.params); if (names.some(n => !known.includes(n)) || $('#params-b').querySelectorAll('.prow').length !== names.length){ for (const n of names) if (!t.params[n]) t.params[n] = {type:'Text', value:''}; const pb = $('.params'); if (pb){ const tmp = document.createElement('div'); tmp.innerHTML = queryHTML(t); const fresh = tmp.querySelector('.params'); pb.replaceWith(fresh); } } return; }
+  if (el.id === 'schema-q'){ S.schemaFilter = el.value; renderSchemaList(); return; }
+  if (el.id === 'hist-q'){ S.hSearch = el.value; renderHistoryList(); return; }
+  if (el.id === 'bm-q'){ S.bSearch = el.value; renderSavedList(); return; }
+  if (el.id === 'bm-name'){ S.bName = el.value; return; }
+  if (el.id === 'ce-text'){ S.cellEdit.text = el.value; return; }
+  if (el.id === 'ff-val'){ S.fform.value = el.value; return; }
+  if (el.id === 'pal-q'){ S.palQ = el.value; S.palI = 0; renderPalette(); return; }
+  if (el.id === 'params-json'){ try { const v = JSON.parse(el.value); const names = detectParams(t.sql); names.forEach((n, i) => { const x = Array.isArray(v) ? v[i] : v[n]; if (x && x.type){ t.params[n] = {type:x.type, value: x.type === 'Blob' ? (x.value || []).map(b => b.toString(16).padStart(2, '0')).join('') : x.value == null ? '' : String(x.value)}; } }); el.style.borderColor = ''; } catch (e){ el.style.borderColor = 'var(--danger)'; } return; }
+  if (el.dataset.paramVal){ t.params[el.dataset.paramVal].value = el.value; return; }
+  if (el.dataset.set){ const k = el.dataset.set; S.settings[k] = k === 'nullMark' ? el.value : Math.max(0, Number(el.value) || 0); if (k === 'nullMark'){ renderMain(); renderInspector(); } if (k === 'busy' || k === 'slow') renderStatus(); return; }
+});
+app.addEventListener('change', ev => {
+  const el = ev.target; const t = activeTab();
+  if (el.dataset.paramType){ t.params[el.dataset.paramType].type = el.value; if (el.value === 'Null') t.params[el.dataset.paramType].value = ''; render(); return; }
+  if (el.id === 'ff-col'){ S.fform = {col:Number(el.value), value:S.fform.value}; render(); return; }
+  if (el.id === 'ff-type'){ S.fform.type = el.value; return; }
+  if (el.id === 'conn-ack'){ S.pendingAck = el.checked; render(); return; }
+});
+app.addEventListener('scroll', ev => { if (ev.target.id === 'sql') syncEditor(); }, true);
+
+/* column resize + editor split */
+let drag = null;
+app.addEventListener('mousedown', ev => {
+  const rz = ev.target.closest('[data-rz]');
+  if (rz){ const j = Number(rz.dataset.rz); const col = app.querySelector(`.grid col[data-c="${j}"]`); const table = rz.closest('table'); drag = {kind:'col', j, col, table, x:ev.clientX, w:col.getBoundingClientRect().width || parseFloat(col.style.width), tw:parseFloat(table.style.width)}; ev.preventDefault(); return; }
+  const sp = ev.target.closest('[data-split]');
+  if (sp){ const q = app.querySelector('.qedit'); drag = {kind:'split', q, y:ev.clientY, h:q.getBoundingClientRect().height}; ev.preventDefault(); }
+});
+window.addEventListener('mousemove', ev => {
+  if (!drag) return;
+  if (drag.kind === 'col'){ const w = Math.max(60, Math.min(640, drag.w + ev.clientX - drag.x)); drag.col.style.width = w + 'px'; drag.table.style.width = (drag.tw + w - drag.w) + 'px'; drag.cur = w; }
+  else { const h = Math.max(90, Math.min(420, drag.h + ev.clientY - drag.y)); drag.q.style.height = h + 'px'; drag.cur = h; }
+});
+window.addEventListener('mouseup', () => {
+  if (!drag) return; const t = activeTab();
+  if (drag.cur != null && t){ if (drag.kind === 'col') t.widths[drag.j] = Math.round(drag.cur); else t.editorH = Math.round(drag.cur); }
+  drag = null;
+});
+
+/* keyboard */
+document.addEventListener('keydown', ev => {
+  const mod = ev.ctrlKey || ev.metaKey;
+  if (S.overlay === 'palette'){
+    if (ev.key === 'ArrowDown'){ S.palI = Math.min(palList.length - 1, S.palI + 1); renderPalette(); ev.preventDefault(); return; }
+    if (ev.key === 'ArrowUp'){ S.palI = Math.max(0, S.palI - 1); renderPalette(); ev.preventDefault(); return; }
+    if (ev.key === 'Enter'){ runPalette(S.palI); ev.preventDefault(); return; }
+  }
+  if (ev.key === 'Escape'){ if (S.overlay || S.menu || S.fform || S.drawer){ S.overlay = null; S.menu = null; S.fform = false; S.drawer = false; render(); ev.preventDefault(); } return; }
+  if (mod && (ev.key === 'k' || ev.key === 'K')){ ev.preventDefault(); S.overlay = S.overlay === 'palette' ? null : 'palette'; S.palQ = ''; S.palI = 0; render(); return; }
+  if (ev.key === 'F1'){ ev.preventDefault(); S.overlay = S.overlay === 'help' ? null : 'help'; render(); return; }
+  if (mod && ev.key === 'Enter' && S.connected){ ev.preventDefault(); if (ev.shiftKey) ACT.runSel(); else runQuery('run'); render(); return; }
+  if (mod && (ev.key === 't' || ev.key === 'T') && !ev.shiftKey){ ev.preventDefault(); cycleTheme(); render(); return; }
+  if (mod && ev.shiftKey && (ev.key === 'c' || ev.key === 'C')){ ev.preventDefault(); toast('Copied retained rows as annotated TSV'); return; }
+  if (ev.altKey && ev.key === 'ArrowLeft'){ ev.preventDefault(); navBack(); render(); return; }
+});
+
+/* boot */
+ensureQueryTab();
+S.active = 't-entries';
+{ const q = tabById('q1'); q.result = execute(q, 'run'); }
+S.statusMsg = 'Staged changes are local. Review and commit to write them.';
+render();
+})();
+</script>

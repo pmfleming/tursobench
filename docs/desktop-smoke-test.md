@@ -19,7 +19,8 @@ for a retained fixture use `python3 tests/fixtures/generate.py /tmp/sample.db`.
 
 Automated headless egui render/pointer-interaction tests run in `cargo test`.
 `bash scripts/desktop-smoke.sh` runs the native app under Xvfb/Mesa against a
-100,000-row disposable fixture and isolates preferences. With Nix:
+100,000-row disposable fixture and isolates preferences. It also loads and renders
+the native-metadata diagram without replacing the retained table page. With Nix:
 
 ```sh
 nix develop -c cargo build --locked -p tursobench-ui
@@ -33,6 +34,43 @@ key collision and verify atomic failure with drafts retained. Export a page and 
 limited SQL result; inspect JSONL scope and end records. Check history/bookmarks
 persist only under the application configuration directory. Close with an active
 transaction and confirm cleanup.
+
+For the workbench additions, also check on a disposable database:
+
+- Search table/index/trigger names, inspect/copy DDL, open columns/index/FK details,
+  and run explicit row count and read-only diagnostics.
+- Execute named bindings (including repeated names), missing/extra bindings, a
+  selection and a statement at a Unicode cursor. Semicolons in strings/trigger
+  bodies must not split execution; full-buffer Run still rejects scripts.
+- Try highlighting/completion, including quoted text and comments; explain a
+  DELETE in both plan and bytecode modes and verify rows were not deleted.
+- Follow composite foreign keys, go back to the original page/filter, and try a
+  NULL reference. Right-click headers/cells, double-click record detail, copy TSV
+  and typed JSON, and inspect raw JSON text with large numbers/duplicate keys.
+- Clone a row (keys omitted), stage/revert cells and deletions, remove an individual
+  preview operation, and verify overlays disappear without issuing SQL writes.
+- Name/search/rename/delete a bookmark; check scoped timed history and slow filters.
+  Loading saved SQL must clear bindings. Toggle theme and open F1 help.
+- Export every format to a NEW file, check scope notices and extension enforcement,
+  and verify existing files cannot be overwritten. CSV/TSV require skipping the
+  metadata line; SQL export must name its target explicitly. Exports/copies retain
+  engine values, not staged overlays.
+
+For the [responsive redesign](ui-redesign.md), also check both themes at 1280×720,
+1366×768, 1920×1080 and 3440×1440, plus a high-DPI/960×640 logical viewport:
+
+- All transaction actions, especially ROLLBACK, remain visible. Panels/Inspector
+  switches compact layouts in one click; rail labels and schema DDL buttons fit.
+- Select/copy/edit a cell in the dock, switch to record/structure, pop out and dock
+  again. Verify stage/preview/remove/commit and DEFAULT/NULL remain accessible.
+- Diagram includes disconnected tables, composite/self/cyclic FKs and engine-owned
+  storage. Select/zoom/pan/arrange/find/fit; double-click to browse. Unresolved and
+  limited metadata must be explicit, and generated edits to engine storage disabled.
+- Keep local drafts while loading the diagram: rows/drafts must not be replaced.
+  Browse links must respect the draft guard. Explicit DDL selection must work while
+  Diagram is visible. Refresh metadata after SQL/DDL; never infer missing targets.
+- Closing/discard must stay pending until actual worker acknowledgement. Unknown
+  staged outcomes must remain unknown in the review window and must not auto-retry.
 
 Native dialog and interactive desktop checks still require a working desktop and
 are not replaced by Xvfb tests. Record platform results in release notes.

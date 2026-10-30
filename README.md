@@ -50,20 +50,39 @@ are unsupported. The exclusive-use checkbox is an acknowledgement, not an OS loc
 
 ## Features
 
+- Responsive dark/light workspaces, activity rail and docked/pop-out inspector for laptops and widescreens.
 - Engine-enforced read-only opening by default; read/write is explicit opt-in.
-- Schema navigation; 100-row table pages; column sorting and typed equality filters.
-- Virtualized row rendering and full typed cell inspection (bounded cell size).
-- Single-statement SQL, including CTEs, PRAGMAs and RETURNING; typed `?1` parameters.
+- Searchable schema/DDL, native index/FK details, related-row navigation and read-only diagnostics.
+- Zoomable schema diagram: tables, keys, composite/self/cyclic foreign keys, pan, arrange, inspect and browse.
+- 100-row table pages, sorting, typed equality filters and index-awareness hints.
+- Virtualized results, resizable columns, typed cell/record inspection and clipboard copy.
+- Highlighted SQL, selection/current-statement execution, prefix completion and EXPLAIN.
+- Single-statement SQL including CTEs, PRAGMAs and RETURNING; typed positional/named bindings.
+- Native Turso FTS and experimental index methods enabled: open existing FTS
+  databases, create `USING fts(...)` indexes and query with `fts_match(...)`.
+  See [FTS support and validation](docs/fts.md).
 - Persistent SQL-editor transactions, explicit commit/rollback, managed close.
 - Local staged inserts/updates/deletes, SQL/binding preview and atomic commits
-  with optimistic conflicts. Only suitable primary-key base tables are editable.
-- Local history/bookmarks/settings and typed JSONL exports of displayed results.
+  with optimistic conflicts. Only suitable non-engine-managed primary-key base tables are editable.
+- Typed cell editing, row cloning, draft overlays and per-cell/row/operation undo.
+- Timed searchable history, named database-scoped bookmarks, themes and keyboard help.
+- Retained-result exports: typed JSONL/JSON, annotated CSV/TSV and SQL INSERTs.
 
-Parameters and cell replacements use tagged JSON, for example:
+See the [UI guide and capability map](docs/ui-redesign.md) for workspace navigation,
+responsive behavior, diagram limits and validation. The SQL/Data modes share one
+editor and one retained result; they are not independent transaction tabs.
+
+See the [tursotui functionality review](docs/tursotui-review.md) for changes,
+shortcuts, evidence and the remaining gaps—not a claim of complete parity.
+
+Parameters use tagged JSON (cell editing also has a typed form), for example:
 
 ```json
 [{"type":"Integer","value":42},{"type":"Null"},{"type":"Blob","value":[0,255]}]
 ```
+
+For `:id`, use an object: `{":id":{"type":"Integer","value":42}}`.
+Named keys retain their `:`, `$` or `@` prefix; do not mix named and positional placeholders.
 
 Insert drafts use one entry per column: JSON `null` omits that column (DEFAULT);
 `{"type":"Null"}` explicitly inserts SQL NULL. Drafts never write until COMMIT.
@@ -78,7 +97,8 @@ therefore wait indefinitely for a non-yielding query. Application retention is
 bounded, but engine allocations are not: a huge cell/query can exhaust memory.
 Default query retention: 1,000 rows, 8 MiB, 64 KiB/cell. Large-result completion is
 labelled Limited, not silently called complete. Table paging uses OFFSET, is not
-a snapshot, and may be slow at deep offsets. No SQL scripts, arbitrary-result
+a snapshot, and may be slow at deep offsets. Multi-statement editor buffers can be
+executed one selection/statement at a time, but never as scripts. No arbitrary-result
 editing, keyless editing, or automatic migration/checkpoint/repair.
 
 This is a working preview, **not a production safety certification**. See
@@ -95,6 +115,7 @@ cargo test --workspace --locked
 cargo run --locked -p engine-spike
 cargo build --locked -p tursobench-ui
 bash scripts/desktop-smoke.sh  # requires Python 3, xvfb-run, timeout and Mesa
+bash scripts/local-project-smoke.sh  # exact local-project schemas; synthetic data only
 bash scripts/package-linux.sh
 ```
 

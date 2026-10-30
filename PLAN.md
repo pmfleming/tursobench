@@ -36,10 +36,14 @@ engine compatibility rules. TursoBench owns its backend API and release cadence.
 ### Deferred scope
 
 Cloud connections/sync, a retained TUI, encrypted files, schema-design tools,
-ER diagrams, profiling, schema diffing, and complete
+profiling, schema diffing, and complete
 tursotui feature parity are not first-release requirements. Multiple database
 windows/tabs can follow the first single-database vertical slice; identities and
 session ownership must support them from the beginning.
+
+The subsequent UI redesign adds a bounded, read-only native-metadata schema diagram
+and responsive SQL/Data/Diagram presentation modes; independent database/query tabs
+remain deferred. See [UI implementation and capability map](docs/ui-redesign.md).
 
 Linux is the proposed first desktop target. Keep the design portable; confirm
 macOS/Windows release requirements before promising support.
@@ -268,6 +272,16 @@ query result, or complete dataset; never silently label truncated data complete.
   engine-compatibility claims.
 
 ## 6. Implementation status
+
+Follow-up capability decision: enable Turso's explicit `fts` Cargo feature and
+`experimental_index_method(true)` for both access modes. Native FTS is validated
+against source-derived local-project schemas; other experimental flags remain
+disabled. See `docs/fts.md` for usage, dependency patch provenance and test results.
+
+Follow-up functionality review: the single-database workbench now closes practical
+schema/editor/results/editing/history/export gaps against tursotui. The explicit
+remaining differences, evidence and shortcuts are in `docs/tursotui-review.md`.
+This does not silently promote the deferred scope above to complete parity.
 
 Phases 0–5 now have a Linux preview implementation, with a separate commit for
 each phase. No upstream backend or GUI feature-parity import was performed.
