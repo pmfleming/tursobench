@@ -7,9 +7,31 @@ eframe/egui and pinned to **Turso 0.8.3**. Linux preview; not a multi-engine cli
 
 ```sh
 cargo run --locked -p tursobench-ui -- /path/to/existing.db
-# NixOS development environment:
-nix-shell --run 'cargo run --locked -p tursobench-ui'
+# Pinned Nix development environment (no global Cargo installation required):
+nix develop -c cargo run --locked -p tursobench-ui
 ```
+
+### Nix environment
+
+`flake.nix` / `flake.lock` pin Nixpkgs and the Rust overlay. The shell reads
+`rust-toolchain.toml` for Rust 1.95.0 and includes Cargo, rustfmt, Clippy,
+rust-analyzer, Rust sources, a C compiler, Python, Xvfb and desktop libraries.
+
+Enter the environment with `nix develop`, then run Cargo normally. The legacy
+`nix-shell` entry point uses the same pinned inputs and environment.
+
+For automatic activation when entering this folder, enable direnv's hook in your
+shell and approve the project's `.envrc` once:
+
+```sh
+direnv allow
+cargo run --locked -p tursobench-ui
+```
+
+For Bash without an existing hook, run `eval "$(direnv hook bash)"` in your terminal
+(or add it to your Bash configuration). Otherwise use `nix develop`; no direnv hook
+is required. `.direnv/` is local cache data and is ignored by Git. Nix requires
+`nix-command` and `flakes` enabled; the first activation may download dependencies.
 
 Rust 1.95.0 is the tested toolchain. Linux needs OpenGL, X11 or Wayland and
 libxkbcommon; the native file dialog uses an XDG portal. Typing a path works

@@ -22,8 +22,8 @@ Automated headless egui render/pointer-interaction tests run in `cargo test`.
 100,000-row disposable fixture and isolates preferences. With Nix:
 
 ```sh
-nix-shell --run 'cargo build --locked -p tursobench-ui'
-nix-shell --run 'nix shell nixpkgs#xvfb-run -c bash scripts/desktop-smoke.sh'
+nix develop -c cargo build --locked -p tursobench-ui
+nix develop -c bash scripts/desktop-smoke.sh
 ```
 
 For writes, reopen a disposable file with read/write enabled. BEGIN, change a row,
