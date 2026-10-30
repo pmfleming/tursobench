@@ -1,20 +1,32 @@
+mod diagram;
 mod editing;
+mod editor;
+mod grid;
+mod inspector;
 #[cfg(test)]
 mod interaction_tests;
+mod results;
+mod schema;
+mod shell;
 mod smoke;
+mod tools;
 mod usability;
 use eframe::egui;
 use tursobench_core::*;
 use tursobench_db::{Operation, Request, Session};
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum View {
     Schema,
     Query,
     Browse,
+    Explain,
+    Diagnostics,
 }
 pub struct App {
     path: String,
+    tools: tools::Tools,
+    ui: shell::UiState,
     smoke: Option<smoke::Smoke>,
     preferences: crate::storage::Preferences,
     store: crate::storage::Store,
@@ -33,7 +45,7 @@ pub struct App {
     active: Option<Ticket>,
     view: View,
     result: ResultSet,
-    schema: Vec<(String, String)>,
+    schema: Vec<SchemaObject>,
     table: Option<Table>,
     browse: Option<Browse>,
     sql: String,
@@ -59,9 +71,12 @@ impl App {
         let wake = ctx.clone();
         let (store, preferences, load_error) =
             crate::storage::Store::start(move || wake.request_repaint());
+        crate::appearance::theme(ctx, preferences.dark_mode);
         let args: Vec<_> = std::env::args().collect();
         let smoke = args.get(1).is_some_and(|a| a == "--smoke-test");
         Self {
+            tools: tools::Tools::default(),
+            ui: shell::UiState::new(ctx),
             smoke: smoke.then(smoke::Smoke::new),
             preferences,
             store,
@@ -109,6 +124,10 @@ impl App {
         }
     }
     fn open(&mut self, ctx: &egui::Context) {
+        if self.session.is_some() || self.commit_ticket.is_some() || self.closing {
+            self.status = "Wait for acknowledged close before opening another database".into();
+            return;
+        }
         if self.has_drafts() {
             self.status = "Drafts retained after disconnect; inspect the database and discard drafts before reopening".into();
             return;
@@ -130,6 +149,23 @@ impl App {
             Ok(s) => {
                 self.result = ResultSet::default();
                 self.schema.clear();
+                self.ui.diagram = Default::default();
+                self.tools.ddl = None;
+                self.inspect = None;
+                self.tools.detail = None;
+                self.drafts = None;
+                self.tools.inspection = None;
+                self.tools.inspection_ticket = None;
+                self.tools.related = None;
+                self.tools.back.clear();
+                let path = std::path::PathBuf::from(&self.path);
+                self.tools.database_scope = if path.is_absolute() {
+                    self.path.clone()
+                } else {
+                    std::env::current_dir()
+                        .map(|cwd| cwd.join(path).to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                };
                 self.table = None;
                 self.browse = None;
                 self.transaction = TransactionState::Autocommit;
@@ -141,67 +177,61 @@ impl App {
             Err(e) => self.status = e.to_string(),
         }
     }
-    fn submit(&mut self, operation: Operation, view: View) {
+    fn submit(&mut self, operation: Operation, view: View) -> Option<Ticket> {
         if self.has_drafts() || self.commit_ticket.is_some() {
             self.status =
                 "Commit or discard staged edits before navigating or executing SQL".into();
-            return;
+            return None;
         }
-        let Some(s) = &self.session else {
-            return;
-        };
+        let s = self.session.as_ref()?;
         if !self.ready || self.closing {
-            return;
-        }
-        if let Some(t) = self.active {
-            s.discard_results(t.request);
+            return None;
         }
         self.sequence += 1;
         self.generation += 1;
         let ticket = s.ticket(self.sequence, self.generation);
         match s.submit(Request { ticket, operation }) {
             Ok(()) => {
+                if let Some(old) = self.active {
+                    s.discard_results(old.request);
+                }
                 self.result.start(ticket);
                 self.active = Some(ticket);
                 self.view = view;
+                self.ui.workspace = if matches!(view, View::Query | View::Explain) {
+                    shell::Workspace::Query
+                } else {
+                    shell::Workspace::Data
+                };
+                if view != View::Browse {
+                    self.tools.export_table = "exported_rows".into();
+                }
                 self.inspect = None;
+                self.tools.detail = None;
                 self.status = "Executing… (discard does not interrupt execution)".into();
+                Some(ticket)
             }
-            Err(e) => self.status = e.to_string(),
+            Err(e) => {
+                self.status = e.to_string();
+                None
+            }
         }
     }
     fn run_sql(&mut self) {
-        if self.has_drafts() || self.commit_ticket.is_some() {
-            self.status = "Commit or discard drafts first".into();
-            return;
-        }
-        match serde_json::from_str::<Vec<Value>>(&self.params) {
-            Ok(parameters) => {
-                self.table = None;
-                self.browse = None;
-                self.submit(
-                    Operation::Execute {
-                        sql: self.sql.clone(),
-                        parameters,
-                        budget: Budget {
-                            rows: self.preferences.row_limit,
-                            ..Budget::default()
-                        },
-                    },
-                    View::Query,
-                );
-                self.preferences.record(&self.sql);
-                self.store.save(&self.preferences);
-            }
-            Err(e) => self.status = format!("Typed parameter JSON: {e}"),
-        }
+        self.run_text(self.sql.clone(), None);
     }
     fn browse_table(&mut self, name: String) {
         if self.has_drafts() || self.commit_ticket.is_some() {
             self.status = "Commit or discard drafts first".into();
             return;
         }
+        if !self.ready || self.closing {
+            self.status = "Open a database before browsing; retained values are unchanged".into();
+            return;
+        }
         self.table = None;
+        self.tools.ddl = None;
+        self.tools.related = None;
         self.browse = Some(Browse {
             table: name,
             offset: 0,
@@ -212,17 +242,39 @@ impl App {
         self.reload();
     }
     fn reload(&mut self) {
-        if let Some(b) = self.browse.clone() {
+        if let Some((table, keys)) = self.tools.related.clone() {
+            self.submit(Operation::Lookup { table, keys }, View::Browse);
+        } else if let Some(b) = self.browse.clone() {
             self.submit(Operation::Browse(b), View::Browse);
         }
     }
     fn poll(&mut self, ctx: &egui::Context) {
         self.poll_storage(ctx);
+        if let Some(rx) = &self.ui.font_rx {
+            match rx.try_recv() {
+                Ok((fonts, label)) => {
+                    ctx.set_fonts(fonts);
+                    self.ui.font_label = label;
+                    self.ui.font_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.ui.font_rx = None;
+                }
+                Err(_) => {}
+            }
+        }
         if let Some(rx) = &self.picker {
             match rx.try_recv() {
                 Ok(path) => {
-                    if let Some(path) = path {
-                        self.path = path.to_string_lossy().into_owned();
+                    if let Some(path) = path
+                        && self.session.is_none()
+                    {
+                        if let Some(path) = path.to_str() {
+                            self.path = path.to_owned();
+                            self.ui.workspace = shell::Workspace::Connect;
+                        } else {
+                            self.status = "Only UTF-8 database paths are supported; no lossy path substitution".into();
+                        }
                     }
                     self.picker = None;
                 }
@@ -258,6 +310,14 @@ impl App {
                 continue;
             }
             match event.kind {
+                EventKind::Diagram(graph) if self.ui.diagram.ticket == Some(event.ticket) => {
+                    self.ui.diagram.loaded(graph);
+                }
+                EventKind::Failed(e) if self.ui.diagram.ticket == Some(event.ticket) => {
+                    self.ui.diagram.ticket = None;
+                    self.ui.diagram.error = e.to_string();
+                    self.ui.diagram.stale = true;
+                }
                 EventKind::EditsCommitted(outcome) if self.commit_ticket == Some(event.ticket) => {
                     self.log_outcome(format!(
                         "Request {} staged commit: {outcome:?}",
@@ -289,6 +349,10 @@ impl App {
                     self.submit(Operation::Schema, View::Schema);
                 }
                 EventKind::Closed { rollback } => {
+                    self.tools.pending_history.clear();
+                    self.tools.inspection_ticket = None;
+                    self.ui.diagram.ticket = None;
+                    self.ui.diagram.stale = true;
                     if rollback.is_err() {
                         self.quit = false;
                         self.transaction = TransactionState::Unknown;
@@ -306,7 +370,19 @@ impl App {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 }
+                EventKind::Inspection(info)
+                    if self.tools.inspection_ticket == Some(event.ticket) =>
+                {
+                    self.tools.inspection = Some(info);
+                    self.tools.inspection_ticket = None;
+                    self.tools.inspection_error.clear();
+                }
+                EventKind::Failed(e) if self.tools.inspection_ticket == Some(event.ticket) => {
+                    self.tools.inspection_ticket = None;
+                    self.tools.inspection_error = e.to_string();
+                }
                 EventKind::Failed(e) => {
+                    self.record_history(event.ticket, None, true);
                     self.log_outcome(format!("Request {} ERROR: {e}", event.ticket.request));
                     if event.ticket.request == 0 {
                         self.status = e.to_string();
@@ -318,9 +394,13 @@ impl App {
                     }
                 }
                 EventKind::Table(t) if self.result.current == Some(event.ticket) => {
+                    self.tools.export_table = t.name.clone();
+                    self.request_inspection(t.name.clone());
                     self.table = Some(t);
                 }
                 EventKind::Finished(ref c) => {
+                    self.ui.diagram.stale = self.ui.diagram.data.is_some();
+                    self.record_history(event.ticket, Some(c.elapsed_ms), c.error.is_some());
                     self.log_outcome(format!(
                         "Request {}: {:?}, {} rows seen, {} changes, editor {:?}{}",
                         event.ticket.request,
@@ -334,8 +414,10 @@ impl App {
                     ));
                     self.transaction = c.transaction;
                     if self.result.current == Some(event.ticket) {
+                        self.tools.last_elapsed = c.elapsed_ms;
                         self.status = format!(
-                            "{:?}: {} rows seen, {} changes; transaction {:?}{}",
+                            "{} ms · {:?}: {} rows seen, {} changes; transaction {:?}{}",
+                            c.elapsed_ms,
                             c.delivery,
                             c.rows_seen,
                             c.changed,
@@ -351,12 +433,21 @@ impl App {
                                 .result
                                 .rows
                                 .iter()
-                                .filter_map(|r| match (&r[0], &r[1]) {
-                                    (Value::Text(kind), Value::Text(name))
-                                        if kind == "table" || kind == "view" =>
-                                    {
-                                        Some((kind.clone(), name.clone()))
-                                    }
+                                .filter_map(|r| match (&r[0], &r[1], &r[2], &r[3]) {
+                                    (
+                                        Value::Text(kind),
+                                        Value::Text(name),
+                                        Value::Text(table),
+                                        ddl,
+                                    ) => Some(SchemaObject {
+                                        kind: kind.clone(),
+                                        name: name.clone(),
+                                        table: table.clone(),
+                                        ddl: match ddl {
+                                            Value::Text(s) => Some(s.clone()),
+                                            _ => None,
+                                        },
+                                    }),
                                     _ => None,
                                 })
                                 .collect();
@@ -379,6 +470,10 @@ impl App {
             self.quit = false;
             self.active = None;
             self.transaction = TransactionState::Unknown;
+            self.tools.pending_history.clear();
+            self.tools.inspection_ticket = None;
+            self.ui.diagram.ticket = None;
+            self.ui.diagram.stale = true;
             self.status =
                 "Worker disconnected unexpectedly; execution and rollback outcome UNKNOWN".into();
         }
@@ -412,179 +507,55 @@ impl App {
         }
     }
     pub fn render(&mut self, ui: &mut egui::Ui) {
-        let ctx = ui.ctx().clone();
-        egui::Panel::top("connection").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading("TursoBench");
-                ui.label(if self.writable {
-                    "Turso 0.8.3 · READ / WRITE"
-                } else {
-                    "Turso 0.8.3 · READ ONLY"
-                });
-                if ui
-                    .add_enabled(
-                        self.session.is_none() && self.picker.is_none(),
-                        egui::Button::new("Choose file…"),
-                    )
-                    .clicked()
-                {
-                    let (tx, rx) = std::sync::mpsc::sync_channel(1);
-                    self.picker = Some(rx);
-                    let wake = ctx.clone();
-                    std::thread::spawn(move || {
-                        let path = rfd::FileDialog::new()
-                            .set_title("Open existing Turso database")
-                            .pick_file();
-                        let _ = tx.send(path);
-                        wake.request_repaint();
-                    });
-                }
-                ui.add_enabled(
-                    self.session.is_none(),
-                    egui::TextEdit::singleline(&mut self.path)
-                        .hint_text("Existing database path")
-                        .desired_width(400.0),
-                );
-                if ui
-                    .add_enabled(
-                        self.session.is_none() && self.exclusive && !self.path.is_empty(),
-                        egui::Button::new("Open"),
-                    )
-                    .clicked()
-                {
-                    self.open(&ctx);
-                }
-                if ui
-                    .add_enabled(
-                        self.session.is_some() && !self.closing,
-                        egui::Button::new("Close"),
-                    )
-                    .clicked()
-                {
-                    self.request_close();
-                }
-            });
-            ui.add_enabled(
-                self.session.is_none(),
-                egui::Checkbox::new(
-                    &mut self.writable,
-                    "Enable read/write access (close before changing mode)",
-                ),
-            );
-            ui.checkbox(
-                &mut self.exclusive,
-                "I confirm this file is not in use by another application (including SQLite tools)",
-            );
-            if self.active.is_some() && ui.button("Discard results (execution continues)").clicked()
-            {
-                if let (Some(s), Some(t)) = (&self.session, self.active) {
-                    s.discard_results(t.request);
-                }
-                self.discard_ticket = self.active;
-                self.result.rows.clear();
-                self.status = "Discard requested; writes are NOT cancelled or rolled back".into();
-            }
-        });
-        egui::Panel::bottom("status").show(ui, |ui| {
-            ui.label(&self.status);
-            ui.collapsing("Execution outcomes (including replaced queries)", |ui| {
-                egui::ScrollArea::vertical()
-                    .max_height(150.0)
-                    .show(ui, |ui| {
-                        for message in self.activity.iter().rev() {
-                            ui.label(message);
-                        }
-                    });
-            });
-        });
-        egui::Panel::left("schema").default_size(200.0).show(ui, |ui| {
-            ui.heading("Schema");
-            if ui.add_enabled(self.ready && !self.closing, egui::Button::new("Refresh schema")).clicked() { self.submit(Operation::Schema, View::Schema); }
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for (kind, name) in self.schema.clone() { if ui.button(format!("{kind}: {name}")).clicked() { self.browse_table(name); } }
-            });
-            ui.small("Browsing uses a separate connection. Uncommitted editor changes are not visible.");
-            self.history_controls(ui);
-        });
-        egui::CentralPanel::default().show(ui, |ui| {
-            ui.heading("SQL editor — one statement");
-            ui.add(egui::TextEdit::multiline(&mut self.sql).code_editor().desired_rows(4).desired_width(f32::INFINITY));
-            ui.horizontal(|ui| {
-                ui.label("Typed parameters (JSON array):"); ui.text_edit_singleline(&mut self.params);
-                if ui.add_enabled(self.ready && !self.closing, egui::Button::new("Run SQL")).clicked() { self.run_sql(); }
-            });
-            ui.small("Example: [{\"type\":\"Integer\",\"value\":42}, {\"type\":\"Null\"}]. Bind as ?1, ?2.");
-            ui.horizontal(|ui| {
-                ui.label(format!("Editor transaction: {:?}", self.transaction));
-                for (label, sql) in [("BEGIN", "BEGIN"), ("COMMIT", "COMMIT"), ("ROLLBACK", "ROLLBACK")] {
-                    if ui.add_enabled(self.ready && self.active.is_none() && !self.closing, egui::Button::new(label)).clicked() {
-                        self.submit(Operation::Execute { sql: sql.into(), parameters: vec![], budget: Budget::default() }, View::Query);
-                    }
-                }
-            });
-            ui.separator();
-            if self.view == View::Browse { self.browse_controls(ui); }
-            self.usability_controls(ui);
-            self.edit_controls(ui);
-            self.grid(ui);
-        });
-        if self.confirm_close {
-            egui::Window::new("Close writable database?").collapsible(false).show(&ctx, |ui| {
-                ui.label("Local drafts will be discarded. Active execution will finish. Any remaining editor transaction will be explicitly rolled back. This does not undo committed writes.");
-                if ui.button("Wait, roll back transaction, and close").clicked() { self.close(); }
-                if ui.button("Keep open").clicked() { self.confirm_close = false; self.quit = false; }
-            });
-        }
-        self.edit_windows(&ctx);
-        if let Some((row, col)) = self.inspect {
-            let mut open = true;
-            egui::Window::new("Cell inspector — typed value")
-                .open(&mut open)
-                .show(&ctx, |ui| {
-                    if let Some(v) = self.result.rows.get(row).and_then(|r| r.get(col)) {
-                        let mut text = match v {
-                            Value::Real(n) if !n.is_finite() => format!("Real({n}) — non-finite values are inspectable/exportable but cannot be edited as JSON"),
-                            _ => serde_json::to_string_pretty(v).unwrap_or_default(),
-                        };
-                        egui::ScrollArea::both().max_height(400.0).show(ui, |ui| {
-                            ui.add(
-                                egui::TextEdit::multiline(&mut text)
-                                    .code_editor()
-                                    .desired_width(600.0),
-                            );
-                        });
-                        ui.small("Blob bytes and NULL retain their types.");
-                        if self.can_edit() {
-                            ui.label("Replacement typed JSON:");
-                            ui.text_edit_multiline(&mut self.cell_json);
-                            if ui.button("Stage cell (no database write)").clicked() {
-                                self.stage_cell(row, col);
-                            }
-                            if ui.button("Stage row deletion").clicked() {
-                                self.stage_delete(row);
-                            }
-                        }
-                    }
-                });
-            if !open {
-                self.inspect = None;
-            }
-        }
+        self.shell(ui);
     }
     fn browse_controls(&mut self, ui: &mut egui::Ui) {
         if self.has_drafts() || self.commit_ticket.is_some() {
             ui.label("Commit or discard drafts before changing pages, sort, or filters.");
             return;
         }
+        if !self.tools.back.is_empty() {
+            let trail = self
+                .tools
+                .back
+                .iter()
+                .map(|d| match d {
+                    tools::Destination::Page(b) => b.table.as_str(),
+                    tools::Destination::Related(t, _) => t.as_str(),
+                })
+                .collect::<Vec<_>>()
+                .join(" → ");
+            ui.small(format!("Reference trail: {trail}"));
+        }
+        if !self.tools.back.is_empty() || self.tools.related.is_some() {
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add_enabled(
+                        !self.tools.back.is_empty(),
+                        egui::Button::new("Back · Alt+Left"),
+                    )
+                    .clicked()
+                {
+                    self.navigate_back();
+                }
+                if let Some((table, _)) = &self.tools.related {
+                    ui.label(format!(
+                        "Related rows in {table} — bounded lookup, up to 100 rows"
+                    ));
+                }
+                if self.tools.related.is_some() && ui.button("Refresh lookup").clicked() {
+                    self.reload();
+                }
+            });
+        }
         let Some(browse) = self.browse.clone() else {
             return;
         };
-        ui.label(format!(
-            "{} — page {} (100 rows/page; not a snapshot)",
-            browse.table,
-            browse.offset / 100 + 1
-        ));
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(format!(
+                "Page {} · 100 rows/page · not a snapshot",
+                browse.offset / 100 + 1
+            ));
             if ui
                 .add_enabled(browse.offset > 0, egui::Button::new("Previous"))
                 .clicked()
@@ -603,7 +574,7 @@ impl App {
             }
         });
         if let Some(table) = self.table.clone() {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 egui::ComboBox::from_id_salt("filter-column")
                     .selected_text(
                         table
@@ -616,8 +587,11 @@ impl App {
                             ui.selectable_value(&mut self.filter_column, i, &c.name);
                         }
                     });
+                if self.tools.inspection.as_ref().is_some_and(|info| table.columns.get(self.filter_column).is_some_and(|c| c.primary_key != 1 && !info.indexes.iter().any(|index| index.columns.first().and_then(Option::as_ref) == Some(&c.name)))) {
+                    ui.label("⚠ Possible scan").on_hover_text("No declared leading index key found for this column. Use EXPLAIN to check the actual plan.");
+                }
                 ui.label("IS typed JSON:");
-                ui.text_edit_singleline(&mut self.filter);
+                ui.add(egui::TextEdit::singleline(&mut self.filter).desired_width(190.0));
                 if ui.button("Filter").clicked() {
                     match serde_json::from_str::<Value>(&self.filter) {
                         Ok(v) => {
@@ -639,52 +613,7 @@ impl App {
         }
     }
     fn grid(&mut self, ui: &mut egui::Ui) {
-        egui::ScrollArea::horizontal().show(ui, |ui| {
-            ui.horizontal(|ui| {
-                for (i, c) in self.result.columns.clone().iter().enumerate() {
-                    if ui
-                        .add_sized([180.0, 24.0], egui::Button::new(&c.name))
-                        .clicked()
-                        && self.view == View::Browse
-                        && !self.has_drafts()
-                        && self.commit_ticket.is_none()
-                    {
-                        if let Some(b) = self.browse.as_mut() {
-                            b.descending = b.sort == Some(i) && !b.descending;
-                            b.sort = Some(i);
-                            b.offset = 0;
-                        }
-                        self.reload();
-                    }
-                }
-            });
-            egui::ScrollArea::vertical().show_rows(
-                ui,
-                26.0,
-                self.result.rows.len(),
-                |ui, range| {
-                    for row in range {
-                        ui.horizontal(|ui| {
-                            for (col, value) in self.result.rows[row].iter().enumerate() {
-                                let response = ui.add_sized(
-                                    [180.0, 24.0],
-                                    egui::Button::new(value.preview()).truncate(),
-                                );
-                                #[cfg(test)]
-                                if row == 0 && col == 0 {
-                                    self.first_cell_rect = Some(response.rect);
-                                }
-                                if response.clicked() {
-                                    self.inspect = Some((row, col));
-                                    self.cell_json =
-                                        serde_json::to_string_pretty(value).unwrap_or_default();
-                                }
-                            }
-                        });
-                    }
-                },
-            );
-        });
+        self.result_grid(ui);
     }
 }
 impl eframe::App for App {
@@ -714,6 +643,7 @@ mod tests {
     fn renders_empty_and_large_cells_without_engine() {
         let ctx = egui::Context::default();
         let mut app = App::new(&ctx);
+        app.ui.workspace = shell::Workspace::Data;
         app.result.columns = vec![Column {
             name: "data".into(),
             declared_type: None,
@@ -726,5 +656,6 @@ mod tests {
         output.textures_delta.clear();
         assert!(app.session.is_none());
         assert!(app.active.is_none());
+        assert!(app.first_cell_rect.is_some());
     }
 }

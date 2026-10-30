@@ -12,6 +12,8 @@ path = "src/main.rs"
 tursobench-core.workspace = true
 tursobench-db.workspace = true
 eframe.workspace = true
+# The same parser already used by egui; validate optional system fonts off-thread.
+skrifa = "=0.44.0"
 rfd = "=0.17.2"
 serde.workspace = true
 serde_json.workspace = true

@@ -1,0 +1,232 @@
+use super::*;
+use results::{CellKind, detail_text};
+impl App {
+    pub(super) fn cell_inspector(&mut self, ui: &mut egui::Ui, row: usize, col: usize) {
+        let Some(value) = self.result.rows.get(row).and_then(|r| r.get(col)).cloned() else {
+            ui.label("Selection no longer belongs to the retained result");
+            return;
+        };
+        ui.strong(
+            self.result
+                .columns
+                .get(col)
+                .map_or("Cell", |c| c.name.as_str()),
+        );
+        if self.view == View::Browse
+            && let Some(table) = &self.table
+        {
+            ui.label(format!("Table: {}", table.name));
+        }
+        ui.small(format!(
+            "Retained row {} · {} budgeted bytes · {:?} result",
+            row + 1,
+            value.bytes(),
+            self.view
+        ));
+        let staged = self
+            .drafts
+            .as_ref()
+            .and_then(|d| self.result.rows.get(row).and_then(|r| d.displayed(r, col)))
+            .cloned();
+        let typed = |value: &Value| match value {
+            Value::Real(n) if !n.is_finite() => {
+                format!("Real({n}) — inspectable/exportable, not editable as a non-finite real")
+            }
+            _ => serde_json::to_string_pretty(value).unwrap_or_default(),
+        };
+        if let Some(value) = staged {
+            ui.colored_label(ui.visuals().warn_fg_color, "Staged value — not yet written");
+            let text = typed(&value);
+            let mut text = text.as_str();
+            ui.add(
+                egui::TextEdit::multiline(&mut text)
+                    .code_editor()
+                    .desired_width(ui.available_width())
+                    .desired_rows(3),
+            );
+        }
+        ui.label("Stored value");
+        let text = typed(&value);
+        let mut text = text.as_str();
+        egui::ScrollArea::vertical()
+            .id_salt("stored-cell")
+            .max_height(180.0)
+            .show(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(&mut text)
+                        .code_editor()
+                        .desired_width(ui.available_width())
+                        .desired_rows(3),
+                );
+            });
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Copy stored value").clicked() {
+                ui.ctx().copy_text(crate::export::cell_text(&value));
+            }
+            if ui.button("Record").clicked() {
+                self.tools.detail = Some(row);
+                self.ui.inspector = shell::Inspector::Record;
+            }
+        });
+        if self.can_edit() {
+            ui.separator();
+            ui.strong("Change value · staged locally");
+            egui::ComboBox::from_id_salt("cell-kind")
+                .selected_text(self.tools.cell_kind.label())
+                .show_ui(ui, |ui| {
+                    for kind in [
+                        CellKind::Null,
+                        CellKind::Integer,
+                        CellKind::Real,
+                        CellKind::Text,
+                        CellKind::Blob,
+                    ] {
+                        ui.selectable_value(&mut self.tools.cell_kind, kind, kind.label());
+                    }
+                });
+            if self.tools.cell_kind != CellKind::Null {
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.tools.cell_input)
+                        .desired_width(ui.available_width())
+                        .desired_rows(3),
+                );
+            }
+            if ui.button("Stage cell change").clicked() {
+                match self.tools.cell_kind.parse(&self.tools.cell_input) {
+                    Ok(value) => {
+                        self.cell_json = serde_json::to_string(&value).unwrap();
+                        self.stage_cell(row, col);
+                    }
+                    Err(e) => self.status = e,
+                }
+            }
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Revert cell draft").clicked()
+                    && let (Some(d), Some(original)) = (&mut self.drafts, self.result.rows.get(row))
+                {
+                    d.revert_cell(original, col);
+                }
+                if ui.button("Revert row draft").clicked()
+                    && let (Some(d), Some(original)) = (&mut self.drafts, self.result.rows.get(row))
+                {
+                    d.revert_row(original);
+                }
+                if ui.button("Stage row deletion").clicked() {
+                    self.stage_delete(row);
+                }
+                if ui.button("Clone as new row…").clicked() {
+                    self.clone_row(row);
+                }
+            });
+        } else {
+            ui.small("Editing requires writable access, editor autocommit, a complete controlled non-engine-managed table result with a proven key, and no pending/uncertain commit. Arbitrary SQL results remain read-only.");
+        }
+        if self.view == View::Browse
+            && let Some(info) = self.tools.inspection.clone()
+        {
+            ui.separator();
+            ui.strong("References");
+            for key in info.foreign_keys {
+                if ui
+                    .button(format!(
+                        "Follow → {} ({})",
+                        key.target,
+                        key.columns
+                            .iter()
+                            .map(|(c, _)| c.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ))
+                    .clicked()
+                {
+                    self.follow_key(row, key);
+                }
+            }
+            ui.small("NULL and unresolved keys are never guessed. Commit or discard drafts before following a reference.");
+        }
+    }
+    pub(super) fn record_inspector(&mut self, ui: &mut egui::Ui, row: usize) {
+        ui.strong(format!("Record {} · retained engine values", row + 1));
+        if self.view == View::Browse
+            && let Some(table) = &self.table
+        {
+            ui.label(format!("Table: {}", table.name));
+        }
+        if ui.button("Copy row (annotated TSV)").clicked() {
+            self.copy_row(ui.ctx(), row);
+        }
+        if let Some(values) = self.result.rows.get(row) {
+            for (column, value) in self.result.columns.iter().zip(values) {
+                ui.separator();
+                ui.strong(&column.name);
+                let text = detail_text(value);
+                let mut text = text.as_str();
+                egui::ScrollArea::vertical()
+                    .id_salt(("record-value", row, &column.name))
+                    .max_height(160.0)
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut text)
+                                .desired_width(ui.available_width())
+                                .desired_rows(2),
+                        );
+                    });
+                ui.small(match value {
+                    Value::Null => "NULL",
+                    Value::Integer(_) => "INTEGER",
+                    Value::Real(_) => "REAL",
+                    Value::Text(_) => "TEXT · JSON tokens preserved when pretty-printing",
+                    Value::Blob(_) => "BLOB (hex)",
+                });
+            }
+        }
+    }
+    pub(super) fn inspection_surfaces(&mut self, ctx: &egui::Context) {
+        if self.ui.inspector_detached && self.ui.inspector_open {
+            let mut open = true;
+            egui::Window::new("Inspector")
+                .open(&mut open)
+                .default_size([420.0, 500.0])
+                .default_pos(egui::pos2(
+                    (ctx.content_rect().center().x - 210.0).max(104.0),
+                    ctx.content_rect().top() + 80.0,
+                ))
+                .max_height((ctx.content_rect().height() - 200.0).max(180.0))
+                .show(ctx, |ui| {
+                    if ui.button("Dock inspector").clicked() {
+                        self.ui.inspector_detached = false;
+                    }
+                    ui.horizontal_wrapped(|ui| {
+                        ui.add_enabled_ui(self.ui.workspace != shell::Workspace::Diagram, |ui| {
+                            ui.selectable_value(
+                                &mut self.ui.inspector,
+                                shell::Inspector::Cell,
+                                "Cell",
+                            );
+                            ui.selectable_value(
+                                &mut self.ui.inspector,
+                                shell::Inspector::Record,
+                                "Record",
+                            );
+                        });
+                        ui.selectable_value(
+                            &mut self.ui.inspector,
+                            shell::Inspector::Structure,
+                            "Structure",
+                        );
+                    });
+                    egui::ScrollArea::vertical().show(ui, |ui| self.inspector_content(ui));
+                });
+            self.ui.inspector_open = open;
+        }
+        if self.tools.help {
+            let mut open = true;
+            egui::Window::new("Keyboard and safety reference").open(&mut open).default_width(560.0).show(ctx,|ui|{
+                egui::ScrollArea::vertical().max_height(500.0).show(ui,|ui|{
+                    for line in ["Schema / History / Saved / Checks / Settings: activity rail","SQL editor / Data and results / Diagram: workspace modes; one retained result, not separate transactions","Ctrl+O: choose file · F1: help · Ctrl+T: theme","In SQL editor: Ctrl+Enter / F5 runs one statement; Ctrl+Shift+Enter runs selection/current statement; Ctrl+Space completes","Ctrl+Shift+C: copy retained results as TSV (outside Diagram) · Alt+Left: back from row reference","Click cell: typed inspector · double-click: record detail · right-click: copy/delete","Drag header edge or right-click: resize column · click table header: sort","Diagram: drag background to pan, wheel to zoom, drag headers to arrange; click table for structure, double-click to browse","Use Inspector / Panels to choose space on laptops; both can stay open on widescreens","Exports/copies never rerun SQL and exclude staged overlays","Discard suppresses delivery; execution and writes continue until the worker reports completion","Closing waits for actual execution and rollback acknowledgement","Writable SQL autocommits unless you BEGIN; staged edits require review and explicit commit"]{ui.label(line);}
+                });
+            });
+            self.tools.help = open;
+        }
+    }
+}
