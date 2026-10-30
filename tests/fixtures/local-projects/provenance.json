@@ -1,0 +1,69 @@
+{
+  "agenda": {
+    "license": "LICENSE-bar-daemon",
+    "project": "bar-daemon",
+    "revision": "55fbac2c80c1790b20e2ed7fe4457dc2b5cedf63",
+    "schema_sha256": "2ed88b9cfb8e871bba2f4a659136fa3a758a0ad99cf00ea92ddfc41ca1e78f01",
+    "sources": [
+      {
+        "file": "src/activity/agenda_store/database.rs",
+        "sha256": "3e92b710a4d577c72e0333750f0fc85400ca9e2baf21b4447755d0c66d07925a",
+        "working_tree_modified": true
+      }
+    ]
+  },
+  "clipboard": {
+    "license": "LICENSE-clip-daemon",
+    "project": "clip-daemon",
+    "revision": "8c2358af544b5f9d6df7a5c18c1ccc690a662b0e",
+    "schema_sha256": "e1910d590122643c5b17ae81f388b4a8d9f2005d9bb458595f844a366bb44e69",
+    "sources": [
+      {
+        "file": "src/history_store/schema.rs",
+        "sha256": "faa189c331c23bd022716b45cf177fd6065ea2081bc88890624cc3849280791e",
+        "working_tree_modified": false
+      }
+    ]
+  },
+  "notifications": {
+    "license": "LICENSE-bar-daemon",
+    "project": "bar-daemon",
+    "revision": "55fbac2c80c1790b20e2ed7fe4457dc2b5cedf63",
+    "schema_sha256": "0c988b4beffba86c2f322bd1e07c6e2ca79c7723a2b33fcf10c2353531165e95",
+    "sources": [
+      {
+        "file": "src/activity/notifications/database.rs",
+        "sha256": "a941fdc8cc3ff1ed0ceddf068d79603fb62514153c3ae6ba62e4fcd7be6f4af0",
+        "working_tree_modified": false
+      }
+    ]
+  },
+  "scratchpad": {
+    "license": "LICENSE-scratchpad",
+    "project": "scratchpad",
+    "revision": "b31592a887d4be468663d00ac8ec0eea35486d12",
+    "schema_sha256": "7188aacbf5f87f214c689bd2372f4fed599cc0969dda2cb3f0fdbd89db848149",
+    "sources": [
+      {
+        "file": "src/app/services/session_store/database/mod.rs",
+        "sha256": "4b73a83398cc84767af940e7949263485edd5fdcd3ca548db9095da2f144e931",
+        "working_tree_modified": false
+      },
+      {
+        "file": "src/app/services/session_store/database/quarantine.rs",
+        "sha256": "e70e6057de576dd6251b85ef2c068b2fbdb72f7ea2c6026a261a3f316c72388f",
+        "working_tree_modified": false
+      },
+      {
+        "file": "src/app/services/session_store/database/closed.rs",
+        "sha256": "7112fad9ffe4b7a1a1bd2ef57229bdf5ceaa5f356a078d92ff80436e8657988d",
+        "working_tree_modified": false
+      },
+      {
+        "file": "src/app/services/session_store/database/versions.rs",
+        "sha256": "43d29035f524040c88103ae9cac7313a6f370ef17a02f8df5505ae3d0d357352",
+        "working_tree_modified": false
+      }
+    ]
+  }
+}
