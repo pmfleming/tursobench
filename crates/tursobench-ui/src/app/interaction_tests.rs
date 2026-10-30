@@ -30,6 +30,115 @@ fn frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) {
     );
     out.textures_delta.clear();
 }
+
+#[test]
+fn failed_open_after_close_can_retry_a_valid_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("valid.db");
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let db = turso::Builder::new_local(path.to_str().unwrap())
+                .build()
+                .await
+                .unwrap();
+            db.connect()
+                .unwrap()
+                .execute("CREATE TABLE example(id INTEGER PRIMARY KEY)", ())
+                .await
+                .unwrap();
+        });
+    let ctx = egui::Context::default();
+    let mut app = App::new(&ctx);
+    app.set_database_path(dir.path().join("missing.db").to_str().unwrap().into());
+    app.exclusive = true;
+    app.open(&ctx);
+    assert!(app.session.is_some());
+    app.request_close();
+    assert!(app.closing);
+    let started = Instant::now();
+    while app.session.is_some() {
+        app.poll(&ctx);
+        assert!(started.elapsed() < Duration::from_secs(5));
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(!app.ready && !app.closing && !app.confirm_close);
+    assert!(app.active.is_none());
+
+    app.set_database_path(path.to_str().unwrap().into());
+    app.exclusive = true;
+    app.open(&ctx);
+    wait(&mut app, &ctx);
+    assert!(app.schema.iter().any(|table| table.name == "example"));
+    app.close();
+    let started = Instant::now();
+    while app.session.is_some() {
+        app.poll(&ctx);
+        assert!(started.elapsed() < Duration::from_secs(5));
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn failed_open_completes_pending_exit_after_any_export() {
+    fn poll_and_check_close(app: &mut App, ctx: &egui::Context) -> bool {
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| app.poll(ctx));
+        output.textures_delta.clear();
+        output.viewport_output.values().any(|viewport| {
+            viewport
+                .commands
+                .iter()
+                .any(|cmd| matches!(cmd, egui::ViewportCommand::Close))
+        })
+    }
+    for pending_export in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx);
+        app.set_database_path(dir.path().join("missing.db").to_str().unwrap().into());
+        app.exclusive = true;
+        app.writable = true;
+        app.open(&ctx);
+        app.quit = true;
+        app.request_close();
+        assert!(app.confirm_close);
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        if pending_export {
+            app.export_job = Some(rx);
+        }
+        let mut close_sent = false;
+        let started = Instant::now();
+        while app.session.is_some() {
+            close_sent |= poll_and_check_close(&mut app, &ctx);
+            assert!(started.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(!app.closing && !app.confirm_close);
+        assert_eq!(close_sent, !pending_export);
+        if pending_export {
+            tx.send(Ok("Export completed".into())).unwrap();
+            assert!(poll_and_check_close(&mut app, &ctx));
+        }
+    }
+}
+
+#[test]
+fn typing_a_different_database_path_resets_consent() {
+    let ctx = egui::Context::default();
+    let mut app = App::new(&ctx);
+    app.path = "previous.db".into();
+    app.exclusive = true;
+    app.writable = true;
+    frame(&mut app, &ctx, vec![]);
+    ctx.memory_mut(|memory| memory.request_focus(egui::Id::new("database-path")));
+    frame(&mut app, &ctx, vec![egui::Event::Text("x".into())]);
+    assert_ne!(app.path, "previous.db");
+    assert!(app.path.contains('x'));
+    assert!(!app.exclusive && !app.writable);
+}
+
 #[test]
 fn diagram_preserves_drafts_and_result_ownership_and_chrome_fits_both_themes() {
     let runtime = tokio::runtime::Builder::new_current_thread()

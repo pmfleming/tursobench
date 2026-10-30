@@ -20,7 +20,8 @@ not a declaration that every production release gate in PLAN.md has passed.
 - Responsive SQL/Data/Diagram workspaces, activity rail, docked/pop-out inspector,
   readable grid and staged review, system-font fallback, and bounded native schema
   diagrams. See `docs/ui-redesign.md` for the capability map and limits.
-- Formatting, warning-free Clippy, 43 workspace unit/integration tests.
+- Formatting, warning-free Clippy, 51 workspace unit/integration tests, including
+  file-picker outcomes, per-file consent, and failed-open close/retry coverage.
 - Four exact local-project schema fixtures (scratchpad, agenda, notifications,
   clip-daemon): synthetic Turso-created data, read-only byte preservation, paging,
   typed edits, FTS transaction consistency, rendering/exports, and native Xvfb smoke.

@@ -6,7 +6,12 @@ closed disposable fixture. The engine spike generates its own temporary fixtures
 for a retained fixture use `python3 tests/fixtures/generate.py /tmp/sample.db`.
 
 1. Confirm Open is disabled until exclusive-use acknowledgement is checked.
-2. Choose an existing file or type its path; open read-only. Try a typo: no new file.
+2. Choose an existing file or type its path; changing the path must restore
+   read-only mode and clear the exclusive-use acknowledgement. Confirm it and open.
+   Cancel the picker: keep the previous path and show a no-selection message.
+   Try a typo: no new file. Close while an open is pending and fails, then retry;
+   the app must not remain stuck closing. Picker failures must show feedback and
+   leave manual path entry available.
 3. Select a table; page, click column headings to sort, apply a typed equality filter.
 4. Inspect NULL, empty text, Unicode and blob cells. Long cells must stay bounded.
 5. Execute `SELECT ?1` with `[{"type":"Blob","value":[0,255]}]`.

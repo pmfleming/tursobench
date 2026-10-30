@@ -329,19 +329,4 @@ impl App {
     pub(super) fn apply_theme(&self, ctx: &egui::Context) {
         crate::appearance::theme(ctx, self.preferences.dark_mode);
     }
-    pub(super) fn choose_file(&mut self, ctx: &egui::Context) {
-        if self.picker.is_some() || self.session.is_some() {
-            return;
-        }
-        let (tx, rx) = std::sync::mpsc::sync_channel(1);
-        self.picker = Some(rx);
-        let wake = ctx.clone();
-        std::thread::spawn(move || {
-            let path = rfd::FileDialog::new()
-                .set_title("Open existing Turso database")
-                .pick_file();
-            let _ = tx.send(path);
-            wake.request_repaint();
-        });
-    }
 }

@@ -351,12 +351,16 @@ impl App {
     fn connect_ui(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().show(ui,|ui|{
             ui.heading("Open a Turso database");ui.label("Trusted local files only. Open never creates a database.");ui.add_space(12.0);
-            ui.label("Existing database file");ui.add(egui::TextEdit::singleline(&mut self.path).desired_width(ui.available_width().min(700.0)).hint_text("/path/to/existing.db"));
+            ui.label("Existing database file");
+            let mut path = self.path.clone();
+            if ui.add(egui::TextEdit::singleline(&mut path).id(egui::Id::new("database-path")).desired_width(ui.available_width().min(700.0)).hint_text("/path/to/existing.db")).changed() {
+                self.set_database_path(path);
+            }
             if ui.add_enabled(self.picker.is_none(),egui::Button::new("Choose file… · Ctrl+O")).clicked(){self.choose_file(ui.ctx());}
             ui.add_space(12.0);ui.horizontal_wrapped(|ui|{ui.selectable_value(&mut self.writable,false,"Read only — engine enforced");ui.selectable_value(&mut self.writable,true,"Read and write — explicit opt-in");});
             if self.writable{ui.colored_label(ui.visuals().warn_fg_color,"Back up closed files with all required WAL state before trying writes.");}
             ui.checkbox(&mut self.exclusive,"I confirm no other application has this file open (including SQLite tools)");ui.small("This acknowledgement is not an OS lock. Live multiprocess use is unsupported.");
-            if ui.add_enabled(self.exclusive&&!self.path.is_empty()&&!self.has_drafts(),egui::Button::new("Open database")).clicked(){self.open(ui.ctx());}
+            if ui.add_enabled(self.picker.is_none()&&self.exclusive&&!self.path.is_empty()&&!self.has_drafts(),egui::Button::new("Open database")).clicked(){self.open(ui.ctx());}
             if self.has_drafts(){ui.colored_label(ui.visuals().error_fg_color,"Drafts retained after disconnect. Inspect the uncertain outcome before discarding or retrying.");if ui.button("Review retained drafts…").clicked(){self.show_preview=true;}
                 if ui.button("Discard retained local drafts").clicked(){self.drafts=None;}}
         });

@@ -1,6 +1,7 @@
 mod diagram;
 mod editing;
 mod editor;
+mod files;
 mod grid;
 mod inspector;
 #[cfg(test)]
@@ -31,7 +32,7 @@ pub struct App {
     preferences: crate::storage::Preferences,
     store: crate::storage::Store,
     export_job: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
-    picker: Option<std::sync::mpsc::Receiver<Option<std::path::PathBuf>>>,
+    picker: Option<std::sync::mpsc::Receiver<files::PickResult>>,
     discard_ticket: Option<Ticket>,
     exclusive: bool,
     writable: bool,
@@ -124,6 +125,10 @@ impl App {
         }
     }
     fn open(&mut self, ctx: &egui::Context) {
+        if self.picker.is_some() {
+            self.status = "Finish choosing a file before opening a database".into();
+            return;
+        }
         if self.session.is_some() || self.commit_ticket.is_some() || self.closing {
             self.status = "Wait for acknowledged close before opening another database".into();
             return;
@@ -263,25 +268,7 @@ impl App {
                 Err(_) => {}
             }
         }
-        if let Some(rx) = &self.picker {
-            match rx.try_recv() {
-                Ok(path) => {
-                    if let Some(path) = path
-                        && self.session.is_none()
-                    {
-                        if let Some(path) = path.to_str() {
-                            self.path = path.to_owned();
-                            self.ui.workspace = shell::Workspace::Connect;
-                        } else {
-                            self.status = "Only UTF-8 database paths are supported; no lossy path substitution".into();
-                        }
-                    }
-                    self.picker = None;
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.picker = None,
-                Err(_) => {}
-            }
-        }
+        self.poll_picker();
         let mut events = Vec::new();
         let mut disconnected = false;
         if let Some(s) = &self.session {
@@ -388,6 +375,14 @@ impl App {
                         self.status = e.to_string();
                         self.session = None;
                         self.ready = false;
+                        self.active = None;
+                        self.closing = false;
+                        self.confirm_close = false;
+                        // Failed opens never send Closed: there is no live session left
+                        // to acknowledge a pending close or application exit.
+                        if self.quit && self.export_job.is_none() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
                     } else if self.active == Some(event.ticket) {
                         self.status = e.to_string();
                         self.active = None;
