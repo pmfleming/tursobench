@@ -11,6 +11,7 @@ jobs:
       - run: cargo test --workspace --locked
       - run: bash scripts/package-linux.sh
       - run: TURSOBENCH_BINARY=target/release/tursobench bash scripts/desktop-smoke.sh
+      - run: TURSOBENCH_BINARY=target/release/tursobench bash scripts/local-project-smoke.sh
       - uses: actions/upload-artifact@v4
         with:
           name: tursobench-linux-preview
