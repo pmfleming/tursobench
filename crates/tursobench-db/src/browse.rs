@@ -1,9 +1,12 @@
 use super::*;
 
 pub(crate) async fn describe(c: &Connection, name: &str) -> Result<Table, Failure> {
+    if name.len() > 64 * 1024 {
+        return Err(Failure::input("Table name exceeds metadata budget"));
+    }
     let mut r = c
         .query(
-            "SELECT type FROM sqlite_schema WHERE name = ?1 AND type IN ('table', 'view')",
+            "SELECT type FROM sqlite_schema WHERE name = ?1 COLLATE NOCASE AND type IN ('table', 'view')",
             [name],
         )
         .await
@@ -25,6 +28,7 @@ pub(crate) async fn describe(c: &Connection, name: &str) -> Result<Table, Failur
         .await
         .map_err(failure)?;
     let mut columns = Vec::new();
+    let mut bytes = name.len();
     while let Some(row) = r.next().await.map_err(failure)? {
         let get = |i| row.get_value(i).map(from_engine).map_err(failure);
         let text = |i| match get(i)? {
@@ -35,7 +39,7 @@ pub(crate) async fn describe(c: &Connection, name: &str) -> Result<Table, Failur
             Value::Integer(n) => Ok(n),
             _ => Err(Failure::input("Unexpected schema metadata")),
         };
-        columns.push(TableColumn {
+        let column = TableColumn {
             name: text(1)?,
             declared_type: text(2)?,
             not_null: integer(3)? != 0,
@@ -45,7 +49,14 @@ pub(crate) async fn describe(c: &Connection, name: &str) -> Result<Table, Failur
             },
             primary_key: integer(5)?,
             hidden: integer(6)?,
-        });
+        };
+        bytes += column.name.len()
+            + column.declared_type.len()
+            + column.default_sql.as_ref().map_or(0, String::len);
+        if bytes > 1024 * 1024 {
+            return Err(Failure::input("Table descriptor exceeds 1 MiB"));
+        }
+        columns.push(column);
         if columns.len() > 512 {
             return Err(Failure::input("Table exceeds 512-column budget"));
         }

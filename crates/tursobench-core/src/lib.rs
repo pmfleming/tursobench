@@ -38,6 +38,26 @@ impl Value {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Bindings {
+    Positional(Vec<Value>),
+    Named(std::collections::BTreeMap<String, Value>),
+}
+impl From<Vec<Value>> for Bindings {
+    fn from(values: Vec<Value>) -> Self {
+        Self::Positional(values)
+    }
+}
+impl Bindings {
+    pub fn bytes(&self) -> usize {
+        match self {
+            Self::Positional(v) => v.iter().map(Value::bytes).sum(),
+            Self::Named(v) => v.iter().map(|(k, v)| k.len() + v.bytes()).sum(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ticket {
     pub database: u64,
@@ -126,6 +146,8 @@ pub enum Delivery {
 }
 #[derive(Debug, Clone)]
 pub struct Completion {
+    /// Worker execution plus delivery/backpressure time; excludes queue wait.
+    pub elapsed_ms: u64,
     pub delivery: Delivery,
     pub rows_seen: u64,
     pub changed: u64,
@@ -181,8 +203,52 @@ pub struct Browse {
     pub filter: Option<(usize, Value)>,
 }
 
+#[derive(Debug, Clone)]
+pub struct SchemaObject {
+    pub kind: String,
+    pub name: String,
+    pub table: String,
+    pub ddl: Option<String>,
+}
+#[derive(Debug, Clone)]
+pub struct IndexInfo {
+    pub name: String,
+    pub unique: bool,
+    pub partial: bool,
+    pub columns: Vec<Option<String>>,
+}
+#[derive(Debug, Clone)]
+pub struct ForeignKey {
+    pub id: i64,
+    pub target: String,
+    pub columns: Vec<(String, Option<String>)>,
+    pub on_update: String,
+    pub on_delete: String,
+}
+#[derive(Debug, Clone)]
+pub struct Inspection {
+    pub table: Table,
+    pub indexes: Vec<IndexInfo>,
+    pub foreign_keys: Vec<ForeignKey>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiagramTable {
+    pub name: String,
+    pub inspection: Option<Inspection>,
+    pub error: Option<String>,
+}
+#[derive(Debug, Clone, Default)]
+pub struct SchemaDiagram {
+    pub tables: Vec<DiagramTable>,
+    /// Discovery/metadata budget reached; never label this as the entire schema.
+    pub limited: bool,
+}
+
 #[derive(Debug)]
 pub enum EventKind {
+    Diagram(SchemaDiagram),
+    Inspection(Inspection),
     Table(Table),
     EditsCommitted(CommitOutcome),
     Opened,

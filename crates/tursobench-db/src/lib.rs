@@ -1,6 +1,9 @@
 //! Turso-only session worker. No engine handles cross the service boundary.
 mod browse;
+mod diagram;
 mod edits;
+mod inspection;
+pub mod sql;
 use browse::{browse_sql, describe};
 use std::{
     path::PathBuf,
@@ -24,10 +27,67 @@ pub enum Operation {
         parameters: Vec<Value>,
         budget: Budget,
     },
+    ExecuteBound {
+        sql: String,
+        parameters: Bindings,
+        budget: Budget,
+    },
+    Explain {
+        sql: String,
+        parameters: Bindings,
+        bytecode: bool,
+    },
+    Inspect(String),
+    Diagram,
+    Lookup {
+        table: String,
+        keys: Vec<(String, Value)>,
+    },
+    Count(String),
+    Diagnostic(Diagnostic),
     Schema,
     Browse(Browse),
     CommitEdits(DraftBatch),
     Close,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Diagnostic {
+    DatabaseList,
+    JournalMode,
+    PageCount,
+    FreelistCount,
+    Integrity,
+    ForeignKeys,
+}
+impl Diagnostic {
+    pub const ALL: [Self; 6] = [
+        Self::DatabaseList,
+        Self::JournalMode,
+        Self::PageCount,
+        Self::FreelistCount,
+        Self::Integrity,
+        Self::ForeignKeys,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::DatabaseList => "Database files",
+            Self::JournalMode => "Journal mode",
+            Self::PageCount => "Page count",
+            Self::FreelistCount => "Free pages",
+            Self::Integrity => "Integrity check (may be slow)",
+            Self::ForeignKeys => "Foreign-key check (may be slow)",
+        }
+    }
+    fn sql(self) -> &'static str {
+        match self {
+            Self::DatabaseList => "PRAGMA database_list",
+            Self::JournalMode => "PRAGMA journal_mode",
+            Self::PageCount => "PRAGMA page_count",
+            Self::FreelistCount => "PRAGMA freelist_count",
+            Self::Integrity => "PRAGMA integrity_check",
+            Self::ForeignKeys => "PRAGMA foreign_key_check",
+        }
+    }
 }
 pub struct Request {
     pub ticket: Ticket,
@@ -335,6 +395,108 @@ async fn worker(
         }
         match request.operation {
             Operation::Close => break,
+            Operation::Diagram => match diagram::load(&browse).await {
+                Ok(graph) => {
+                    output.send(request.ticket, EventKind::Diagram(graph));
+                }
+                Err(error) => {
+                    output.send(request.ticket, EventKind::Failed(error));
+                }
+            },
+            Operation::Inspect(name) => match inspection::inspect(&browse, &name).await {
+                Ok(info) => {
+                    output.send(request.ticket, EventKind::Inspection(info));
+                }
+                Err(e) => {
+                    output.send(request.ticket, EventKind::Failed(e));
+                }
+            },
+            Operation::Lookup { table: name, keys } => {
+                let prepared = match describe(&browse, &name).await {
+                    Ok(table) => inspection::lookup_sql(&table, &keys)
+                        .map(|(sql, params)| (table, sql, params)),
+                    Err(e) => Err(e),
+                };
+                match prepared {
+                    Ok((table, sql, params)) => {
+                        output.send(request.ticket, EventKind::Table(table));
+                        let mut completion = execute(
+                            &browse,
+                            request.ticket,
+                            &sql,
+                            params,
+                            Budget::default(),
+                            &output,
+                        )
+                        .await;
+                        completion.transaction = state(&editor);
+                        output.send(request.ticket, EventKind::Finished(completion));
+                    }
+                    Err(e) => {
+                        output.send(request.ticket, EventKind::Failed(e));
+                    }
+                }
+            }
+            Operation::Count(name) => {
+                let sql = format!(
+                    "SELECT count(*) AS row_count FROM {}",
+                    quote_identifier(&name)
+                );
+                let mut completion = execute(
+                    &browse,
+                    request.ticket,
+                    &sql,
+                    vec![],
+                    Budget::default(),
+                    &output,
+                )
+                .await;
+                completion.transaction = state(&editor);
+                output.send(request.ticket, EventKind::Finished(completion));
+            }
+            Operation::Diagnostic(kind) => {
+                let mut completion = execute(
+                    &browse,
+                    request.ticket,
+                    kind.sql(),
+                    vec![],
+                    Budget::default(),
+                    &output,
+                )
+                .await;
+                completion.transaction = state(&editor);
+                output.send(request.ticket, EventKind::Finished(completion));
+            }
+            Operation::Explain {
+                sql,
+                parameters,
+                bytecode,
+            } => match sql::explain_sql(&sql, bytecode) {
+                Ok(sql) => {
+                    let completion = execute(
+                        &editor,
+                        request.ticket,
+                        &sql,
+                        parameters,
+                        Budget::default(),
+                        &output,
+                    )
+                    .await;
+                    output.send(request.ticket, EventKind::Finished(completion));
+                }
+                Err(e) => {
+                    output.send(request.ticket, EventKind::Failed(e));
+                }
+            },
+            Operation::ExecuteBound {
+                sql,
+                parameters,
+                budget,
+            } => {
+                let completion =
+                    execute(&editor, request.ticket, &sql, parameters, budget, &output).await;
+                output.send(request.ticket, EventKind::Finished(completion));
+            }
             Operation::CommitEdits(batch) => {
                 let outcome = if uncertain_edit {
                     CommitOutcome::Unknown(Failure { kind: ErrorKind::Unknown, message: "A previous edit commit has an uncertain outcome; close and inspect before retrying".into() })
@@ -369,7 +531,7 @@ async fn worker(
                 }
             },
             Operation::Schema => {
-                let mut completion = execute(&browse, request.ticket, "SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name", vec![], Budget::default(), &output).await;
+                let mut completion = execute(&browse, request.ticket, "SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY type, name", vec![], Budget::default(), &output).await;
                 completion.transaction = state(&editor);
                 output.send(request.ticket, EventKind::Finished(completion));
             }
@@ -400,11 +562,14 @@ async fn execute(
     c: &Connection,
     ticket: Ticket,
     sql: &str,
-    parameters: Vec<Value>,
+    parameters: impl Into<Bindings>,
     budget: Budget,
     out: &Output,
 ) -> Completion {
+    let started = std::time::Instant::now();
+    let parameters = parameters.into();
     let mut completion = Completion {
+        elapsed_ms: 0,
         delivery: Delivery::Complete,
         rows_seen: 0,
         changed: 0,
@@ -413,7 +578,8 @@ async fn execute(
     };
     let result = async {
         validate_single(sql)?;
-        if parameters.iter().map(Value::bytes).sum::<usize>() > 8 * 1024 * 1024 {
+        sql::validate_bindings(sql, &parameters)?;
+        if parameters.bytes() > 8 * 1024 * 1024 {
             return Err(Failure::input("Parameters exceed 8 MiB"));
         }
         let mut stmt = c.prepare(sql).await.map_err(failure)?;
@@ -435,10 +601,18 @@ async fn execute(
             return Err(Failure::input("Result metadata exceeds display budget"));
         }
         out.send(ticket, EventKind::Columns(columns));
-        let mut rows = stmt
-            .query(params_from_iter(parameters.into_iter().map(to_engine)))
-            .await
-            .map_err(failure)?;
+        let parameters = match parameters {
+            Bindings::Positional(values) => {
+                turso::params::Params::Positional(values.into_iter().map(to_engine).collect())
+            }
+            Bindings::Named(values) => turso::params::Params::Named(
+                values
+                    .into_iter()
+                    .map(|(name, value)| (name.into(), to_engine(value)))
+                    .collect(),
+            ),
+        };
+        let mut rows = stmt.query(parameters).await.map_err(failure)?;
         let mut kept = 0;
         let mut bytes = 0;
         let mut chunk = Vec::new();
@@ -484,6 +658,7 @@ async fn execute(
         Ok::<(), Failure>(())
     }
     .await;
+    completion.elapsed_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
     completion.error = result.err();
     completion.transaction = state(c);
     if out.discarded(ticket) {
