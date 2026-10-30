@@ -5,6 +5,7 @@ let
     extensions = toolchainSpec.components ++ [ "rust-src" "rust-analyzer" ];
   };
   desktopLibraries = with pkgs; [
+    dbus # rfd dynamically loads libdbus-1 to reach the desktop file chooser portal.
     libxkbcommon
     wayland
     libGL
@@ -27,7 +28,7 @@ in pkgs.mkShell {
   buildInputs = desktopLibraries;
   RUST_SRC_PATH = "${toolchain}/lib/rustlib/src/rust/library";
 
-  # eframe loads these libraries dynamically. Preserve any existing driver paths.
+  # eframe and rfd load these libraries dynamically. Preserve existing driver paths.
   shellHook = ''
     export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath desktopLibraries}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
   '';
