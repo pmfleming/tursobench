@@ -1,4 +1,6 @@
 //! Turso-only session worker. No engine handles cross the service boundary.
+mod browse;
+use browse::{browse_sql, describe};
 use std::{
     path::PathBuf,
     sync::{
@@ -22,6 +24,7 @@ pub enum Operation {
         budget: Budget,
     },
     Schema,
+    Browse(Browse),
     Close,
 }
 pub struct Request {
@@ -277,6 +280,28 @@ async fn worker(id: u64, path: PathBuf, access: Access, rx: Receiver<Request>, o
         };
         match request.operation {
             Operation::Close => break,
+            Operation::Browse(spec) => match describe(&browse, &spec.table).await {
+                Ok(table) => match browse_sql(&table, &spec) {
+                    Ok((sql, params)) => {
+                        output.send(request.ticket, EventKind::Table(table));
+                        execute(
+                            &browse,
+                            request.ticket,
+                            &sql,
+                            params,
+                            Budget::default(),
+                            &output,
+                        )
+                        .await;
+                    }
+                    Err(e) => {
+                        output.send(request.ticket, EventKind::Failed(e));
+                    }
+                },
+                Err(e) => {
+                    output.send(request.ticket, EventKind::Failed(e));
+                }
+            },
             Operation::Schema => {
                 execute(&browse, request.ticket, "SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name", vec![], Budget::default(), &output).await;
             }

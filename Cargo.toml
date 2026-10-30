@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["tools/engine-spike", "crates/tursobench-core", "crates/tursobench-db"]
+members = ["tools/engine-spike", "crates/tursobench-core", "crates/tursobench-db", "crates/tursobench-ui"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,6 +12,7 @@ rust-version = "1.92"
 tursobench-core = { path = "crates/tursobench-core" }
 tursobench-db = { path = "crates/tursobench-db" }
 turso_parser = "=0.8.3"
+eframe = { version = "=0.36.2", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
 turso = { version = "=0.8.3", default-features = false }
 tokio = { version = "1", features = ["rt", "time", "macros"] }
 tempfile = "3"

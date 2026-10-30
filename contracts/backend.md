@@ -31,3 +31,13 @@ Closed; dropping Session is best-effort cleanup, not a rollback acknowledgement.
 No timeout or discard is proof of rollback. Busy timeout is 250 ms, without retry.
 Single-statement validation uses Turso 0.8.3's parser, including trigger bodies;
 multiple statements and malformed suffixes are rejected before execution.
+
+Table browsing uses a separate connection and controlled generated SELECTs: 100
+rows/page, typed equality filters (`IS`, including NULL), quoted identifiers,
+column sorting followed by primary-key tie breakers. Tables without a primary
+key sort by all columns; identical duplicate rows are indistinguishable and not
+editable. Paging currently uses bounded OFFSET (maximum 1,000,000), not keyset;
+it may be slower at deep offsets. Concurrent local editor commits can shift page
+boundaries: no snapshot consistency is promised. Every page is labelled as a
+page, never a complete table. Views are read-only. Hidden/generated columns are
+rejected rather than guessed. Schema discovery is itself budgeted and may be limited.

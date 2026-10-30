@@ -119,8 +119,49 @@ pub struct Completion {
     pub transaction: TransactionState,
     pub error: Option<Failure>,
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableColumn {
+    pub name: String,
+    pub declared_type: String,
+    pub not_null: bool,
+    pub primary_key: i64,
+    pub hidden: i64,
+    pub default_sql: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Table {
+    pub name: String,
+    pub columns: Vec<TableColumn>,
+    pub is_table: bool,
+}
+impl Table {
+    pub fn keys(&self) -> Vec<usize> {
+        let mut keys: Vec<_> = self
+            .columns
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.primary_key > 0)
+            .map(|(i, _)| i)
+            .collect();
+        keys.sort_by_key(|i| self.columns[*i].primary_key);
+        keys
+    }
+    pub fn editable(&self) -> bool {
+        self.is_table && !self.keys().is_empty() && self.columns.iter().all(|c| c.hidden == 0)
+    }
+}
+#[derive(Debug, Clone)]
+pub struct Browse {
+    pub table: String,
+    pub offset: usize,
+    pub sort: Option<usize>,
+    pub descending: bool,
+    pub filter: Option<(usize, Value)>,
+}
+
 #[derive(Debug)]
 pub enum EventKind {
+    Table(Table),
     Opened,
     Columns(Vec<Column>),
     Rows(Vec<Vec<Value>>),
