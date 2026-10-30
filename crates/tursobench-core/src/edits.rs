@@ -50,6 +50,37 @@ impl DraftBatch {
             });
         }
     }
+    pub fn revert_cell(&mut self, original: &[Value], column: usize) {
+        for edit in &mut self.edits {
+            if let Edit::Update {
+                original: o,
+                changes,
+            } = edit
+                && o == original
+            {
+                changes.retain(|(i, _)| *i != column);
+            }
+        }
+        self.edits
+            .retain(|e| !matches!(e, Edit::Update { changes, .. } if changes.is_empty()));
+    }
+    pub fn revert_row(&mut self, original: &[Value]) {
+        self.edits.retain(|e| !matches!(e, Edit::Update { original: o, .. } | Edit::Delete { original: o } if o == original));
+    }
+    pub fn displayed(&self, original: &[Value], column: usize) -> Option<&Value> {
+        self.edits.iter().find_map(|e| match e {
+            Edit::Update {
+                original: o,
+                changes,
+            } if o == original => changes.iter().find(|(i, _)| *i == column).map(|(_, v)| v),
+            _ => None,
+        })
+    }
+    pub fn deleted(&self, original: &[Value]) -> bool {
+        self.edits
+            .iter()
+            .any(|e| matches!(e, Edit::Delete { original: o } if o == original))
+    }
     pub fn stage_delete(&mut self, original: Vec<Value>) {
         self.edits.retain(|e| !matches!(e, Edit::Update { original: o, .. } | Edit::Delete { original: o } if *o == original));
         self.edits.push(Edit::Delete { original });
