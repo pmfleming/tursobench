@@ -2105,6 +2105,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "tursobench-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "tursobench-db"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "tokio",
+ "turso",
+ "turso_parser",
+ "tursobench-core",
+]
+
+[[package]]
 name = "twox-hash"
 version = "2.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

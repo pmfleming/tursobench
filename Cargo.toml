@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["tools/engine-spike"]
+members = ["tools/engine-spike", "crates/tursobench-core", "crates/tursobench-db"]
 
 [workspace.package]
 version = "0.1.0"
@@ -9,6 +9,9 @@ license = "MIT"
 rust-version = "1.92"
 
 [workspace.dependencies]
+tursobench-core = { path = "crates/tursobench-core" }
+tursobench-db = { path = "crates/tursobench-db" }
+turso_parser = "=0.8.3"
 turso = { version = "=0.8.3", default-features = false }
 tokio = { version = "1", features = ["rt", "time", "macros"] }
 tempfile = "3"
