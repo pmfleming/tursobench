@@ -159,8 +159,17 @@ impl Table {
         keys.sort_by_key(|i| self.columns[*i].primary_key);
         keys
     }
+    pub fn engine_managed(&self) -> bool {
+        let prefix = "__turso_internal_";
+        self.name
+            .get(..prefix.len())
+            .is_some_and(|name| name.eq_ignore_ascii_case(prefix))
+    }
     pub fn editable(&self) -> bool {
-        self.is_table && !self.keys().is_empty() && self.columns.iter().all(|c| c.hidden == 0)
+        self.is_table
+            && !self.engine_managed()
+            && !self.keys().is_empty()
+            && self.columns.iter().all(|c| c.hidden == 0)
     }
 }
 #[derive(Debug, Clone)]

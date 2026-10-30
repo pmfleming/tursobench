@@ -21,6 +21,7 @@ cp packaging/tursobench.svg "$stage/share/icons/hicolor/scalable/apps/"
 cp README.md LICENSE Cargo.lock rust-toolchain.toml "$stage/docs/"
 cp -R docs contracts "$stage/docs/"
 python3 scripts/license-notices.py "$stage/docs/third-party"
+cp vendor/README.md "$stage/docs/third-party/VENDOR-PATCHES.md"
 # Fixed ordering, owner and timestamps make the archive deterministic for the same binary.
 tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner -C target/package -cf - "$name" | gzip -n > "target/$name.tar.gz"
 (cd target && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")

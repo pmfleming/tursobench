@@ -5,15 +5,18 @@ Network maintenance tool, not needed to build/run TursoBench. Review its diff.
 import hashlib
 import json
 import pathlib
+import sys
 import urllib.request
 
 root = pathlib.Path(__file__).resolve().parents[1]
 packages = json.loads(__import__('subprocess').check_output(['cargo', 'metadata', '--locked', '--format-version', '1']))['packages']
-missing = (root / 'target/package/tursobench-0.1.0-preview-linux-x86_64/docs/third-party/MISSING-LICENSE-TEXTS.txt').read_text().splitlines()
+report = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else root / 'target/package/tursobench-0.1.0-preview-linux-x86_64/docs/third-party/MISSING-LICENSE-TEXTS.txt'
+missing = report.read_text().splitlines()
 output = root / 'third-party/license-supplements'
 output.mkdir(parents=True, exist_ok=True)
 cache = {}
-index = {}
+index_path = output / 'sources.json'
+index = json.loads(index_path.read_text()) if index_path.exists() else {}
 for package in packages:
     name = f'{package["name"]}-{package["version"]}'
     if name not in missing:
@@ -49,4 +52,4 @@ for package in packages:
     except Exception as error:
         print(f'{name}: {error}')
 (output / 'sources.json').write_text(json.dumps(index, indent=2, sort_keys=True) + '\n')
-print(f'Supplements for {len(index)}/{len(missing)} missing packages; review third-party/license-supplements')
+print(f'Supplements available for {sum(name in index for name in missing)}/{len(missing)} requested packages; review third-party/license-supplements')

@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["tools/engine-spike", "crates/tursobench-core", "crates/tursobench-db", "crates/tursobench-ui"]
+exclude = ["vendor/tantivy-sstable"]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,11 +14,15 @@ tursobench-core = { path = "crates/tursobench-core" }
 tursobench-db = { path = "crates/tursobench-db" }
 turso_parser = "=0.8.3"
 eframe = { version = "=0.36.2", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
-turso = { version = "=0.8.3", default-features = false }
+turso = { version = "=0.8.3", default-features = false, features = ["fts"] }
 tokio = { version = "1", features = ["rt", "time", "macros"] }
 tempfile = "3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[patch.crates-io]
+# Turso's Tantivy dependency otherwise constrains zstd to a vulnerable 0.13 release.
+tantivy-sstable = { path = "vendor/tantivy-sstable" }
 
 [profile.dev]
 debug = 0

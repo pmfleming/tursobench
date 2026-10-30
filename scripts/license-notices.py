@@ -20,7 +20,7 @@ supplements = json.loads((supplement_root / "sources.json").read_text())
 missing = []
 inventory = ["# Third-party dependency inventory", "", "Generated from Cargo.lock. Includes some build/test dependencies.", ""]
 for package in sorted(metadata["packages"], key=lambda p: (p["name"], p["version"])):
-    if package["id"] not in resolved or package["source"] is None:
+    if package["id"] not in resolved or package["id"] in metadata["workspace_members"]:
         continue
     name = f'{package["name"]}-{package["version"]}'
     inventory.append(f'- {name}: {package["license"] or "SEE LICENSE FILE"}; {package["repository"] or ""}')

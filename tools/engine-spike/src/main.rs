@@ -5,6 +5,10 @@ use std::{
 };
 use turso::{Builder, Connection, Value, params_from_iter};
 
+fn local(path: &str) -> Builder {
+    Builder::new_local(path).experimental_index_method(true)
+}
+
 async fn scalar(c: &Connection, sql: &str) -> turso::Result<Value> {
     let mut r = c.query(sql, ()).await?;
     let value = r.next().await?.unwrap().get_value(0)?;
@@ -16,7 +20,7 @@ async fn scalar(c: &Connection, sql: &str) -> turso::Result<Value> {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().collect();
     if args.get(1).is_some_and(|a| a == "--child") {
-        let db = Builder::new_local(&args[2])
+        let db = local(&args[2])
             .read_only(true)
             .experimental_multiprocess_wal(args[3] == "true")
             .build()
@@ -38,7 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("probe.db");
     let p = path.to_str().unwrap();
-    let db = Builder::new_local(p).build().await?;
+    let db = local(p).build().await?;
     let mut c = db.connect()?;
     c.busy_timeout(Duration::from_millis(50))?;
     c.execute(
@@ -69,6 +73,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     assert_eq!(s.column_count(), 4);
     println!("typed values, bindings, RETURNING, empty CTE metadata: passed");
+    c.execute(
+        "CREATE TABLE fts_probe(id INTEGER PRIMARY KEY, body TEXT NOT NULL)",
+        (),
+    )
+    .await?;
+    c.execute("CREATE INDEX probe_fts ON fts_probe USING fts(body)", ())
+        .await?;
+    c.execute("INSERT INTO fts_probe VALUES(1,'native search probe')", ())
+        .await?;
+    assert_eq!(
+        scalar(
+            &c,
+            "SELECT count(*) FROM fts_probe WHERE fts_match(body,'native')"
+        )
+        .await?,
+        Value::Integer(1)
+    );
+    println!("native FTS + experimental index methods: creation/search passed");
     for pragma in [
         "PRAGMA table_xinfo('sample')",
         "PRAGMA table_info('sample')",
@@ -147,7 +169,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     drop(db);
     let before = std::fs::read(&path)?;
     let wal_before = std::fs::read(format!("{p}-wal")).ok();
-    let ro = Builder::new_local(p).read_only(true).build().await?;
+    let ro = local(p).read_only(true).build().await?;
     let c = ro.connect()?;
     assert_eq!(
         scalar(&c, "SELECT count(*) FROM sample").await?,
@@ -158,14 +180,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await
             .is_err()
     );
+    assert_eq!(
+        scalar(
+            &c,
+            "SELECT count(*) FROM fts_probe WHERE fts_match(body,'native')"
+        )
+        .await?,
+        Value::Integer(1)
+    );
     drop(c);
     drop(ro);
     assert_eq!(before, std::fs::read(&path)?);
     assert_eq!(wal_before, std::fs::read(format!("{p}-wal")).ok());
-    println!("read-only reopen, write rejection, main/WAL byte preservation: passed");
+    println!("read-only FTS database reopen, write rejection, main/WAL byte preservation: passed");
     let missing = dir.path().join("missing.db");
     assert!(
-        Builder::new_local(missing.to_str().unwrap())
+        local(missing.to_str().unwrap())
             .read_only(true)
             .build()
             .await
@@ -176,7 +206,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::write(&corrupt, vec![0x42; 8192])?;
     println!(
         "corrupt open: {:?}",
-        Builder::new_local(corrupt.to_str().unwrap())
+        local(corrupt.to_str().unwrap())
             .read_only(true)
             .build()
             .await
@@ -187,14 +217,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000))?;
         println!(
             "permission denied: {:?}",
-            Builder::new_local(p).read_only(true).build().await
+            local(p).read_only(true).build().await
         );
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
     }
     let sqlite = dir.path().join("sqlite.db");
     let output = Command::new("python3").args(["-c", "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('CREATE TABLE sample(id INTEGER PRIMARY KEY, t TEXT)'); c.execute(\"INSERT INTO sample VALUES (1, 'sqlite fixture')\"); c.commit(); c.close()", sqlite.to_str().unwrap()]).output()?;
     assert!(output.status.success());
-    let db = Builder::new_local(sqlite.to_str().unwrap())
+    let db = local(sqlite.to_str().unwrap())
         .read_only(true)
         .build()
         .await?;

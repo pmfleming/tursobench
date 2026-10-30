@@ -250,6 +250,9 @@ async fn open(
         .to_str()
         .ok_or_else(|| Failure::input("Non-UTF8 paths are not supported by Turso's builder"))?;
     let db = Builder::new_local(path)
+        // Turso's native FTS indexes require both the Cargo `fts` feature and
+        // index-method capability when opening existing files or creating indexes.
+        .experimental_index_method(true)
         .read_only(access == Access::ReadOnly)
         .build()
         .await

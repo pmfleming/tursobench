@@ -30,6 +30,23 @@
       "url": "https://raw.githubusercontent.com/aretta-ai/aristo/b6f9585a26a5ff2064134143aa10c813d2795546/LICENSE"
     }
   ],
+  "datasketches-0.2.0": [
+    {
+      "file": "apache--datasketches-rust-fdb38b85d22e/LICENSE",
+      "sha256": "2a93522cc3e0d15510a70e0e7aaf33dc6a1588c39ca4a5c60c4b0121ed25eaf4",
+      "url": "https://raw.githubusercontent.com/apache/datasketches-rust/fdb38b85d22e6549ab283bf3b9b133659267d19f/LICENSE"
+    },
+    {
+      "file": "apache--datasketches-rust-fdb38b85d22e/NOTICE",
+      "sha256": "624b424b930d7ce49f8856323c6aa5ffbcaa71a474d60bf8f60852f8aa20bcfa",
+      "url": "https://raw.githubusercontent.com/apache/datasketches-rust/fdb38b85d22e6549ab283bf3b9b133659267d19f/NOTICE"
+    },
+    {
+      "file": "apache--datasketches-rust-fdb38b85d22e/licenserc.toml",
+      "sha256": "3d863c5f06a917b5c9dd3b7023d912bad46f68e3121ea309aa79390fbcf16d0b",
+      "url": "https://raw.githubusercontent.com/apache/datasketches-rust/fdb38b85d22e6549ab283bf3b9b133659267d19f/licenserc.toml"
+    }
+  ],
   "ecolor-0.36.2": [
     {
       "file": "emilk--egui-49682f8baa05/LICENSE-APACHE",
@@ -152,6 +169,13 @@
       "url": "https://raw.githubusercontent.com/brendanzab/gl-rs/f150967b1c44ae888e6676f93f639ebc82771bdc/LICENSE"
     }
   ],
+  "ownedbytes-0.9.0": [
+    {
+      "file": "quickwit-oss--tantivy-c6e77d27c605/LICENSE",
+      "sha256": "acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a",
+      "url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/c6e77d27c605cb3cea1a933fa7d68632aeb7865e/LICENSE"
+    }
+  ],
   "profiling-1.0.18": [
     {
       "file": "aclysma--profiling-8271551172eb/LICENSE-APACHE",
@@ -169,6 +193,48 @@
       "file": "ashvardanian--SimSIMD-fb7cbdda3d18/LICENSE",
       "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
       "url": "https://raw.githubusercontent.com/ashvardanian/SimSIMD/fb7cbdda3d187e4875cef71f2d16c1b739bff38f/LICENSE"
+    }
+  ],
+  "tantivy-bitpacker-0.10.0": [
+    {
+      "file": "quickwit-oss--tantivy-9e63fc508153/LICENSE",
+      "sha256": "acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a",
+      "url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/9e63fc508153ef770f9ff980c8fa2f11e8e2e6db/LICENSE"
+    }
+  ],
+  "tantivy-columnar-0.7.0": [
+    {
+      "file": "quickwit-oss--tantivy-9e63fc508153/LICENSE",
+      "sha256": "acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a",
+      "url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/9e63fc508153ef770f9ff980c8fa2f11e8e2e6db/LICENSE"
+    }
+  ],
+  "tantivy-common-0.11.0": [
+    {
+      "file": "quickwit-oss--tantivy-9e63fc508153/LICENSE",
+      "sha256": "acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a",
+      "url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/9e63fc508153ef770f9ff980c8fa2f11e8e2e6db/LICENSE"
+    }
+  ],
+  "tantivy-query-grammar-0.26.0": [
+    {
+      "file": "quickwit-oss--tantivy-9e63fc508153/LICENSE",
+      "sha256": "acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a",
+      "url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/9e63fc508153ef770f9ff980c8fa2f11e8e2e6db/LICENSE"
+    }
+  ],
+  "tantivy-stacker-0.7.0": [
+    {
+      "file": "quickwit-oss--tantivy-9e63fc508153/LICENSE",
+      "sha256": "acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a",
+      "url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/9e63fc508153ef770f9ff980c8fa2f11e8e2e6db/LICENSE"
+    }
+  ],
+  "tantivy-tokenizer-api-0.7.0": [
+    {
+      "file": "quickwit-oss--tantivy-9e63fc508153/LICENSE",
+      "sha256": "acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a",
+      "url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/9e63fc508153ef770f9ff980c8fa2f11e8e2e6db/LICENSE"
     }
   ],
   "turso-0.8.3": [
