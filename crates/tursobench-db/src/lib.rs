@@ -1,5 +1,6 @@
 //! Turso-only session worker. No engine handles cross the service boundary.
 mod browse;
+mod edits;
 use browse::{browse_sql, describe};
 use std::{
     path::PathBuf,
@@ -25,6 +26,7 @@ pub enum Operation {
     },
     Schema,
     Browse(Browse),
+    CommitEdits(DraftBatch),
     Close,
 }
 pub struct Request {
@@ -289,6 +291,7 @@ async fn worker(id: u64, path: PathBuf, access: Access, rx: Receiver<Request>, o
     if !output.send(ticket, EventKind::Opened) {
         return;
     }
+    let mut uncertain_edit = false;
     while !output.closing.load(Ordering::Acquire) {
         let request = match rx.recv_timeout(Duration::from_millis(25)) {
             Ok(r) => r,
@@ -297,6 +300,15 @@ async fn worker(id: u64, path: PathBuf, access: Access, rx: Receiver<Request>, o
         };
         match request.operation {
             Operation::Close => break,
+            Operation::CommitEdits(batch) => {
+                let outcome = if uncertain_edit {
+                    CommitOutcome::Unknown(Failure { kind: ErrorKind::Unknown, message: "A previous edit commit has an uncertain outcome; close and inspect before retrying".into() })
+                } else {
+                    edits::commit(&_db, access, batch).await
+                };
+                uncertain_edit |= matches!(outcome, CommitOutcome::Unknown(_));
+                output.send(request.ticket, EventKind::EditsCommitted(outcome));
+            }
             Operation::Browse(spec) => match describe(&browse, &spec.table).await {
                 Ok(table) => match browse_sql(&table, &spec) {
                     Ok((sql, params)) => {

@@ -1,4 +1,6 @@
 //! Engine-independent application data, not a multi-engine abstraction.
+mod edits;
+pub use edits::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -162,6 +164,7 @@ pub struct Browse {
 #[derive(Debug)]
 pub enum EventKind {
     Table(Table),
+    EditsCommitted(CommitOutcome),
     Opened,
     Columns(Vec<Column>),
     Rows(Vec<Vec<Value>>),

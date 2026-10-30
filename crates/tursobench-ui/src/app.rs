@@ -1,3 +1,6 @@
+mod editing;
+#[cfg(test)]
+mod interaction_tests;
 use eframe::egui;
 use tursobench_core::*;
 use tursobench_db::{Operation, Request, Session};
@@ -34,6 +37,15 @@ pub struct App {
     filter_column: usize,
     inspect: Option<(usize, usize)>,
     transaction: TransactionState,
+    drafts: Option<DraftBatch>,
+    cell_json: String,
+    insert_json: String,
+    show_insert: bool,
+    show_preview: bool,
+    commit_ticket: Option<Ticket>,
+    uncertain_edit: bool,
+    #[cfg(test)]
+    first_cell_rect: Option<egui::Rect>,
 }
 impl App {
     pub fn new(_ctx: &egui::Context) -> Self {
@@ -64,6 +76,15 @@ impl App {
             filter_column: 0,
             inspect: None,
             transaction: TransactionState::Autocommit,
+            drafts: None,
+            cell_json: String::new(),
+            insert_json: String::new(),
+            show_insert: false,
+            show_preview: false,
+            commit_ticket: None,
+            uncertain_edit: false,
+            #[cfg(test)]
+            first_cell_rect: None,
         }
     }
     fn open(&mut self, ctx: &egui::Context) {
@@ -84,6 +105,7 @@ impl App {
                 self.table = None;
                 self.browse = None;
                 self.transaction = TransactionState::Autocommit;
+                self.uncertain_edit = false;
                 self.session = Some(s);
                 self.status = "Opening…".into();
                 self.closing = false;
@@ -92,6 +114,11 @@ impl App {
         }
     }
     fn submit(&mut self, operation: Operation, view: View) {
+        if self.has_drafts() || self.commit_ticket.is_some() {
+            self.status =
+                "Commit or discard staged edits before navigating or executing SQL".into();
+            return;
+        }
         let Some(s) = &self.session else {
             return;
         };
@@ -116,6 +143,10 @@ impl App {
         }
     }
     fn run_sql(&mut self) {
+        if self.has_drafts() || self.commit_ticket.is_some() {
+            self.status = "Commit or discard drafts first".into();
+            return;
+        }
         match serde_json::from_str::<Vec<Value>>(&self.params) {
             Ok(parameters) => {
                 self.table = None;
@@ -133,6 +164,10 @@ impl App {
         }
     }
     fn browse_table(&mut self, name: String) {
+        if self.has_drafts() || self.commit_ticket.is_some() {
+            self.status = "Commit or discard drafts first".into();
+            return;
+        }
         self.table = None;
         self.browse = Some(Browse {
             table: name,
@@ -189,6 +224,28 @@ impl App {
                 continue;
             }
             match event.kind {
+                EventKind::EditsCommitted(outcome) if self.commit_ticket == Some(event.ticket) => {
+                    self.commit_ticket = None;
+                    match outcome {
+                        CommitOutcome::Committed { operations } => {
+                            self.drafts = None;
+                            self.show_preview = false;
+                            self.inspect = None;
+                            self.reload();
+                            self.status = format!(
+                                "Committed {operations} staged operations; refreshing page"
+                            );
+                        }
+                        CommitOutcome::Rejected(e) => {
+                            self.status = format!("No edits committed; drafts retained: {e}")
+                        }
+                        CommitOutcome::Unknown(e) => {
+                            self.uncertain_edit = true;
+                            self.status =
+                                format!("UNKNOWN outcome; drafts retained. Do not retry: {e}");
+                        }
+                    }
+                }
                 EventKind::Opened => {
                     self.ready = true;
                     self.submit(Operation::Schema, View::Schema);
@@ -271,6 +328,10 @@ impl App {
         }
     }
     fn request_close(&mut self) {
+        if self.commit_ticket.is_some() {
+            self.status = "Wait for the staged commit outcome before closing".into();
+            return;
+        }
         if self.writable && !self.closing {
             self.confirm_close = true;
         } else {
@@ -279,6 +340,9 @@ impl App {
     }
     fn close(&mut self) {
         self.confirm_close = false;
+        self.drafts = None;
+        self.show_preview = false;
+        self.show_insert = false;
         if let Some(s) = &self.session {
             s.close();
             self.closing = true;
@@ -388,15 +452,17 @@ impl App {
             });
             ui.separator();
             if self.view == View::Browse { self.browse_controls(ui); }
+            self.edit_controls(ui);
             self.grid(ui);
         });
         if self.confirm_close {
             egui::Window::new("Close writable database?").collapsible(false).show(&ctx, |ui| {
-                ui.label("Active execution will finish. Any remaining editor transaction will be explicitly rolled back. Discard does not undo committed writes.");
+                ui.label("Local drafts will be discarded. Active execution will finish. Any remaining editor transaction will be explicitly rolled back. This does not undo committed writes.");
                 if ui.button("Wait, roll back transaction, and close").clicked() { self.close(); }
                 if ui.button("Keep open").clicked() { self.confirm_close = false; self.quit = false; }
             });
         }
+        self.edit_windows(&ctx);
         if let Some((row, col)) = self.inspect {
             let mut open = true;
             egui::Window::new("Cell inspector — typed value")
@@ -411,7 +477,17 @@ impl App {
                                     .desired_width(600.0),
                             );
                         });
-                        ui.small("Read-only inspector. Blob bytes and NULL retain their types.");
+                        ui.small("Blob bytes and NULL retain their types.");
+                        if self.can_edit() {
+                            ui.label("Replacement typed JSON:");
+                            ui.text_edit_multiline(&mut self.cell_json);
+                            if ui.button("Stage cell (no database write)").clicked() {
+                                self.stage_cell(row, col);
+                            }
+                            if ui.button("Stage row deletion").clicked() {
+                                self.stage_delete(row);
+                            }
+                        }
                     }
                 });
             if !open {
@@ -420,6 +496,10 @@ impl App {
         }
     }
     fn browse_controls(&mut self, ui: &mut egui::Ui) {
+        if self.has_drafts() || self.commit_ticket.is_some() {
+            ui.label("Commit or discard drafts before changing pages, sort, or filters.");
+            return;
+        }
         let Some(browse) = self.browse.clone() else {
             return;
         };
@@ -490,6 +570,8 @@ impl App {
                         .add_sized([180.0, 24.0], egui::Button::new(&c.name))
                         .clicked()
                         && self.view == View::Browse
+                        && !self.has_drafts()
+                        && self.commit_ticket.is_none()
                     {
                         if let Some(b) = self.browse.as_mut() {
                             b.descending = b.sort == Some(i) && !b.descending;
@@ -508,14 +590,18 @@ impl App {
                     for row in range {
                         ui.horizontal(|ui| {
                             for (col, value) in self.result.rows[row].iter().enumerate() {
-                                if ui
-                                    .add_sized(
-                                        [180.0, 24.0],
-                                        egui::Button::new(value.preview()).truncate(),
-                                    )
-                                    .clicked()
-                                {
+                                let response = ui.add_sized(
+                                    [180.0, 24.0],
+                                    egui::Button::new(value.preview()).truncate(),
+                                );
+                                #[cfg(test)]
+                                if row == 0 && col == 0 {
+                                    self.first_cell_rect = Some(response.rect);
+                                }
+                                if response.clicked() {
                                     self.inspect = Some((row, col));
+                                    self.cell_json =
+                                        serde_json::to_string_pretty(value).unwrap_or_default();
                                 }
                             }
                         });
