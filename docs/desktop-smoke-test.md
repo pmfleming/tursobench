@@ -6,6 +6,12 @@ closed disposable fixture. The engine spike generates its own temporary fixtures
 for a retained fixture use `python3 tests/fixtures/generate.py /tmp/sample.db`.
 
 1. Confirm Open is disabled until exclusive-use acknowledgement is checked.
+   The chooser should show cached/recent files immediately and append startup
+   discoveries while remaining responsive. Filter by name/path; Ctrl+O returns to
+   the chooser. Browse remains available during search. Stop, refresh, add a
+   search folder and exclude one. Restart to check cached entries, successful-open
+   history and the startup toggle. Changing roots must not change the selected
+   database or acknowledge exclusive access.
 2. Choose an existing file or type its path; changing the path must restore
    read-only mode and clear the exclusive-use acknowledgement. Confirm it and open.
    Cancel the picker: keep the previous path and show a no-selection message.
@@ -30,6 +36,7 @@ the native-metadata diagram without replacing the retained table page. With Nix:
 ```sh
 nix develop -c cargo build --locked -p tursobench-ui
 nix develop -c bash scripts/desktop-smoke.sh
+nix develop -c bash scripts/discovery-smoke.sh
 ```
 
 For writes, reopen a disposable file with read/write enabled. BEGIN, change a row,

@@ -50,6 +50,7 @@ are unsupported. The exclusive-use checkbox is an acknowledgement, not an OS loc
 
 ## Features
 
+- Startup database discovery with cached/recent files, a filterable chooser, search-folder controls and native file browsing. See [discovery behavior and limits](docs/database-discovery.md).
 - Responsive dark/light workspaces, activity rail and docked/pop-out inspector for laptops and widescreens.
 - Engine-enforced read-only opening by default; read/write is explicit opt-in.
 - Searchable schema/DDL, native index/FK details, related-row navigation and read-only diagnostics.
@@ -115,6 +116,7 @@ cargo test --workspace --locked
 cargo run --locked -p engine-spike
 cargo build --locked -p tursobench-ui
 bash scripts/desktop-smoke.sh  # requires Python 3, xvfb-run, timeout and Mesa
+bash scripts/discovery-smoke.sh  # startup scan with an isolated home and disposable files
 bash scripts/local-project-smoke.sh  # exact local-project schemas; synthetic data only
 bash scripts/package-linux.sh
 ```

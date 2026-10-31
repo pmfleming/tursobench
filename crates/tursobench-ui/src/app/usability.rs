@@ -158,8 +158,12 @@ impl App {
                     self.status = "Saving application-owned preferences…".into();
                 }
                 ui.separator();
-                egui::CollapsingHeader::new("Database discovery")
-                    .show(ui, |ui| self.discovery_settings_ui(ui));
+                egui::CollapsingHeader::new("Database discovery").show(ui, |ui| {
+                    self.discovery_settings_ui(ui);
+                    if let Some(message) = &self.databases.message {
+                        ui.label(message);
+                    }
+                });
             });
         }
         if ui.button("Keyboard / safety help · F1").clicked() {

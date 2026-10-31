@@ -22,6 +22,19 @@ worker with coalescing. This is best-effort convenience storage, not durable dra
 recovery; abrupt process shutdown can lose the most recent preference change.
 Invalid/oversized preferences produce a visible error and safe defaults.
 
+The `discovery` preference stores the startup toggle, added search folders,
+exclusions, recent successful opens (absolute path and last-open time), and cached
+candidates (absolute path, size and optional modification time). Limits are 32
+search folders / 32 KiB, 64 exclusions / 32 KiB, 50 recent files / 64 KiB and 200
+cached candidates / 256 KiB, with 4096 bytes per path. Paths are normalized
+lexically, without filesystem access; non-UTF-8 paths are not persisted. Older
+preferences default to startup discovery enabled. Cached headers are rechecked;
+modification times and directory timestamps are never proof of validity. Use
+**Forget** in the chooser to remove an individual saved path; a future scan can
+rediscover it. Excluded folders disappear from the chooser and cached candidates.
+Successful opens are recorded only after the engine reports Opened, never on
+selection or failed open. See [database discovery](database-discovery.md).
+
 ## Typed JSONL v1
 
 Export streams the **already retained engine result**, not local staged overlays,

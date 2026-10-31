@@ -35,7 +35,8 @@ The later [responsive UI redesign](ui-redesign.md) reorganizes these capabilitie
 into activity-rail panels, SQL/Data/Diagram modes and a docked inspector. The modes
 share one editor and retained result; execution shortcuts apply in SQL mode only.
 
-- **F1** opens help; **Ctrl+O** chooses a file; **Ctrl+T** changes theme.
+- **F1** opens help; **Ctrl+O** opens the database chooser; **Ctrl+T** changes theme.
+  The chooser lists local discoveries and recent files before offering native file browsing.
 - **Ctrl+Enter / F5** runs the whole editor only if it contains one statement.
 - **Ctrl+Shift+Enter** runs one selected statement, or the statement at the cursor.
   Statement boundaries come from Turso's parser, including quoted semicolons and
