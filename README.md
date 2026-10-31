@@ -50,7 +50,7 @@ are unsupported. The exclusive-use checkbox is an acknowledgement, not an OS loc
 
 ## Features
 
-- Startup database discovery with cached/recent files, a filterable chooser, search-folder controls and native file browsing. See [discovery behavior and limits](docs/database-discovery.md).
+- Startup database discovery with cached/recent files, a Shelllist-style keyboard chooser, a folder icon inside search, and search-folder controls. See [discovery behavior and limits](docs/database-discovery.md).
 - Responsive dark/light workspaces, activity rail and docked/pop-out inspector for laptops and widescreens.
 - Engine-enforced read-only opening by default; read/write is explicit opt-in.
 - Searchable schema/DDL, native index/FK details, related-row navigation and read-only diagnostics.

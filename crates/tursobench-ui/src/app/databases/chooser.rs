@@ -252,7 +252,8 @@ impl App {
             ui.small("Use the folder icon to browse for a database.");
             ui.add_space(16.0);
         } else {
-            let height = (ui.available_height() - 220.0).clamp(128.0, 320.0);
+            let reserve = if self.path.is_empty() { 110.0 } else { 280.0 };
+            let height = (ui.available_height() - reserve).clamp(96.0, 360.0);
             let stride = ROW_HEIGHT + ui.spacing().item_spacing.y;
             let mut scroll = egui::ScrollArea::vertical()
                 .id_salt("database-candidates")
@@ -281,15 +282,8 @@ impl App {
                         egui::vec2(ui.available_width(), ROW_HEIGHT),
                         egui::Sense::hover(),
                     );
-                    let response = ui.interact(
-                        rect,
-                        ui.id().with(&entry.path),
-                        if available {
-                            egui::Sense::click()
-                        } else {
-                            egui::Sense::hover()
-                        },
-                    );
+                    let response =
+                        ui.interact(rect, ui.id().with(&entry.path), egui::Sense::click());
                     response.widget_info(|| {
                         egui::WidgetInfo::selected(
                             egui::WidgetType::SelectableLabel,
@@ -368,7 +362,7 @@ impl App {
                     {
                         self.databases.row_rects.push((entry.path.clone(), rect));
                     }
-                    if response.clicked() {
+                    if response.clicked() && available {
                         selected = Some(entry.path.clone());
                     }
                     response.context_menu(|ui| {
@@ -420,7 +414,7 @@ impl App {
                 ));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.small("↑ ↓ to choose · Enter to select");
+                ui.small("Up/Down to choose · Enter to select");
             });
         });
         if let Some(message) = &self.databases.message {

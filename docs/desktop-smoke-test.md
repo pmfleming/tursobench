@@ -5,10 +5,14 @@ session (NixOS: `nix-shell --run 'cargo run --locked -p tursobench-ui'`). Use on
 closed disposable fixture. The engine spike generates its own temporary fixtures;
 for a retained fixture use `python3 tests/fixtures/generate.py /tmp/sample.db`.
 
-1. Confirm Open is disabled until exclusive-use acknowledgement is checked.
+1. Select a database and confirm Open is disabled until exclusive-use acknowledgement is checked.
    The chooser should show cached/recent files immediately and append startup
    discoveries while remaining responsive. Filter by name/path; Ctrl+O returns to
-   the chooser. Browse remains available during search. Stop, refresh, add a
+   the chooser. Down enters results, Up/Down moves the marker and Up from the
+   first result returns to search. Enter selects the file for review; typing from
+   results resumes search at the retained cursor. PageDown reveals later rows.
+   The folder icon inside search (also Alt+Enter) opens the native file dialog
+   and remains available during discovery. In Search options, stop, refresh, add a
    search folder and exclude one. Restart to check cached entries, successful-open
    history and the startup toggle. Changing roots must not change the selected
    database or acknowledge exclusive access.

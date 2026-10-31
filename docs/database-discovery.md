@@ -4,8 +4,18 @@ TursoBench starts one background search when the application launches. The Open
 database screen immediately shows remembered files, then appends new candidates
 without changing the selected path, access mode, keyboard focus or scroll
 position. Recent successful opens appear first on the next launch. **Ctrl+O**
-returns to this chooser and focuses its name/path filter. **Browse for another
-file…** opens the native file dialog; manual path entry remains available.
+returns to this chooser and focuses its name/path filter. The folder icon inside
+the search field opens the native file dialog; **Alt+Enter** does the same while
+search is focused. Manual entry is available under **Enter a path manually**.
+
+The chooser follows Shelllist's search/list pattern: one rounded search field
+above full-width filename/path rows. Down from search enters the first selectable
+result; Up/Down browses results, skipping unavailable files. Up from the first
+result returns to search. PageUp/PageDown moves through longer lists and reveals
+the highlighted row. Typing or pasting while browsing edits the search at its
+retained cursor/selection. Enter selects the highlighted file for access review;
+clicking a row also selects it. Browsing alone does not replace a command-line or
+previously selected path, and incoming discoveries preserve the highlight.
 
 Selecting a candidate does not connect to it. The existing access review and
 exclusive-use acknowledgement still precede Open. Changing the selected path
@@ -20,13 +30,13 @@ directory, files directly in the home directory, common development folders
 have a five-level recursion limit, recent parents one, application data three,
 and home zero. Launching from home never makes all of home recursive.
 
-**Search folders and exclusions** in the chooser, also available in Settings,
+**Search options** in the chooser, also available as Database discovery in Settings,
 provides a startup toggle, folder picker, typed folder entry and exclusions.
 **Save and search this folder** saves an absolute folder and searches that folder
 immediately, including extensionless files, to five levels. This manual search
 also works when startup discovery is disabled. Use a narrower folder to look
-past an automatic depth or resource limit. **Refresh** reruns the configured
-search. **Stop** requests cancellation; another worker cannot start until the
+past an automatic depth or resource limit. **Refresh databases** reruns the configured
+search. **Stop search** requests cancellation; another worker cannot start until the
 current one finishes. File browsing remains available during a search.
 
 Automatic discovery skips system folders, network/FUSE/unknown filesystems,
@@ -93,8 +103,10 @@ Unit tests use temporary roots and synthetic files, including budgets, ignored
 directories, depth limits, permissions, mount boundaries, symlinks, hard links,
 sidecars, native paths, cancellation and channel backpressure. A real Turso 0.8.3
 fixture is checked byte-for-byte, including sidecars, before and after discovery.
-Headless egui tests exercise filtering, focus, pointer selection, stable result
-order, access resets and native-folder-result routing. Engine lifecycle tests
+Headless egui tests exercise filtering, native search-cursor retention, arrow-key
+and page navigation, scrolling, the folder icon's placement inside the search
+field, pointer selection, stable asynchronous result order, access resets and
+native-folder-result routing. Engine lifecycle tests
 verify successful-open-only history.
 
 `bash scripts/discovery-smoke.sh` runs normal native startup under Xvfb with an

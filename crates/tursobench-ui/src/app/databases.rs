@@ -678,6 +678,31 @@ mod tests {
         assert_eq!(app.databases.list_offset, offset);
         assert!(app.path.is_empty());
     }
+    #[test]
+    fn typing_and_enter_in_one_frame_selects_the_new_filtered_result() {
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx);
+        app.discovery_event(found("/work/agenda.db"));
+        app.discovery_event(found("/work/clipboard.db"));
+        frame(&mut app, &ctx, vec![], 900.0);
+        frame(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::Text("clipboard".into()),
+                egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            900.0,
+        );
+        assert_eq!(app.path, "/work/clipboard.db");
+        assert!(app.session.is_none());
+    }
 
     #[test]
     fn cached_and_recent_entries_are_immediate_unique_and_unverified() {

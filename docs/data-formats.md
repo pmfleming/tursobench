@@ -30,7 +30,7 @@ cached candidates / 256 KiB, with 4096 bytes per path. Paths are normalized
 lexically, without filesystem access; non-UTF-8 paths are not persisted. Older
 preferences default to startup discovery enabled. Cached headers are rechecked;
 modification times and directory timestamps are never proof of validity. Use
-**Forget** in the chooser to remove an individual saved path; a future scan can
+**Forget database** in a row's context menu to remove an individual saved path; a future scan can
 rediscover it. Excluded folders disappear from the chooser and cached candidates.
 Successful opens are recorded only after the engine reports Opened, never on
 selection or failed open. See [database discovery](database-discovery.md).
