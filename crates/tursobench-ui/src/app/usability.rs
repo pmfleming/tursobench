@@ -157,6 +157,9 @@ impl App {
                     self.store.save(&self.preferences);
                     self.status = "Saving application-owned preferences…".into();
                 }
+                ui.separator();
+                egui::CollapsingHeader::new("Database discovery")
+                    .show(ui, |ui| self.discovery_settings_ui(ui));
             });
         }
         if ui.button("Keyboard / safety help · F1").clicked() {

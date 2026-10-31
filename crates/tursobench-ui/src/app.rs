@@ -1,3 +1,4 @@
+mod databases;
 mod diagram;
 mod editing;
 mod editor;
@@ -33,6 +34,7 @@ pub struct App {
     store: crate::storage::Store,
     export_job: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     picker: Option<std::sync::mpsc::Receiver<files::PickResult>>,
+    databases: databases::Chooser,
     discard_ticket: Option<Ticket>,
     exclusive: bool,
     writable: bool,
@@ -75,10 +77,11 @@ impl App {
         crate::appearance::theme(ctx, preferences.dark_mode);
         let args: Vec<_> = std::env::args().collect();
         let smoke = args.get(1).is_some_and(|a| a == "--smoke-test");
-        Self {
+        let mut app = Self {
             tools: tools::Tools::default(),
             ui: shell::UiState::new(ctx),
             smoke: smoke.then(smoke::Smoke::new),
+            databases: databases::Chooser::new(&preferences.discovery),
             preferences,
             store,
             export_job: None,
@@ -122,7 +125,12 @@ impl App {
             uncertain_edit: false,
             #[cfg(test)]
             first_cell_rect: None,
+        };
+        // Tests and desktop smoke runs must never inspect the user's filesystem.
+        if !cfg!(test) && !smoke && app.preferences.discovery.enabled {
+            app.start_discovery(ctx, None);
         }
+        app
     }
     fn open(&mut self, ctx: &egui::Context) {
         if self.picker.is_some() {
@@ -269,6 +277,7 @@ impl App {
             }
         }
         self.poll_picker();
+        self.poll_discovery(ctx);
         let mut events = Vec::new();
         let mut disconnected = false;
         if let Some(s) = &self.session {
@@ -333,6 +342,7 @@ impl App {
                 }
                 EventKind::Opened => {
                     self.ready = true;
+                    self.record_database_open();
                     self.submit(Operation::Schema, View::Schema);
                 }
                 EventKind::Closed { rollback } => {

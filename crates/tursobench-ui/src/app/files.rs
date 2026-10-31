@@ -36,6 +36,16 @@ impl App {
         if self.picker.is_some() || self.session.is_some() {
             return;
         }
+        self.ui.workspace = shell::Workspace::Connect;
+        self.databases.focus_filter = true;
+        ctx.request_repaint();
+    }
+
+    pub(super) fn browse_file(&mut self, ctx: &egui::Context) {
+        if self.picker.is_some() || self.session.is_some() {
+            return;
+        }
+        self.databases.picking_folder = false;
         match start_picker(ctx.clone(), || {
             rfd::FileDialog::new()
                 .set_title("Open existing Turso database")
@@ -53,6 +63,28 @@ impl App {
         }
     }
 
+    pub(super) fn browse_search_folder(&mut self, ctx: &egui::Context) {
+        if self.picker.is_some() || self.databases.job.is_some() {
+            return;
+        }
+        match start_picker(ctx.clone(), || {
+            rfd::FileDialog::new()
+                .set_title("Choose a database search folder")
+                .pick_folder()
+        }) {
+            Ok(rx) => {
+                self.databases.picking_folder = true;
+                self.picker = Some(rx);
+                self.databases.message = Some("Waiting for search folder selection…".into());
+            }
+            Err(error) => {
+                self.databases.message = Some(format!(
+                    "Could not start the folder chooser: {error}. Enter a folder path below."
+                ))
+            }
+        }
+    }
+
     pub(super) fn poll_picker(&mut self) {
         let Some(rx) = &self.picker else {
             return;
@@ -65,6 +97,20 @@ impl App {
             }
         };
         self.picker = None;
+        if std::mem::take(&mut self.databases.picking_folder) {
+            match result {
+                Ok(Some(path)) => self.add_search_folder(path),
+                Ok(None) => {
+                    self.databases.message =
+                        Some("No search folder selected. You can enter a folder path below.".into())
+                }
+                Err(error) => {
+                    self.databases.message =
+                        Some(format!("Could not choose a search folder: {error}"))
+                }
+            }
+            return;
+        }
         match result {
             Ok(Some(path)) if self.session.is_none() => {
                 if let Some(path) = path.to_str() {
