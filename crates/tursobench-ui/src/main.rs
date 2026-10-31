@@ -1,5 +1,6 @@
 mod app;
 mod appearance;
+mod discovery;
 mod export;
 #[cfg(test)]
 #[path = "../../tursobench-db/tests/common/local_fixtures.rs"]
