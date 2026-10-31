@@ -349,21 +349,51 @@ impl App {
         self.inspector_windows(&ctx);
     }
     fn connect_ui(&mut self, ui: &mut egui::Ui) {
-        egui::ScrollArea::vertical().show(ui,|ui|{
-            ui.heading("Open a Turso database");ui.label("Trusted local files only. Open never creates a database.");ui.add_space(12.0);
+        egui::ScrollArea::vertical().id_salt("database-connection").show(ui, |ui| {
+            ui.set_max_width(840.0);
+            ui.heading("Open database");
+            ui.add_space(12.0);
             self.database_chooser_ui(ui);
-            ui.label("Existing database file");
-            let mut path = self.path.clone();
-            if ui.add(egui::TextEdit::singleline(&mut path).id(egui::Id::new("database-path")).desired_width(ui.available_width().min(700.0)).hint_text("/path/to/existing.db")).changed() {
-                self.set_database_path(path);
+            if self.path.is_empty() {
+                egui::CollapsingHeader::new("Enter a path manually").show(ui, |ui| self.database_path_ui(ui));
+            } else {
+                ui.separator();
+                ui.label("Selected database");
+                self.database_path_ui(ui);
+                ui.add_space(8.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.selectable_value(&mut self.writable, false, "Read only");
+                    ui.selectable_value(&mut self.writable, true, "Read and write");
+                });
+                if self.writable {
+                    ui.colored_label(ui.visuals().warn_fg_color, "Back up closed files with all required WAL state before trying writes.");
+                }
+                ui.checkbox(&mut self.exclusive, "No other application has this database open");
+                ui.small("Exclusive use is required. This acknowledgement is not an OS lock.");
+                if ui.add_enabled(self.picker.is_none() && self.exclusive && !self.has_drafts(), egui::Button::new("Open database")).clicked() {
+                    self.open(ui.ctx());
+                }
             }
-            ui.add_space(12.0);ui.horizontal_wrapped(|ui|{ui.selectable_value(&mut self.writable,false,"Read only — engine enforced");ui.selectable_value(&mut self.writable,true,"Read and write — explicit opt-in");});
-            if self.writable{ui.colored_label(ui.visuals().warn_fg_color,"Back up closed files with all required WAL state before trying writes.");}
-            ui.checkbox(&mut self.exclusive,"I confirm no other application has this file open (including SQLite tools)");ui.small("This acknowledgement is not an OS lock. Live multiprocess use is unsupported.");
-            if ui.add_enabled(self.picker.is_none()&&self.exclusive&&!self.path.is_empty()&&!self.has_drafts(),egui::Button::new("Open database")).clicked(){self.open(ui.ctx());}
-            if self.has_drafts(){ui.colored_label(ui.visuals().error_fg_color,"Drafts retained after disconnect. Inspect the uncertain outcome before discarding or retrying.");if ui.button("Review retained drafts…").clicked(){self.show_preview=true;}
-                if ui.button("Discard retained local drafts").clicked(){self.drafts=None;}}
+            if self.has_drafts() {
+                ui.colored_label(ui.visuals().error_fg_color, "Drafts retained after disconnect. Inspect the uncertain outcome before discarding or retrying.");
+                if ui.button("Review retained drafts…").clicked() { self.show_preview = true; }
+                if ui.button("Discard retained local drafts").clicked() { self.drafts = None; }
+            }
         });
+    }
+    fn database_path_ui(&mut self, ui: &mut egui::Ui) {
+        let mut path = self.path.clone();
+        if ui
+            .add(
+                egui::TextEdit::singleline(&mut path)
+                    .id(egui::Id::new("database-path"))
+                    .desired_width(ui.available_width())
+                    .hint_text("/path/to/existing.db"),
+            )
+            .changed()
+        {
+            self.set_database_path(path);
+        }
     }
     fn docked_inspector(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {

@@ -75,7 +75,11 @@ impl App {
         let (store, preferences, load_error) =
             crate::storage::Store::start(move || wake.request_repaint());
         crate::appearance::theme(ctx, preferences.dark_mode);
-        let args: Vec<_> = std::env::args().collect();
+        let args: Vec<_> = if cfg!(test) {
+            vec![]
+        } else {
+            std::env::args().collect()
+        };
         let smoke = args.get(1).is_some_and(|a| a == "--smoke-test");
         let mut app = Self {
             tools: tools::Tools::default(),

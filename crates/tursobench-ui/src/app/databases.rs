@@ -1,4 +1,5 @@
 use super::*;
+mod chooser;
 use crate::{
     discovery::{self, Availability, Event, Job, Request, Root, Summary},
     storage::{CachedDatabase, DiscoveryPreferences, normalized_absolute},
@@ -56,6 +57,10 @@ pub(super) struct Chooser {
     pub job: Option<Job>,
     entries: Vec<Entry>,
     filter: String,
+    highlighted: Option<PathBuf>,
+    navigating: bool,
+    reveal_highlight: bool,
+    list_offset: f32,
     folder_input: String,
     exclude_input: String,
     pub focus_filter: bool,
@@ -69,10 +74,15 @@ pub(super) struct Chooser {
     pub row_rects: Vec<(PathBuf, egui::Rect)>,
     #[cfg(test)]
     pub browse_rect: Option<egui::Rect>,
+    #[cfg(test)]
+    pub search_rect: Option<egui::Rect>,
 }
 impl Chooser {
     pub(super) fn new(prefs: &DiscoveryPreferences) -> Self {
-        let mut chooser = Self::default();
+        let mut chooser = Self {
+            focus_filter: true,
+            ..Default::default()
+        };
         for recent in &prefs.recent {
             chooser.entries.push(Entry {
                 path: recent.path.clone(),
@@ -499,184 +509,6 @@ impl App {
                 Some("Exclusion removed. Refresh to search that location.".into());
         }
     }
-
-    pub(super) fn database_chooser_ui(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            ui.strong("Local databases");
-            if self.databases.job.is_some() {
-                ui.spinner();
-                ui.label(if self.databases.cancelling {
-                    "Stopping search…"
-                } else {
-                    "Searching…"
-                });
-                if ui
-                    .add_enabled(!self.databases.cancelling, egui::Button::new("Stop"))
-                    .clicked()
-                {
-                    self.databases.cancel();
-                }
-            } else if ui
-                .add_enabled(self.picker.is_none(), egui::Button::new("Refresh"))
-                .clicked()
-            {
-                self.start_discovery(ui.ctx(), None);
-            }
-        });
-        let filter = ui.add(
-            egui::TextEdit::singleline(&mut self.databases.filter)
-                .hint_text("Filter databases by name or path… · Ctrl+O")
-                .char_limit(256)
-                .desired_width(ui.available_width().min(700.0)),
-        );
-        if std::mem::take(&mut self.databases.focus_filter) {
-            filter.request_focus();
-        }
-        if let Some(summary) = &self.databases.summary {
-            if let Some(error) = &summary.error {
-                ui.colored_label(ui.visuals().warn_fg_color, error);
-            }
-            ui.small(format!(
-                "{} · {} candidates · {} headers checked · {} entries · {} folders{}{}",
-                if summary.cancelled {
-                    "Search stopped"
-                } else if summary.limited {
-                    "Search limit reached"
-                } else {
-                    "Search finished"
-                },
-                summary.found,
-                summary.probes,
-                summary.entries,
-                summary.directories,
-                if summary.unavailable > 0 {
-                    format!(" · {} locations unavailable", summary.unavailable)
-                } else {
-                    String::new()
-                },
-                if summary.skipped > 0 {
-                    format!(" · {} locations skipped", summary.skipped)
-                } else {
-                    String::new()
-                }
-            ));
-        }
-        if let Some(message) = &self.databases.message {
-            ui.label(message);
-        }
-        let search = self.databases.filter.to_lowercase();
-        let filtered: Vec<_> = self
-            .databases
-            .entries
-            .iter()
-            .filter(|e| e.path.to_string_lossy().to_lowercase().contains(&search))
-            .collect();
-        let mut selected = None;
-        let mut forget = None;
-        #[cfg(test)]
-        {
-            self.databases.row_rects.clear();
-        }
-        if filtered.is_empty() {
-            ui.label(if self.databases.entries.is_empty() {
-                "No database candidates yet. Browse for a file or add a search folder."
-            } else {
-                "No databases match this filter."
-            });
-        } else {
-            egui::ScrollArea::vertical()
-                .id_salt("database-candidates")
-                .max_height(240.0)
-                .auto_shrink([false, true])
-                .show_rows(ui, 80.0, filtered.len(), |ui, range| {
-                    for entry in &filtered[range] {
-                        ui.push_id(&entry.path, |ui| {
-                            ui.set_min_height(80.0);
-                            ui.horizontal(|ui| {
-                                let name = entry
-                                    .path
-                                    .file_name()
-                                    .unwrap_or(entry.path.as_os_str())
-                                    .to_string_lossy();
-                                let response = ui
-                                    .add_enabled(
-                                        self.picker.is_none() && entry.selectable(),
-                                        egui::Button::new(name)
-                                            .selected(Path::new(&self.path) == entry.path)
-                                            .truncate()
-                                            .min_size(egui::vec2(
-                                                (ui.available_width() - 75.0).max(40.0),
-                                                26.0,
-                                            )),
-                                    )
-                                    .on_hover_text(entry.path.to_string_lossy());
-                                #[cfg(test)]
-                                {
-                                    self.databases
-                                        .row_rects
-                                        .push((entry.path.clone(), response.rect));
-                                }
-                                if response.clicked() {
-                                    selected = Some(entry.path.clone());
-                                }
-                                if ui
-                                    .small_button("Forget")
-                                    .on_hover_text(
-                                        "Remove saved path. A later search may find it again.",
-                                    )
-                                    .clicked()
-                                {
-                                    forget = Some(entry.path.clone());
-                                }
-                            });
-                            ui.add(
-                                egui::Label::new(
-                                    entry.path.parent().unwrap_or(&entry.path).to_string_lossy(),
-                                )
-                                .truncate(),
-                            )
-                            .on_hover_text(entry.path.to_string_lossy());
-                            ui.small(format!(
-                                "{}{}{}",
-                                entry.label(),
-                                entry
-                                    .size
-                                    .map(|bytes| format!(" · {} KiB", bytes.div_ceil(1024)))
-                                    .unwrap_or_default(),
-                                if entry.path.to_str().is_none() {
-                                    " · path unsupported by engine"
-                                } else {
-                                    ""
-                                }
-                            ));
-                            ui.add_space(4.0);
-                        });
-                    }
-                });
-        }
-        if let Some(path) = selected {
-            self.select_database(&path);
-        }
-        if let Some(path) = forget {
-            self.forget_database(&path);
-        }
-        ui.small("Candidates share the SQLite file format; the creating engine cannot be identified reliably. Compatibility is checked when opening. Search covers likely folders, not the whole disk.");
-        let browse = ui.add_enabled(
-            self.picker.is_none(),
-            egui::Button::new("Browse for another file…"),
-        );
-        #[cfg(test)]
-        {
-            self.databases.browse_rect = Some(browse.rect);
-        }
-        if browse.clicked() {
-            self.browse_file(ui.ctx());
-        }
-        egui::CollapsingHeader::new("Search folders and exclusions")
-            .id_salt("discovery-settings")
-            .show(ui, |ui| self.discovery_settings_ui(ui));
-        ui.separator();
-    }
 }
 
 #[cfg(test)]
@@ -727,6 +559,124 @@ mod tests {
                 900.0,
             );
         }
+    }
+    fn key(app: &mut App, ctx: &egui::Context, key: egui::Key) {
+        frame(
+            app,
+            ctx,
+            [true, false]
+                .into_iter()
+                .map(|pressed| egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                })
+                .collect(),
+            900.0,
+        );
+    }
+
+    #[test]
+    fn search_and_results_support_shelllist_arrow_keys_and_explicit_selection() {
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx);
+        app.path = "/explicit/database.db".into();
+        app.exclusive = true;
+        app.writable = true;
+        for path in ["/work/a.db", "/work/missing.db", "/work/b.db"] {
+            app.discovery_event(found(path));
+        }
+        app.discovery_event(Event::Checked(
+            "/work/missing.db".into(),
+            Availability::Missing,
+        ));
+        frame(&mut app, &ctx, vec![], 900.0);
+        key(&mut app, &ctx, egui::Key::ArrowUp);
+        assert!(!app.databases.navigating);
+        key(&mut app, &ctx, egui::Key::ArrowDown);
+        assert!(app.databases.navigating);
+        assert_eq!(
+            app.databases.highlighted.as_deref(),
+            Some(Path::new("/work/a.db"))
+        );
+        key(&mut app, &ctx, egui::Key::ArrowDown);
+        assert_eq!(
+            app.databases.highlighted.as_deref(),
+            Some(Path::new("/work/b.db"))
+        );
+        assert_eq!(app.path, "/explicit/database.db");
+        assert!(app.exclusive && app.writable);
+        key(&mut app, &ctx, egui::Key::Enter);
+        assert_eq!(app.path, "/work/b.db");
+        assert!(!app.exclusive && !app.writable);
+        assert!(app.session.is_none() && app.picker.is_none());
+        key(&mut app, &ctx, egui::Key::ArrowUp);
+        assert!(app.databases.navigating);
+        key(&mut app, &ctx, egui::Key::ArrowUp);
+        assert!(!app.databases.navigating);
+        assert!(ctx.memory(|m| m.has_focus(egui::Id::new("database-search"))));
+    }
+
+    #[test]
+    fn typing_from_results_preserves_the_native_search_cursor() {
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx);
+        app.discovery_event(found("/work/agenda.db"));
+        frame(&mut app, &ctx, vec![], 900.0);
+        frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Text("agenda".into())],
+            900.0,
+        );
+        key(&mut app, &ctx, egui::Key::Home);
+        key(&mut app, &ctx, egui::Key::ArrowRight);
+        key(&mut app, &ctx, egui::Key::ArrowDown);
+        assert!(app.databases.navigating);
+        frame(&mut app, &ctx, vec![egui::Event::Text("g".into())], 900.0);
+        assert_eq!(app.databases.filter, "aggenda");
+        assert!(!app.databases.navigating);
+        assert!(app.databases.row_rects.is_empty());
+        key(&mut app, &ctx, egui::Key::ArrowDown);
+        key(&mut app, &ctx, egui::Key::Enter);
+        assert!(app.path.is_empty());
+        assert!(app.session.is_none() && app.picker.is_none());
+    }
+
+    #[test]
+    fn keyboard_navigation_reveals_virtualized_results_and_survives_async_updates() {
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx);
+        for i in 0..100 {
+            app.discovery_event(found(&format!("/work/{i:03}.db")));
+        }
+        frame(&mut app, &ctx, vec![], 900.0);
+        key(&mut app, &ctx, egui::Key::ArrowDown);
+        for _ in 0..6 {
+            key(&mut app, &ctx, egui::Key::PageDown);
+        }
+        assert_eq!(
+            app.databases.highlighted.as_deref(),
+            Some(Path::new("/work/030.db"))
+        );
+        assert!(app.databases.list_offset > 0.0);
+        assert!(
+            app.databases
+                .row_rects
+                .iter()
+                .any(|(p, _)| Some(p) == app.databases.highlighted.as_ref())
+        );
+        let offset = app.databases.list_offset;
+        app.discovery_event(found("/work/arriving.db"));
+        frame(&mut app, &ctx, vec![], 900.0);
+        assert_eq!(
+            app.databases.highlighted.as_deref(),
+            Some(Path::new("/work/030.db"))
+        );
+        assert_eq!(app.databases.list_offset, offset);
+        assert!(app.path.is_empty());
     }
 
     #[test]
@@ -857,7 +807,9 @@ mod tests {
         assert_eq!(app.databases.row_rects.len(), 1);
         let row = app.databases.row_rects[0].1;
         let browse = app.databases.browse_rect.unwrap();
-        assert!(browse.top() > row.bottom());
+        let search = app.databases.search_rect.unwrap();
+        assert!(search.contains_rect(browse));
+        assert!(row.top() > search.bottom());
         click(&mut app, &ctx, row.center());
         assert_eq!(app.path, "/work/agenda.db");
         assert!(!app.exclusive && !app.writable);

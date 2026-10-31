@@ -111,6 +111,7 @@ impl App {
             }
             return;
         }
+        self.databases.focus_filter = true;
         match result {
             Ok(Some(path)) if self.session.is_none() => {
                 if let Some(path) = path.to_str() {
