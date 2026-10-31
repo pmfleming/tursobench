@@ -1,9 +1,128 @@
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
     io::Write,
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, SyncSender, TrySendError},
 };
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CachedDatabase {
+    pub path: PathBuf,
+    pub size: u64,
+    pub modified: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RecentDatabase {
+    pub path: PathBuf,
+    pub last_opened: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DiscoveryPreferences {
+    pub enabled: bool,
+    pub roots: Vec<PathBuf>,
+    pub excluded: Vec<PathBuf>,
+    pub recent: Vec<RecentDatabase>,
+    pub cached: Vec<CachedDatabase>,
+}
+impl Default for DiscoveryPreferences {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            roots: vec![],
+            excluded: vec![],
+            recent: vec![],
+            cached: vec![],
+        }
+    }
+}
+impl DiscoveryPreferences {
+    pub fn record_open(&mut self, path: PathBuf, last_opened: u64) {
+        let Some(path) = normalized_absolute(&path) else {
+            return;
+        };
+        self.recent.retain(|entry| entry.path != path);
+        self.recent.insert(0, RecentDatabase { path, last_opened });
+        self.normalize();
+    }
+    pub fn remember(&mut self, entry: CachedDatabase) {
+        self.cached.retain(|old| old.path != entry.path);
+        self.cached.insert(0, entry);
+        self.normalize();
+    }
+    pub fn normalize(&mut self) {
+        normalize_paths(&mut self.roots, 32, 32 * 1024, false);
+        normalize_paths(&mut self.excluded, 64, 32 * 1024, true);
+        let mut seen = HashSet::new();
+        let mut bytes = 0;
+        self.recent.retain_mut(|entry| {
+            let Some(path) = persistable_path(&entry.path) else {
+                return false;
+            };
+            bytes += path.as_os_str().len();
+            entry.path = path;
+            bytes <= 64 * 1024 && seen.insert(entry.path.clone())
+        });
+        self.recent.truncate(50);
+        seen.clear();
+        bytes = 0;
+        self.cached.retain_mut(|entry| {
+            let Some(path) = persistable_path(&entry.path) else {
+                return false;
+            };
+            bytes += path.as_os_str().len();
+            entry.path = path;
+            bytes <= 256 * 1024 && seen.insert(entry.path.clone())
+        });
+        self.cached.truncate(200);
+    }
+}
+
+/// Lexical normalization only: preferences and UI construction never stat paths
+/// (a path could refer to a sleeping disk or an automount).
+pub fn normalized_absolute(path: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+    if !path.is_absolute() {
+        return None;
+    }
+    let mut result = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !result.pop() {
+                    return None;
+                }
+            }
+            other => result.push(other),
+        }
+    }
+    Some(result)
+}
+fn persistable_path(path: &Path) -> Option<PathBuf> {
+    let normalized = normalized_absolute(path)?;
+    normalized.to_str().filter(|s| s.len() <= 4096)?;
+    Some(normalized)
+}
+fn normalize_paths(paths: &mut Vec<PathBuf>, count: usize, byte_limit: usize, allow_root: bool) {
+    let mut seen = HashSet::new();
+    let mut bytes = 0;
+    paths.retain_mut(|path| {
+        let Some(normalized) = persistable_path(path) else {
+            return false;
+        };
+        if !allow_root && normalized.parent().is_none() {
+            return false;
+        }
+        bytes += normalized.as_os_str().len();
+        *path = normalized;
+        bytes <= byte_limit && seen.insert(path.clone())
+    });
+    paths.truncate(count);
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryEntry {
@@ -31,6 +150,7 @@ pub struct Preferences {
     pub dark_mode: bool,
     pub slow_query_ms: u64,
     pub null_display: String,
+    pub discovery: DiscoveryPreferences,
 }
 impl Default for Preferences {
     fn default() -> Self {
@@ -44,6 +164,7 @@ impl Default for Preferences {
             dark_mode: true,
             slow_query_ms: 500,
             null_display: "NULL".into(),
+            discovery: DiscoveryPreferences::default(),
         }
     }
 }
@@ -92,6 +213,7 @@ impl Preferences {
         }
     }
     pub fn normalize(&mut self) {
+        self.discovery.normalize();
         self.row_limit = self.row_limit.clamp(1, 10_000);
         self.busy_timeout_ms = self.busy_timeout_ms.min(5000);
         self.slow_query_ms = self.slow_query_ms.clamp(1, 60_000);
@@ -220,6 +342,76 @@ fn save(path: &Path, prefs: &Preferences) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn discovery_preferences_migrate_bound_and_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prefs.json");
+        fs_write(
+            &path,
+            r#"{"dark_mode":false,"discovery":{"enabled":false}}"#,
+        );
+        let mut prefs = load(&path).unwrap();
+        assert!(!prefs.discovery.enabled);
+        assert!(prefs.discovery.cached.is_empty());
+        prefs.discovery.roots = vec![
+            "/".into(),
+            "relative".into(),
+            "/home/test/Projects/../Code".into(),
+            "/home/test/Code".into(),
+        ];
+        prefs.discovery.excluded = vec!["/home/test/Code/build".into()];
+        for i in 0..250 {
+            let db = PathBuf::from(format!("/home/test/{i}.db"));
+            prefs.discovery.record_open(db.clone(), i);
+            prefs.discovery.remember(CachedDatabase {
+                path: db,
+                size: 100,
+                modified: Some(i),
+            });
+        }
+        prefs.discovery.record_open("/home/test/249.db".into(), 999);
+        prefs.discovery.record_open("relative.db".into(), 1000);
+        prefs.normalize();
+        assert_eq!(prefs.discovery.recent.len(), 50);
+        assert_eq!(prefs.discovery.cached.len(), 200);
+        assert_eq!(
+            prefs.discovery.roots,
+            vec![PathBuf::from("/home/test/Code")]
+        );
+        assert_eq!(prefs.discovery.recent[0].last_opened, 999);
+        save(&path, &prefs).unwrap();
+        let loaded = load(&path).unwrap();
+        assert_eq!(loaded.discovery.cached, prefs.discovery.cached);
+        assert_eq!(loaded.discovery.recent, prefs.discovery.recent);
+        assert_eq!(loaded.discovery.excluded, prefs.discovery.excluded);
+        fs_write(&path, r#"{"dark_mode":true}"#);
+        assert!(load(&path).unwrap().discovery.enabled);
+    }
+    fn fs_write(path: &Path, text: &str) {
+        std::fs::write(path, text).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discovery_does_not_persist_non_utf8_paths_or_escape_exclusions_with_parent_components() {
+        use std::os::unix::ffi::OsStringExt;
+        let mut prefs = Preferences::default();
+        prefs.discovery.record_open(
+            std::ffi::OsString::from_vec(b"/home/test/odd-\xff.db".to_vec()).into(),
+            1,
+        );
+        prefs
+            .discovery
+            .roots
+            .push("/home/test/Code/../Private".into());
+        prefs.normalize();
+        assert!(prefs.discovery.recent.is_empty());
+        assert_eq!(
+            prefs.discovery.roots,
+            vec![PathBuf::from("/home/test/Private")]
+        );
+        assert!(serde_json::to_vec(&prefs).is_ok());
+    }
     #[test]
     fn bounded_atomic_application_storage() {
         let dir = tempfile::tempdir().unwrap();
