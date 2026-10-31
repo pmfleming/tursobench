@@ -66,12 +66,18 @@ fn failed_open_after_close_can_retry_a_valid_database() {
     }
     assert!(!app.ready && !app.closing && !app.confirm_close);
     assert!(app.active.is_none());
+    assert!(
+        app.preferences.discovery.recent.is_empty(),
+        "failed opens must not enter history"
+    );
 
     app.set_database_path(path.to_str().unwrap().into());
     app.exclusive = true;
     app.open(&ctx);
     wait(&mut app, &ctx);
     assert!(app.schema.iter().any(|table| table.name == "example"));
+    assert_eq!(app.preferences.discovery.recent.len(), 1);
+    assert_eq!(app.preferences.discovery.recent[0].path, path);
     app.close();
     let started = Instant::now();
     while app.session.is_some() {

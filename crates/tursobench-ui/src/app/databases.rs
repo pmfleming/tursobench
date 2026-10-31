@@ -16,6 +16,7 @@ enum State {
     Found,
     Checked(Availability),
 }
+
 struct Entry {
     path: PathBuf,
     state: State,
@@ -25,8 +26,8 @@ struct Entry {
 impl Entry {
     fn label(&self) -> &'static str {
         match (self.state, self.last_opened.is_some()) {
-            (State::Remembered, true) => "Opened before · not checked this launch",
-            (State::Remembered, false) => "Remembered candidate · not checked this launch",
+            (State::Remembered, true) => "Opened before · awaiting header check",
+            (State::Remembered, false) => "Remembered candidate · awaiting header check",
             (State::Found, true) => "Opened before · header checked",
             (State::Found, false) => "Database candidate · header checked",
             (State::Checked(Availability::Missing), _) => "File no longer found",
@@ -574,9 +575,10 @@ impl App {
                 .id_salt("database-candidates")
                 .max_height(240.0)
                 .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    for entry in filtered {
+                .show_rows(ui, 80.0, filtered.len(), |ui, range| {
+                    for entry in &filtered[range] {
                         ui.push_id(&entry.path, |ui| {
+                            ui.set_min_height(80.0);
                             ui.horizontal(|ui| {
                                 let name = entry
                                     .path
@@ -661,5 +663,273 @@ impl App {
             .id_salt("discovery-settings")
             .show(ui, |ui| self.discovery_settings_ui(ui));
         ui.separator();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{discovery::Candidate, storage::RecentDatabase};
+    use std::{
+        sync::mpsc,
+        time::{Duration, Instant},
+    };
+
+    fn found(path: &str) -> Event {
+        Event::Found(Candidate {
+            path: path.into(),
+            size: 4096,
+            modified: Some(1),
+        })
+    }
+    fn frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>, width: f32) {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(width, 900.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| app.database_chooser_ui(ui),
+        );
+        output.textures_delta.clear();
+        assert!(!output.shapes.is_empty());
+    }
+    fn click(app: &mut App, ctx: &egui::Context, position: egui::Pos2) {
+        for pressed in [true, false] {
+            frame(
+                app,
+                ctx,
+                vec![
+                    egui::Event::PointerMoved(position),
+                    egui::Event::PointerButton {
+                        pos: position,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                900.0,
+            );
+        }
+    }
+
+    #[test]
+    fn cached_and_recent_entries_are_immediate_unique_and_unverified() {
+        let mut prefs = DiscoveryPreferences::default();
+        prefs.record_open("/work/recent.db".into(), 10);
+        prefs.remember(CachedDatabase {
+            path: "/work/recent.db".into(),
+            size: 100,
+            modified: None,
+        });
+        prefs.remember(CachedDatabase {
+            path: "/work/other.db".into(),
+            size: 200,
+            modified: None,
+        });
+        prefs.remember(CachedDatabase {
+            path: "/private/hidden.db".into(),
+            size: 200,
+            modified: None,
+        });
+        prefs.excluded.push("/private".into());
+        let chooser = Chooser::new(&prefs);
+        assert!(chooser.job.is_none());
+        assert_eq!(chooser.entries.len(), 2);
+        assert_eq!(chooser.entries[0].path, Path::new("/work/recent.db"));
+        assert!(chooser.entries.iter().all(|e| e.state == State::Remembered));
+    }
+
+    #[test]
+    fn incremental_discoveries_never_replace_paths_consent_or_row_order() {
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx);
+        assert!(app.databases.job.is_none());
+        app.path = "/explicit/command-line.db".into();
+        app.exclusive = true;
+        app.writable = true;
+        app.discovery_event(found("/work/z-last.db"));
+        app.discovery_event(found("/work/a-first.db"));
+        app.discovery_event(found("/work/z-last.db"));
+        assert_eq!(app.path, "/explicit/command-line.db");
+        assert!(app.exclusive && app.writable);
+        assert_eq!(app.databases.entries.len(), 2);
+        assert_eq!(app.databases.entries[0].path, Path::new("/work/z-last.db"));
+        app.select_database(Path::new("/work/a-first.db"));
+        assert_eq!(app.path, "/work/a-first.db");
+        assert!(!app.exclusive && !app.writable);
+        assert!(app.session.is_none());
+        app.exclusive = true;
+        let (tx, rx) = mpsc::sync_channel(1);
+        app.picker = Some(rx);
+        app.select_database(Path::new("/work/z-last.db"));
+        assert_eq!(app.path, "/work/a-first.db");
+        assert!(app.exclusive);
+        drop(tx);
+    }
+
+    #[test]
+    fn stale_entries_aliases_and_forgetting_do_not_reappear_from_pending_events() {
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx);
+        app.discovery_event(found("/work/a.db"));
+        app.discovery_event(found("/work/b.db"));
+        app.discovery_event(Event::Checked("/work/a.db".into(), Availability::Missing));
+        assert!(!app.databases.entries[0].selectable());
+        assert!(
+            app.preferences
+                .discovery
+                .cached
+                .iter()
+                .all(|e| e.path != Path::new("/work/a.db"))
+        );
+        app.discovery_event(Event::Alias {
+            path: "/work/a.db".into(),
+            original: "/work/b.db".into(),
+        });
+        assert_eq!(app.databases.entries.len(), 1);
+        app.forget_database(Path::new("/work/b.db"));
+        app.discovery_event(found("/work/b.db"));
+        assert!(app.databases.entries.is_empty());
+        assert!(app.preferences.discovery.cached.is_empty());
+        app.add_exclusion("/work".into());
+        app.discovery_event(found("/work/c.db"));
+        assert!(app.databases.entries.is_empty());
+    }
+
+    #[test]
+    fn chooser_filters_clicks_and_keyboard_focus_without_opening_a_native_dialog() {
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx);
+        app.discovery_event(found("/work/agenda.db"));
+        app.discovery_event(found("/other/clipboard.db"));
+        app.ui.workspace = shell::Workspace::Query;
+        app.choose_file(&ctx);
+        assert_eq!(app.ui.workspace, shell::Workspace::Connect);
+        assert!(app.picker.is_none());
+        frame(&mut app, &ctx, vec![], 900.0);
+        assert!(ctx.memory(|m| m.focused().is_some()));
+        frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Text("agenda".into())],
+            900.0,
+        );
+        assert_eq!(app.databases.filter, "agenda");
+        assert_eq!(app.databases.row_rects.len(), 1);
+        let row = app.databases.row_rects[0].1;
+        let browse = app.databases.browse_rect.unwrap();
+        assert!(browse.top() > row.bottom());
+        click(&mut app, &ctx, row.center());
+        assert_eq!(app.path, "/work/agenda.db");
+        assert!(!app.exclusive && !app.writable);
+        assert!(app.session.is_none() && app.picker.is_none());
+        // Large candidate lists render only the visible rows.
+        app.databases.filter.clear();
+        for i in 0..500 {
+            app.discovery_event(found(&format!("/bulk/{i}.db")));
+        }
+        for width in [720.0, 900.0, 1920.0] {
+            frame(&mut app, &ctx, vec![], width);
+            assert!(app.databases.row_rects.len() < 10);
+            assert!(app.databases.browse_rect.unwrap().right() <= width);
+        }
+    }
+
+    #[test]
+    fn folder_selection_keeps_database_selection_and_can_find_extensionless_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let database = temp.path().join("extensionless");
+        let mut header = [0; 100];
+        header[..16].copy_from_slice(b"SQLite format 3\0");
+        std::fs::write(&database, header).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx);
+        app.path = "selected.db".into();
+        app.exclusive = true;
+        app.writable = true;
+        app.databases.picking_folder = true;
+        let (tx, rx) = mpsc::sync_channel(1);
+        app.picker = Some(rx);
+        tx.send(Ok(Some(temp.path().into()))).unwrap();
+        app.poll_picker();
+        assert_eq!(app.path, "selected.db");
+        assert!(app.exclusive && app.writable);
+        assert!(
+            app.preferences
+                .discovery
+                .roots
+                .contains(&temp.path().to_path_buf())
+        );
+        app.poll_discovery(&ctx);
+        assert!(app.databases.job.is_some());
+        let start = Instant::now();
+        while app.databases.job.is_some() {
+            app.poll_discovery(&ctx);
+            assert!(start.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(
+            app.databases
+                .entries
+                .iter()
+                .any(|e| e.path == database && e.state == State::Found)
+        );
+        assert_eq!(std::fs::read(&database).unwrap(), header);
+        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn roots_are_normalized_exclusions_win_and_only_successful_opens_are_recorded() {
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx);
+        app.add_search_folder("relative".into());
+        app.add_search_folder("/".into());
+        assert!(app.preferences.discovery.roots.is_empty());
+        app.add_exclusion("/work/private".into());
+        app.add_search_folder("/work/project/../private".into());
+        assert!(app.preferences.discovery.roots.is_empty());
+        app.set_database_path("/work/selected.db".into());
+        assert!(app.preferences.discovery.recent.is_empty());
+        app.tools.database_scope = "/work/selected.db".into();
+        app.record_database_open();
+        assert_eq!(app.preferences.discovery.recent.len(), 1);
+        assert_eq!(
+            app.preferences.discovery.recent[0].path,
+            Path::new("/work/selected.db")
+        );
+        app.record_database_open();
+        assert_eq!(app.preferences.discovery.recent.len(), 1);
+        app.preferences.discovery.recent.push(RecentDatabase {
+            path: "/work/project.db".into(),
+            last_opened: 0,
+        });
+        let req = request(&app.preferences.discovery, Some("/work/private".into()));
+        assert!(req.known.is_empty());
+        assert_eq!(req.roots.len(), 1);
+        assert!(req.roots[0].explicit);
+    }
+
+    #[test]
+    fn cancellation_retains_the_job_until_it_acknowledges_completion() {
+        let temp = tempfile::tempdir().unwrap();
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx);
+        app.start_discovery(&ctx, Some(temp.path().into()));
+        app.databases.cancel();
+        app.start_discovery(&ctx, Some(temp.path().join("replacement")));
+        assert!(app.databases.cancelling);
+        assert!(app.databases.job.is_some());
+        let start = Instant::now();
+        while app.databases.job.is_some() {
+            app.poll_discovery(&ctx);
+            assert!(start.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(app.databases.summary.is_some());
+        assert!(!app.databases.cancelling);
     }
 }

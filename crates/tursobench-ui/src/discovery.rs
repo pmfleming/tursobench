@@ -255,12 +255,11 @@ fn skip_directory(path: &Path) -> bool {
 }
 
 fn candidate_name(path: &Path, extensionless: bool) -> bool {
-    let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
-        // Keep native paths; even an unrepresentable name can have a .db extension.
-        return path.extension().is_some_and(|s| s == "db")
-            || (extensionless && path.extension().is_none());
+    let Some(name) = path.file_name() else {
+        return false;
     };
-    let name = name.to_ascii_lowercase();
+    // Lossy text is used only for matching, never to construct or open a path.
+    let name = name.to_string_lossy().to_ascii_lowercase();
     if [
         "-wal", "-shm", "-journal", "-log", ".wal", ".shm", ".journal",
     ]
@@ -280,7 +279,7 @@ fn candidate_name(path: &Path, extensionless: bool) -> bool {
 
 #[derive(Default)]
 struct Mounts {
-    points: Vec<PathBuf>,
+    points: HashSet<PathBuf>,
     blocked: Vec<PathBuf>,
     reliable: bool,
 }
@@ -358,16 +357,23 @@ impl Mounts {
             ) {
                 result.blocked.push(path.clone());
             }
-            result.points.push(path);
+            result.points.insert(path);
         }
-        result.reliable = result.points.iter().any(|p| p == Path::new("/"));
+        result.reliable = result.points.contains(Path::new("/"));
         result
     }
     fn automatic_allowed(&self, path: &Path) -> bool {
         self.reliable && !system_path(path) && !self.blocked.iter().any(|p| path.starts_with(p))
     }
     fn boundary(&self, path: &Path) -> bool {
-        self.points.iter().any(|p| p == path)
+        self.points.contains(path)
+    }
+    fn explicit_allowed(&self, root: &Path, path: &Path) -> bool {
+        path.starts_with(root)
+            && !self
+                .points
+                .iter()
+                .any(|p| p != root && p.starts_with(root) && path.starts_with(p))
     }
 }
 
@@ -557,8 +563,16 @@ impl<F: FnMut(Event) -> bool> Scanner<'_, F> {
                 .request
                 .roots
                 .iter()
+                .any(|r| r.explicit && self.mounts.explicit_allowed(&r.path, &path));
+            let beneath_explicit = self
+                .request
+                .roots
+                .iter()
                 .any(|r| r.explicit && path.starts_with(&r.path));
-            if self.excluded(&path) || (!explicit && !self.mounts.automatic_allowed(&path)) {
+            if self.excluded(&path)
+                || (beneath_explicit && !explicit)
+                || (!explicit && !self.mounts.automatic_allowed(&path))
+            {
                 self.checked(&path, Availability::Skipped, true);
             } else {
                 match no_symlink_components(&path) {
@@ -598,9 +612,20 @@ impl<F: FnMut(Event) -> bool> Scanner<'_, F> {
                 self.summary.skipped += 1;
                 continue;
             }
-            // Check every configured root's ancestry before canonicalize/stat.
-            if device.is_none() && !matches!(no_symlink_components(&root.path), Ok(true)) {
-                continue;
+            // Check ancestry before opening a directory, including a parent
+            // replaced with a symlink since it was queued.
+            match no_symlink_components(&root.path) {
+                Ok(true) => {}
+                Ok(false) => {
+                    self.summary.skipped += 1;
+                    continue;
+                }
+                Err(e) => {
+                    if root.explicit || e.kind() != io::ErrorKind::NotFound {
+                        self.summary.unavailable += 1;
+                    }
+                    continue;
+                }
             }
             let metadata = match fs::symlink_metadata(&root.path) {
                 Ok(m) if m.is_dir() && !m.file_type().is_symlink() => m,
@@ -608,7 +633,12 @@ impl<F: FnMut(Event) -> bool> Scanner<'_, F> {
                     self.summary.unavailable += 1;
                     continue;
                 }
-                _ => continue,
+                _ => {
+                    if root.explicit {
+                        self.summary.unavailable += 1;
+                    }
+                    continue;
+                }
             };
             #[cfg(unix)]
             let current_device = {
@@ -896,6 +926,63 @@ mod tests {
         assert_eq!(run(req).1.found, 1);
     }
     #[test]
+    fn explicit_folders_do_not_authorize_nested_mounts_or_cached_files_inside_them() {
+        let temp = tempfile::tempdir().unwrap();
+        let nested = temp.path().join("mount");
+        database(&nested.join("remote.db"));
+        database(&temp.path().join("local.db"));
+        for kind in ["nfs", "ext4", "autofs", "fuse.sshfs"] {
+            let mounts = Mounts::parse(&format!(
+                "1 0 8:1 / / rw - ext4 /dev/a rw\n2 1 0:1 / {} rw - {kind} source rw\n",
+                nested.display()
+            ));
+            let mut req = request(temp.path());
+            req.known.push(nested.join("remote.db"));
+            let mut events = vec![];
+            let summary = scan(req, &mounts, &AtomicBool::new(false), |event| {
+                events.push(event);
+                true
+            });
+            assert_eq!(summary.found, 1, "{kind}");
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e, Event::Checked(_, Availability::Skipped)))
+            );
+        }
+    }
+    #[test]
+    fn invalid_explicit_roots_and_symlink_ancestors_are_reported() {
+        let temp = tempfile::tempdir().unwrap();
+        let (_, summary) = run(request(&temp.path().join("missing")));
+        assert_eq!(summary.unavailable, 1);
+        let file = temp.path().join("file.db");
+        database(&file);
+        assert_eq!(run(request(&file)).1.unavailable, 1);
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(temp.path(), temp.path().join("alias")).unwrap();
+            assert_eq!(run(request(&temp.path().join("alias/nested"))).1.skipped, 1);
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn permission_failures_do_not_abort_other_roots() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let denied = temp.path().join("denied");
+        database(&denied.join("private.db"));
+        database(&temp.path().join("public.db"));
+        fs::set_permissions(&denied, fs::Permissions::from_mode(0o0)).unwrap();
+        let (_, summary) = run(request(temp.path()));
+        fs::set_permissions(&denied, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(summary.found, 1);
+        assert!(summary.unavailable > 0);
+    }
+    #[test]
     fn root_defaults_are_shallow_for_home_and_never_scan_the_filesystem_root() {
         let home = Path::new("/home/test");
         let roots = default_roots(Some(home), Some(home), None);
@@ -911,6 +998,48 @@ mod tests {
                 .any(|r| r.path == home.join(".local/share") && r.extensionless)
         );
         assert!(default_roots(None, Some(Path::new("/")), None).is_empty());
+    }
+    #[test]
+    fn real_turso_database_and_sidecars_are_unchanged_by_discovery() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("native.db");
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let db = turso::Builder::new_local(path.to_str().unwrap())
+                    .build()
+                    .await
+                    .unwrap();
+                let conn = db.connect().unwrap();
+                conn.execute(
+                    "CREATE TABLE example(id INTEGER PRIMARY KEY, value TEXT)",
+                    (),
+                )
+                .await
+                .unwrap();
+                conn.execute("INSERT INTO example VALUES (1, 'discovery fixture')", ())
+                    .await
+                    .unwrap();
+            });
+        let snapshot = || {
+            let mut files: Vec<_> = fs::read_dir(temp.path())
+                .unwrap()
+                .map(|entry| {
+                    let path = entry.unwrap().path();
+                    let bytes = fs::read(&path).unwrap();
+                    (path, bytes)
+                })
+                .collect();
+            files.sort_by(|a, b| a.0.cmp(&b.0));
+            files
+        };
+        let before = snapshot();
+        let (events, summary) = run(request(temp.path()));
+        assert_eq!(summary.found, 1);
+        assert_eq!(paths(&events), vec![path]);
+        assert_eq!(snapshot(), before);
     }
     #[test]
     fn worker_finishes_and_dropping_a_full_receiver_unblocks_it() {
@@ -933,5 +1062,27 @@ mod tests {
             |_| false,
         );
         assert!(summary.cancelled);
+
+        // Fill the actual result channel before dropping the receiver. The wake
+        // sender disappearing proves that the worker exited without a UI join.
+        for i in 0..100 {
+            database(&temp.path().join(format!("{i}.db")));
+        }
+        let (wake_tx, wake_rx) = mpsc::channel();
+        let job = Job::start(request(temp.path()), move || {
+            let _ = wake_tx.send(());
+        })
+        .unwrap();
+        for _ in 0..32 {
+            wake_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+        drop(job);
+        loop {
+            match wake_rx.recv_timeout(Duration::from_secs(5)) {
+                Ok(()) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(e) => panic!("discovery worker remained blocked after drop: {e}"),
+            }
+        }
     }
 }
