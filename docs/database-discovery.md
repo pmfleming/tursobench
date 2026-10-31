@@ -36,6 +36,13 @@ and most hidden directories are excluded. Hidden `.data`, `.turso`, `.libsql` an
 `.local` directories within searched roots remain eligible. `.gitignore` is not
 consulted: real development databases are often intentionally ignored.
 
+Browser detection also recognizes custom Chrome/Chromium folder names and profile
+markers such as `Local State`, rather than relying only on standard folder names.
+Certificate/key stores and known desktop address-book/file-manager stores are
+excluded. Old cached discoveries in those locations are pruned on refresh or
+startup; deliberately opened recent files remain available in history. Explicitly
+adding a profile folder itself opts into searching it.
+
 Added folders opt into otherwise skipped root locations, including network
 locations. User exclusions always take precedence. No directory symlinks are
 followed, even in a root's ancestors, and traversal never crosses a nested mount.

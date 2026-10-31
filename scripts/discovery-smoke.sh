@@ -27,7 +27,10 @@ prefs_path = config / "tursobench/preferences.json"
 prefs_path.parent.mkdir(parents=True)
 expected = {project / "app.db", data / "demo/state"}
 excluded = project / "private"
-ignored = {project / "target/ignored.db", data / "chromium/History", excluded / "secret.db"}
+ignored = {project / "target/ignored.db", data / "chromium/History", excluded / "secret.db",
+           data / "captive-portal-chrome/Default/History", data / "unusual-profile-app/Default/History",
+           data / "pki/nssdb/key4.db", data / "evolution/addressbook/contacts.db",
+           data / "nautilus/tags/meta.db"}
 for path in expected | ignored:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
@@ -36,10 +39,12 @@ for path in expected | ignored:
     conn.commit()
     conn.close()
 (project / ".gitignore").write_text("*.db\n")
+(data / "unusual-profile-app/Local State").write_text("{}")
 missing = home / "removed.db"
 prefs_path.write_text(json.dumps({"discovery": {
     "enabled": True, "excluded": [str(excluded)],
-    "cached": [{"path": str(missing), "size": 100, "modified": None}]
+    "cached": [{"path": str(path), "size": 100, "modified": None}
+               for path in [missing, data / "unusual-profile-app/Default/History", data / "pki/nssdb/key4.db"]]
 }}))
 environment = dict(os.environ, HOME=str(home), XDG_CONFIG_HOME=str(config),
                    XDG_DATA_HOME=str(data), XDG_CACHE_HOME=str(home / ".cache"))

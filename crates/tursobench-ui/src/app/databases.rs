@@ -36,6 +36,9 @@ impl Entry {
             (State::Checked(Availability::Skipped), _) => {
                 "Not searched · outside automatic search policy"
             }
+            (State::Checked(Availability::ExcludedApplication), _) => {
+                "Excluded application data · use Browse to select explicitly"
+            }
         }
     }
     fn selectable(&self) -> bool {
@@ -261,8 +264,18 @@ impl App {
                 if let Some(entry) = self.databases.entries.iter_mut().find(|e| e.path == path) {
                     entry.state = State::Checked(state);
                 }
-                if matches!(state, Availability::Missing | Availability::NotDatabase) {
+                if matches!(
+                    state,
+                    Availability::Missing
+                        | Availability::NotDatabase
+                        | Availability::ExcludedApplication
+                ) {
                     self.preferences.discovery.cached.retain(|c| c.path != path);
+                }
+                if state == Availability::ExcludedApplication {
+                    self.databases
+                        .entries
+                        .retain(|e| e.path != path || e.last_opened.is_some());
                 }
             }
             Event::Alias { path, original } => {
@@ -798,6 +811,28 @@ mod tests {
         app.add_exclusion("/work".into());
         app.discovery_event(found("/work/c.db"));
         assert!(app.databases.entries.is_empty());
+    }
+    #[test]
+    fn application_exclusions_remove_old_discoveries_but_keep_deliberate_open_history() {
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx);
+        app.discovery_event(found("/data/custom-browser/History"));
+        app.discovery_event(found("/data/custom-browser/Cookies"));
+        app.tools.database_scope = "/data/custom-browser/History".into();
+        app.record_database_open();
+        for path in [
+            "/data/custom-browser/History",
+            "/data/custom-browser/Cookies",
+        ] {
+            app.discovery_event(Event::Checked(
+                path.into(),
+                Availability::ExcludedApplication,
+            ));
+        }
+        assert!(app.preferences.discovery.cached.is_empty());
+        assert_eq!(app.databases.entries.len(), 1);
+        assert_eq!(app.preferences.discovery.recent.len(), 1);
+        assert!(app.databases.entries[0].last_opened.is_some());
     }
 
     #[test]

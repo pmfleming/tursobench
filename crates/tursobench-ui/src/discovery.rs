@@ -62,6 +62,7 @@ pub enum Availability {
     Unavailable,
     NotDatabase,
     Skipped,
+    ExcludedApplication,
 }
 
 #[derive(Debug)]
@@ -218,6 +219,9 @@ fn skip_directory(path: &Path) -> bool {
     if name.starts_with('.') && !matches!(name, ".data" | ".turso" | ".libsql" | ".local") {
         return true;
     }
+    if application_directory_name(name) {
+        return true;
+    }
     matches!(
         name.to_ascii_lowercase().as_str(),
         "node_modules"
@@ -252,6 +256,27 @@ fn skip_directory(path: &Path) -> bool {
             | "nix"
             | "lost+found"
     )
+}
+
+fn application_directory_name(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    matches!(
+        name.as_str(),
+        "pki" | "nssdb" | "keyrings" | "evolution" | "nautilus"
+    ) || name.split(['-', '_', '.']).any(|part| {
+        matches!(
+            part,
+            "chrome"
+                | "chromium"
+                | "firefox"
+                | "mozilla"
+                | "brave"
+                | "bravesoftware"
+                | "vivaldi"
+                | "webkit"
+                | "webkitgtk"
+        )
+    })
 }
 
 fn candidate_name(path: &Path, extensionless: bool) -> bool {
@@ -451,6 +476,7 @@ struct Scanner<'a, F> {
     summary: Summary,
     files: HashMap<Identity, PathBuf>,
     probed_paths: HashSet<PathBuf>,
+    application_dirs: HashMap<PathBuf, bool>,
 }
 impl<F: FnMut(Event) -> bool> Scanner<'_, F> {
     fn stopped(&mut self) -> bool {
@@ -466,6 +492,39 @@ impl<F: FnMut(Event) -> bool> Scanner<'_, F> {
     }
     fn excluded(&self, path: &Path) -> bool {
         self.request.excluded.iter().any(|p| path.starts_with(p))
+    }
+    fn application_path(&mut self, path: &Path) -> bool {
+        // Called only after mount and symlink checks. Cache marker checks across
+        // siblings and remembered files; never read browser settings or content.
+        for directory in path.ancestors() {
+            if directory
+                .file_name()
+                .and_then(|s| s.to_str())
+                .is_some_and(application_directory_name)
+            {
+                return true;
+            }
+            let ignored = *self
+                .application_dirs
+                .entry(directory.into())
+                .or_insert_with(|| {
+                    let regular = |name: &str| {
+                        let marker = directory.join(name);
+                        !self.mounts.boundary(&marker)
+                            && fs::symlink_metadata(marker).is_ok_and(|m| m.is_file())
+                    };
+                    // Chromium profiles can be inside arbitrarily named applications.
+                    // Firefox also permits arbitrary profile and installation names.
+                    regular("Local State")
+                        || regular("profiles.ini")
+                        || (regular("Preferences") && (regular("History") || regular("Login Data")))
+                        || (regular("prefs.js") && regular("places.sqlite"))
+                });
+            if ignored {
+                return true;
+            }
+        }
+        false
     }
     fn send(&mut self, event: Event) {
         if !(self.emit)(event) {
@@ -576,7 +635,13 @@ impl<F: FnMut(Event) -> bool> Scanner<'_, F> {
                 self.checked(&path, Availability::Skipped, true);
             } else {
                 match no_symlink_components(&path) {
-                    Ok(true) => self.probe(&path, true),
+                    Ok(true) => {
+                        if !explicit && path.parent().is_some_and(|p| self.application_path(p)) {
+                            self.checked(&path, Availability::ExcludedApplication, true);
+                        } else {
+                            self.probe(&path, true);
+                        }
+                    }
                     Ok(false) => self.checked(&path, Availability::Skipped, true),
                     Err(e) => self.checked(
                         &path,
@@ -626,6 +691,10 @@ impl<F: FnMut(Event) -> bool> Scanner<'_, F> {
                     }
                     continue;
                 }
+            }
+            if !root.explicit && self.application_path(&root.path) {
+                self.summary.skipped += 1;
+                continue;
             }
             let metadata = match fs::symlink_metadata(&root.path) {
                 Ok(m) if m.is_dir() && !m.file_type().is_symlink() => m,
@@ -732,6 +801,7 @@ fn scan(
         summary: Summary::default(),
         files: HashMap::new(),
         probed_paths: HashSet::new(),
+        application_dirs: HashMap::new(),
     }
     .run()
 }
@@ -808,6 +878,52 @@ mod tests {
         assert_eq!(paths(&events).len(), 4);
         assert_eq!(summary.found, 4);
         assert!(!summary.limited);
+    }
+    #[test]
+    fn custom_browser_profiles_and_platform_stores_are_excluded_including_old_cache_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let browser = temp.path().join("arbitrarily-named-app");
+        let history = browser.join("Default/History");
+        database(&history);
+        fs::write(browser.join("Local State"), "{}").unwrap();
+        for name in [
+            "captive-portal-chrome/first_party_sets.db",
+            "chrome-web-apps/app/Default/History",
+            "pki/nssdb/key4.db",
+            "evolution/addressbook/contacts.db",
+            "nautilus/tags/meta.db",
+        ] {
+            database(&temp.path().join(name));
+        }
+        database(&temp.path().join("clip-daemon/history/history.db"));
+        let mounts = Mounts::parse("1 0 8:1 / / rw - ext4 /dev/a rw\n");
+        let mut req = request(temp.path());
+        req.roots[0].explicit = false;
+        req.known = vec![history.clone(), temp.path().join("pki/nssdb/key4.db")];
+        let mut events = vec![];
+        let summary = scan(req, &mounts, &AtomicBool::new(false), |event| {
+            events.push(event);
+            true
+        });
+        assert_eq!(summary.found, 1);
+        assert_eq!(
+            paths(&events),
+            vec![temp.path().join("clip-daemon/history/history.db")]
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    Event::Checked(_, Availability::ExcludedApplication)
+                ))
+                .count(),
+            2
+        );
+        // A deliberate search of the profile itself still allows an override.
+        let mut req = request(&browser);
+        req.known.push(history.clone());
+        assert_eq!(paths(&run(req).0), vec![history]);
     }
     #[test]
     fn budgets_cancellation_depth_and_exclusions_are_enforced() {
