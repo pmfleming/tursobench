@@ -10,65 +10,52 @@
   <a href="LICENSE">MIT license</a>
 </p>
 
-**TursoBench** is a local-first desktop workbench for **Turso** databases,
-built with Rust and egui. Browse tables, explore relationships, write SQL and
-review edits before committing. Currently a **Linux preview**, pinned to Turso 0.8.3.
+**TursoBench** is a local Turso database workbench.
+Built with Rust and egui. Linux preview. Turso 0.8.3.
 
 > **Independent project.** TursoBench is not affiliated with, aligned with,
 > endorsed by, or maintained by Turso or the Turso team.
 
 | 🔎 Explore | ⌨️ Query | ✏️ Edit |
 | --- | --- | --- |
-| Search tables, filter rows and map relationships. | SQL highlighting, typed parameters, EXPLAIN and native Turso FTS. | Stage changes, inspect SQL and commit with conflict checks. |
+| Schema search, row filters, foreign-key maps. | Syntax highlighting, typed parameters, EXPLAIN, native FTS. | Staged edits, SQL preview, conflict checks. |
 
 Read-only by default · Local history and bookmarks · JSON, CSV, TSV and SQL exports
 
-## A look inside
+## UI
 
-Browse tables, inspect their columns and follow foreign-key links.
+**Table browser**
 
 ![Table browser showing synthetic project tasks, typed columns and foreign-key links](docs/assets/ui/table-browser.png)
 
-<details>
-<summary>See the relationship map and SQL editor</summary>
-
-**Explore relationships** between tables, primary keys and foreign keys.
+**Schema map**
 
 ![Schema map linking people, projects and tasks](docs/assets/ui/relationships.png)
 
-**Write SQL** with syntax highlighting and view query results above the editor.
+**SQL editor**
 
 ![SQL editor joining tasks, projects and people, with the resulting rows](docs/assets/ui/sql-editor.png)
 
-</details>
+*Linux. Emerald dark theme. Synthetic data.*
 
-*Captured from the Linux app with synthetic data and the emerald dark theme.*
+## Run
 
-## Get started
-
-With the pinned Rust toolchain and Linux desktop dependencies installed:
+Requires the pinned Rust toolchain and Linux desktop libraries.
 
 ```sh
 cargo run --locked -p tursobench-ui -- /path/to/existing.db
 ```
 
-Or use the pinned Nix environment:
+With Nix:
 
 ```sh
 nix develop -c cargo run --locked -p tursobench-ui -- /path/to/existing.db
 ```
 
-Use trusted local files, close other applications using the database, and back up
-before enabling writes. Live multiprocess access, cloud sync and other database
-engines are unsupported. See the [setup and usage guide](docs/guide.md) for
-dependencies, sample data, shortcuts and limits, and [release status](docs/release.md)
-for preview caveats.
+Trusted local files only. Close other database clients. Back up before writes.
+No live multiprocess access, cloud sync or other engines.
 
-## Join in
+[Setup and limits](docs/guide.md) · [Release status](docs/release.md)
 
-Bug reports, documentation improvements and focused pull requests are welcome.
-Read [Contributing](CONTRIBUTING.md) and the [Code of conduct](CODE_OF_CONDUCT.md).
-Report vulnerabilities using the [Security policy](SECURITY.md).
-
-Released under the [MIT license](LICENSE). Dependencies retain their own licenses;
-see [third-party notices](third-party/README.md).
+[MIT license](LICENSE). Dependencies retain their own licenses.
+See [third-party notices](third-party/README.md).
