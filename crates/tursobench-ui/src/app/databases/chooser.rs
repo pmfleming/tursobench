@@ -1,4 +1,5 @@
-use super::*;
+use super::{App, Chooser};
+use eframe::egui;
 
 const SEARCH_ID: &str = "database-search";
 const ROW_HEIGHT: f32 = 60.0;

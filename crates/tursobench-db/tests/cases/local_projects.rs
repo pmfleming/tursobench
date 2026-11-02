@@ -1,113 +1,8 @@
-#[path = "common/local_fixtures.rs"]
-mod fixtures;
-use std::{collections::BTreeMap, path::Path, time::Duration};
-use tursobench_core::*;
-use tursobench_db::{Operation, Request, Session};
+use crate::common::{Client, local_fixtures as fixtures, snapshot as bytes};
 
-struct Client {
-    session: Session,
-    sequence: u64,
-}
-impl Client {
-    fn open(path: &Path, access: Access) -> Self {
-        let session = Session::open(path.into(), access, true, || {}).unwrap();
-        let event = session
-            .events
-            .recv_timeout(Duration::from_secs(10))
-            .unwrap();
-        assert!(
-            matches!(event.kind, EventKind::Opened),
-            "open {}: {:?}",
-            path.display(),
-            event.kind
-        );
-        Self {
-            session,
-            sequence: 0,
-        }
-    }
-    fn request(
-        &mut self,
-        operation: Operation,
-    ) -> (ResultSet, Option<Table>, Option<CommitOutcome>) {
-        self.sequence += 1;
-        let ticket = self.session.ticket(self.sequence, 0);
-        self.session.submit(Request { ticket, operation }).unwrap();
-        let mut result = ResultSet::default();
-        result.start(ticket);
-        let mut table = None;
-        loop {
-            let event = self
-                .session
-                .events
-                .recv_timeout(Duration::from_secs(30))
-                .unwrap();
-            assert_eq!(event.ticket, ticket);
-            match event.kind {
-                EventKind::Failed(e) => panic!("request failed: {e}"),
-                EventKind::Table(t) => table = Some(t),
-                EventKind::EditsCommitted(outcome) => return (result, table, Some(outcome)),
-                EventKind::Finished(_) => {
-                    result.apply(event);
-                    return (result, table, None);
-                }
-                _ => {
-                    result.apply(event);
-                }
-            }
-        }
-    }
-    fn query(&mut self, sql: &str, parameters: Vec<Value>) -> ResultSet {
-        self.request(Operation::Execute {
-            sql: sql.into(),
-            parameters,
-            budget: Budget::default(),
-        })
-        .0
-    }
-    fn sql(&mut self, sql: &str) -> ResultSet {
-        let r = self.query(sql, vec![]);
-        assert!(
-            r.completion.as_ref().unwrap().error.is_none(),
-            "{sql}: {:?}",
-            r.completion
-        );
-        r
-    }
-    fn browse(&mut self, name: &str, offset: usize) -> (Table, ResultSet) {
-        let (r, t, _) = self.request(Operation::Browse(Browse {
-            table: name.into(),
-            offset,
-            sort: None,
-            descending: false,
-            filter: None,
-        }));
-        assert!(
-            r.completion.as_ref().unwrap().error.is_none(),
-            "{name}: {:?}",
-            r.completion
-        );
-        (t.unwrap(), r)
-    }
-    fn commit(&mut self, table: Table, edits: Vec<Edit>) -> CommitOutcome {
-        self.request(Operation::CommitEdits(DraftBatch { table, edits }))
-            .2
-            .unwrap()
-    }
-    fn close(self) {
-        self.session.close();
-        let event = self
-            .session
-            .events
-            .recv_timeout(Duration::from_secs(10))
-            .unwrap();
-        assert!(
-            matches!(event.kind, EventKind::Closed { rollback: Ok(()) }),
-            "{:?}",
-            event.kind
-        );
-    }
-}
+use tursobench_core::*;
+use tursobench_db::Operation;
+
 fn fixture(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(format!("{name}.db"));
@@ -118,24 +13,6 @@ fn fixture(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
         .block_on(fixtures::create(&path, name))
         .unwrap();
     (dir, path)
-}
-fn bytes(root: &Path) -> BTreeMap<std::path::PathBuf, Vec<u8>> {
-    fn walk(root: &Path, path: &Path, into: &mut BTreeMap<std::path::PathBuf, Vec<u8>>) {
-        for entry in std::fs::read_dir(path).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                walk(root, &path, into);
-            } else {
-                into.insert(
-                    path.strip_prefix(root).unwrap().into(),
-                    std::fs::read(path).unwrap(),
-                );
-            }
-        }
-    }
-    let mut files = BTreeMap::new();
-    walk(root, root, &mut files);
-    files
 }
 fn text(s: &str) -> Value {
     Value::Text(s.into())
@@ -155,7 +32,7 @@ fn exact_project_schemas_open_browse_filter_page_and_preserve_readonly_files() {
         let (dir, path) = fixture(name);
         let before = bytes(dir.path());
         let mut c = Client::open(&path, Access::ReadOnly);
-        let schema = c.request(Operation::Schema).0;
+        let schema = c.run(Operation::Schema).result;
         assert!(schema.completion.unwrap().error.is_none());
         for row in schema.rows {
             if row[0] == text("table") {
@@ -184,14 +61,14 @@ fn exact_project_schemas_open_browse_filter_page_and_preserve_readonly_files() {
         assert_ne!(first.rows[0], second.rows[0]);
         let key = table.keys()[0];
         let wanted = first.rows[0][key].clone();
-        let (filtered, _, _) = c.request(Operation::Browse(Browse {
+        let filtered = c.run(Operation::Browse(Browse {
             table: paged.into(),
             offset: 0,
             sort: Some(key),
             descending: true,
             filter: Some((key, wanted)),
         }));
-        assert_eq!(filtered.rows, vec![first.rows[0].clone()]);
+        assert_eq!(filtered.result.rows, vec![first.rows[0].clone()]);
         assert_eq!(
             c.query(&format!("DELETE FROM {}", quote_identifier(paged)), vec![])
                 .completion

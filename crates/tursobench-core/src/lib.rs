@@ -1,6 +1,6 @@
 //! Engine-independent application data, not a multi-engine abstraction.
 mod edits;
-pub use edits::*;
+pub use edits::{BoundEdit, CommitOutcome, DraftBatch, Edit};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -190,7 +190,7 @@ impl Table {
     pub fn editable(&self) -> bool {
         self.is_table
             && !self.engine_managed()
-            && !self.keys().is_empty()
+            && self.columns.iter().any(|c| c.primary_key > 0)
             && self.columns.iter().all(|c| c.hidden == 0)
     }
 }

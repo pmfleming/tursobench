@@ -1,3 +1,7 @@
+use tursobench_core::{
+    Access, Browse, CommitOutcome, ConnectionSettings, DraftBatch, EventKind, ResultSet,
+    SchemaObject, Table, Ticket, TransactionState, Value,
+};
 mod databases;
 mod diagram;
 mod editing;
@@ -14,7 +18,7 @@ mod smoke;
 mod tools;
 mod usability;
 use eframe::egui;
-use tursobench_core::*;
+
 use tursobench_db::{Operation, Request, Session};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -60,7 +64,6 @@ pub struct App {
     inspect: Option<(usize, usize)>,
     transaction: TransactionState,
     drafts: Option<DraftBatch>,
-    cell_json: String,
     insert_json: String,
     show_insert: bool,
     show_preview: bool,
@@ -121,7 +124,6 @@ impl App {
             inspect: None,
             transaction: TransactionState::Autocommit,
             drafts: None,
-            cell_json: String::new(),
             insert_json: String::new(),
             show_insert: false,
             show_preview: false,
@@ -155,7 +157,9 @@ impl App {
             return;
         }
         if !self.databases.inspection.allows_open(&self.path) {
-            self.status = "Likely SQLite. Select Open with Turso anyway to override this classification.".into();
+            self.status =
+                "Likely SQLite. Select Open with Turso anyway to override this classification."
+                    .into();
             return;
         }
         let wake = ctx.clone();
@@ -454,13 +458,13 @@ impl App {
                                 .result
                                 .rows
                                 .iter()
-                                .filter_map(|r| match (&r[0], &r[1], &r[2], &r[3]) {
-                                    (
+                                .filter_map(|r| match r.as_slice() {
+                                    [
                                         Value::Text(kind),
                                         Value::Text(name),
                                         Value::Text(table),
                                         ddl,
-                                    ) => Some(SchemaObject {
+                                    ] => Some(SchemaObject {
                                         kind: kind.clone(),
                                         name: name.clone(),
                                         table: table.clone(),
@@ -569,9 +573,10 @@ impl App {
                 }
             });
         }
-        let Some(browse) = self.browse.clone() else {
+        let Some(browse) = &mut self.browse else {
             return;
         };
+        let mut reload = false;
         ui.horizontal_wrapped(|ui| {
             ui.label(format!(
                 "Page {} · 100 rows/page · not a snapshot",
@@ -581,20 +586,18 @@ impl App {
                 .add_enabled(browse.offset > 0, egui::Button::new("Previous"))
                 .clicked()
             {
-                self.browse.as_mut().unwrap().offset =
-                    self.browse.as_ref().unwrap().offset.saturating_sub(100);
-                self.reload();
+                browse.offset = browse.offset.saturating_sub(100);
+                reload = true;
             }
             if ui.button("Next").clicked() {
-                self.browse.as_mut().unwrap().offset =
-                    (self.browse.as_ref().unwrap().offset + 100).min(1_000_000);
-                self.reload();
+                browse.offset = browse.offset.saturating_add(100).min(1_000_000);
+                reload = true;
             }
             if ui.button("Refresh page").clicked() {
-                self.reload();
+                reload = true;
             }
         });
-        if let Some(table) = self.table.clone() {
+        if let Some(table) = &self.table {
             ui.horizontal_wrapped(|ui| {
                 egui::ComboBox::from_id_salt("filter-column")
                     .selected_text(
@@ -616,25 +619,25 @@ impl App {
                 if ui.button("Filter").clicked() {
                     match serde_json::from_str::<Value>(&self.filter) {
                         Ok(v) => {
-                            let b = self.browse.as_mut().unwrap();
+                            let b = &mut *browse;
                             b.filter = Some((self.filter_column, v));
                             b.offset = 0;
-                            self.reload();
+                            reload = true;
                         }
                         Err(e) => self.status = e.to_string(),
                     }
                 }
                 if ui.button("Clear filter").clicked() {
-                    let b = self.browse.as_mut().unwrap();
+                    let b = &mut *browse;
                     b.filter = None;
                     b.offset = 0;
-                    self.reload();
+                    reload = true;
                 }
             });
         }
-    }
-    fn grid(&mut self, ui: &mut egui::Ui) {
-        self.result_grid(ui);
+        if reload {
+            self.reload();
+        }
     }
 }
 impl eframe::App for App {
@@ -660,6 +663,7 @@ impl eframe::App for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tursobench_core::Column;
     #[test]
     fn renders_empty_and_large_cells_without_engine() {
         let ctx = egui::Context::default();

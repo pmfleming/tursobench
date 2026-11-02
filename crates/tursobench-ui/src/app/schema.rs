@@ -1,4 +1,8 @@
-use super::*;
+use super::{App, View, shell, tools};
+use eframe::egui;
+use tursobench_core::{ForeignKey, Value};
+use tursobench_db::{Operation, Request};
+
 use tools::Destination;
 impl App {
     pub(super) fn request_inspection(&mut self, name: String) {

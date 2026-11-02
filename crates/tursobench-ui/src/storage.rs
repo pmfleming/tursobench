@@ -220,37 +220,31 @@ impl Preferences {
         self.null_display = self.null_display.chars().take(32).collect();
         self.query_history
             .retain(|h| h.sql.len() <= 64 * 1024 && h.database.len() <= 4096);
-        self.query_history.truncate(100);
-        while self
-            .query_history
-            .iter()
-            .map(|h| h.sql.len() + h.database.len())
-            .sum::<usize>()
-            > 512 * 1024
-        {
-            self.query_history.pop();
-        }
+        retain_prefix(&mut self.query_history, |h| h.sql.len() + h.database.len());
         self.saved_queries.retain(|b| {
             b.sql.len() <= 64 * 1024 && b.database.len() <= 4096 && b.name.len() <= 256
         });
-        self.saved_queries.truncate(100);
-        while self
-            .saved_queries
-            .iter()
-            .map(|b| b.sql.len() + b.database.len() + b.name.len())
-            .sum::<usize>()
-            > 512 * 1024
-        {
-            self.saved_queries.pop();
-        }
+        retain_prefix(&mut self.saved_queries, |b| {
+            b.sql.len() + b.database.len() + b.name.len()
+        });
         for list in [&mut self.history, &mut self.bookmarks] {
             list.retain(|s| s.len() <= 64 * 1024);
-            list.truncate(100);
-            while list.iter().map(String::len).sum::<usize>() > 512 * 1024 {
-                list.pop();
-            }
+            retain_prefix(list, String::len);
         }
     }
+}
+// Keep the most recent prefix in one pass, bounded by count and bytes.
+fn retain_prefix<T>(items: &mut Vec<T>, size: impl Fn(&T) -> usize) {
+    let mut bytes = 0;
+    let keep = items
+        .iter()
+        .take(100)
+        .take_while(|item| {
+            bytes += size(item);
+            bytes <= 512 * 1024
+        })
+        .count();
+    items.truncate(keep);
 }
 pub struct Store {
     tx: SyncSender<Preferences>,

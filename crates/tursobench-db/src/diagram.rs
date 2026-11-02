@@ -1,5 +1,10 @@
 //! Bounded committed-schema discovery; no table scans and no inferred relationships.
-use super::*;
+use crate::{inspection, worker::failure};
+use turso::Connection;
+use tursobench_core::{
+    DiagramTable, Failure, ForeignKey, IndexInfo, Inspection, SchemaDiagram, TableColumn,
+};
+
 const MAX_TABLES: usize = 512;
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 fn bytes(info: &Inspection) -> usize {

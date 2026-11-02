@@ -1,4 +1,8 @@
-use super::*;
+use super::{App, View, diagram};
+use eframe::egui;
+use tursobench_core::Budget;
+use tursobench_db::Operation;
+
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub(super) enum Sidebar {
     #[default]
@@ -94,6 +98,58 @@ impl App {
             self.ui.inspector_open && !self.ui.inspector_detached,
         )
         .show_sidebar;
+        self.connection_bar(ui, width, sidebar_visible);
+        self.status_bar(ui, height);
+        self.activity_rail(ui, width, sidebar_visible);
+        let layout = Layout::new(
+            width,
+            self.ui.sidebar_open,
+            self.ui.inspector_open && !self.ui.inspector_detached,
+        );
+        if layout.show_sidebar {
+            egui::Panel::left("workspace-sidebar")
+                .resizable(true)
+                .default_size(layout.sidebar_width)
+                .size_range(190.0..=300.0)
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("workspace-sidebar-scroll")
+                        .show(ui, |ui| match self.ui.sidebar {
+                            Sidebar::Schema => self.schema_panel(ui),
+                            Sidebar::Diagnostics => self.diagnostics_ui(ui),
+                            _ => self.history_controls(ui),
+                        });
+                });
+        }
+        if self.ui.inspector_open && !self.ui.inspector_detached {
+            if layout.bottom_inspector {
+                egui::Panel::bottom("inspector-bottom")
+                    .resizable(true)
+                    .default_size(180.0)
+                    .size_range(100.0..=(height * 0.4).max(100.0))
+                    .show(ui, |ui| self.docked_inspector(ui));
+            } else {
+                egui::Panel::right("inspector-right")
+                    .resizable(true)
+                    .default_size(layout.inspector_width)
+                    .size_range(260.0..=420.0)
+                    .show(ui, |ui| self.docked_inspector(ui));
+            }
+        }
+        egui::CentralPanel::default().show(ui, |ui| self.workspace_ui(ui));
+        if self.confirm_close {
+            egui::Window::new("Close writable database?").collapsible(false).show(&ctx,|ui|{
+            ui.label("Local drafts will be discarded. Active execution will finish. Any remaining editor transaction will be explicitly rolled back. This does not undo committed writes.");
+            if ui.button("Wait, roll back transaction, and close").clicked(){self.close();}
+            if ui.button("Keep open").clicked(){self.confirm_close=false;self.quit=false;}
+        });
+        }
+        self.edit_windows(&ctx);
+        self.schema_windows(&ctx);
+        self.inspection_surfaces(&ctx);
+    }
+    fn connection_bar(&mut self, ui: &mut egui::Ui, width: f32, sidebar_visible: bool) {
+        let ctx = ui.ctx().clone();
         egui::Panel::top("connection").show(ui,|ui|{
             ui.horizontal_wrapped(|ui|{
                 ui.strong("TursoBench");
@@ -126,6 +182,8 @@ impl App {
             }
             if self.uncertain_edit { ui.colored_label(ui.visuals().error_fg_color,"UNKNOWN commit outcome — no automatic retry"); }
         });
+    }
+    fn status_bar(&mut self, ui: &mut egui::Ui, height: f32) {
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.small(if self.closing {
@@ -141,13 +199,10 @@ impl App {
                 } else {
                     "Not connected"
                 });
-                if self.has_drafts() {
+                if let Some(draft) = self.drafts.as_ref().filter(|d| !d.edits.is_empty()) {
                     ui.colored_label(
                         ui.visuals().warn_fg_color,
-                        format!(
-                            "{} staged operations",
-                            self.drafts.as_ref().unwrap().edits.len()
-                        ),
+                        format!("{} staged operations", draft.edits.len()),
                     );
                     if ui.button("Review staged edits…").clicked() {
                         self.show_preview = true;
@@ -190,6 +245,8 @@ impl App {
                     });
             }
         });
+    }
+    fn activity_rail(&mut self, ui: &mut egui::Ui, width: f32, sidebar_visible: bool) {
         egui::Panel::left("activity-rail")
             .exact_size(96.0)
             .show(ui, |ui| {
@@ -234,119 +291,89 @@ impl App {
                     }
                 }
             });
-        let layout = Layout::new(
-            width,
-            self.ui.sidebar_open,
-            self.ui.inspector_open && !self.ui.inspector_detached,
-        );
-        if layout.show_sidebar {
-            egui::Panel::left("workspace-sidebar")
-                .resizable(true)
-                .default_size(layout.sidebar_width)
-                .size_range(190.0..=300.0)
-                .show(ui, |ui| {
-                    egui::ScrollArea::vertical()
-                        .id_salt("workspace-sidebar-scroll")
-                        .show(ui, |ui| match self.ui.sidebar {
-                            Sidebar::Schema => self.schema_panel(ui),
-                            Sidebar::Diagnostics => self.diagnostics_ui(ui),
-                            _ => self.history_controls(ui),
-                        });
-                });
+    }
+    fn workspace_ui(&mut self, ui: &mut egui::Ui) {
+        #[cfg(test)]
+        {
+            self.ui.workspace_rect = ui.available_rect_before_wrap();
         }
-        if self.ui.inspector_open && !self.ui.inspector_detached {
-            if layout.bottom_inspector {
-                egui::Panel::bottom("inspector-bottom")
-                    .resizable(true)
-                    .default_size(180.0)
-                    .size_range(100.0..=(height * 0.4).max(100.0))
-                    .show(ui, |ui| self.docked_inspector(ui));
-            } else {
-                egui::Panel::right("inspector-right")
-                    .resizable(true)
-                    .default_size(layout.inspector_width)
-                    .size_range(260.0..=420.0)
-                    .show(ui, |ui| self.docked_inspector(ui));
-            }
-        }
-        egui::CentralPanel::default().show(ui, |ui| {
-            #[cfg(test)]
-            {
-                self.ui.workspace_rect = ui.available_rect_before_wrap();
-            }
-            ui.horizontal_wrapped(|ui| {
-                if self.session.is_none() { ui.selectable_value(&mut self.ui.workspace, Workspace::Connect, "Open database"); }
-                ui.selectable_value(&mut self.ui.workspace, Workspace::Query, "SQL editor");
-                ui.selectable_value(&mut self.ui.workspace, Workspace::Data, "Data / results");
-                if ui
-                    .selectable_value(&mut self.ui.workspace, Workspace::Diagram, "Diagram")
-                    .clicked()
-                {
-                    self.tools.ddl = None;
-                    self.show_structure();
-                    if self.ui.diagram.data.is_none() {
-                        self.load_diagram();
-                    }
-                }
-            });
-            ui.separator();
-            if self.ui.workspace == Workspace::Connect && self.session.is_none() { self.connect_ui(ui); return; }
-            if self.session.is_some() && !self.ready {
-                ui.label("Opening database on the worker…");
-                if self.ui.workspace == Workspace::Query { self.editor_ui(ui); }
-                return;
-            }
+        ui.horizontal_wrapped(|ui| {
             if self.session.is_none() {
-                ui.label("Not connected — edit SQL or inspect/copy/export retained results. Open a database to execute.");
-                if !self.tools.database_scope.is_empty() && (self.result.current.is_some() || self.ui.diagram.data.is_some()) { ui.add(egui::Label::new(format!("Retained source: {}",self.tools.database_scope)).truncate()).on_hover_text(&self.tools.database_scope); }
+                ui.selectable_value(&mut self.ui.workspace, Workspace::Connect, "Open database");
             }
-            if self.ui.workspace == Workspace::Diagram {
-                self.diagram_ui(ui);
-                return;
+            ui.selectable_value(&mut self.ui.workspace, Workspace::Query, "SQL editor");
+            ui.selectable_value(&mut self.ui.workspace, Workspace::Data, "Data / results");
+            if ui
+                .selectable_value(&mut self.ui.workspace, Workspace::Diagram, "Diagram")
+                .clicked()
+            {
+                self.tools.ddl = None;
+                self.show_structure();
+                if self.ui.diagram.data.is_none() {
+                    self.load_diagram();
+                }
             }
-            // One persistent editor and one retained result: presentation modes,
-            // not pretend independent transactions or unbounded result tabs.
-            egui::ScrollArea::vertical()
-                .id_salt("workspace-content")
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    if self.ui.workspace == Workspace::Query {
-                        self.editor_ui(ui);
-                        ui.separator();
-                    }
-                    ui.horizontal_wrapped(|ui| {
-                        ui.strong(match self.view {
-                            View::Browse => self
-                                .table
-                                .as_ref()
-                                .map_or("Table data", |t| t.name.as_str()),
-                            View::Schema => "Schema catalog",
-                            View::Explain => "EXPLAIN result",
-                            View::Diagnostics => "Diagnostic result",
-                            View::Query => "Query result",
-                        });
-                        ui.small(self.export_scope());
-                    });
-                    if self.view == View::Browse {
-                        ui.add_enabled_ui(self.ready && !self.closing, |ui| self.browse_controls(ui));
-                        self.edit_controls(ui);
-                    }
-                    ui.collapsing("Export and copy retained results", |ui| {
-                        self.usability_controls(ui)
-                    });
-                    self.grid(ui);
-                });
         });
-        if self.confirm_close {
-            egui::Window::new("Close writable database?").collapsible(false).show(&ctx,|ui|{
-            ui.label("Local drafts will be discarded. Active execution will finish. Any remaining editor transaction will be explicitly rolled back. This does not undo committed writes.");
-            if ui.button("Wait, roll back transaction, and close").clicked(){self.close();}
-            if ui.button("Keep open").clicked(){self.confirm_close=false;self.quit=false;}
-        });
+        ui.separator();
+        if self.ui.workspace == Workspace::Connect && self.session.is_none() {
+            self.connect_ui(ui);
+            return;
         }
-        self.edit_windows(&ctx);
-        self.schema_windows(&ctx);
-        self.inspector_windows(&ctx);
+        if self.session.is_some() && !self.ready {
+            ui.label("Opening database on the worker…");
+            if self.ui.workspace == Workspace::Query {
+                self.editor_ui(ui);
+            }
+            return;
+        }
+        if self.session.is_none() {
+            ui.label("Not connected — edit SQL or inspect/copy/export retained results. Open a database to execute.");
+            if !self.tools.database_scope.is_empty()
+                && (self.result.current.is_some() || self.ui.diagram.data.is_some())
+            {
+                ui.add(
+                    egui::Label::new(format!("Retained source: {}", self.tools.database_scope))
+                        .truncate(),
+                )
+                .on_hover_text(&self.tools.database_scope);
+            }
+        }
+        if self.ui.workspace == Workspace::Diagram {
+            self.diagram_ui(ui);
+            return;
+        }
+        // One persistent editor and one retained result: presentation modes,
+        // not pretend independent transactions or unbounded result tabs.
+        egui::ScrollArea::vertical()
+            .id_salt("workspace-content")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                if self.ui.workspace == Workspace::Query {
+                    self.editor_ui(ui);
+                    ui.separator();
+                }
+                ui.horizontal_wrapped(|ui| {
+                    ui.strong(match self.view {
+                        View::Browse => self
+                            .table
+                            .as_ref()
+                            .map_or("Table data", |t| t.name.as_str()),
+                        View::Schema => "Schema catalog",
+                        View::Explain => "EXPLAIN result",
+                        View::Diagnostics => "Diagnostic result",
+                        View::Query => "Query result",
+                    });
+                    ui.small(self.export_scope());
+                });
+                if self.view == View::Browse {
+                    ui.add_enabled_ui(self.ready && !self.closing, |ui| self.browse_controls(ui));
+                    self.edit_controls(ui);
+                }
+                ui.collapsing("Export and copy retained results", |ui| {
+                    self.usability_controls(ui)
+                });
+                self.grid_contents(ui);
+            });
     }
     fn docked_inspector(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {

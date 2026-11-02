@@ -1,4 +1,4 @@
-use crate::*;
+use crate::{Failure, Table, Value, quote_identifier};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Edit {
@@ -218,6 +218,7 @@ fn generate(table: &Table, edit: &Edit) -> Result<BoundEdit, Failure> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TableColumn;
     fn table() -> Table {
         Table {
             name: "a\"b".into(),
@@ -276,6 +277,38 @@ mod tests {
             }],
         };
         assert!(b.preview().is_err());
+        let insert = |value| Edit::Insert {
+            values: vec![Some(value)],
+        };
+        let update = |changes| Edit::Update {
+            original: vec![Value::Integer(1)],
+            changes,
+        };
+        for edit in [
+            Edit::Insert { values: vec![] },
+            insert(Value::Real(f64::NAN)),
+            insert(Value::Text("x".repeat(64 * 1024))),
+            update(vec![]),
+            update(vec![(1, Value::Null)]),
+            update(vec![(0, Value::Null), (0, Value::Null)]),
+            Edit::Delete { original: vec![] },
+        ] {
+            b.edits = vec![edit];
+            assert!(b.preview().is_err(), "{:?}", b.edits);
+        }
+        for edits in [
+            vec![],
+            vec![Edit::Insert { values: vec![None] }; 1001],
+            vec![
+                Edit::Insert {
+                    values: vec![Some(Value::Blob(vec![0; 60 * 1024]))]
+                };
+                140
+            ],
+        ] {
+            b.edits = edits;
+            assert!(b.preview().is_err());
+        }
         b.table.columns[0].primary_key = 0;
         assert!(b.preview().is_err());
     }

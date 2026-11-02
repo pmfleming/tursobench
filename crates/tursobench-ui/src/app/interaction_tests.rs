@@ -1,5 +1,6 @@
 use super::*;
 use std::time::{Duration, Instant};
+use tursobench_core::Budget;
 fn inspect_selected(app: &mut App, ctx: &egui::Context) {
     let start = Instant::now();
     loop {
@@ -27,6 +28,17 @@ fn wait(app: &mut App, ctx: &egui::Context) {
         std::thread::sleep(Duration::from_millis(5));
     }
 }
+fn connected(path: &std::path::Path, writable: bool) -> (egui::Context, App) {
+    let ctx = egui::Context::default();
+    let mut app = App::new(&ctx);
+    app.path = path.to_string_lossy().into_owned();
+    app.exclusive = true;
+    app.writable = writable;
+    inspect_selected(&mut app, &ctx);
+    app.open(&ctx);
+    wait(&mut app, &ctx);
+    (ctx, app)
+}
 fn frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) {
     let mut out = ctx.run_ui(
         egui::RawInput {
@@ -46,21 +58,7 @@ fn frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) {
 fn failed_open_after_close_can_retry_a_valid_database() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("valid.db");
-    tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap()
-        .block_on(async {
-            let db = turso::Builder::new_local(path.to_str().unwrap())
-                .build()
-                .await
-                .unwrap();
-            db.connect()
-                .unwrap()
-                .execute("CREATE TABLE example(id INTEGER PRIMARY KEY)", ())
-                .await
-                .unwrap();
-        });
+    crate::test_support::create(&path, &["CREATE TABLE example(id INTEGER PRIMARY KEY)"]);
     let ctx = egui::Context::default();
     let mut app = App::new(&ctx);
     app.set_database_path(dir.path().join("missing.db").to_str().unwrap().into());
@@ -162,29 +160,15 @@ fn typing_a_different_database_path_resets_consent() {
 
 #[test]
 fn diagram_preserves_drafts_and_result_ownership_and_chrome_fits_both_themes() {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("layout.db");
-    runtime
-        .block_on(crate::local_project_fixtures::create(&path, "scratchpad"))
-        .unwrap();
-    let ctx = egui::Context::default();
-    let mut app = App::new(&ctx);
-    app.path = path.to_string_lossy().into_owned();
-    app.exclusive = true;
-    app.writable = true;
-    inspect_selected(&mut app, &ctx);
-    app.open(&ctx);
-    wait(&mut app, &ctx);
+    crate::test_support::run(crate::local_project_fixtures::create(&path, "scratchpad")).unwrap();
+    let (ctx, mut app) = connected(&path, true);
     app.browse_table("buffer_ids".into());
     wait(&mut app, &ctx);
     let retained = app.result.rows.clone();
     let ticket = app.result.current;
-    app.cell_json = serde_json::to_string(&Value::Text("pending diagram edit".into())).unwrap();
-    app.stage_cell(0, 0);
+    app.stage_cell(0, 0, Value::Text("pending diagram edit".into()));
     assert!(app.has_drafts());
     app.ui.workspace = shell::Workspace::Diagram;
     app.show_structure();
@@ -294,45 +278,26 @@ fn diagram_preserves_drafts_and_result_ownership_and_chrome_fits_both_themes() {
 }
 #[test]
 fn reverted_empty_batch_cannot_carry_identity_to_another_table() {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("identity.db");
-    runtime.block_on(async {
-        let db = turso::Builder::new_local(path.to_str().unwrap())
-            .build()
-            .await
-            .unwrap();
-        let c = db.connect().unwrap();
-        for sql in [
+    crate::test_support::create(
+        &path,
+        &[
             "CREATE TABLE a(id INTEGER PRIMARY KEY,value TEXT)",
             "CREATE TABLE b(id INTEGER PRIMARY KEY,value TEXT)",
             "INSERT INTO a VALUES(1,'same')",
             "INSERT INTO b VALUES(1,'same')",
-        ] {
-            c.execute(sql, ()).await.unwrap();
-        }
-    });
-    let ctx = egui::Context::default();
-    let mut app = App::new(&ctx);
-    app.path = path.to_string_lossy().into_owned();
-    app.writable = true;
-    app.exclusive = true;
-    inspect_selected(&mut app, &ctx);
-    app.open(&ctx);
-    wait(&mut app, &ctx);
+        ],
+    );
+    let (ctx, mut app) = connected(&path, true);
     app.browse_table("a".into());
     wait(&mut app, &ctx);
-    app.cell_json = serde_json::to_string(&Value::Text("temporary".into())).unwrap();
-    app.stage_cell(0, 1);
+    app.stage_cell(0, 1, Value::Text("temporary".into()));
     app.drafts.as_mut().unwrap().revert_row(&app.result.rows[0]);
     assert!(!app.has_drafts());
     app.browse_table("b".into());
     wait(&mut app, &ctx);
-    app.cell_json = serde_json::to_string(&Value::Text("only b".into())).unwrap();
-    app.stage_cell(0, 1);
+    app.stage_cell(0, 1, Value::Text("only b".into()));
     assert_eq!(app.drafts.as_ref().unwrap().table.name, "b");
     app.commit_drafts();
     wait(&mut app, &ctx);
@@ -347,7 +312,7 @@ fn reverted_empty_batch_cannot_carry_identity_to_another_table() {
     wait(&mut app, &ctx);
     assert_eq!(app.transaction, TransactionState::Active);
     assert!(!app.can_edit());
-    app.stage_cell(0, 1);
+    app.stage_cell(0, 1, Value::Text("only b".into()));
     assert!(!app.has_drafts());
     app.sql = "ROLLBACK".into();
     app.run_sql();
@@ -379,23 +344,11 @@ fn reverted_empty_batch_cannot_carry_identity_to_another_table() {
 }
 #[test]
 fn local_project_pages_and_fts_results_render_and_export() {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
     for name in crate::local_project_fixtures::NAMES {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("project.db");
-        runtime
-            .block_on(crate::local_project_fixtures::create(&path, name))
-            .unwrap();
-        let ctx = egui::Context::default();
-        let mut app = App::new(&ctx);
-        app.path = path.to_string_lossy().into_owned();
-        app.exclusive = true;
-        inspect_selected(&mut app, &ctx);
-        app.open(&ctx);
-        wait(&mut app, &ctx);
+        crate::test_support::run(crate::local_project_fixtures::create(&path, name)).unwrap();
+        let (ctx, mut app) = connected(&path, false);
         let table = match name {
             "scratchpad" => "buffer_ids",
             "agenda" => "items",
@@ -408,8 +361,15 @@ fn local_project_pages_and_fts_results_render_and_export() {
         assert!(!app.can_edit());
         frame(&mut app, &ctx, vec![]);
         let export = dir.path().join("page.jsonl");
-        crate::export::write_result(&export, "table-page", &app.result.columns, &app.result.rows)
-            .unwrap();
+        crate::export::write_result_as(
+            &export,
+            crate::export::Format::JsonLines,
+            "table-page",
+            &app.result.columns,
+            &app.result.rows,
+            "t",
+        )
+        .unwrap();
         let contents = std::fs::read_to_string(export).unwrap();
         let records: Vec<serde_json::Value> = contents
             .lines()
@@ -435,11 +395,13 @@ fn local_project_pages_and_fts_results_render_and_export() {
                 vec![vec![Value::Text("entry-0000".into())]]
             );
             frame(&mut app, &ctx, vec![]);
-            crate::export::write_result(
+            crate::export::write_result_as(
                 &dir.path().join("fts.jsonl"),
+                crate::export::Format::JsonLines,
                 "complete-query-result",
                 &app.result.columns,
                 &app.result.rows,
+                "t",
             )
             .unwrap();
         }
@@ -458,31 +420,14 @@ fn local_project_pages_and_fts_results_render_and_export() {
 fn click_inspect_stage_no_write_failed_commit_retains_drafts() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ui.db");
-    tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap()
-        .block_on(async {
-            let db = turso::Builder::new_local(path.to_str().unwrap())
-                .build()
-                .await
-                .unwrap();
-            let c = db.connect().unwrap();
-            c.execute("CREATE TABLE items(id INTEGER PRIMARY KEY, name TEXT)", ())
-                .await
-                .unwrap();
-            c.execute("INSERT INTO items VALUES (1, 'original'), (2, 'other')", ())
-                .await
-                .unwrap();
-        });
-    let ctx = egui::Context::default();
-    let mut app = App::new(&ctx);
-    app.path = path.to_string_lossy().into_owned();
-    app.exclusive = true;
-    app.writable = true;
-    inspect_selected(&mut app, &ctx);
-    app.open(&ctx);
-    wait(&mut app, &ctx);
+    crate::test_support::create(
+        &path,
+        &[
+            "CREATE TABLE items(id INTEGER PRIMARY KEY, name TEXT)",
+            "INSERT INTO items VALUES (1, 'original'), (2, 'other')",
+        ],
+    );
+    let (ctx, mut app) = connected(&path, true);
     app.browse_table("items".into());
     wait(&mut app, &ctx);
     frame(&mut app, &ctx, vec![]);
@@ -517,8 +462,7 @@ fn click_inspect_stage_no_write_failed_commit_retains_drafts() {
     assert_eq!(clone, vec![None, Some(Value::Text("original".into()))]);
     assert!(!app.has_drafts());
     app.show_insert = false;
-    app.cell_json = "{\"type\":\"Text\",\"value\":\"draft\"}".into();
-    app.stage_cell(0, 1);
+    app.stage_cell(0, 1, Value::Text("draft".into()));
     let original = app.result.rows[0].clone();
     assert_eq!(
         app.drafts.as_ref().unwrap().displayed(&original, 1),
@@ -530,8 +474,7 @@ fn click_inspect_stage_no_write_failed_commit_retains_drafts() {
     assert!(app.drafts.as_ref().unwrap().deleted(&original));
     app.drafts.as_mut().unwrap().revert_row(&original);
     assert!(!app.has_drafts());
-    app.cell_json = "{\"type\":\"Integer\",\"value\":2}".into();
-    app.stage_cell(0, 0);
+    app.stage_cell(0, 0, Value::Integer(2));
     assert!(app.has_drafts());
     assert!(app.commit_ticket.is_none());
     // Inspecting, rendering and staging produced no SQL request or row mutation.
@@ -565,8 +508,7 @@ fn click_inspect_stage_no_write_failed_commit_retains_drafts() {
     wait(&mut app, &ctx);
     assert!(app.has_drafts());
     assert!(app.status.contains("drafts retained"));
-    app.cell_json = "{\"type\":\"Integer\",\"value\":3}".into();
-    app.stage_cell(0, 0);
+    app.stage_cell(0, 0, Value::Integer(3));
     app.commit_drafts();
     wait(&mut app, &ctx);
     assert!(!app.has_drafts());
@@ -578,17 +520,22 @@ fn click_inspect_stage_no_write_failed_commit_retains_drafts() {
 fn selection_named_history_metadata_reference_back_and_tools_render() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("navigation.db");
-    tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap().block_on(async {
-        let db = turso::Builder::new_local(path.to_str().unwrap()).build().await.unwrap(); let c = db.connect().unwrap();
-        for sql in ["CREATE TABLE parent(a INTEGER,b TEXT,payload TEXT,PRIMARY KEY(a,b))", "CREATE TABLE child(id INTEGER PRIMARY KEY,a INTEGER,b TEXT,FOREIGN KEY(a,b) REFERENCES parent)", "INSERT INTO parent VALUES(7,'001','{\"x\":1}')", "INSERT INTO child VALUES(1,7,'001'),(2,NULL,NULL)"] { c.execute(sql,()).await.unwrap(); }
+    crate::test_support::run(async {
+        let db = turso::Builder::new_local(path.to_str().unwrap())
+            .build()
+            .await
+            .unwrap();
+        let c = db.connect().unwrap();
+        for sql in [
+            "CREATE TABLE parent(a INTEGER,b TEXT,payload TEXT,PRIMARY KEY(a,b))",
+            "CREATE TABLE child(id INTEGER PRIMARY KEY,a INTEGER,b TEXT,FOREIGN KEY(a,b) REFERENCES parent)",
+            "INSERT INTO parent VALUES(7,'001','{\"x\":1}')",
+            "INSERT INTO child VALUES(1,7,'001'),(2,NULL,NULL)",
+        ] {
+            c.execute(sql, ()).await.unwrap();
+        }
     });
-    let ctx = egui::Context::default();
-    let mut app = App::new(&ctx);
-    app.path = path.to_string_lossy().into_owned();
-    app.exclusive = true;
-    inspect_selected(&mut app, &ctx);
-    app.open(&ctx);
-    wait(&mut app, &ctx);
+    let (ctx, mut app) = connected(&path, false);
     assert!(
         app.schema
             .iter()

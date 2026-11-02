@@ -69,7 +69,7 @@ same value; object keys must include their exact `:`, `@` or `$` prefix.
 
 ## Evidence and safety
 
-- `crates/tursobench-db/tests/workbench.rs`: native FTS/ordinary index metadata,
+- `crates/tursobench-db/tests/cases/workbench.rs`: native FTS/ordinary index metadata,
   composite implicit FK resolution, bound related lookups and injection rejection,
   named parameters, EXPLAIN non-mutation, and **all diagnostic actions with
   read-only file-byte preservation**. These use fresh synthetic Turso databases.

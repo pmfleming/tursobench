@@ -1,4 +1,6 @@
-use super::*;
+use super::{App, shell};
+use eframe::egui;
+
 use std::{
     path::PathBuf,
     sync::mpsc::{self, Receiver, TryRecvError},

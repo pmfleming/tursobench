@@ -1,4 +1,8 @@
-use super::*;
+use super::{App, shell};
+use eframe::egui;
+use tursobench_core::{Inspection, SchemaDiagram, Ticket};
+use tursobench_db::{Operation, Request};
+
 use std::collections::BTreeMap;
 const WIDTH: f32 = 320.0;
 const LINE: f32 = 22.0;
@@ -377,7 +381,9 @@ impl App {
                     );
                     let points: Vec<_> = path.into_iter().map(point).collect();
                     let start = points[0];
-                    let end = *points.last().unwrap();
+                    let Some(&end) = points.last() else {
+                        continue;
+                    };
                     if !egui::Rect::from_two_pos(start, end)
                         .expand(100.0 * zoom)
                         .intersects(canvas)
@@ -597,6 +603,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tursobench_core::DiagramTable;
     #[test]
     fn links_use_facing_ports_in_both_directions_and_keep_self_loops_outside() {
         let left = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(WIDTH, 120.0));

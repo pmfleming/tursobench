@@ -1,8 +1,11 @@
-use super::*;
+use super::{App, View, results, shell};
+use eframe::egui;
+use tursobench_core::Value;
+
 use results::{CellKind, detail_text};
 impl App {
     pub(super) fn cell_inspector(&mut self, ui: &mut egui::Ui, row: usize, col: usize) {
-        let Some(value) = self.result.rows.get(row).and_then(|r| r.get(col)).cloned() else {
+        let Some(value) = self.result.rows.get(row).and_then(|r| r.get(col)) else {
             ui.label("Selection no longer belongs to the retained result");
             return;
         };
@@ -26,8 +29,7 @@ impl App {
         let staged = self
             .drafts
             .as_ref()
-            .and_then(|d| self.result.rows.get(row).and_then(|r| d.displayed(r, col)))
-            .cloned();
+            .and_then(|d| self.result.rows.get(row).and_then(|r| d.displayed(r, col)));
         let typed = |value: &Value| match value {
             Value::Real(n) if !n.is_finite() => {
                 format!("Real({n}) — inspectable/exportable, not editable as a non-finite real")
@@ -36,7 +38,7 @@ impl App {
         };
         if let Some(value) = staged {
             ui.colored_label(ui.visuals().warn_fg_color, "Staged value — not yet written");
-            let text = typed(&value);
+            let text = typed(value);
             let mut text = text.as_str();
             ui.add(
                 egui::TextEdit::multiline(&mut text)
@@ -46,7 +48,7 @@ impl App {
             );
         }
         ui.label("Stored value");
-        let text = typed(&value);
+        let text = typed(value);
         let mut text = text.as_str();
         egui::ScrollArea::vertical()
             .id_salt("stored-cell")
@@ -61,7 +63,7 @@ impl App {
             });
         ui.horizontal_wrapped(|ui| {
             if ui.button("Copy stored value").clicked() {
-                ui.ctx().copy_text(crate::export::cell_text(&value));
+                ui.ctx().copy_text(crate::export::cell_text(value));
             }
             if ui.button("Record").clicked() {
                 self.tools.detail = Some(row);
@@ -93,10 +95,7 @@ impl App {
             }
             if ui.button("Stage cell change").clicked() {
                 match self.tools.cell_kind.parse(&self.tools.cell_input) {
-                    Ok(value) => {
-                        self.cell_json = serde_json::to_string(&value).unwrap();
-                        self.stage_cell(row, col);
-                    }
+                    Ok(value) => self.stage_cell(row, col, value),
                     Err(e) => self.status = e,
                 }
             }
@@ -122,11 +121,12 @@ impl App {
             ui.small("Editing requires writable access, editor autocommit, a complete controlled non-engine-managed table result with a proven key, and no pending/uncertain commit. Arbitrary SQL results remain read-only.");
         }
         if self.view == View::Browse
-            && let Some(info) = self.tools.inspection.clone()
+            && let Some(info) = &self.tools.inspection
         {
             ui.separator();
             ui.strong("References");
-            for key in info.foreign_keys {
+            let mut selected = None;
+            for key in &info.foreign_keys {
                 if ui
                     .button(format!(
                         "Follow → {} ({})",
@@ -139,8 +139,11 @@ impl App {
                     ))
                     .clicked()
                 {
-                    self.follow_key(row, key);
+                    selected = Some(key.clone());
                 }
+            }
+            if let Some(key) = selected {
+                self.follow_key(row, key);
             }
             ui.small("NULL and unresolved keys are never guessed. Commit or discard drafts before following a reference.");
         }

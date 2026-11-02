@@ -1,145 +1,21 @@
-use std::{collections::BTreeMap, path::Path, time::Duration};
+use crate::common::{self, Client, snapshot};
+use std::{collections::BTreeMap, path::Path};
 use tursobench_core::*;
-use tursobench_db::{Diagnostic, Operation, Request, Session};
+use tursobench_db::{Diagnostic, Operation};
 fn fixture(path: &Path) {
-    tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap().block_on(async{
-    let db=turso::Builder::new_local(path.to_str().unwrap()).experimental_index_method(true).build().await.unwrap();let c=db.connect().unwrap();
-    for sql in [
-        "CREATE TABLE parent(a INTEGER, b TEXT, payload TEXT, PRIMARY KEY(a,b)) STRICT",
-        "CREATE TABLE child(id INTEGER PRIMARY KEY,a INTEGER,b TEXT,note TEXT,FOREIGN KEY(a,b) REFERENCES parent ON DELETE CASCADE) STRICT",
-        "CREATE INDEX child_note_idx ON child(note) WHERE note IS NOT NULL",
-        "CREATE INDEX child_fts ON child USING fts(note)",
-        "INSERT INTO parent VALUES(7,'001','original')",
-        "INSERT INTO child VALUES(1,7,'001','needle'),(2,NULL,NULL,NULL)",
-    ]{c.execute(sql,()).await.unwrap();}
-});
+    common::create(
+        path,
+        &[
+            "CREATE TABLE parent(a INTEGER, b TEXT, payload TEXT, PRIMARY KEY(a,b)) STRICT",
+            "CREATE TABLE child(id INTEGER PRIMARY KEY,a INTEGER,b TEXT,note TEXT,FOREIGN KEY(a,b) REFERENCES parent ON DELETE CASCADE) STRICT",
+            "CREATE INDEX child_note_idx ON child(note) WHERE note IS NOT NULL",
+            "CREATE INDEX child_fts ON child USING fts(note)",
+            "INSERT INTO parent VALUES(7,'001','original')",
+            "INSERT INTO child VALUES(1,7,'001','needle'),(2,NULL,NULL,NULL)",
+        ],
+    );
 }
-struct Client {
-    session: Session,
-    sequence: u64,
-}
-struct Reply {
-    result: ResultSet,
-    info: Option<Inspection>,
-    failure: Option<Failure>,
-}
-impl Client {
-    fn open(path: &Path, access: Access) -> Self {
-        let session = Session::open(path.into(), access, true, || {}).unwrap();
-        assert!(matches!(
-            session
-                .events
-                .recv_timeout(Duration::from_secs(5))
-                .unwrap()
-                .kind,
-            EventKind::Opened
-        ));
-        Self {
-            session,
-            sequence: 0,
-        }
-    }
-    fn run(&mut self, operation: Operation) -> Reply {
-        self.sequence += 1;
-        let ticket = self.session.ticket(self.sequence, 0);
-        self.session.submit(Request { ticket, operation }).unwrap();
-        let mut result = ResultSet::default();
-        result.start(ticket);
-        loop {
-            let event = self
-                .session
-                .events
-                .recv_timeout(Duration::from_secs(10))
-                .unwrap();
-            assert_eq!(event.ticket, ticket);
-            match event.kind {
-                EventKind::Inspection(info) => {
-                    return Reply {
-                        result,
-                        info: Some(info),
-                        failure: None,
-                    };
-                }
-                EventKind::Failed(e) => {
-                    return Reply {
-                        result,
-                        info: None,
-                        failure: Some(e),
-                    };
-                }
-                _ => {
-                    let done = matches!(event.kind, EventKind::Finished(_));
-                    result.apply(event);
-                    if done {
-                        return Reply {
-                            result,
-                            info: None,
-                            failure: None,
-                        };
-                    }
-                }
-            }
-        }
-    }
-    fn sql(&mut self, sql: &str) -> ResultSet {
-        let reply = self.run(Operation::Execute {
-            sql: sql.into(),
-            parameters: vec![],
-            budget: Budget::default(),
-        });
-        assert!(reply.failure.is_none());
-        assert!(
-            reply.result.completion.as_ref().unwrap().error.is_none(),
-            "{}: {:?}",
-            sql,
-            reply.result.completion
-        );
-        reply.result
-    }
-    fn diagram(&mut self) -> SchemaDiagram {
-        self.sequence += 1;
-        let ticket = self.session.ticket(self.sequence, 0);
-        self.session
-            .submit(Request {
-                ticket,
-                operation: Operation::Diagram,
-            })
-            .unwrap();
-        let event = self
-            .session
-            .events
-            .recv_timeout(Duration::from_secs(10))
-            .unwrap();
-        assert_eq!(event.ticket, ticket);
-        match event.kind {
-            EventKind::Diagram(graph) => graph,
-            other => panic!("Expected diagram: {other:?}"),
-        }
-    }
-    fn close(self) {
-        self.session.close();
-        assert!(matches!(
-            self.session
-                .events
-                .recv_timeout(Duration::from_secs(5))
-                .unwrap()
-                .kind,
-            EventKind::Closed { rollback: Ok(()) }
-        ));
-    }
-}
-fn snapshot(dir: &Path) -> BTreeMap<String, Vec<u8>> {
-    std::fs::read_dir(dir)
-        .unwrap()
-        .map(|entry| {
-            let e = entry.unwrap();
-            (
-                e.file_name().to_string_lossy().into_owned(),
-                std::fs::read(e.path()).unwrap(),
-            )
-        })
-        .collect()
-}
+
 #[test]
 fn native_metadata_related_lookup_and_diagnostics_preserve_readonly_bytes() {
     let dir = tempfile::tempdir().unwrap();

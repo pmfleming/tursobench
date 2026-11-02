@@ -1,4 +1,6 @@
-use super::*;
+use super::results;
+use tursobench_core::{Browse, Inspection, SchemaObject, Ticket, Value};
+
 use std::{collections::BTreeMap, ops::Range};
 #[derive(Clone)]
 pub(super) enum Destination {

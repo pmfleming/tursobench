@@ -126,7 +126,7 @@ pub fn selection_or_statement(sql: &str, selection: Range<usize>) -> Result<Stri
     }
     if !selection.is_empty() {
         let selected = &sql[selection];
-        super::validate_single(selected)?;
+        validate_single(selected)?;
         return Ok(selected.to_owned());
     }
     let mut parser = Parser::new(sql.as_bytes());
@@ -147,11 +147,11 @@ pub fn selection_or_statement(sql: &str, selection: Range<usize>) -> Result<Stri
         .or_else(|| ranges.last().filter(|r| selection.start >= r.end))
         .ok_or_else(|| Failure::input("No statement at cursor"))?;
     let statement = sql[range.clone()].to_owned();
-    super::validate_single(&statement)?;
+    validate_single(&statement)?;
     Ok(statement)
 }
 pub fn explain_sql(sql: &str, bytecode: bool) -> Result<String, Failure> {
-    super::validate_single(sql)?;
+    validate_single(sql)?;
     use turso_parser::ast::{Cmd, Stmt};
     let command = Parser::new(sql.as_bytes())
         .next_cmd()
@@ -182,6 +182,30 @@ pub fn named_template(sql: &str) -> BTreeMap<String, tursobench_core::Value> {
         .filter(|p| !p.starts_with('?'))
         .map(|p| (p, tursobench_core::Value::Null))
         .collect()
+}
+
+pub fn validate_single(sql: &str) -> Result<(), Failure> {
+    if sql.len() > 1024 * 1024 {
+        return Err(Failure::input("SQL exceeds 1 MiB"));
+    }
+    let mut parser = turso_parser::parser::Parser::new(sql.as_bytes());
+    if parser
+        .next_cmd()
+        .map_err(|e| Failure::input(e.to_string()))?
+        .is_none()
+    {
+        return Err(Failure::input("Enter one SQL statement"));
+    }
+    if parser
+        .next_cmd()
+        .map_err(|e| Failure::input(e.to_string()))?
+        .is_some()
+    {
+        return Err(Failure::input(
+            "Scripts are not supported; execute one statement at a time",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

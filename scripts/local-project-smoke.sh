@@ -2,7 +2,7 @@
 # Source-derived schemas and synthetic data only. Never opens live project stores.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-cargo test --locked -p tursobench-db --test local_projects -- --nocapture
+cargo test --locked -p tursobench-db --test suite local_projects:: -- --nocapture
 cargo build --locked -p tursobench-ui
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT

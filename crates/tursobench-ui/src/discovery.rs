@@ -12,7 +12,6 @@ use std::{
     },
     time::{Duration, Instant, UNIX_EPOCH},
 };
-
 mod classification;
 pub use classification::DatabaseKind;
 
@@ -635,6 +634,146 @@ impl<F: FnMut(Event) -> bool> Scanner<'_, F> {
             ),
         }
     }
+    fn check_known(&mut self, path: &Path) {
+        let explicit = self
+            .request
+            .roots
+            .iter()
+            .any(|r| r.explicit && self.mounts.explicit_allowed(&r.path, path));
+        let beneath_explicit = self
+            .request
+            .roots
+            .iter()
+            .any(|r| r.explicit && path.starts_with(&r.path));
+        if self.excluded(path)
+            || (beneath_explicit && !explicit)
+            || (!explicit && !self.mounts.automatic_allowed(path))
+        {
+            self.checked(path, Availability::Skipped, true);
+        } else {
+            match no_symlink_components(path) {
+                Ok(true) => {
+                    if !explicit && path.parent().is_some_and(|p| self.application_path(p)) {
+                        self.checked(path, Availability::ExcludedApplication, true);
+                    } else {
+                        self.probe(path, true);
+                    }
+                }
+                Ok(false) => self.checked(path, Availability::Skipped, true),
+                Err(e) => self.checked(
+                    path,
+                    if e.kind() == io::ErrorKind::NotFound {
+                        Availability::Missing
+                    } else {
+                        Availability::Unavailable
+                    },
+                    true,
+                ),
+            }
+        }
+    }
+    fn directory(&mut self, root: &Root, device: Option<u64>) -> Option<(Metadata, u64)> {
+        if self.excluded(&root.path)
+            || (!root.explicit && !self.mounts.automatic_allowed(&root.path))
+        {
+            self.summary.skipped += 1;
+            return None;
+        }
+        // Check ancestry before opening a directory, including a parent
+        // replaced with a symlink since it was queued.
+        match no_symlink_components(&root.path) {
+            Ok(true) => {}
+            Ok(false) => {
+                self.summary.skipped += 1;
+                return None;
+            }
+            Err(e) => {
+                if root.explicit || e.kind() != io::ErrorKind::NotFound {
+                    self.summary.unavailable += 1;
+                }
+                return None;
+            }
+        }
+        if !root.explicit && self.application_path(&root.path) {
+            self.summary.skipped += 1;
+            return None;
+        }
+        let metadata = match fs::symlink_metadata(&root.path) {
+            Ok(m) if m.is_dir() && !m.file_type().is_symlink() => m,
+            Err(e) if e.kind() != io::ErrorKind::NotFound => {
+                self.summary.unavailable += 1;
+                return None;
+            }
+            _ => {
+                if root.explicit {
+                    self.summary.unavailable += 1;
+                }
+                return None;
+            }
+        };
+        #[cfg(unix)]
+        let current_device = {
+            use std::os::unix::fs::MetadataExt;
+            metadata.dev()
+        };
+        #[cfg(not(unix))]
+        let current_device = 0u64;
+        if device.is_some_and(|d| d != current_device) {
+            self.summary.skipped += 1;
+            return None;
+        }
+        Some((metadata, current_device))
+    }
+    fn entry(
+        &mut self,
+        entry: io::Result<fs::DirEntry>,
+        root: &Root,
+        current_device: u64,
+        queue: &mut VecDeque<(Root, Option<u64>)>,
+    ) {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => {
+                self.summary.unavailable += 1;
+                return;
+            }
+        };
+        let path = entry.path();
+        if self.excluded(&path) {
+            return;
+        }
+        // Never touch an automount entry before testing mount policy.
+        if self.mounts.boundary(&path) {
+            self.summary.skipped += 1;
+            return;
+        }
+        let kind = match entry.file_type() {
+            Ok(t) => t,
+            Err(_) => {
+                self.summary.unavailable += 1;
+                return;
+            }
+        };
+        if kind.is_dir() && root.depth > 0 && !skip_directory(&path) {
+            queue.push_back((
+                Root {
+                    path,
+                    depth: root.depth - 1,
+                    extensionless: root.extensionless,
+                    explicit: root.explicit,
+                },
+                Some(current_device),
+            ));
+        } else if kind.is_file() && candidate_name(&path, root.extensionless) {
+            self.probe(&path, false);
+        }
+    }
+    fn entry_limit(&mut self) -> bool {
+        let limited = self.summary.entries >= self.request.budget.entries
+            || self.summary.probes >= self.request.budget.probes;
+        self.summary.limited |= limited;
+        limited
+    }
     fn run(mut self) -> Summary {
         // Revalidate remembered files before traversing directories. Explicit
         // search roots can authorize network locations, never user exclusions.
@@ -642,108 +781,24 @@ impl<F: FnMut(Event) -> bool> Scanner<'_, F> {
             if self.stopped() {
                 return self.summary;
             }
-            let explicit = self
-                .request
-                .roots
-                .iter()
-                .any(|r| r.explicit && self.mounts.explicit_allowed(&r.path, &path));
-            let beneath_explicit = self
-                .request
-                .roots
-                .iter()
-                .any(|r| r.explicit && path.starts_with(&r.path));
-            if self.excluded(&path)
-                || (beneath_explicit && !explicit)
-                || (!explicit && !self.mounts.automatic_allowed(&path))
-            {
-                self.checked(&path, Availability::Skipped, true);
-            } else {
-                match no_symlink_components(&path) {
-                    Ok(true) => {
-                        if !explicit && path.parent().is_some_and(|p| self.application_path(p)) {
-                            self.checked(&path, Availability::ExcludedApplication, true);
-                        } else {
-                            self.probe(&path, true);
-                        }
-                    }
-                    Ok(false) => self.checked(&path, Availability::Skipped, true),
-                    Err(e) => self.checked(
-                        &path,
-                        if e.kind() == io::ErrorKind::NotFound {
-                            Availability::Missing
-                        } else {
-                            Availability::Unavailable
-                        },
-                        true,
-                    ),
-                }
-            }
+            self.check_known(&path);
         }
         let mut queue: VecDeque<_> = std::mem::take(&mut self.request.roots)
             .into_iter()
-            .map(|r| (r, None))
+            .map(|root| (root, None))
             .collect();
         let mut visited: HashMap<(Identity, bool), usize> = HashMap::new();
         while let Some((root, device)) = queue.pop_front() {
-            if self.stopped() {
+            if self.stopped() || self.entry_limit() {
                 break;
             }
-            if self.summary.entries >= self.request.budget.entries
-                || self.summary.directories >= self.request.budget.directories
-                || self.summary.probes >= self.request.budget.probes
-            {
+            if self.summary.directories >= self.request.budget.directories {
                 self.summary.limited = true;
                 break;
             }
-            if self.excluded(&root.path)
-                || (!root.explicit && !self.mounts.automatic_allowed(&root.path))
-            {
-                self.summary.skipped += 1;
+            let Some((metadata, current_device)) = self.directory(&root, device) else {
                 continue;
-            }
-            // Check ancestry before opening a directory, including a parent
-            // replaced with a symlink since it was queued.
-            match no_symlink_components(&root.path) {
-                Ok(true) => {}
-                Ok(false) => {
-                    self.summary.skipped += 1;
-                    continue;
-                }
-                Err(e) => {
-                    if root.explicit || e.kind() != io::ErrorKind::NotFound {
-                        self.summary.unavailable += 1;
-                    }
-                    continue;
-                }
-            }
-            if !root.explicit && self.application_path(&root.path) {
-                self.summary.skipped += 1;
-                continue;
-            }
-            let metadata = match fs::symlink_metadata(&root.path) {
-                Ok(m) if m.is_dir() && !m.file_type().is_symlink() => m,
-                Err(e) if e.kind() != io::ErrorKind::NotFound => {
-                    self.summary.unavailable += 1;
-                    continue;
-                }
-                _ => {
-                    if root.explicit {
-                        self.summary.unavailable += 1;
-                    }
-                    continue;
-                }
             };
-            #[cfg(unix)]
-            let current_device = {
-                use std::os::unix::fs::MetadataExt;
-                metadata.dev()
-            };
-            #[cfg(not(unix))]
-            let current_device = 0u64;
-            if device.is_some_and(|d| d != current_device) {
-                self.summary.skipped += 1;
-                continue;
-            }
             let key = (identity(&metadata, &root.path), root.extensionless);
             if visited.get(&key).is_some_and(|depth| *depth >= root.depth) {
                 continue;
@@ -758,51 +813,11 @@ impl<F: FnMut(Event) -> bool> Scanner<'_, F> {
                 }
             };
             for entry in entries {
-                if self.stopped() {
-                    break;
-                }
-                if self.summary.entries >= self.request.budget.entries
-                    || self.summary.probes >= self.request.budget.probes
-                {
-                    self.summary.limited = true;
+                if self.stopped() || self.entry_limit() {
                     break;
                 }
                 self.summary.entries += 1;
-                let entry = match entry {
-                    Ok(e) => e,
-                    Err(_) => {
-                        self.summary.unavailable += 1;
-                        continue;
-                    }
-                };
-                let path = entry.path();
-                if self.excluded(&path) {
-                    continue;
-                }
-                // Never touch an automount entry before testing mount policy.
-                if self.mounts.boundary(&path) {
-                    self.summary.skipped += 1;
-                    continue;
-                }
-                let kind = match entry.file_type() {
-                    Ok(t) => t,
-                    Err(_) => {
-                        self.summary.unavailable += 1;
-                        continue;
-                    }
-                };
-                if kind.is_dir() && root.depth > 0 && !skip_directory(&path) {
-                    queue.push_back((
-                        Root {
-                            path,
-                            depth: root.depth - 1,
-                            ..root.clone()
-                        },
-                        Some(current_device),
-                    ));
-                } else if kind.is_file() && candidate_name(&path, root.extensionless) {
-                    self.probe(&path, false);
-                }
+                self.entry(entry, &root, current_device, &mut queue);
             }
         }
         self.summary.cancelled |= self.cancel.load(Ordering::Relaxed);
@@ -1177,38 +1192,14 @@ mod tests {
     fn real_turso_database_and_sidecars_are_unchanged_by_discovery() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("native.db");
-        tokio::runtime::Builder::new_current_thread()
-            .enable_time()
-            .build()
-            .unwrap()
-            .block_on(async {
-                let db = turso::Builder::new_local(path.to_str().unwrap())
-                    .build()
-                    .await
-                    .unwrap();
-                let conn = db.connect().unwrap();
-                conn.execute(
-                    "CREATE TABLE example(id INTEGER PRIMARY KEY, value TEXT)",
-                    (),
-                )
-                .await
-                .unwrap();
-                conn.execute("INSERT INTO example VALUES (1, 'discovery fixture')", ())
-                    .await
-                    .unwrap();
-            });
-        let snapshot = || {
-            let mut files: Vec<_> = fs::read_dir(temp.path())
-                .unwrap()
-                .map(|entry| {
-                    let path = entry.unwrap().path();
-                    let bytes = fs::read(&path).unwrap();
-                    (path, bytes)
-                })
-                .collect();
-            files.sort_by(|a, b| a.0.cmp(&b.0));
-            files
-        };
+        crate::test_support::create(
+            &path,
+            &[
+                "CREATE TABLE example(id INTEGER PRIMARY KEY, value TEXT)",
+                "INSERT INTO example VALUES (1, 'discovery fixture')",
+            ],
+        );
+        let snapshot = || crate::test_support::snapshot(temp.path());
         let before = snapshot();
         let (events, summary) = run(request(temp.path()));
         assert_eq!(summary.found, 1);

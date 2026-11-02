@@ -1,3 +1,4 @@
+use crate::common;
 use std::{path::PathBuf, time::Duration};
 use tursobench_core::*;
 use tursobench_db::{Operation, Request, Session, validate_single};
@@ -5,56 +6,28 @@ use tursobench_db::{Operation, Request, Session, validate_single};
 fn fixture() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("test.db");
-    tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap()
-        .block_on(async {
-            let db = turso::Builder::new_local(path.to_str().unwrap())
-                .build()
-                .await
-                .unwrap();
-            let c = db.connect().unwrap();
-            c.execute("CREATE TABLE items(id INTEGER PRIMARY KEY, value TEXT)", ())
-                .await
-                .unwrap();
-            c.execute("INSERT INTO items VALUES (1, 'hello'), (2, NULL)", ())
-                .await
-                .unwrap();
-        });
+    common::create(
+        &path,
+        &[
+            "CREATE TABLE items(id INTEGER PRIMARY KEY, value TEXT)",
+            "INSERT INTO items VALUES (1, 'hello'), (2, NULL)",
+        ],
+    );
     (dir, path)
 }
-fn opened(path: PathBuf) -> Session {
-    let s = Session::open(path, Access::ReadOnly, true, || {}).unwrap();
-    assert!(matches!(
-        s.events.recv_timeout(Duration::from_secs(5)).unwrap().kind,
-        EventKind::Opened
-    ));
-    s
-}
 fn run(s: &Session, n: u64, sql: &str, budget: Budget) -> ResultSet {
-    let ticket = s.ticket(n, 0);
-    s.submit(Request {
-        ticket,
-        operation: Operation::Execute {
+    common::run(
+        s,
+        n,
+        Operation::Execute {
             sql: sql.into(),
             parameters: vec![],
             budget,
         },
-    })
-    .unwrap();
-    let mut results = ResultSet::default();
-    results.start(ticket);
-    loop {
-        let e = s.events.recv_timeout(Duration::from_secs(10)).unwrap();
-        let done = matches!(e.kind, EventKind::Finished(_));
-        results.apply(e);
-        if done {
-            break;
-        }
-    }
-    results
+    )
+    .result
 }
+
 #[test]
 fn parser_not_semicolon_splitting() {
     assert!(validate_single("SELECT ';' /* ; */;").is_ok());
@@ -65,12 +38,19 @@ fn parser_not_semicolon_splitting() {
         .is_ok()
     );
     assert!(validate_single("SELECT 1; DELETE FROM items").is_err());
-    assert!(validate_single("-- empty").is_err());
+    for sql in [
+        "-- empty".into(),
+        "?".into(),
+        "SELECT 1; ?".into(),
+        " ".repeat(1024 * 1024 + 1),
+    ] {
+        assert!(validate_single(&sql).is_err(), "{sql:.40}");
+    }
 }
 #[test]
 fn real_readonly_bounded_results_and_cleanup() {
     let (_dir, path) = fixture();
-    let s = opened(path);
+    let s = common::opened(&path, Access::ReadOnly);
     let r = run(&s, 1, "SELECT * FROM items ORDER BY id", Budget::default());
     assert_eq!(r.rows.len(), 2);
     assert_eq!(r.rows[1][1], Value::Null);
@@ -80,23 +60,76 @@ fn real_readonly_bounded_results_and_cleanup() {
         r.completion.unwrap().error.unwrap().kind,
         ErrorKind::ReadOnly
     );
-    let r = run(
-        &s,
-        3,
-        "SELECT * FROM items",
+    for (index, budget) in [
         Budget {
             rows: 1,
             ..Budget::default()
         },
-    );
-    assert_eq!(r.rows.len(), 1);
-    assert_eq!(r.completion.unwrap().delivery, Delivery::Limited);
+        Budget {
+            rows: 0,
+            ..Budget::default()
+        },
+        Budget {
+            bytes: 0,
+            ..Budget::default()
+        },
+        Budget {
+            cell_bytes: 0,
+            ..Budget::default()
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let r = run(&s, 10 + index as u64, "SELECT * FROM items", budget);
+        assert_eq!(r.rows.len(), usize::from(index == 0));
+        let completion = r.completion.unwrap();
+        assert_eq!(completion.delivery, Delivery::Limited);
+        assert_eq!(completion.rows_seen, 2);
+    }
     let r = run(&s, 4, "SELECT zeroblob(100000)", Budget::default());
     assert!(r.rows.is_empty());
     assert_eq!(r.completion.unwrap().delivery, Delivery::Limited);
     let r = run(&s, 5, "SELECT * FROM items WHERE 0", Budget::default());
     assert_eq!(r.columns.len(), 2);
     assert!(r.rows.is_empty());
+    for ticket in [
+        Ticket {
+            session: s.id + 1,
+            ..s.ticket(20, 0)
+        },
+        Ticket {
+            database: s.id + 1,
+            ..s.ticket(20, 0)
+        },
+    ] {
+        assert!(
+            s.submit(Request {
+                ticket,
+                operation: Operation::Schema
+            })
+            .is_err()
+        );
+    }
+    for (sql, parameters) in [
+        (
+            "SELECT ?1".into(),
+            vec![Value::Blob(vec![0; 8 * 1024 * 1024])],
+        ),
+        (format!("SELECT {}", vec!["0"; 513].join(",")), vec![]),
+    ] {
+        let r = common::run(
+            &s,
+            21,
+            Operation::Execute {
+                sql,
+                parameters,
+                budget: Budget::default(),
+            },
+        )
+        .result;
+        assert_eq!(r.completion.unwrap().error.unwrap().kind, ErrorKind::Input);
+    }
     s.close();
     assert!(matches!(
         s.events.recv_timeout(Duration::from_secs(5)).unwrap().kind,
@@ -106,7 +139,7 @@ fn real_readonly_bounded_results_and_cleanup() {
 #[test]
 fn discard_unblocks_backpressure() {
     let (_dir, path) = fixture();
-    let s = opened(path);
+    let s = common::opened(&path, Access::ReadOnly);
     s.submit(Request { ticket: s.ticket(1, 0), operation: Operation::Execute { sql: "WITH RECURSIVE x(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM x WHERE n<10000) SELECT n FROM x".into(), parameters: vec![], budget: Budget { rows: 10000, ..Budget::default() } } }).unwrap();
     std::thread::sleep(Duration::from_millis(100));
     s.discard_results(1);
@@ -122,11 +155,7 @@ fn discard_unblocks_backpressure() {
 #[test]
 fn close_discards_queued_work_and_rejects_new_submissions() {
     let (_dir, path) = fixture();
-    let s = Session::open(path.clone(), Access::ReadWrite, true, || {}).unwrap();
-    assert!(matches!(
-        s.events.recv_timeout(Duration::from_secs(5)).unwrap().kind,
-        EventKind::Opened
-    ));
+    let s = common::opened(&path, Access::ReadWrite);
     s.submit(Request { ticket: s.ticket(1, 0), operation: Operation::Execute {
         sql: "WITH RECURSIVE x(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM x WHERE n<100000) SELECT n FROM x".into(), parameters: vec![], budget: Budget::default()
     } }).unwrap();
@@ -159,7 +188,7 @@ fn close_discards_queued_work_and_rejects_new_submissions() {
             break;
         }
     }
-    let s = opened(path);
+    let s = common::opened(&path, Access::ReadOnly);
     assert_eq!(
         run(&s, 1, "SELECT count(*) FROM items", Budget::default()).rows,
         vec![vec![Value::Integer(2)]]
@@ -168,11 +197,7 @@ fn close_discards_queued_work_and_rejects_new_submissions() {
 #[test]
 fn returning_is_drained_even_when_delivery_is_limited() {
     let (_dir, path) = fixture();
-    let s = Session::open(path, Access::ReadWrite, true, || {}).unwrap();
-    assert!(matches!(
-        s.events.recv_timeout(Duration::from_secs(5)).unwrap().kind,
-        EventKind::Opened
-    ));
+    let s = common::opened(&path, Access::ReadWrite);
     let r = run(
         &s,
         1,
@@ -196,13 +221,30 @@ fn returning_is_drained_even_when_delivery_is_limited() {
     );
 }
 #[test]
-fn missing_path_never_created() {
+fn invalid_open_inputs_never_create_or_rewrite_files() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("typo.db");
-    let s = Session::open(path.clone(), Access::ReadOnly, true, || {}).unwrap();
-    assert!(matches!(
-        s.events.recv_timeout(Duration::from_secs(5)).unwrap().kind,
-        EventKind::Failed(_)
-    ));
-    assert!(!path.exists());
+    assert!(Session::open(path.clone(), Access::ReadOnly, false, || {}).is_err());
+    assert!(
+        Session::open_with_settings(
+            path.clone(),
+            Access::ReadOnly,
+            true,
+            ConnectionSettings {
+                busy_timeout_ms: 5001
+            },
+            || {}
+        )
+        .is_err()
+    );
+    for contents in [None, Some(vec![]), Some(vec![0; 100])] {
+        if let Some(bytes) = &contents {
+            std::fs::write(&path, bytes).unwrap();
+        }
+        let s = Session::open(path.clone(), Access::ReadOnly, true, || {}).unwrap();
+        assert!(matches!(common::event(&s).kind, EventKind::Failed(_)));
+        assert_eq!(std::fs::read(&path).ok(), contents);
+    }
+    let s = Session::open(dir.path().into(), Access::ReadOnly, true, || {}).unwrap();
+    assert!(matches!(common::event(&s).kind, EventKind::Failed(_)));
 }

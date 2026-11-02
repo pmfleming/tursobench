@@ -35,21 +35,6 @@ impl Format {
         }
     }
 }
-pub fn write_result(
-    path: &Path,
-    scope: &str,
-    columns: &[Column],
-    rows: &[Vec<Value>],
-) -> Result<(), String> {
-    write_result_as(
-        path,
-        Format::JsonLines,
-        scope,
-        columns,
-        rows,
-        "exported_rows",
-    )
-}
 /// Atomic, new-file-only export. Never reruns SQL or writes the inspected database.
 pub fn write_result_as(
     path: &Path,
@@ -269,100 +254,141 @@ mod tests {
             .collect()
     }
     #[test]
-    fn typed_stream_scope_end_marker_and_no_overwrite() {
+    fn formats_preserve_types_scope_and_atomic_publication() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("result.jsonl");
-        write_result(
-            &path,
-            "limited-query-result",
-            &columns(5),
-            &[vec![
-                Value::Integer(i64::MAX),
-                Value::Real(f64::INFINITY),
-                Value::Null,
-                Value::Text(String::new()),
-                Value::Blob(vec![0, 255]),
-            ]],
-        )
-        .unwrap();
-        let text = std::fs::read_to_string(&path).unwrap();
-        let lines: Vec<Json> = text
-            .lines()
-            .map(|l| serde_json::from_str(l).unwrap())
-            .collect();
-        assert_eq!(lines[0]["scope"], "limited-query-result");
-        assert_eq!(lines[1]["values"][0]["value"], i64::MAX.to_string());
-        assert_eq!(lines[1]["values"][1]["value"], "inf");
-        assert_eq!(lines[1]["values"][4]["hex"], "00ff");
-        assert_eq!(lines[2]["record"], "end");
-        assert!(write_result(&path, "table-page", &[], &[]).is_err());
-        assert_eq!(std::fs::read_to_string(path).unwrap(), text);
-        assert!(write_result(&dir.path().join("database.db"), "table-page", &[], &[]).is_err());
-    }
-    #[test]
-    fn convenience_formats_preserve_types_and_scope() {
-        let row = vec![
+        let rows = vec![vec![
             Value::Text("001".into()),
             Value::Null,
             Value::Blob(vec![0, 255]),
             Value::Real(1.0),
             Value::Text("a'\0b".into()),
-        ];
-        let cols = columns(row.len());
-        let sql = clipboard(
-            Format::Sql,
-            "table-page",
-            &cols,
-            std::slice::from_ref(&row),
-            "t\"x",
-        )
-        .unwrap();
-        assert!(sql.contains("\"t\"\"x\""));
-        assert!(sql.contains("'001', NULL, X'00ff', 1.0, CAST(X'61270062' AS TEXT)"));
-        let json: Json = serde_json::from_str(
-            &clipboard(Format::Json, "table-page", &cols, &[row], "").unwrap(),
-        )
-        .unwrap();
-        assert_eq!(json["header"]["scope"], "table-page");
-        assert_eq!(json["rows"][0][0]["type"], "text");
-        let csv = clipboard(
-            Format::Csv,
-            "limited-query-result",
-            &columns(3),
-            &[vec![
-                Value::Text("=1+1".into()),
-                Value::Text("a,\"b\n".into()),
-                Value::Null,
-            ]],
-            "",
-        )
-        .unwrap();
-        assert!(csv.contains("limited-query-result"));
-        assert!(csv.contains("\"'=1+1\""));
-        assert!(csv.contains("a,\"\"b\n"));
-        assert!(csv.contains("\\N"));
+        ]];
+        let cols = columns(5);
+        for format in Format::ALL {
+            let path = dir.path().join(format!("result.{}", format.extension()));
+            let text = clipboard(format, "table-page", &cols, &rows, "t\"x").unwrap();
+            write_result_as(&path, format, "table-page", &cols, &rows, "t\"x").unwrap();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+            assert!(write_result_as(&path, format, "other", &[], &[], "t").is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+            assert!(text.contains("table-page"));
+            match format {
+                Format::JsonLines => {
+                    let lines: Vec<Json> = text
+                        .lines()
+                        .map(|l| serde_json::from_str(l).unwrap())
+                        .collect();
+                    assert_eq!(lines[0]["scope"], "table-page");
+                    assert_eq!(lines[1]["values"][0]["value"], "001");
+                    assert_eq!(lines[1]["values"][2]["hex"], "00ff");
+                    assert_eq!(lines[2], json!({"record":"end", "rows":1}));
+                }
+                Format::Json => {
+                    let data: Json = serde_json::from_str(&text).unwrap();
+                    assert_eq!(data["header"]["scope"], "table-page");
+                    assert_eq!(data["rows"][0][0]["type"], "text");
+                }
+                Format::Sql => {
+                    assert!(text.contains("\"t\"\"x\""));
+                    assert!(text.contains("'001', NULL, X'00ff', 1.0, CAST(X'61270062' AS TEXT)"));
+                }
+                Format::Csv | Format::Tsv => {
+                    let escaped = clipboard(
+                        format,
+                        "limited-query-result",
+                        &columns(3),
+                        &[vec![
+                            Value::Text("=1+1".into()),
+                            Value::Text("a,\"b\n".into()),
+                            Value::Null,
+                        ]],
+                        "",
+                    )
+                    .unwrap();
+                    assert!(escaped.contains("limited-query-result"));
+                    assert!(escaped.contains("\"'=1+1\""));
+                    assert!(escaped.contains("a,\"\"b\n"));
+                    assert!(escaped.contains("\\N"));
+                }
+            }
+        }
+        for format in [Format::Json, Format::JsonLines] {
+            let text = clipboard(
+                format,
+                "limited-query-result",
+                &columns(2),
+                &[vec![Value::Integer(i64::MAX), Value::Real(f64::INFINITY)]],
+                "",
+            )
+            .unwrap();
+            assert!(text.contains(&i64::MAX.to_string()));
+            assert!(text.contains("inf"));
+        }
+        assert!(
+            write_result_as(
+                &dir.path().join("database.db"),
+                Format::JsonLines,
+                "table-page",
+                &[],
+                &[],
+                "t"
+            )
+            .is_err()
+        );
     }
     #[test]
     fn sql_export_round_trips_through_turso_with_quoted_names_and_nul_text() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("restore.db");
-        tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap().block_on(async {
-            let db = turso::Builder::new_local(path.to_str().unwrap()).build().await.unwrap(); let c = db.connect().unwrap();
+        crate::test_support::run(async {
+            let db = turso::Builder::new_local(path.to_str().unwrap())
+                .build()
+                .await
+                .unwrap();
+            let c = db.connect().unwrap();
             c.execute("CREATE TABLE \"t\"\"x\"(col0 INTEGER PRIMARY KEY,col1 REAL,col2 TEXT,col3 BLOB,col4 TEXT) STRICT",()).await.unwrap();
             let expected = vec![
-                vec![Value::Integer(i64::MIN),Value::Real(1.0),Value::Text("001".into()),Value::Blob(vec![]),Value::Null],
-                vec![Value::Integer(i64::MAX),Value::Real(-0.0),Value::Text("a'\0λ\n".into()),Value::Blob(vec![0,255]),Value::Null],
+                vec![
+                    Value::Integer(i64::MIN),
+                    Value::Real(1.0),
+                    Value::Text("001".into()),
+                    Value::Blob(vec![]),
+                    Value::Null,
+                ],
+                vec![
+                    Value::Integer(i64::MAX),
+                    Value::Real(-0.0),
+                    Value::Text("a'\0λ\n".into()),
+                    Value::Blob(vec![0, 255]),
+                    Value::Null,
+                ],
             ];
             for row in &expected {
-                let sql = clipboard(Format::Sql,"table-page",&columns(5),std::slice::from_ref(row),"t\"x").unwrap();
-                c.execute(sql,()).await.unwrap();
+                let sql = clipboard(
+                    Format::Sql,
+                    "table-page",
+                    &columns(5),
+                    std::slice::from_ref(row),
+                    "t\"x",
+                )
+                .unwrap();
+                c.execute(sql, ()).await.unwrap();
             }
-            let mut rows = c.query("SELECT * FROM \"t\"\"x\" ORDER BY col0",()).await.unwrap();
+            let mut rows = c
+                .query("SELECT * FROM \"t\"\"x\" ORDER BY col0", ())
+                .await
+                .unwrap();
             for expected in expected {
                 let row = rows.next().await.unwrap().unwrap();
-                for (i,value) in expected.into_iter().enumerate() {
-                    let value = match value { Value::Null=>turso::Value::Null,Value::Integer(n)=>turso::Value::Integer(n),Value::Real(n)=>turso::Value::Real(n),Value::Text(s)=>turso::Value::Text(s),Value::Blob(b)=>turso::Value::Blob(b) };
-                    assert_eq!(row.get_value(i).unwrap(),value);
+                for (i, value) in expected.into_iter().enumerate() {
+                    let value = match value {
+                        Value::Null => turso::Value::Null,
+                        Value::Integer(n) => turso::Value::Integer(n),
+                        Value::Real(n) => turso::Value::Real(n),
+                        Value::Text(s) => turso::Value::Text(s),
+                        Value::Blob(b) => turso::Value::Blob(b),
+                    };
+                    assert_eq!(row.get_value(i).unwrap(), value);
                 }
             }
             assert!(rows.next().await.unwrap().is_none());
@@ -381,18 +407,19 @@ mod tests {
             .is_err()
         );
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("bad.sql");
-        assert!(
-            write_result_as(
-                &path,
-                Format::Sql,
-                "test",
-                &columns(1),
-                &[vec![Value::Real(f64::NAN)]],
-                "t"
-            )
-            .is_err()
-        );
-        assert!(!path.exists());
+        let mut duplicates = columns(2);
+        duplicates[1].name = duplicates[0].name.to_uppercase();
+        for (cols, rows, table) in [
+            (columns(1), vec![vec![Value::Real(f64::NAN)]], "t"),
+            (columns(1), vec![vec![]], "t"),
+            (columns(1), vec![], ""),
+            (vec![], vec![], "t"),
+            (duplicates, vec![], "t"),
+        ] {
+            let path = dir.path().join("bad.sql");
+            assert!(write_result_as(&path, Format::Sql, "test", &cols, &rows, table).is_err());
+            assert!(!path.exists());
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        }
     }
 }

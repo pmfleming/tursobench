@@ -1,4 +1,6 @@
-use super::*;
+use super::App;
+use eframe::egui;
+
 mod chooser;
 mod connection;
 mod inspection;
@@ -582,6 +584,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::shell;
     use crate::{discovery::Candidate, storage::RecentDatabase};
     use std::{
         sync::mpsc,

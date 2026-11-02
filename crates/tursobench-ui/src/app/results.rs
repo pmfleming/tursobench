@@ -1,4 +1,7 @@
-use super::*;
+use super::{App, shell};
+use eframe::egui;
+use tursobench_core::{Ticket, Value};
+
 use crate::export::{self, Format};
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum CellKind {
@@ -40,8 +43,9 @@ impl CellKind {
                 Value::Blob(
                     (0..s.len())
                         .step_by(2)
-                        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
-                        .collect(),
+                        .map(|i| u8::from_str_radix(&s[i..i + 2], 16))
+                        .collect::<Result<_, _>>()
+                        .map_err(|e| e.to_string())?,
                 )
             }
         })
@@ -165,7 +169,6 @@ impl App {
             self.inspect = Some((row, column));
             self.ui.inspector = shell::Inspector::Cell;
             self.ui.inspector_open = true;
-            self.cell_json = serde_json::to_string_pretty(value).unwrap_or_default();
             self.tools.cell_kind = match value {
                 Value::Null => CellKind::Null,
                 Value::Integer(_) => CellKind::Integer,
@@ -179,12 +182,6 @@ impl App {
                 _ => export::cell_text(value),
             };
         }
-    }
-    pub(super) fn result_grid(&mut self, ui: &mut egui::Ui) {
-        self.grid_contents(ui);
-    }
-    pub(super) fn inspector_windows(&mut self, ctx: &egui::Context) {
-        self.inspection_surfaces(ctx);
     }
 }
 #[cfg(test)]

@@ -1,0 +1,15 @@
+project_name = "tursobench"
+project_root = "."
+source_roots = ["crates", "tools/engine-spike/src"]
+output_dir = "target/analysis"
+fingerprint_inputs = ["tests/fixtures", "contracts"]
+
+[rust]
+identity_resolution = "auto"
+identity_offline = true
+
+[verification]
+workspace = true
+all_targets = true
+locked = true
+timeout_seconds = 1200
