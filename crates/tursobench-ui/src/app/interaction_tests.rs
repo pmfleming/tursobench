@@ -242,6 +242,7 @@ fn diagram_preserves_drafts_and_result_ownership_and_chrome_fits_both_themes() {
     app.ui.workspace = shell::Workspace::Diagram;
     app.ui.diagram.fit = true;
     frame(&mut app, &ctx, vec![]);
+    let before_selection = app.ui.diagram.selected.clone();
     let (name, rect) = app.ui.diagram.table_rects[0].clone();
     let pos = rect.center();
     for pressed in [true, false] {
@@ -259,7 +260,7 @@ fn diagram_preserves_drafts_and_result_ownership_and_chrome_fits_both_themes() {
             ],
         );
     }
-    assert_eq!(app.ui.diagram.selected.as_ref(), Some(&name));
+    assert_eq!(app.ui.diagram.selected, before_selection);
     assert_eq!(app.ui.inspector, shell::Inspector::Structure);
     // Diagram navigation must not bypass the draft guard.
     app.browse_table(name.clone());
@@ -269,7 +270,8 @@ fn diagram_preserves_drafts_and_result_ownership_and_chrome_fits_both_themes() {
     app.browse_table(name.clone());
     wait(&mut app, &ctx);
     assert_eq!(app.table.as_ref().unwrap().name, name);
-    assert_eq!(app.ui.workspace, shell::Workspace::Data);
+    assert_eq!(app.ui.workspace, shell::Workspace::Diagram);
+    assert!(app.ui.drawer.open);
     app.close();
     while app.session.is_some() {
         app.poll(&ctx);
@@ -600,5 +602,42 @@ fn selection_named_history_metadata_reference_back_and_tools_render() {
     assert!(!app.result.rows.is_empty());
     app.tools.complete = true;
     frame(&mut app, &ctx, vec![]);
+    app.close();
+}
+
+#[test]
+fn map_home_drawer_preserves_camera_and_rejects_navigation_with_drafts() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("map-home.db");
+    crate::test_support::create(
+        &path,
+        &[
+            "CREATE TABLE a(id INTEGER PRIMARY KEY, value TEXT)",
+            "CREATE TABLE b(id INTEGER PRIMARY KEY)",
+            "INSERT INTO a VALUES(1, 'original')",
+        ],
+    );
+    let (ctx, mut app) = connected(&path, true);
+    assert_eq!(app.ui.workspace, shell::Workspace::Diagram);
+    assert!(!app.ui.drawer.open);
+    assert_eq!(app.ui.diagram.data.as_ref().unwrap().tables.len(), 2);
+    frame(&mut app, &ctx, vec![]);
+    let camera = (app.ui.diagram.zoom, app.ui.diagram.pan);
+    app.browse_table("a".into());
+    wait(&mut app, &ctx);
+    assert!(app.ui.drawer.open);
+    assert_eq!(app.result.rows[0][1], Value::Text("original".into()));
+    for expanded in [false, true, false] {
+        app.ui.drawer.expanded = expanded;
+        frame(&mut app, &ctx, vec![]);
+        assert_eq!((app.ui.diagram.zoom, app.ui.diagram.pan), camera);
+    }
+    app.stage_cell(0, 1, Value::Text("draft".into()));
+    let ticket = app.result.current;
+    app.browse_table("b".into());
+    assert_eq!(app.result.current, ticket);
+    assert_eq!(app.ui.diagram.selected.as_deref(), Some("a"));
+    assert_eq!(app.table.as_ref().unwrap().name, "a");
+    app.drafts = None;
     app.close();
 }

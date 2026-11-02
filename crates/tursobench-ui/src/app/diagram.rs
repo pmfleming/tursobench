@@ -28,6 +28,9 @@ pub(super) struct DiagramState {
     positions: BTreeMap<String, egui::Pos2>,
 }
 impl DiagramState {
+    pub fn freeze_camera(&mut self) {
+        self.auto_fit = false;
+    }
     pub fn loaded(&mut self, data: SchemaDiagram) {
         self.data = Some(data);
         self.ticket = None;
@@ -221,7 +224,7 @@ impl App {
                 self.ui.inspector_open = true;
             }
         });
-        ui.small("Declared relationships only · PK = primary-key position · UQ = unique-index member · FK = foreign-key member. Drag background to pan; wheel to zoom; drag table headers; click for structure; double-click to browse.");
+        ui.small("Declared relationships only · PK = primary-key position · UQ = unique-index member · FK = foreign-key member. Drag background to pan; wheel to zoom; drag table headers; click a table to open its Data / Structure drawer.");
         if self.ui.diagram.ticket.is_some() {
             ui.label(
                 "Loading committed metadata on the worker… Closing still waits for active work.",
@@ -470,7 +473,7 @@ impl App {
                 node.name,
                 node.error
                     .as_deref()
-                    .unwrap_or("Click: structure · Double-click: browse")
+                    .unwrap_or("Click: open Data / Structure drawer")
             ));
             let drag = ui.interact(
                 header.intersect(canvas),
@@ -589,13 +592,7 @@ impl App {
         if unresolved > 0 {
             painter.text(canvas.left_bottom()+egui::vec2(10.0,-10.0),egui::Align2::LEFT_BOTTOM,format!("{unresolved} unresolved relationship endpoints — inspect Structure; no targets invented"),egui::FontId::proportional(12.0),ui.visuals().warn_fg_color);
         }
-        if let Some(name) = selected {
-            self.ui.diagram.selected = Some(name);
-            self.tools.ddl = None;
-            self.ui.inspector_open = true;
-            self.ui.inspector = shell::Inspector::Structure;
-        }
-        if let Some(name) = browse {
+        if let Some(name) = browse.or(selected) {
             self.browse_table(name);
         }
     }

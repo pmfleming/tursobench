@@ -27,6 +27,18 @@ pub(super) enum Inspector {
     Record,
     Structure,
 }
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum TableView {
+    #[default]
+    Data,
+    Structure,
+}
+#[derive(Default)]
+pub(super) struct Drawer {
+    pub open: bool,
+    pub expanded: bool,
+    pub view: TableView,
+}
 pub(super) struct UiState {
     pub sidebar: Sidebar,
     pub sidebar_open: bool,
@@ -36,6 +48,7 @@ pub(super) struct UiState {
     pub inspector_detached: bool,
     pub outcomes: bool,
     pub diagram: diagram::DiagramState,
+    pub drawer: Drawer,
     pub font_rx: Option<std::sync::mpsc::Receiver<(egui::FontDefinitions, String)>>,
     pub font_label: String,
     #[cfg(test)]
@@ -47,13 +60,14 @@ impl UiState {
     pub fn new(ctx: &egui::Context) -> Self {
         Self {
             sidebar: Sidebar::Schema,
-            sidebar_open: true,
+            sidebar_open: false,
             workspace: Workspace::Connect,
             inspector: Inspector::Cell,
             inspector_open: false,
             inspector_detached: false,
             outcomes: false,
             diagram: Default::default(),
+            drawer: Default::default(),
             font_rx: Some(crate::appearance::system_fonts(ctx.clone())),
             font_label: "Loading system fonts; built-in fallback available".into(),
             #[cfg(test)]
@@ -339,9 +353,53 @@ impl App {
             }
         }
         if self.ui.workspace == Workspace::Diagram {
+            if self.ui.drawer.open {
+                if self.ui.drawer.expanded {
+                    self.table_drawer(ui);
+                    return;
+                }
+                let height = ui.available_height();
+                egui::Panel::bottom("table-drawer")
+                    .resizable(true)
+                    .default_size(height * 0.48)
+                    .size_range(120.0..=(height * 0.75).max(120.0))
+                    .show(ui, |ui| self.table_drawer(ui));
+            }
             self.diagram_ui(ui);
             return;
         }
+        self.result_workspace(ui);
+    }
+    fn table_drawer(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.strong(self.ui.diagram.selected.as_deref().unwrap_or("Table"));
+            ui.selectable_value(&mut self.ui.drawer.view, TableView::Data, "Data");
+            ui.selectable_value(&mut self.ui.drawer.view, TableView::Structure, "Structure");
+            if ui
+                .button(if self.ui.drawer.expanded {
+                    "Return to map"
+                } else {
+                    "Expand"
+                })
+                .clicked()
+            {
+                self.ui.drawer.expanded = !self.ui.drawer.expanded;
+            }
+            if ui.button("Close drawer").clicked() {
+                self.ui.drawer.open = false;
+                self.ui.drawer.expanded = false;
+            }
+        });
+        ui.separator();
+        if self.ui.drawer.view == TableView::Structure {
+            egui::ScrollArea::vertical()
+                .id_salt("drawer-structure")
+                .show(ui, |ui| self.structure_inspector(ui));
+        } else {
+            self.result_workspace(ui);
+        }
+    }
+    fn result_workspace(&mut self, ui: &mut egui::Ui) {
         // One persistent editor and one retained result: presentation modes,
         // not pretend independent transactions or unbounded result tabs.
         egui::ScrollArea::vertical()
@@ -384,7 +442,9 @@ impl App {
             ] {
                 if ui
                     .add_enabled(
-                        kind == Inspector::Structure || self.ui.workspace != Workspace::Diagram,
+                        kind == Inspector::Structure
+                            || self.ui.workspace != Workspace::Diagram
+                            || self.ui.drawer.open,
                         egui::Button::new(label).selected(self.ui.inspector == kind),
                     )
                     .clicked()
@@ -406,7 +466,10 @@ impl App {
             .show(ui, |ui| self.inspector_content(ui));
     }
     pub(super) fn inspector_content(&mut self, ui: &mut egui::Ui) {
-        if self.ui.workspace == Workspace::Diagram && self.ui.inspector != Inspector::Structure {
+        if self.ui.workspace == Workspace::Diagram
+            && !self.ui.drawer.open
+            && self.ui.inspector != Inspector::Structure
+        {
             ui.label("Choose Data / results or SQL editor to inspect retained row values. Diagram selection is schema metadata, not a data row.");
             return;
         }

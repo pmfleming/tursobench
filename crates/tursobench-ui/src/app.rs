@@ -180,6 +180,7 @@ impl App {
                 self.result = ResultSet::default();
                 self.schema.clear();
                 self.ui.diagram = Default::default();
+                self.ui.drawer = Default::default();
                 self.tools.ddl = None;
                 self.inspect = None;
                 self.tools.detail = None;
@@ -228,11 +229,16 @@ impl App {
                 self.result.start(ticket);
                 self.active = Some(ticket);
                 self.view = view;
-                self.ui.workspace = if matches!(view, View::Query | View::Explain) {
-                    shell::Workspace::Query
-                } else {
-                    shell::Workspace::Data
-                };
+                self.ui.workspace =
+                    if view == View::Browse && self.ui.workspace == shell::Workspace::Diagram {
+                        self.ui.drawer.open = true;
+                        self.ui.drawer.view = shell::TableView::Data;
+                        shell::Workspace::Diagram
+                    } else if matches!(view, View::Query | View::Explain) {
+                        shell::Workspace::Query
+                    } else {
+                        shell::Workspace::Data
+                    };
                 if view != View::Browse {
                     self.tools.export_table = "exported_rows".into();
                 }
@@ -259,17 +265,24 @@ impl App {
             self.status = "Open a database before browsing; retained values are unchanged".into();
             return;
         }
-        self.table = None;
-        self.tools.ddl = None;
-        self.tools.related = None;
-        self.browse = Some(Browse {
-            table: name,
+        let browse = Browse {
+            table: name.clone(),
             offset: 0,
             sort: None,
             descending: false,
             filter: None,
-        });
-        self.reload();
+        };
+        if self
+            .submit(Operation::Browse(browse.clone()), View::Browse)
+            .is_some()
+        {
+            self.table = None;
+            self.tools.ddl = None;
+            self.tools.related = None;
+            self.browse = Some(browse);
+            self.ui.diagram.selected = Some(name);
+            self.ui.diagram.freeze_camera();
+        }
     }
     fn reload(&mut self) {
         if let Some((table, keys)) = self.tools.related.clone() {
@@ -364,6 +377,8 @@ impl App {
                     self.ready = true;
                     self.record_database_open();
                     self.submit(Operation::Schema, View::Schema);
+                    self.ui.workspace = shell::Workspace::Diagram;
+                    self.load_diagram();
                 }
                 EventKind::Closed { rollback } => {
                     self.tools.pending_history.clear();
