@@ -1,0 +1,20 @@
+TursoBench app icon
+
+Canonical runtime asset: tursobench.png (512 × 512).
+tursobench.svg embeds the same PNG for icon-theme compatibility; it is not a vector tracing.
+The README banner embeds this mark as well.
+
+Approved design: 04-wrapped.png, developed from the Curl concept.
+Generated with the built-in image generation tool, then resized with Inkscape.
+
+Generation brief and reference:
+
+Use case: precise-object-edit / logo-brand.
+Create one polished square app icon by editing reference image 1 (03-curl.png). Image 1 is the design base: a flat friendly emerald serpent with a storage/database cylinder, on a deep green rounded-square tile. Image 2 is a modern artistic interpretation of Muirdris; use ONLY a light influence from its face: a broad rounded brow, round alert eyes, a short wide ridged aquatic muzzle. Do not reproduce its full body, illustration, text, inset maps or signature.
+Main change: the snake's long continuous body must visibly WRAP AROUND the central storage cylinder, with an obvious rear section disappearing behind the cylinder and a broad foreground coil crossing over the lower front of the cylinder. Use clean intentional occlusion to show one coherent coiling snake, not an unrelated ring beside the database. Maintain the compact friendly identity and curled-tail character of image 1. Head sits at upper right, connected naturally to the coil, looking toward the viewer/right in three-quarter view. Change the dog-like smile and pointy dog ears into a more aquatic Muirdris-inspired head: broad brow, short blunt ridged muzzle, round eyes, and two or three very simple fin/bramble crest points. Friendly mysterious expression, not horror. Minimal facial marks.
+The database must remain unmistakable: upright storage cylinder with oval top and two horizontal tier separators, clearly visible inside the coil.
+Exactly THREE flat solid colors across the entire icon: deep evergreen #102D25 for rounded-square background, outlines and eyes; emerald #10B981 for storage cylinder; pale emerald #6EE7B7 for serpent body and face. Use negative space and outlines to separate forms, no additional tones, no gradients, no shadows, no textures, no lighting, no 3D. Bold simple smooth vector-style silhouette, careful evenly weighted outlines, minimal details, legible at app-icon size. Preserve clean generous padding within the tile and transparent pixels outside its rounded corners. Single icon only, no captions, no labels, no decorative background. Output a high-resolution PNG, ideally 1024x1024.
+
+Reference: https://abookofcreatures.com/2016/09/23/muirdris/
+The reference is a modern artist's interpretation, not a canonical historical likeness.
+Created with the built-in image generation tool from 03-curl.png.

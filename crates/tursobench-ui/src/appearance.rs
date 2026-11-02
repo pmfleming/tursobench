@@ -8,41 +8,41 @@ pub fn theme(ctx: &egui::Context, dark: bool) {
     };
     let rgb = egui::Color32::from_rgb;
     visuals.panel_fill = if dark {
-        rgb(20, 29, 32)
+        rgb(20, 29, 25)
     } else {
-        rgb(244, 247, 247)
+        rgb(244, 247, 245)
     };
     visuals.window_fill = if dark {
-        rgb(29, 41, 46)
+        rgb(29, 41, 35)
     } else {
-        rgb(252, 253, 253)
+        rgb(252, 253, 252)
     };
     visuals.extreme_bg_color = if dark {
-        rgb(13, 21, 24)
+        rgb(13, 21, 17)
     } else {
         rgb(255, 255, 255)
     };
     visuals.faint_bg_color = if dark {
-        rgb(25, 36, 40)
+        rgb(25, 36, 30)
     } else {
-        rgb(235, 242, 243)
+        rgb(235, 242, 238)
     };
     visuals.override_text_color = Some(if dark {
-        rgb(220, 230, 232)
+        rgb(220, 230, 224)
     } else {
-        rgb(22, 32, 36)
+        rgb(22, 32, 27)
     });
     visuals.selection.bg_fill = if dark {
-        rgb(22, 58, 63)
+        rgb(6, 78, 59)
     } else {
-        rgb(211, 236, 238)
+        rgb(209, 250, 229)
     };
     visuals.selection.stroke = egui::Stroke::new(
         1.5,
         if dark {
-            rgb(76, 184, 194)
+            rgb(52, 211, 153)
         } else {
-            rgb(11, 116, 128)
+            rgb(4, 120, 87)
         },
     );
     visuals.hyperlink_color = visuals.selection.stroke.color;

@@ -4,4 +4,13 @@
 *.db-shm
 /result
 /.direnv/
-/docs/
+/docs/*
+!/docs/guide.md
+!/docs/database-discovery.md
+!/docs/fts.md
+!/docs/release.md
+!/docs/tursotui-review.md
+!/docs/assets/
+/docs/assets/*
+!/docs/assets/tursobench-banner.svg
+!/docs/assets/tursobench-banner.png

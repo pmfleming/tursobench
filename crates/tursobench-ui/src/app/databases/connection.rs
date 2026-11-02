@@ -142,7 +142,7 @@ impl App {
                 let response = ui.add_enabled(
                     enabled,
                     egui::Button::new(egui::RichText::new("Open database").color(egui::Color32::WHITE))
-                        .fill(egui::Color32::from_rgb(11, 116, 128))
+                        .fill(egui::Color32::from_rgb(4, 120, 87))
                         .min_size(egui::vec2(150.0, 36.0)),
                 );
                 #[cfg(test)]
