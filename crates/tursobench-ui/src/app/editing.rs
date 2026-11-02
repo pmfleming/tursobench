@@ -15,6 +15,7 @@ impl App {
             && self.transaction == TransactionState::Autocommit
             && self.commit_ticket.is_none()
             && self.active.is_none()
+            && self.tools.pages.pending.is_none()
             && self.view == View::Browse
             && self.table.as_ref().is_some_and(Table::editable)
             && self

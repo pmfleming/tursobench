@@ -539,35 +539,7 @@ impl App {
         {
             self.count_table(b.table.clone());
         }
-        let enabled =
-            self.ready && !self.closing && !self.has_drafts() && self.commit_ticket.is_none();
-        if ui
-            .add_enabled_ui(enabled && b.offset > 0, |ui| {
-                icons::button(ui, Icon::Back, "Previous 100", "Page Up")
-            })
-            .inner
-            .clicked()
-        {
-            self.browse.as_mut().unwrap().offset = b.offset.saturating_sub(100);
-            self.reload();
-        }
-        ui.small(format!(
-            "{}–{}",
-            b.offset + usize::from(!self.result.rows.is_empty()),
-            b.offset + self.result.rows.len()
-        ))
-        .on_hover_text("100 rows per page · OFFSET paging · not a snapshot");
-        if ui
-            .add_enabled_ui(
-                enabled && self.result.rows.len() == 100 && b.offset < 1_000_000,
-                |ui| icons::button(ui, Icon::Next, "Next 100", "Page Down"),
-            )
-            .inner
-            .clicked()
-        {
-            self.browse.as_mut().unwrap().offset = (b.offset + 100).min(1_000_000);
-            self.reload();
-        }
+        ui.small(format!("{}–{}",b.offset+usize::from(!self.result.rows.is_empty()),b.offset+self.result.rows.len())).on_hover_text("100 rows per fetch · retained window · OFFSET is not a snapshot · scroll back to reload evicted pages");
     }
     fn result_title(&self) -> &str {
         match self.view {

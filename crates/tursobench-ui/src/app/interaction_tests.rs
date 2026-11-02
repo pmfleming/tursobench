@@ -19,6 +19,7 @@ fn wait(app: &mut App, ctx: &egui::Context) {
         if app.ready
             && !app.closing
             && app.active.is_none()
+            && app.tools.pages.pending.is_none()
             && app.catalog_ticket.is_none()
             && app.commit_ticket.is_none()
             && app.tools.count_request.is_none()
@@ -1151,5 +1152,64 @@ fn range_selection_uses_visible_order_and_exact_numeric_values_and_inline_stages
             .displayed(&app.result.rows[0], 1),
         Some(&Value::Integer(123))
     );
+    app.close();
+}
+
+#[test]
+fn scroll_pages_append_evict_reload_and_reject_stale_or_draft_owned_fetches() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("pages.db");
+    crate::test_support::create(
+        &path,
+        &[
+            "CREATE TABLE sample(id INTEGER PRIMARY KEY,n INTEGER)",
+            "INSERT INTO sample WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<450) SELECT x,x FROM n",
+        ],
+    );
+    let (ctx, mut app) = connected(&path, true);
+    app.preferences.row_limit = 400;
+    app.browse_table("sample".into());
+    wait(&mut app, &ctx);
+    let owner = app.result.current;
+    let first = app.result.rows.clone();
+    app.request_page(false);
+    assert_eq!(app.result.rows, first);
+    assert!(app.tools.pages.pending.is_some());
+    wait(&mut app, &ctx);
+    assert_eq!(app.result.rows.len(), 200);
+    assert_eq!(app.result.current, owner);
+    app.request_page(false);
+    wait(&mut app, &ctx);
+    app.select_cell(200, 1, false);
+    app.request_page(false);
+    wait(&mut app, &ctx);
+    assert_eq!(app.browse.as_ref().unwrap().offset, 100);
+    assert_eq!(app.result.rows.len(), 300);
+    assert_eq!(app.inspect, Some((100, 1)));
+    app.request_page(true);
+    wait(&mut app, &ctx);
+    assert_eq!(app.browse.as_ref().unwrap().offset, 0);
+    assert_eq!(app.result.rows[0][0], Value::Integer(1));
+    app.stage_cell(0, 1, Value::Integer(999));
+    app.request_page(false);
+    assert!(app.tools.pages.pending.is_none());
+    assert!(app.has_drafts());
+    app.drafts = None;
+    app.request_page(false);
+    app.run_text("SELECT 987 AS answer".into(), None);
+    wait(&mut app, &ctx);
+    assert_eq!(app.result.rows, vec![vec![Value::Integer(987)]]);
+    app.browse_table("sample".into());
+    wait(&mut app, &ctx);
+    for _ in 0..5 {
+        app.request_page(false);
+        wait(&mut app, &ctx);
+    }
+    assert_eq!(app.tools.pages.end, Some(450));
+    assert_eq!(app.result.rows.last().unwrap()[0], Value::Integer(450));
+    let rows = app.result.rows.clone();
+    app.request_page(false);
+    assert!(app.tools.pages.pending.is_none());
+    assert_eq!(app.result.rows, rows);
     app.close();
 }

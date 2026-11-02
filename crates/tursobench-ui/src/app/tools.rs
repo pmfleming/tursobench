@@ -39,6 +39,7 @@ pub(super) struct NavigationEntry {
     pub record: Option<Vec<Value>>,
     pub structure: bool,
     pub scroll: eframe::egui::Vec2,
+    pub window_rows: usize,
 }
 #[derive(Default)]
 pub(super) struct Tools {
@@ -57,6 +58,7 @@ pub(super) struct Tools {
     pub restore_navigation: Option<NavigationEntry>,
     pub counts: BTreeMap<String, i64>,
     pub count_request: Option<(String, tursobench_core::ResultSet)>,
+    pub pages: super::paging::Pages,
     pub grid_scroll: eframe::egui::Vec2,
     pub restore_scroll: Option<eframe::egui::Vec2>,
     pub cell_kind: results::CellKind,

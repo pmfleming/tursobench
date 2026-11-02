@@ -274,6 +274,12 @@ impl App {
                     .saturating_add_signed(dr)
                     .min(self.result.rows.len().saturating_sub(1));
                 let col = c.saturating_add_signed(dc).min(cols.len() - 1);
+                if key == egui::Key::PageDown && row == s.cursor.0 {
+                    self.request_page(false);
+                }
+                if key == egui::Key::PageUp && row == 0 {
+                    self.request_page(true);
+                }
                 self.select_cell(row, cols[col], shift);
                 self.tools.scroll_to_cell = true;
                 break;

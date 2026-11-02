@@ -462,6 +462,7 @@ impl App {
                 .and_then(|r| self.result.rows.get(r).cloned()),
             structure: self.ui.table_view == shell::TableView::Structure,
             scroll: self.tools.grid_scroll,
+            window_rows: self.result.rows.len(),
         })
     }
     pub(super) fn restore_destination(&mut self, entry: NavigationEntry) -> bool {
@@ -490,6 +491,11 @@ impl App {
         } else {
             shell::TableView::Data
         };
+        self.tools.pages.restore_rows = if self.browse.is_some() {
+            entry.window_rows
+        } else {
+            0
+        };
         self.tools.restore_navigation = Some(entry);
         true
     }
@@ -510,6 +516,11 @@ impl App {
         }
     }
     pub(super) fn restore_browse_selection(&mut self) {
+        if self.tools.pages.restore_rows > self.result.rows.len() && self.tools.pages.end.is_none()
+        {
+            return;
+        }
+        self.tools.pages.restore_rows = 0;
         let Some(entry) = self.tools.restore_navigation.take() else {
             return;
         };

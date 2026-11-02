@@ -189,7 +189,7 @@ impl Worker<'_> {
                 let table = describe(self.browse, &spec.table).await?;
                 let (sql, parameters) = browse_sql(&table, spec)?;
                 self.output.send(ticket, EventKind::Table(table));
-                (self.browse, sql, parameters.into(), default)
+                (self.browse, sql, parameters.into(), Budget {rows:100,bytes:4*1024*1024,..default})
             }
             Operation::Lookup { table: name, keys } => {
                 let table = describe(self.browse, &name).await?;

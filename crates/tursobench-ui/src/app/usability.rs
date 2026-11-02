@@ -184,7 +184,7 @@ impl App {
             Some(_) if self.view == View::Browse && self.tools.related.is_some() => {
                 "related-row-lookup"
             }
-            Some(_) if self.view == View::Browse => "table-page",
+            Some(_) if self.view == View::Browse => "table-window",
             Some(_) => "complete-query-result",
             None => "unfinished",
         }

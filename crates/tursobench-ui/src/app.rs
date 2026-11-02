@@ -15,6 +15,7 @@ mod icons;
 mod inspector;
 #[cfg(test)]
 mod interaction_tests;
+mod paging;
 mod results;
 mod schema;
 mod selection;
@@ -268,6 +269,7 @@ impl App {
                 self.tools.restore_navigation = None;
                 self.tools.grid_scroll = egui::Vec2::ZERO;
                 self.tools.restore_scroll = None;
+                self.tools.pages = Default::default();
                 self.tools.grid_selection = None;
                 self.tools.inline = None;
                 self.result.start(ticket);
@@ -438,6 +440,16 @@ impl App {
             .as_ref()
             .is_none_or(|s| s.id != event.ticket.session)
         {
+            return;
+        }
+        if self
+            .tools
+            .pages
+            .pending
+            .as_ref()
+            .is_some_and(|p| p.result.current == Some(event.ticket))
+        {
+            self.page_event(event);
             return;
         }
         if let Some((_, result)) = &mut self.tools.count_request
@@ -633,6 +645,15 @@ impl App {
                     );
                     self.active = None;
                     self.result.apply(event);
+                    if self.view == View::Browse
+                        && let Some(browse) = &self.browse
+                        && self.result.rows.len() < 100
+                        && self.result.completion.as_ref().is_some_and(|c| {
+                            c.delivery == tursobench_core::Delivery::Complete && c.error.is_none()
+                        })
+                    {
+                        self.tools.pages.end = Some(browse.offset + self.result.rows.len());
+                    }
                     self.restore_browse_selection();
                 }
             }

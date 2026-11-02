@@ -45,6 +45,7 @@ impl App {
             let scans=self.result.rows.iter().filter(|r|matches!(r.get(detail),Some(Value::Text(s))if s.to_uppercase().contains("SCAN "))).count();
             ui.label(format!("Planner notes: {scans} scan entries. Scans may be intentional; not a runtime profile."));
         }
+        let mut page_range = 0..0;
         let restore = self.tools.restore_scroll.take();
         let horizontal = egui::ScrollArea::horizontal()
             .horizontal_scroll_offset(restore.map_or(self.tools.grid_scroll.x, |s| s.x))
@@ -56,6 +57,7 @@ impl App {
                     .id_salt("result-rows")
                     .max_height(remaining)
                     .show_rows(ui, 24.0, self.result.rows.len(), |ui, range| {
+                        page_range = range.clone();
                         #[cfg(test)]
                         {
                             self.ui.visible_rows = range
@@ -102,6 +104,25 @@ impl App {
                 self.add_filter(filter);
             }
             None => {}
+        }
+        if self.ui.nav == shell::Nav::Table && self.ui.table_view == shell::TableView::Data {
+            self.maybe_page(
+                page_range.start,
+                page_range.end,
+                ui.input(|i| i.smooth_scroll_delta.y),
+            );
+            if self.tools.pages.pending.is_some() {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.small("Loading 100 rows…");
+                });
+            }
+            if !self.tools.pages.error.is_empty() {
+                ui.colored_label(ui.visuals().error_fg_color, &self.tools.pages.error);
+                if ui.button("Retry next page").clicked() {
+                    self.request_page(false);
+                }
+            }
         }
         if self.writable && icons::control(ui, Icon::Plus, "New row", "", false, true).clicked() {
             self.begin_insert();
