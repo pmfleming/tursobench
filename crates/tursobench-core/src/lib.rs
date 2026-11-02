@@ -207,16 +207,20 @@ pub enum FilterOp {
     NotEqual,
     Less,
     Greater,
+    LessOrEqual,
+    GreaterOrEqual,
     Contains,
     IsNull,
     IsNotNull,
 }
 impl FilterOp {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 9] = [
         Self::Equal,
         Self::NotEqual,
         Self::Less,
         Self::Greater,
+        Self::LessOrEqual,
+        Self::GreaterOrEqual,
         Self::Contains,
         Self::IsNull,
         Self::IsNotNull,
@@ -227,6 +231,8 @@ impl FilterOp {
             Self::NotEqual => "≠",
             Self::Less => "<",
             Self::Greater => ">",
+            Self::LessOrEqual => "<=",
+            Self::GreaterOrEqual => ">=",
             Self::Contains => "contains",
             Self::IsNull => "is null",
             Self::IsNotNull => "is not null",

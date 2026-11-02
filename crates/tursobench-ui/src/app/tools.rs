@@ -43,6 +43,10 @@ pub(super) struct NavigationEntry {
 #[derive(Default)]
 pub(super) struct Tools {
     pub schema_filter: String,
+    pub filter_focus: bool,
+    pub filter_error: String,
+    pub filter_value: String,
+    pub filter_edit: Option<usize>,
     pub ddl: Option<SchemaObject>,
     pub inspection: Option<Inspection>,
     pub inspection_ticket: Option<Ticket>,

@@ -99,6 +99,8 @@ pub(crate) fn browse_sql(table: &Table, spec: Browse) -> Result<(String, Vec<Val
             FilterOp::NotEqual => "IS NOT",
             FilterOp::Less => "<",
             FilterOp::Greater => ">",
+            FilterOp::LessOrEqual => "<=",
+            FilterOp::GreaterOrEqual => ">=",
             FilterOp::Contains => "LIKE",
             FilterOp::IsNull => "IS NULL",
             FilterOp::IsNotNull => "IS NOT NULL",

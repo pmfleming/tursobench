@@ -356,6 +356,14 @@ fn typed_filter_chips_bind_values_escape_contains_and_combine_null_predicates() 
             vec![f(2, FilterOp::Equal, Value::Integer(i64::MAX))],
             vec![3],
         ),
+        (
+            vec![f(2, FilterOp::LessOrEqual, Value::Integer(3))],
+            vec![1, 2],
+        ),
+        (
+            vec![f(2, FilterOp::GreaterOrEqual, Value::Integer(3))],
+            vec![2, 3],
+        ),
         (vec![f(1, FilterOp::IsNull, Value::Null)], vec![3]),
         (vec![f(1, FilterOp::Equal, Value::Null)], vec![3]),
         (vec![f(1, FilterOp::NotEqual, Value::Null)], vec![1, 2]),

@@ -411,6 +411,7 @@ impl App {
         }
         if consumed(egui::Modifiers::CTRL, egui::Key::F) && self.ui.nav == shell::Nav::Table {
             self.ui.filter_open = true;
+            self.tools.filter_focus = true;
         }
         if consumed(egui::Modifiers::CTRL, egui::Key::Num1) {
             self.ui.table_view = shell::TableView::Data;

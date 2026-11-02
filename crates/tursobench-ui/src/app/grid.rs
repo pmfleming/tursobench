@@ -13,6 +13,7 @@ enum GridAction {
     Copy(usize),
     Delete(usize),
     Follow(usize, ForeignKey),
+    Filter(tursobench_core::Filter),
 }
 impl App {
     pub(super) fn grid_contents(&mut self, ui: &mut egui::Ui) {
@@ -84,6 +85,9 @@ impl App {
             Some(GridAction::Copy(r)) => self.copy_row(ui.ctx(), r),
             Some(GridAction::Delete(r)) => self.stage_delete(r),
             Some(GridAction::Follow(r, key)) => self.follow_key(r, key),
+            Some(GridAction::Filter(filter)) => {
+                self.add_filter(filter);
+            }
             None => {}
         }
         if self.writable && icons::control(ui, Icon::Plus, "New row", "", false, true).clicked() {
@@ -133,11 +137,16 @@ impl App {
                     if response.drag_started(){response.dnd_set_drag_payload(i);}
                     if let Some(from)=response.dnd_release_payload::<usize>() {self.tools.columns.move_before(*from,i);}
 
+                    let funnel_rect=egui::Rect::from_min_size(rect.right_top()+egui::vec2(-24.0,5.0),egui::vec2(17.0,20.0));
+                    let funnel=ui.interact(funnel_rect,ui.id().with(("column-filter",i)),egui::Sense::click());
+                    icons::paint(ui.painter(),funnel_rect.shrink(2.0),Icon::Filter,ui.visuals().weak_text_color());
+                    funnel.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,ui.is_enabled(),format!("Filter {}",column.name)));
+                    egui::Popup::menu(&funnel).show(|ui|self.column_facets(ui,i));
                     let handle=egui::Rect::from_min_max(egui::pos2(rect.right()-6.0,rect.top()),rect.right_bottom());
                     let drag=ui.interact(handle,ui.id().with(("resize-column",i)),egui::Sense::click_and_drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
                     if drag.double_clicked(){self.tools.columns.manual.remove(&i);self.tools.columns.refit=true;}
                     if drag.dragged(){self.tools.columns.manual.insert(i);self.tools.columns.widths[i]=(self.tools.columns.widths[i]+drag.drag_delta().x).clamp(60.0,640.0);}
-                    if response.clicked()&&!drag.contains_pointer(){sort=Some(i);}
+                    if response.clicked()&&!drag.contains_pointer()&&!funnel.contains_pointer(){sort=Some(i);}
                 }
             });
 
@@ -289,7 +298,13 @@ impl App {
                 if row == 0 && col == 0 {
                     self.first_cell_rect = Some(rect);
                 }
-                if response.clicked() {
+                if response.clicked() && ui.input(|i| i.modifiers.alt) && self.browse.is_some() {
+                    action = Some(GridAction::Filter(tursobench_core::Filter {
+                        column: col,
+                        op: tursobench_core::FilterOp::Equal,
+                        value: value.clone(),
+                    }));
+                } else if response.clicked() {
                     action = Some(if references.len() == 1 {
                         GridAction::Follow(row, references[0].clone())
                     } else {
@@ -314,6 +329,21 @@ impl App {
                         })
                 };
                 response.context_menu(|ui| {
+                    if self.view == View::Browse && self.browse.is_some() {
+                        for (op, label) in [
+                            (tursobench_core::FilterOp::Equal, "Filter = value"),
+                            (tursobench_core::FilterOp::NotEqual, "Exclude value"),
+                        ] {
+                            if ui.button(label).clicked() {
+                                action = Some(GridAction::Filter(tursobench_core::Filter {
+                                    column: col,
+                                    op,
+                                    value: value.clone(),
+                                }));
+                                ui.close();
+                            }
+                        }
+                    }
                     for key in &references {
                         if ui
                             .button(format!("Parent: {} (FK {})", key.target, key.id))

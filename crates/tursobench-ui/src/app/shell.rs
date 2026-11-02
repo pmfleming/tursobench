@@ -370,9 +370,6 @@ impl App {
                 .id_salt("table-structure")
                 .show(ui, |ui| self.structure_inspector(ui));
         } else {
-            if self.view == View::Browse {
-                self.filter_controls(ui);
-            }
             self.grid_contents(ui);
         }
     }
@@ -438,20 +435,6 @@ impl App {
                         self.copy_results(ui.ctx(), crate::export::Format::Tsv);
                         ui.close();
                     }
-                    if self.view == View::Browse
-                        && icons::control(
-                            ui,
-                            Icon::Filter,
-                            "Add typed filter",
-                            "Ctrl F",
-                            false,
-                            true,
-                        )
-                        .clicked()
-                    {
-                        self.ui.filter_open = true;
-                        ui.close();
-                    }
                     if ui.button("Show hidden columns").clicked() {
                         self.tools.columns.hidden.clear();
                         ui.close();
@@ -495,6 +478,31 @@ impl App {
                 }
                 if self.ui.nav == Nav::Table && self.ui.table_view == TableView::Data {
                     self.page_controls(ui);
+                    if ui.available_width() >= 120.0 {
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            self.filter_controls(ui)
+                        });
+                    } else {
+                        let filter = icons::control(
+                            ui,
+                            Icon::Filter,
+                            "Filter rows",
+                            "Ctrl F",
+                            self.browse.as_ref().is_some_and(|b| !b.filters.is_empty()),
+                            false,
+                        );
+                        if self.ui.filter_open {
+                            egui::Popup::open_id(
+                                ui.ctx(),
+                                egui::Popup::default_response_id(&filter),
+                            );
+                            self.ui.filter_open = false;
+                        }
+                        egui::Popup::menu(&filter).show(|ui| {
+                            ui.set_min_width(300.0);
+                            self.filter_controls(ui);
+                        });
+                    }
                 }
             });
         });
