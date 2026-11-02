@@ -14,6 +14,8 @@ enum GridAction {
     Delete(usize),
     Follow(usize, ForeignKey),
     Filter(tursobench_core::Filter),
+    Inspect(usize, usize),
+    Stage(usize, usize, Value),
 }
 impl App {
     pub(super) fn grid_contents(&mut self, ui: &mut egui::Ui) {
@@ -24,6 +26,9 @@ impl App {
         ui.spacing_mut().item_spacing.y = 1.0;
         let mut action = None;
         let editable = self.can_edit();
+        if !ui.input(|i| i.pointer.primary_down()) {
+            self.tools.dragging_selection = false;
+        }
         let remaining = (ui.available_height() - 38.0).max(0.0);
         #[cfg(test)]
         {
@@ -71,12 +76,20 @@ impl App {
             });
         self.tools.grid_scroll.x = horizontal.state.offset.x;
         match action {
-            Some(GridAction::Cell(r, c)) => {
-                self.open_cell(r, c);
-                self.tools.detail = Some(r);
-                self.ui.inspector = shell::DetailMode::Record;
+            Some(GridAction::Cell(r, c)) => self.select_cell(
+                r,
+                c,
+                ui.input(|i| i.modifiers.shift) || self.tools.dragging_selection,
+            ),
+            Some(GridAction::Edit(r, c)) => self.start_inline(r, c),
+            Some(GridAction::Inspect(r, c)) => self.open_cell(r, c),
+            Some(GridAction::Stage(r, c, v)) => {
+                self.stage_cell(r, c, v);
+                self.tools.inline = None;
+                if let Some(id) = self.tools.grid_focus {
+                    ui.ctx().memory_mut(|m| m.request_focus(id));
+                }
             }
-            Some(GridAction::Edit(r, c)) => self.open_cell(r, c),
             Some(GridAction::Record(r)) => {
                 self.tools.detail = Some(r);
                 self.ui.inspector = shell::DetailMode::Record;
@@ -210,7 +223,7 @@ impl App {
                 let fill = cell_fill(ui.visuals(), deleted, staged.is_some(), row);
                 let (rect, response) = ui.allocate_exact_size(
                     egui::vec2(self.tools.columns.widths[col], 24.0),
-                    egui::Sense::click(),
+                    egui::Sense::click_and_drag(),
                 );
                 response.widget_info(|| {
                     egui::WidgetInfo::selected(
@@ -231,8 +244,56 @@ impl App {
                         ),
                     )
                 });
+                if let Some(edit) = self
+                    .tools
+                    .inline
+                    .as_mut()
+                    .filter(|e| e.row == row && e.column == col)
+                {
+                    let response = ui.put(rect, egui::TextEdit::singleline(&mut edit.input));
+                    if edit.focus {
+                        response.request_focus();
+                        edit.focus = false;
+                    }
+                    response.context_menu(|ui| {
+                        egui::ComboBox::from_id_salt("inline-type")
+                            .selected_text(edit.kind.label())
+                            .show_ui(ui, |ui| {
+                                for k in [
+                                    super::results::CellKind::Null,
+                                    super::results::CellKind::Integer,
+                                    super::results::CellKind::Real,
+                                    super::results::CellKind::Text,
+                                ] {
+                                    ui.selectable_value(&mut edit.kind, k, k.label());
+                                }
+                            });
+                    });
+                    if response.has_focus()
+                        && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
+                    {
+                        match edit.kind.parse(&edit.input) {
+                            Ok(v) => action = Some(GridAction::Stage(row, col, v)),
+                            Err(e) => self.status = e,
+                        }
+                    }
+                    continue;
+                }
+                if self.tools.scroll_to_cell && self.inspect == Some((row, col)) {
+                    ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                    self.tools.scroll_to_cell = false;
+                }
                 let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
-                painter.rect_filled(rect, 0.0, fill);
+                let selected = self.cell_selected(row, col);
+                painter.rect_filled(
+                    rect,
+                    0.0,
+                    if selected {
+                        ui.visuals().selection.bg_fill
+                    } else {
+                        fill
+                    },
+                );
                 if self.inspect == Some((row, col)) || response.has_focus() {
                     painter.rect_stroke(
                         rect,
@@ -298,6 +359,29 @@ impl App {
                 if row == 0 && col == 0 {
                     self.first_cell_rect = Some(rect);
                 }
+                if response.drag_started_by(egui::PointerButton::Primary) {
+                    self.tools.grid_selection = Some(super::selection::Selection {
+                        ticket: self.result.current,
+                        anchor: (row, col),
+                        cursor: (row, col),
+                    });
+                    self.tools.dragging_selection = true;
+                    self.tools.grid_focus = Some(response.id);
+                    response.request_focus();
+                }
+                if response.hovered()
+                    && self.tools.dragging_selection
+                    && ui.input(|i| i.pointer.primary_down())
+                {
+                    if let Some(s) = &mut self.tools.grid_selection {
+                        s.cursor = (row, col);
+                    }
+                    action = Some(GridAction::Cell(row, col));
+                }
+                if response.clicked() {
+                    response.request_focus();
+                    self.tools.grid_focus = Some(response.id);
+                }
                 if response.clicked() && ui.input(|i| i.modifiers.alt) && self.browse.is_some() {
                     action = Some(GridAction::Filter(tursobench_core::Filter {
                         column: col,
@@ -305,11 +389,13 @@ impl App {
                         value: value.clone(),
                     }));
                 } else if response.clicked() {
-                    action = Some(if references.len() == 1 {
-                        GridAction::Follow(row, references[0].clone())
-                    } else {
-                        GridAction::Cell(row, col)
-                    });
+                    action = Some(
+                        if references.len() == 1 && !ui.input(|i| i.modifiers.shift) {
+                            GridAction::Follow(row, references[0].clone())
+                        } else {
+                            GridAction::Cell(row, col)
+                        },
+                    );
                 }
                 if response.double_clicked() {
                     action = Some(GridAction::Edit(row, col));
@@ -354,7 +440,7 @@ impl App {
                         }
                     }
                     if ui.button("Inspect / edit cell").clicked() {
-                        action = Some(GridAction::Edit(row, col));
+                        action = Some(GridAction::Inspect(row, col));
                         ui.close();
                     }
                     if ui.button("Copy stored cell").clicked() {

@@ -17,6 +17,7 @@ mod inspector;
 mod interaction_tests;
 mod results;
 mod schema;
+mod selection;
 mod shell;
 mod sidebar;
 mod smoke;
@@ -267,6 +268,8 @@ impl App {
                 self.tools.restore_navigation = None;
                 self.tools.grid_scroll = egui::Vec2::ZERO;
                 self.tools.restore_scroll = None;
+                self.tools.grid_selection = None;
+                self.tools.inline = None;
                 self.result.start(ticket);
                 self.active = Some(ticket);
                 self.view = view;

@@ -324,6 +324,8 @@ impl App {
                     self.result.rows.clear();
                     self.status = "Delivery suppressed; awaiting execution outcome".into();
                 }
+                let summary=self.selection_summary();
+                if !summary.is_empty() && ui.available_width()>160.0 {ui.add(egui::Label::new(summary).truncate());}
                 if let Some(c) = &self.result.completion && ui.available_width() > 200.0 {
                     ui.small(format!("{:?} · {} ms", c.delivery, c.elapsed_ms)).on_hover_text(self.export_scope());
                 }

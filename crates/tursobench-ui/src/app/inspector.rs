@@ -174,32 +174,87 @@ impl App {
                 }
             }
         }
-        self.incoming_references(ui, row);
-        if let Some(values) = self.result.rows.get(row) {
-            for (column, value) in self.result.columns.iter().zip(values) {
-                ui.separator();
-                ui.strong(&column.name);
-                let text = detail_text(value);
-                let mut text = text.as_str();
-                egui::ScrollArea::vertical()
-                    .id_salt(("record-value", row, &column.name))
-                    .max_height(160.0)
-                    .show(ui, |ui| {
-                        ui.add(
-                            egui::TextEdit::multiline(&mut text)
-                                .desired_width(ui.available_width())
-                                .desired_rows(2),
+        let mut inspect = None;
+        let mut edit = None;
+        if let Some(values) = self.result.rows.get(row).cloned() {
+            egui::Grid::new("compact-record")
+                .num_columns(2)
+                .spacing([8.0, 1.0])
+                .show(ui, |ui| {
+                    for (col, value) in values.iter().enumerate() {
+                        let name = &self.result.columns[col].name;
+                        ui.add_sized(
+                            [100.0, 25.0],
+                            egui::Label::new(egui::RichText::new(name).monospace()).truncate(),
                         );
-                    });
-                ui.small(match value {
-                    Value::Null => "NULL",
-                    Value::Integer(_) => "INTEGER",
-                    Value::Real(_) => "REAL",
-                    Value::Text(_) => "TEXT · JSON tokens preserved when pretty-printing",
-                    Value::Blob(_) => "BLOB (hex)",
+                        let shown = self
+                            .drafts
+                            .as_ref()
+                            .and_then(|d| d.displayed(&values, col))
+                            .unwrap_or(value);
+                        if let Some(inline) = self
+                            .tools
+                            .inline
+                            .as_mut()
+                            .filter(|e| e.row == row && e.column == col)
+                        {
+                            let response = ui.add_sized(
+                                [ui.available_width().min(240.0), 25.0],
+                                egui::TextEdit::singleline(&mut inline.input),
+                            );
+                            if inline.focus {
+                                response.request_focus();
+                                inline.focus = false;
+                            }
+                            if response.has_focus()
+                                && ui.input_mut(|i| {
+                                    i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+                                })
+                            {
+                                match inline.kind.parse(&inline.input) {
+                                    Ok(v) => edit = Some((col, v)),
+                                    Err(e) => self.status = e,
+                                }
+                            }
+                        } else {
+                            let response = ui
+                                .add_sized(
+                                    [ui.available_width().min(240.0), 25.0],
+                                    egui::Button::new(
+                                        egui::RichText::new(shown.preview()).monospace(),
+                                    )
+                                    .frame_when_inactive(false)
+                                    .truncate(),
+                                )
+                                .on_hover_text(format!(
+                                    "{} · {}\n{}",
+                                    name,
+                                    kind_name(shown),
+                                    detail_text(shown)
+                                ));
+                            if response.clicked() {
+                                inspect = Some(col);
+                            }
+                            if response.double_clicked() {
+                                edit = Some((col, shown.clone()));
+                            }
+                        }
+                        ui.end_row();
+                    }
                 });
+        }
+        if let Some(col) = inspect {
+            self.open_cell(row, col);
+        }
+        if let Some((col, value)) = edit {
+            if self.tools.inline.is_some() {
+                self.stage_cell(row, col, value);
+                self.tools.inline = None;
+            } else {
+                self.start_inline(row, col);
             }
         }
+        self.incoming_references(ui, row);
     }
     fn incoming_references(&mut self, ui: &mut egui::Ui, row: usize) {
         if self.view != View::Browse {
@@ -320,5 +375,15 @@ impl App {
             });
             self.tools.help = open;
         }
+    }
+}
+
+fn kind_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "NULL",
+        Value::Integer(_) => "INTEGER",
+        Value::Real(_) => "REAL",
+        Value::Text(_) => "TEXT",
+        Value::Blob(_) => "BLOB",
     }
 }

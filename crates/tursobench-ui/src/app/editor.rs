@@ -340,8 +340,12 @@ impl App {
         });
     }
     pub(super) fn shortcuts(&mut self, ctx: &egui::Context) {
+        self.grid_keys(ctx);
         let consumed = |mods, key| ctx.input_mut(|i| i.consume_key(mods, key));
         if consumed(egui::Modifiers::NONE, egui::Key::Escape) {
+            if self.tools.inline.take().is_some() {
+                return;
+            }
             if egui::Popup::is_any_open(ctx) {
                 egui::Popup::close_all(ctx);
             } else {

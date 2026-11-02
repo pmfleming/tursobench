@@ -1111,3 +1111,45 @@ fn column_presentation_preserves_schema_indices_and_manual_widths() {
     assert_eq!(app.result.rows[0][0], Value::Integer(1));
     app.close();
 }
+
+#[test]
+fn range_selection_uses_visible_order_and_exact_numeric_values_and_inline_stages() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("selection.db");
+    crate::test_support::create(
+        &path,
+        &[
+            "CREATE TABLE sample(id INTEGER PRIMARY KEY,n INTEGER,text TEXT)",
+            "INSERT INTO sample VALUES(1,9007199254740993,''),(2,9007199254740995,'two')",
+        ],
+    );
+    let (ctx, mut app) = connected(&path, true);
+    app.browse_table("sample".into());
+    wait(&mut app, &ctx);
+    frame(&mut app, &ctx, vec![]);
+    app.select_cell(0, 1, false);
+    app.select_cell(1, 1, true);
+    assert_eq!(app.selected_cells(), vec![(0, 1), (1, 1)]);
+    let summary = app.selection_summary();
+    assert!(summary.contains("18014398509481988"), "{summary}");
+    app.tools.columns.move_before(2, 1);
+    app.select_cell(0, 2, false);
+    app.select_cell(1, 1, true);
+    assert_eq!(app.selected_cells(), vec![(0, 2), (0, 1), (1, 2), (1, 1)]);
+    app.start_inline(0, 1);
+    assert!(app.tools.inline.is_some());
+    let edit = app.tools.inline.as_mut().unwrap();
+    edit.input = "123".into();
+    let value = edit.kind.parse(&edit.input).unwrap();
+    app.stage_cell(0, 1, value);
+    app.tools.inline = None;
+    assert_eq!(app.result.rows[0][1], Value::Integer(9007199254740993));
+    assert_eq!(
+        app.drafts
+            .as_ref()
+            .unwrap()
+            .displayed(&app.result.rows[0], 1),
+        Some(&Value::Integer(123))
+    );
+    app.close();
+}
