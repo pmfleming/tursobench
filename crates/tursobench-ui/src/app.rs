@@ -10,12 +10,14 @@ mod editor;
 mod files;
 mod filters;
 mod grid;
+mod icons;
 mod inspector;
 #[cfg(test)]
 mod interaction_tests;
 mod results;
 mod schema;
 mod shell;
+mod sidebar;
 mod smoke;
 mod tools;
 mod usability;
@@ -323,6 +325,7 @@ impl App {
             self.tools.highlight_column = None;
             self.tools.scroll_to_column = false;
             self.ui.sql_open = false;
+            self.ui.unfolded = Some(name.clone());
             self.ui.diagram.selected = Some(name);
             self.ui.diagram.freeze_camera();
         }

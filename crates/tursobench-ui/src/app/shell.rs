@@ -41,6 +41,8 @@ pub(super) struct Drawer {
 }
 pub(super) struct UiState {
     pub sidebar: Sidebar,
+    pub unfolded: Option<String>,
+    pub hover_table: Option<String>,
     pub sidebar_open: bool,
     pub workspace: Workspace,
     pub inspector: Inspector,
@@ -71,6 +73,8 @@ impl UiState {
     pub fn new(ctx: &egui::Context) -> Self {
         Self {
             sidebar: Sidebar::Schema,
+            unfolded: None,
+            hover_table: None,
             sidebar_open: false,
             workspace: Workspace::Connect,
             inspector: Inspector::Cell,
@@ -107,10 +111,10 @@ pub(super) struct Layout {
     pub inspector_width: f32,
 }
 impl Layout {
-    pub fn new(width: f32, sidebar: bool, inspector: bool) -> Self {
+    pub fn new(width: f32, sidebar: bool, _inspector: bool) -> Self {
         Self {
-            show_sidebar: sidebar && (!inspector || width >= 1500.0),
-            bottom_inspector: width < 1100.0,
+            show_sidebar: sidebar,
+            bottom_inspector: width < 1400.0,
             sidebar_width: if width >= 1800.0 { 260.0 } else { 220.0 },
             inspector_width: if width >= 1800.0 { 370.0 } else { 310.0 },
         }
@@ -133,7 +137,7 @@ impl App {
 
         let layout = Layout::new(
             width,
-            self.ui.sidebar_open,
+            self.session.is_some(),
             self.ui.inspector_open && !self.ui.inspector_detached,
         );
         if layout.show_sidebar {
@@ -142,16 +146,7 @@ impl App {
                 .default_size(layout.sidebar_width)
                 .size_range(190.0..=300.0)
                 .show(ui, |ui| {
-                    if ui.button("Close panel").clicked() {
-                        self.ui.sidebar_open = false;
-                    }
-                    egui::ScrollArea::vertical()
-                        .id_salt("workspace-sidebar-scroll")
-                        .show(ui, |ui| match self.ui.sidebar {
-                            Sidebar::Schema => self.schema_panel(ui),
-                            Sidebar::Diagnostics => self.diagnostics_ui(ui),
-                            _ => self.history_controls(ui),
-                        });
+                    self.navigation_sidebar(ui);
                 });
         }
         if self.ui.inspector_open && !self.ui.inspector_detached {
@@ -182,6 +177,7 @@ impl App {
         self.inspection_surfaces(&ctx);
         self.command_palette(&ctx);
         self.access_dialog(&ctx);
+        self.tool_window(&ctx);
         if self.ui.export_open {
             let mut open = true;
             egui::Window::new("Export retained result")

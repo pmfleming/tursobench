@@ -1,0 +1,382 @@
+//! Asset-free icons share native button interaction, focus, tooltip and AccessKit names.
+use eframe::egui::{self, Pos2, Stroke};
+
+#[derive(Clone, Copy)]
+pub(super) enum Icon {
+    Back,
+    Next,
+    Search,
+    Database,
+    Map,
+    Data,
+    Structure,
+    Filter,
+    Refresh,
+    Count,
+    Export,
+    Copy,
+    Sql,
+    History,
+    Saved,
+    Checks,
+    Settings,
+    Help,
+    Close,
+    Popout,
+    Lock,
+    Edit,
+    More,
+    Fit,
+    Arrange,
+    Columns,
+    System,
+    Plus,
+    Selection,
+    Explain,
+    Parameters,
+    Complete,
+    Undo,
+    Trash,
+    Key,
+    Link,
+    Up,
+    Down,
+    Theme,
+}
+
+pub(super) fn button(ui: &mut egui::Ui, icon: Icon, name: &str, shortcut: &str) -> egui::Response {
+    control(ui, icon, name, shortcut, false, false)
+}
+
+pub(super) fn control(
+    ui: &mut egui::Ui,
+    icon: Icon,
+    name: &str,
+    shortcut: &str,
+    selected: bool,
+    label: bool,
+) -> egui::Response {
+    let text = if label {
+        format!("     {name}")
+    } else {
+        String::new()
+    };
+    let response = ui.add(
+        egui::Button::new(text)
+            .min_size(egui::vec2(28.0, 28.0))
+            .selected(selected),
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), selected, name)
+    });
+    let rect = egui::Rect::from_center_size(
+        egui::pos2(response.rect.left() + 14.0, response.rect.center().y),
+        egui::vec2(16.0, 16.0),
+    );
+    paint(
+        ui.painter(),
+        rect,
+        icon,
+        ui.style().interact(&response).fg_stroke.color,
+    );
+    response.on_hover_text(if shortcut.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{name} · {shortcut}")
+    })
+}
+
+pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color: egui::Color32) {
+    let p =
+        |x: f32, y: f32| rect.min + egui::vec2(x * rect.width() / 24.0, y * rect.height() / 24.0);
+    let stroke = Stroke::new(1.4, color);
+    let line = |points: &[(f32, f32)]| {
+        painter.add(egui::Shape::line(
+            points.iter().map(|&(x, y)| p(x, y)).collect::<Vec<Pos2>>(),
+            stroke,
+        ));
+    };
+    let circle = |x, y, r| {
+        painter.circle_stroke(p(x, y), r * rect.width() / 24.0, stroke);
+    };
+    let box_ = |x, y, w, h| {
+        painter.rect_stroke(
+            egui::Rect::from_min_max(p(x, y), p(x + w, y + h)),
+            2.0,
+            stroke,
+            egui::StrokeKind::Inside,
+        );
+    };
+    use Icon::*;
+    match icon {
+        Back => {
+            line(&[(19., 12.), (5., 12.)]);
+            line(&[(11., 6.), (5., 12.), (11., 18.)]);
+        }
+        Next => {
+            line(&[(5., 12.), (19., 12.)]);
+            line(&[(13., 6.), (19., 12.), (13., 18.)]);
+        }
+        Up => line(&[(6., 15.), (12., 9.), (18., 15.)]),
+        Down => line(&[(6., 9.), (12., 15.), (18., 9.)]),
+        Search => {
+            circle(10., 10., 7.);
+            line(&[(15., 15.), (21., 21.)]);
+        }
+        Database => {
+            box_(4., 4., 16., 17.);
+            line(&[(4., 9.), (20., 9.)]);
+            line(&[(4., 15.), (20., 15.)]);
+        }
+        Map => {
+            box_(2., 3., 8., 6.);
+            box_(15., 3., 7., 6.);
+            box_(8., 16., 8., 6.);
+            line(&[(6., 9.), (6., 12.), (19., 12.), (19., 9.)]);
+            line(&[(12., 12.), (12., 16.)]);
+        }
+        Data => {
+            box_(3., 3., 18., 18.);
+            line(&[(3., 9.), (21., 9.)]);
+            line(&[(3., 15.), (21., 15.)]);
+            line(&[(9., 3.), (9., 21.)]);
+        }
+        Structure => {
+            for y in [6., 12., 18.] {
+                circle(4., y, 1.);
+                line(&[(9., y), (21., y)]);
+            }
+        }
+        Filter => line(&[
+            (3., 4.),
+            (21., 4.),
+            (14., 12.),
+            (14., 19.),
+            (10., 21.),
+            (10., 12.),
+            (3., 4.),
+        ]),
+        Refresh => {
+            line(&[(21., 4.), (21., 10.), (15., 10.)]);
+            line(&[
+                (21., 10.),
+                (17., 5.),
+                (9., 4.),
+                (4., 9.),
+                (4., 16.),
+                (10., 21.),
+                (17., 20.),
+                (21., 16.),
+            ]);
+        }
+        Count => line(&[
+            (19., 7.),
+            (19., 4.),
+            (5., 4.),
+            (12., 12.),
+            (5., 20.),
+            (19., 20.),
+            (19., 17.),
+        ]),
+        Export => {
+            line(&[(12., 3.), (12., 16.)]);
+            line(&[(6., 10.), (12., 16.), (18., 10.)]);
+            line(&[(3., 16.), (3., 21.), (21., 21.), (21., 16.)]);
+        }
+        Copy => {
+            box_(9., 9., 12., 12.);
+            line(&[(5., 16.), (3., 16.), (3., 3.), (16., 3.), (16., 5.)]);
+        }
+        Sql => {
+            box_(2., 4., 20., 16.);
+            line(&[(6., 9.), (10., 12.), (6., 15.)]);
+            line(&[(13., 16.), (18., 16.)]);
+        }
+        History => {
+            circle(12., 12., 9.);
+            line(&[(12., 6.), (12., 12.), (17., 15.)]);
+        }
+        Saved => line(&[
+            (6., 21.),
+            (6., 3.),
+            (18., 3.),
+            (18., 21.),
+            (12., 16.),
+            (6., 21.),
+        ]),
+        Checks => line(&[
+            (2., 12.),
+            (6., 12.),
+            (9., 4.),
+            (15., 20.),
+            (18., 12.),
+            (22., 12.),
+        ]),
+        Settings => {
+            for (x, y) in [(4., 14.), (12., 8.), (20., 16.)] {
+                line(&[(x, 3.), (x, 21.)]);
+                circle(x, y, 2.5);
+            }
+        }
+        Help => {
+            circle(12., 12., 9.);
+            line(&[
+                (8., 8.),
+                (10., 6.),
+                (14., 6.),
+                (16., 9.),
+                (12., 13.),
+                (12., 14.),
+            ]);
+            circle(12., 18., 0.6);
+        }
+        Close => {
+            line(&[(6., 6.), (18., 18.)]);
+            line(&[(6., 18.), (18., 6.)]);
+        }
+        Popout => {
+            line(&[(14., 3.), (21., 3.), (21., 10.)]);
+            line(&[(10., 14.), (21., 3.)]);
+            line(&[(10., 4.), (3., 4.), (3., 21.), (20., 21.), (20., 14.)]);
+        }
+        Lock => {
+            box_(4., 11., 16., 11.);
+            line(&[
+                (8., 11.),
+                (8., 5.),
+                (10., 3.),
+                (14., 3.),
+                (16., 5.),
+                (16., 11.),
+            ]);
+        }
+        Edit => line(&[
+            (4., 20.),
+            (6., 14.),
+            (17., 3.),
+            (21., 7.),
+            (10., 18.),
+            (4., 20.),
+        ]),
+        More => {
+            for x in [5., 12., 19.] {
+                circle(x, 12., 1.);
+            }
+        }
+        Fit => {
+            for (x, y, dx, dy) in [
+                (3., 3., 5., 5.),
+                (21., 3., -5., 5.),
+                (3., 21., 5., -5.),
+                (21., 21., -5., -5.),
+            ] {
+                line(&[(x, y + dy), (x, y), (x + dx, y)]);
+            }
+        }
+        Arrange => {
+            for (x, y) in [(3., 3.), (14., 3.), (3., 14.), (14., 14.)] {
+                box_(x, y, 7., 7.);
+            }
+        }
+        Columns => {
+            box_(3., 3., 18., 18.);
+            line(&[(12., 3.), (12., 21.)]);
+        }
+        System => line(&[
+            (12., 2.),
+            (21., 6.),
+            (20., 15.),
+            (16., 20.),
+            (12., 23.),
+            (8., 20.),
+            (4., 15.),
+            (3., 6.),
+            (12., 2.),
+        ]),
+        Plus => {
+            line(&[(4., 12.), (20., 12.)]);
+            line(&[(12., 4.), (12., 20.)]);
+        }
+        Selection => {
+            for y in [6., 12., 18.] {
+                line(&[(2., y), (8., y)]);
+            }
+            line(&[(13., 6.), (21., 12.), (13., 18.), (13., 6.)]);
+        }
+        Explain => {
+            box_(2., 3., 7., 7.);
+            box_(15., 15., 7., 7.);
+            line(&[(6., 10.), (6., 18.), (15., 18.)]);
+        }
+        Parameters => {
+            line(&[
+                (8., 3.),
+                (5., 3.),
+                (5., 10.),
+                (2., 12.),
+                (5., 14.),
+                (5., 21.),
+                (8., 21.),
+            ]);
+            line(&[
+                (16., 3.),
+                (19., 3.),
+                (19., 10.),
+                (22., 12.),
+                (19., 14.),
+                (19., 21.),
+                (16., 21.),
+            ]);
+        }
+        Complete => {
+            line(&[(3., 6.), (21., 6.)]);
+            line(&[(3., 12.), (16., 12.)]);
+            line(&[(3., 18.), (12., 18.)]);
+        }
+        Undo => {
+            line(&[(9., 4.), (4., 9.), (9., 14.)]);
+            line(&[
+                (4., 9.),
+                (17., 9.),
+                (21., 13.),
+                (21., 17.),
+                (17., 21.),
+                (12., 21.),
+            ]);
+        }
+        Trash => {
+            line(&[(3., 6.), (21., 6.)]);
+            line(&[(8., 6.), (8., 3.), (16., 3.), (16., 6.)]);
+            line(&[(5., 6.), (6., 21.), (18., 21.), (19., 6.)]);
+        }
+        Key => {
+            circle(7., 16., 5.);
+            line(&[(11., 12.), (21., 2.)]);
+            line(&[(16., 7.), (20., 11.)]);
+        }
+        Link => {
+            line(&[
+                (10., 15.),
+                (6., 19.),
+                (2., 15.),
+                (2., 12.),
+                (8., 6.),
+                (12., 6.),
+                (16., 10.),
+            ]);
+            line(&[
+                (8., 14.),
+                (14., 8.),
+                (18., 5.),
+                (22., 9.),
+                (22., 12.),
+                (16., 18.),
+                (12., 18.),
+            ]);
+        }
+        Theme => {
+            circle(12., 12., 9.);
+            line(&[(12., 3.), (12., 21.)]);
+        }
+    }
+}

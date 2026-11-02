@@ -213,7 +213,6 @@ impl App {
                 Command::Panel(panel) => {
                     self.ui.sidebar = panel;
                     self.ui.sidebar_open = true;
-                    self.ui.inspector_open = false;
                 }
                 Command::Export => self.ui.export_open = true,
                 Command::Review => self.show_preview = true,

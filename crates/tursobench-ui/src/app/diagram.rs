@@ -449,6 +449,12 @@ impl App {
             .enumerate()
             .map(|(i, t)| (t.name.to_ascii_lowercase(), i))
             .collect();
+        let relatives = self
+            .ui
+            .hover_table
+            .as_deref()
+            .map(|t| self.related_tables(t))
+            .unwrap_or_default();
         let mut unresolved = 0;
         for (source, node) in graph.tables.iter().enumerate() {
             let Some(info) = &node.inspection else {
@@ -546,7 +552,11 @@ impl App {
                 r,
                 4.0,
                 egui::Stroke::new(
-                    if is_selected { 2.0 } else { 1.0 },
+                    if is_selected || relatives.contains(&node.name) {
+                        2.0
+                    } else {
+                        1.0
+                    },
                     if is_selected {
                         accent
                     } else {

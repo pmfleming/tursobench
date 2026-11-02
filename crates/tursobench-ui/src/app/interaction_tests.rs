@@ -916,3 +916,58 @@ fn navigation_restores_typed_browse_context_and_query_return_without_dropping_dr
     assert!(app.has_drafts());
     app.close();
 }
+
+#[test]
+fn sidebar_catalog_includes_views_when_map_is_incomplete_and_tools_preserve_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("catalog-sidebar.db");
+    crate::test_support::create(
+        &path,
+        &[
+            "CREATE TABLE example(id INTEGER PRIMARY KEY)",
+            "INSERT INTO example VALUES(1)",
+            "CREATE VIEW example_view AS SELECT * FROM example",
+        ],
+    );
+    let (ctx, mut app) = connected(&path, false);
+    app.browse_table("example".into());
+    wait(&mut app, &ctx);
+    app.ui.diagram.data = Some(tursobench_core::SchemaDiagram {
+        tables: vec![],
+        limited: true,
+    });
+    let rows = app.result.rows.clone();
+    let ticket = app.result.current;
+    for panel in [
+        shell::Sidebar::History,
+        shell::Sidebar::Saved,
+        shell::Sidebar::Diagnostics,
+        shell::Sidebar::Settings,
+    ] {
+        app.ui.sidebar = panel;
+        app.ui.sidebar_open = true;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 720.0),
+                )),
+                ..Default::default()
+            },
+            |ui| app.render(ui),
+        );
+        assert!(
+            output.shapes.iter().any(
+                |s| matches!(&s.shape,egui::Shape::Text(t) if t.galley.job.text=="example_view")
+            )
+        );
+        output.textures_delta.clear();
+        assert_eq!(app.result.current, ticket);
+        assert_eq!(app.result.rows, rows);
+    }
+    app.browse_table("example_view".into());
+    wait(&mut app, &ctx);
+    assert_eq!(app.result.rows, rows);
+    assert!(!app.can_edit());
+    app.close();
+}
