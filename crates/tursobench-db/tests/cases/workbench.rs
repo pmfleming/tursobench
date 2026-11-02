@@ -449,6 +449,21 @@ fn reverse_references_use_parent_affinity_and_collation_and_reject_changed_keys(
     );
     assert_eq!(reply.result.rows.len(), 2);
     assert_eq!(reply.table.unwrap().name, "child");
+    let count = c.run(Operation::ReferenceCount {
+        table: "child".into(),
+        key: key.clone(),
+        values: values.clone(),
+    });
+    assert_eq!(count.result.rows, vec![vec![Value::Integer(2)]]);
+    let peek = c.run(Operation::Peek {
+        table: "child".into(),
+        key: key.clone(),
+        values: vec![Value::Text("007".into()), Value::Text("alpha".into())],
+    });
+    assert_eq!(
+        peek.result.rows,
+        vec![vec![Value::Integer(7), Value::Text("Alpha".into())]]
+    );
     let mut changed = key;
     changed.columns[0].0 = "id".into();
     assert!(

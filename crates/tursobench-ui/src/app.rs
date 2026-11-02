@@ -4,6 +4,7 @@ use tursobench_core::{
 };
 mod columns;
 mod commands;
+mod context;
 mod databases;
 mod diagram;
 mod editing;
@@ -269,6 +270,7 @@ impl App {
                 self.tools.restore_navigation = None;
                 self.tools.grid_scroll = egui::Vec2::ZERO;
                 self.tools.restore_scroll = None;
+                self.tools.context = Default::default();
                 self.tools.pages = Default::default();
                 self.tools.grid_selection = None;
                 self.tools.inline = None;
@@ -349,6 +351,7 @@ impl App {
         }
     }
     fn refresh_catalog(&mut self) {
+        self.tools.context = Default::default();
         if !self.ready || self.closing || self.catalog_ticket.is_some() {
             return;
         }
@@ -444,6 +447,16 @@ impl App {
         }
         if self
             .tools
+            .context
+            .pending
+            .as_ref()
+            .is_some_and(|p| p.result.current == Some(event.ticket))
+        {
+            self.context_event(event);
+            return;
+        }
+        if self
+            .tools
             .pages
             .pending
             .as_ref()
@@ -506,6 +519,7 @@ impl App {
                 match outcome {
                     CommitOutcome::Committed { operations } => {
                         self.tools.counts.clear();
+                        self.tools.context = Default::default();
                         self.ui.diagram.stale = true;
                         self.drafts = None;
                         self.show_preview = false;
@@ -607,6 +621,7 @@ impl App {
             }
             EventKind::Finished(ref c) => {
                 if c.changed > 0 {
+                    self.tools.context = Default::default();
                     self.tools.counts.clear();
                 }
                 if c.changed > 0

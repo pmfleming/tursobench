@@ -172,6 +172,7 @@ impl Worker<'_> {
         operation: Operation,
     ) -> Result<Option<EventKind>, Failure> {
         let default = Budget::default();
+        let count_references = matches!(&operation, Operation::ReferenceCount { .. });
         let (connection, sql, parameters, budget) = match operation {
             Operation::Close => return Ok(None),
             Operation::Diagram => return diagram::load(self.browse).await.map(EventKind::Diagram).map(Some),
@@ -197,13 +198,21 @@ impl Worker<'_> {
                 self.output.send(ticket, EventKind::Table(table));
                 (self.browse, sql, parameters.into(), default)
             }
-            Operation::References { table: name, key, values } => {
+            Operation::References { table: name, key, values } | Operation::ReferenceCount { table: name,key,values } => {
                 let child = inspection::inspect(self.browse, &name).await?;
                 if !child.foreign_keys.contains(&key) { return Err(Failure::input("Relationship metadata changed; refresh the schema")); }
                 let parent = describe(self.browse, &key.target).await?;
-                let sql = inspection::references_sql(&child.table, &parent, &key, &values)?;
+                let sql = inspection::references_sql(&child.table, &parent, &key, &values,count_references)?;
                 self.output.send(ticket, EventKind::Table(child.table));
                 (self.browse, sql, values.into(), default)
+            }
+            Operation::Peek {table:name,key,values} => {
+                let child=inspection::inspect(self.browse,&name).await?;
+                if !child.foreign_keys.contains(&key) || key.columns.len()!=values.len() || values.contains(&Value::Null) {return Err(Failure::input("Relationship metadata changed or key is NULL"));}
+                let parent=describe(self.browse,&key.target).await?;
+                let keys=key.columns.iter().zip(values).map(|((_,target),value)|target.clone().map(|target|(target,value)).ok_or_else(||Failure::input("Unresolved parent key"))).collect::<Result<Vec<_>,_>>()?;
+                let (sql,parameters)=inspection::lookup_sql(&parent,keys)?;
+                (self.browse,sql,parameters.into(),Budget{rows:1,bytes:512*1024,..default})
             }
             Operation::Count(name) => (self.browse, format!("SELECT count(*) AS row_count FROM {}", quote_identifier(&name)), vec![].into(), default),
             Operation::Diagnostic(kind) => (self.browse, kind.sql().into(), vec![].into(), default),

@@ -24,6 +24,7 @@ impl App {
             self.fk_cell_rect = None;
         }
         ui.spacing_mut().item_spacing.y = 1.0;
+        self.tools.context.hovered = None;
         let mut action = None;
         let editable = self.can_edit();
         if !ui.input(|i| i.pointer.primary_down()) {
@@ -105,6 +106,7 @@ impl App {
             }
             None => {}
         }
+        self.hover_context(ui.ctx());
         if self.ui.nav == shell::Nav::Table && self.ui.table_view == shell::TableView::Data {
             self.maybe_page(
                 page_range.start,
@@ -421,18 +423,20 @@ impl App {
                 if response.double_clicked() {
                     action = Some(GridAction::Edit(row, col));
                 }
+                if response.hovered() && references.len() == 1 {
+                    self.tools.context.hovered = Some((row, references[0].clone()));
+                }
                 let response = if references.is_empty() {
                     response
                 } else {
                     response
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .on_hover_text(if references.len() == 1 {
-                            format!(
-                                "Follow reference to {} · right-click to inspect or edit",
-                                references[0].target
-                            )
-                        } else {
-                            "Multiple references: right-click to choose a target".into()
+                        .on_hover_ui(|ui| {
+                            if references.len() == 1 {
+                                self.peek_view(ui, row, &references[0]);
+                            } else {
+                                ui.label("Multiple references: right-click to choose");
+                            }
                         })
                 };
                 response.context_menu(|ui| {

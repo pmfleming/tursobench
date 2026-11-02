@@ -181,6 +181,7 @@ pub(crate) fn references_sql(
     parent: &Table,
     key: &ForeignKey,
     values: &[Value],
+    count: bool,
 ) -> Result<String, Failure> {
     if key.columns.is_empty()
         || key.columns.len() != values.len()
@@ -222,8 +223,14 @@ pub(crate) fn references_sql(
         .map(|c| format!("c.{}", quote_identifier(&c.name)))
         .collect::<Vec<_>>()
         .join(", ");
+    let columns = if count {
+        "count(*) AS row_count".into()
+    } else {
+        columns
+    };
+    let limit = if count { "" } else { " LIMIT 100" };
     Ok(format!(
-        "SELECT {columns} FROM {} AS c WHERE EXISTS (SELECT 1 FROM {} AS p WHERE {}) LIMIT 100",
+        "SELECT {columns} FROM {} AS c WHERE EXISTS (SELECT 1 FROM {} AS p WHERE {}){limit}",
         quote_identifier(&child.name),
         quote_identifier(&parent.name),
         predicates.join(" AND ")

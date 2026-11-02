@@ -20,6 +20,7 @@ fn wait(app: &mut App, ctx: &egui::Context) {
             && !app.closing
             && app.active.is_none()
             && app.tools.pages.pending.is_none()
+            && app.tools.context.pending.is_none()
             && app.catalog_ticket.is_none()
             && app.commit_ticket.is_none()
             && app.tools.count_request.is_none()
@@ -1211,5 +1212,64 @@ fn scroll_pages_append_evict_reload_and_reject_stale_or_draft_owned_fetches() {
     app.request_page(false);
     assert!(app.tools.pages.pending.is_none());
     assert_eq!(app.result.rows, rows);
+    app.close();
+}
+
+#[test]
+fn contextual_reads_and_wide_related_grid_preserve_parent_result_and_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("context.db");
+    crate::test_support::create(
+        &path,
+        &[
+            "CREATE TABLE parent(a INTEGER,b TEXT COLLATE NOCASE,PRIMARY KEY(a,b))",
+            "CREATE TABLE child(id INTEGER PRIMARY KEY,a TEXT,b TEXT,payload TEXT,FOREIGN KEY(a,b) REFERENCES parent)",
+            "INSERT INTO parent VALUES(7,'Alpha')",
+            "INSERT INTO child VALUES(1,'007','alpha','child-only')",
+        ],
+    );
+    let (ctx, mut app) = connected(&path, false);
+    app.browse_table("child".into());
+    wait(&mut app, &ctx);
+    let child = app.tools.inspection.as_ref().unwrap().foreign_keys[0].clone();
+    let owner = app.result.current;
+    let original = app.result.rows.clone();
+    app.request_context(0, "child", &child, context::ReadKind::Parent);
+    wait(&mut app, &ctx);
+    assert_eq!(app.result.current, owner);
+    assert_eq!(app.result.rows, original);
+    app.browse_table("parent".into());
+    wait(&mut app, &ctx);
+    frame(&mut app, &ctx, vec![]);
+    app.select_cell(0, 0, false);
+    let owner = app.result.current;
+    let original = app.result.rows.clone();
+    app.request_context(0, "child", &child, context::ReadKind::Count);
+    wait(&mut app, &ctx);
+    frame_at(&mut app, &ctx, egui::vec2(3440.0, 1440.0), vec![]);
+    wait(&mut app, &ctx);
+    for _ in 0..2 {
+        frame_at(&mut app, &ctx, egui::vec2(3440.0, 1440.0), vec![]);
+    }
+    let output = frame_at(&mut app, &ctx, egui::vec2(3440.0, 1440.0), vec![]);
+    let texts: Vec<_> = output
+        .shapes
+        .iter()
+        .filter_map(|s| {
+            if let egui::Shape::Text(t) = &s.shape {
+                Some(t.galley.job.text.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(texts.iter().any(|t| t.contains("child-only")), "{texts:?}");
+    assert_eq!(app.result.current, owner);
+    assert_eq!(app.result.rows, original);
+    assert_eq!(app.inspect, Some((0, 0)));
+    app.request_context(0, "child", &child, context::ReadKind::Count);
+    app.run_text("SELECT 654".into(), None);
+    wait(&mut app, &ctx);
+    assert_eq!(app.result.rows, vec![vec![Value::Integer(654)]]);
     app.close();
 }

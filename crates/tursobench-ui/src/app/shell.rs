@@ -363,6 +363,20 @@ impl App {
             return;
         }
         self.workspace_header(ui);
+        if self.ui.nav == Nav::Table
+            && self.ui.table_view == TableView::Data
+            && ui.ctx().content_rect().width() >= 2400.0
+            && self.inspect.is_some()
+        {
+            egui::Panel::bottom("related-records")
+                .resizable(true)
+                .default_size(220.0)
+                .size_range(100.0..=(ui.available_height() * 0.45).max(100.0))
+                .show(ui, |ui| {
+                    ui.set_min_height(160.0);
+                    self.wide_related(ui)
+                });
+        }
         if self.ui.nav == Nav::Overview {
             self.diagram_ui(ui);
             return;

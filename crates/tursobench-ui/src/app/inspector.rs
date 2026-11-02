@@ -257,76 +257,7 @@ impl App {
         self.incoming_references(ui, row);
     }
     fn incoming_references(&mut self, ui: &mut egui::Ui, row: usize) {
-        if self.view != View::Browse {
-            return;
-        }
-        let (Some(table), Some(graph)) = (&self.table, &self.ui.diagram.data) else {
-            return;
-        };
-        ui.separator();
-        ui.strong("Referenced by");
-        if graph.limited || self.ui.diagram.stale || graph.tables.iter().any(|n| n.error.is_some())
-        {
-            ui.colored_label(
-                ui.visuals().warn_fg_color,
-                "Cached or incomplete schema — this list may omit references.",
-            );
-        }
-        let references: Vec<_> = graph
-            .tables
-            .iter()
-            .flat_map(|node| {
-                node.inspection
-                    .iter()
-                    .flat_map(|i| i.foreign_keys.iter())
-                    .filter(|key| key.target.eq_ignore_ascii_case(&table.name))
-                    .map(|key| (node.name.clone(), key.clone()))
-            })
-            .collect();
-        if references.is_empty() {
-            ui.small("No incoming references found in loaded metadata.");
-        }
-        for (child, key) in references {
-            let available = key.columns.iter().all(|(_, target)| {
-                target
-                    .as_ref()
-                    .and_then(|target| {
-                        self.table
-                            .as_ref()?
-                            .columns
-                            .iter()
-                            .position(|c| c.name.eq_ignore_ascii_case(target))
-                    })
-                    .and_then(|i| self.result.rows.get(row)?.get(i))
-                    .is_some_and(|v| *v != Value::Null)
-            });
-            let label = format!(
-                "Rows from {} ({})",
-                child,
-                key.columns
-                    .iter()
-                    .map(|(c, _)| c.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-            if ui
-                .add_enabled(
-                    available
-                        && self.active.is_none()
-                        && !self.has_drafts()
-                        && self.ready
-                        && !self.closing,
-                    egui::Button::new(label),
-                )
-                .on_hover_text(
-                    "Bound lookup, up to 100 rows. Counts are not fetched automatically.",
-                )
-                .clicked()
-            {
-                self.follow_incoming(row, child, key);
-                break;
-            }
-        }
+        self.related_list(ui, row);
     }
     pub(super) fn inspection_surfaces(&mut self, ctx: &egui::Context) {
         if self.ui.inspector_detached && self.ui.inspector_open {

@@ -52,6 +52,16 @@ pub enum Operation {
         key: tursobench_core::ForeignKey,
         values: Vec<Value>,
     },
+    Peek {
+        table: String,
+        key: tursobench_core::ForeignKey,
+        values: Vec<Value>,
+    },
+    ReferenceCount {
+        table: String,
+        key: tursobench_core::ForeignKey,
+        values: Vec<Value>,
+    },
     Count(String),
     Diagnostic(Diagnostic),
     Schema,
