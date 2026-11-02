@@ -452,6 +452,15 @@ impl App {
                         self.ui.filter_open = true;
                         ui.close();
                     }
+                    if ui.button("Show hidden columns").clicked() {
+                        self.tools.columns.hidden.clear();
+                        ui.close();
+                    }
+                    if ui.button("Fit all column widths").clicked() {
+                        self.tools.columns.manual.clear();
+                        self.tools.columns.refit = true;
+                        ui.close();
+                    }
                     if self.has_drafts() && ui.button("Show staged data").clicked() {
                         self.ui.nav = Nav::Table;
                         self.ui.table_view = TableView::Data;

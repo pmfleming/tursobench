@@ -1077,3 +1077,37 @@ fn escape_and_search_close_popups_without_replacing_the_retained_result() {
     assert_eq!(app.result.current, ticket);
     app.close();
 }
+
+#[test]
+fn column_presentation_preserves_schema_indices_and_manual_widths() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("columns.db");
+    crate::test_support::create(
+        &path,
+        &[
+            "CREATE TABLE sample(id INTEGER PRIMARY KEY, label TEXT, number INTEGER)",
+            "INSERT INTO sample VALUES(1,'a long string',42)",
+        ],
+    );
+    let (ctx, mut app) = connected(&path, true);
+    app.browse_table("sample".into());
+    wait(&mut app, &ctx);
+    frame(&mut app, &ctx, vec![]);
+    app.tools.columns.move_before(2, 0);
+    app.tools.columns.hidden.insert(1);
+    app.tools.columns.manual.insert(2);
+    app.tools.columns.widths[2] = 217.0;
+    frame(&mut app, &ctx, vec![]);
+    assert_eq!(app.visible_columns(), vec![2, 0]);
+    assert_eq!(app.tools.columns.widths[2], 217.0);
+    app.open_cell(0, 2);
+    assert_eq!(app.tools.cell_input, "42");
+    app.stage_cell(0, 2, Value::Integer(55));
+    let draft = app.drafts.as_ref().unwrap();
+    assert_eq!(
+        draft.displayed(&app.result.rows[0], 2),
+        Some(&Value::Integer(55))
+    );
+    assert_eq!(app.result.rows[0][0], Value::Integer(1));
+    app.close();
+}

@@ -2,6 +2,7 @@ use tursobench_core::{
     Access, Browse, CommitOutcome, ConnectionSettings, DraftBatch, Event, EventKind, ResultSet,
     SchemaObject, Table, Ticket, TransactionState,
 };
+mod columns;
 mod commands;
 mod databases;
 mod diagram;

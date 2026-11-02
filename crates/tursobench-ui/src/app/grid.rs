@@ -20,6 +20,7 @@ impl App {
         {
             self.fk_cell_rect = None;
         }
+        ui.spacing_mut().item_spacing.y = 1.0;
         let mut action = None;
         let editable = self.can_edit();
         let remaining = (ui.available_height() - 38.0).max(0.0);
@@ -27,7 +28,7 @@ impl App {
         {
             self.ui.grid_rect = ui.available_rect_before_wrap();
         }
-        self.tools.widths.resize(self.result.columns.len(), 180.0);
+        self.prepare_columns(ui);
         if self.view == View::Explain
             && let Some(detail) = self
                 .result
@@ -100,14 +101,15 @@ impl App {
         let mut sort = None;
         ui.horizontal(|ui|{
                 ui.add_sized([44.0,30.0],egui::Label::new("#"));
-                for(i,column)in self.result.columns.iter().enumerate(){
+                for i in self.visible_columns() {
+                    let column=&self.result.columns[i];
                     let info=self.tools.inspection.as_ref().filter(|info|self.view==View::Browse&&self.table.as_ref().is_some_and(|t|t.name==info.table.name));
                     let pk=info.and_then(|info|info.table.columns.get(i)).map_or(0,|c|c.primary_key);
                     let indexed=info.is_some_and(|info|info.indexes.iter().any(|idx|idx.columns.first().and_then(Option::as_ref)==Some(&column.name)));
                     let foreign=info.is_some_and(|info|info.foreign_keys.iter().any(|fk|fk.columns.iter().any(|(name,_)|name==&column.name)));
                     let tags=format!("{}{}{}",if pk>0{format!(" PK{pk}")}else{String::new()},if indexed{" IX"}else{""},if foreign{" FK"}else{""});
                     let sorted=self.browse.as_ref().filter(|b|b.sort==Some(i)).map_or("",|b|if b.descending{" descending"}else{" ascending"});
-                    let (rect,response)=ui.allocate_exact_size(egui::vec2(self.tools.widths[i],30.0),egui::Sense::click());
+                    let (rect,response)=ui.allocate_exact_size(egui::vec2(self.tools.columns.widths[i],30.0),egui::Sense::click_and_drag());
                     response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,ui.is_enabled(),format!("Column {}{tags}{sorted}",column.name)));
                     let highlighted = self.tools.highlight_column.as_ref().is_some_and(|(table, name)| self.view == View::Browse && self.table.as_ref().is_some_and(|t| &t.name == table) && &column.name == name);
                     if highlighted && self.tools.scroll_to_column { ui.scroll_to_rect(rect, Some(egui::Align::Center)); self.tools.scroll_to_column = false; }
@@ -122,11 +124,20 @@ impl App {
                     painter.text(rect.right_center()-egui::vec2(19.0,0.0),egui::Align2::CENTER_CENTER,ty,egui::FontId::monospace(10.0),ui.visuals().weak_text_color());
                     if !sorted.is_empty(){icons::paint(&painter,egui::Rect::from_min_size(rect.right_top()+egui::vec2(-47.0,8.0),egui::vec2(12.0,12.0)),if self.browse.as_ref().is_some_and(|b|b.descending){Icon::Down}else{Icon::Up},ui.visuals().selection.stroke.color);}
                     let response=response.on_hover_text(format!("{} · {}\nPK = key position; IX = declared leading index; FK = foreign key. Index method/partial predicate may not apply. Drag the right edge or right-click to resize.",column.name,column.declared_type.as_deref().unwrap_or("runtime type")));
-                    response.context_menu(|ui|{ui.label("Column width");ui.add(egui::Slider::new(&mut self.tools.widths[i],60.0..=640.0));});
+                    response.context_menu(|ui|{
+                        if ui.button("Fit contents").clicked(){self.tools.columns.manual.remove(&i);self.tools.columns.refit=true;ui.close();}
+                        if ui.button("Move left").clicked(){self.tools.columns.shift(i,-1);ui.close();}
+                        if ui.button("Move right").clicked(){self.tools.columns.shift(i,1);ui.close();}
+                        if ui.button("Hide column").clicked(){self.tools.columns.hidden.insert(i);ui.close();}
+                    });
+                    if response.drag_started(){response.dnd_set_drag_payload(i);}
+                    if let Some(from)=response.dnd_release_payload::<usize>() {self.tools.columns.move_before(*from,i);}
+
                     let handle=egui::Rect::from_min_max(egui::pos2(rect.right()-6.0,rect.top()),rect.right_bottom());
-                    let drag=ui.interact(handle,ui.id().with(("resize-column",i)),egui::Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
-                    if drag.dragged(){self.tools.widths[i]=(self.tools.widths[i]+drag.drag_delta().x).clamp(60.0,640.0);}
-                    if response.clicked()&&!drag.dragged(){sort=Some(i);}
+                    let drag=ui.interact(handle,ui.id().with(("resize-column",i)),egui::Sense::click_and_drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+                    if drag.double_clicked(){self.tools.columns.manual.remove(&i);self.tools.columns.refit=true;}
+                    if drag.dragged(){self.tools.columns.manual.insert(i);self.tools.columns.widths[i]=(self.tools.columns.widths[i]+drag.drag_delta().x).clamp(60.0,640.0);}
+                    if response.clicked()&&!drag.contains_pointer(){sort=Some(i);}
                 }
             });
 
@@ -138,8 +149,15 @@ impl App {
             && self.commit_ticket.is_none()
             && let Some(b) = self.browse.as_mut()
         {
-            b.descending = b.sort == Some(i) && !b.descending;
-            b.sort = Some(i);
+            if b.sort != Some(i) {
+                b.sort = Some(i);
+                b.descending = false;
+            } else if !b.descending {
+                b.descending = true;
+            } else {
+                b.sort = None;
+                b.descending = false;
+            }
             b.offset = 0;
             self.reload();
         }
@@ -169,7 +187,8 @@ impl App {
                         .small(),
                 ),
             );
-            for (col, value) in values.iter().enumerate() {
+            for col in self.visible_columns() {
+                let value = &values[col];
                 let references = self.cell_references(row, col);
                 let staged = self.drafts.as_ref().and_then(|d| d.displayed(values, col));
                 let displayed = staged.unwrap_or(value);
@@ -181,7 +200,7 @@ impl App {
                 };
                 let fill = cell_fill(ui.visuals(), deleted, staged.is_some(), row);
                 let (rect, response) = ui.allocate_exact_size(
-                    egui::vec2(self.tools.widths[col], 24.0),
+                    egui::vec2(self.tools.columns.widths[col], 24.0),
                     egui::Sense::click(),
                 );
                 response.widget_info(|| {
