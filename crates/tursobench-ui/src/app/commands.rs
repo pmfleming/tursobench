@@ -51,6 +51,10 @@ impl App {
         self.ui.access_dialog &= open;
     }
     pub(super) fn open_palette(&mut self) {
+        if self.session.is_none() && self.ui.nav == Nav::Databases {
+            self.databases.focus_filter = true;
+            return;
+        }
         self.ui.palette_open = true;
         self.ui.palette_focus = true;
         self.ui.palette_query.clear();
@@ -172,8 +176,11 @@ impl App {
             match action {
                 Command::Table(name, column) => {
                     let before = self.result.current;
-                    self.browse_table(name.clone());
-                    if self.result.current != before {
+                    self.activate_table(name.clone());
+                    if self.result.current != before
+                        || self.view == super::View::Browse
+                            && self.table.as_ref().is_some_and(|t| t.name == name)
+                    {
                         self.ui.nav = Nav::Table;
                         self.ui.table_view = TableView::Data;
                         self.tools.highlight_column = column.map(|column| (name, column));

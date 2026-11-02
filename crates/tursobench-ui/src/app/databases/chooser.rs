@@ -116,7 +116,10 @@ impl App {
         let (toolbar, _) =
             ui.allocate_exact_size(egui::vec2(ui.available_width(), 44.0), egui::Sense::hover());
         let browse_rect = egui::Rect::from_min_max(
-            egui::pos2(toolbar.right() - 136.0, toolbar.top()),
+            egui::pos2(
+                toolbar.right() - if toolbar.width() < 400.0 { 32.0 } else { 136.0 },
+                toolbar.top(),
+            ),
             toolbar.right_bottom(),
         );
         let rect = egui::Rect::from_min_max(
@@ -185,7 +188,12 @@ impl App {
             .add_enabled_ui(self.picker.is_none(), |ui| {
                 ui.put(
                     browse_rect,
-                    egui::Button::new("Browse files…").corner_radius(10.0),
+                    egui::Button::new(if toolbar.width() < 400.0 {
+                        ""
+                    } else {
+                        "Browse files…"
+                    })
+                    .corner_radius(10.0),
                 )
             })
             .inner;
@@ -193,6 +201,22 @@ impl App {
         {
             self.databases.search_rect = Some(rect);
             self.databases.browse_rect = Some(browse_rect);
+        }
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::Button,
+                ui.is_enabled(),
+                "Browse database files",
+            )
+        });
+        if toolbar.width() < 400.0 {
+            let r = browse_rect.shrink(7.0);
+            super::super::icons::paint(
+                ui.painter(),
+                r,
+                super::super::icons::Icon::Folder,
+                ui.visuals().text_color(),
+            );
         }
         response
             .on_hover_text("Browse database files… · Alt+Enter")
@@ -234,7 +258,11 @@ impl App {
             ui.add_space(16.0);
         } else {
             // Leave the access review and primary action visible on laptop screens.
-            let reserve = if self.path.is_empty() { 110.0 } else { 410.0 };
+            let reserve = if ui.available_width() < 400.0 || self.path.is_empty() {
+                110.0
+            } else {
+                410.0
+            };
             let minimum = if self.path.is_empty() {
                 96.0
             } else {
@@ -429,7 +457,9 @@ impl App {
                     if filtered.len() == 1 { "" } else { "s" }
                 ));
             }
-            ui.small("· ↑↓ to choose · Enter to select");
+            if ui.available_width() > 400.0 {
+                ui.small("Up/Down choose · Enter select");
+            }
             let settings = ui.link("Search settings…");
             #[cfg(test)]
             {

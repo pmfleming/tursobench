@@ -103,7 +103,7 @@ impl App {
                     let indexed=info.is_some_and(|info|info.indexes.iter().any(|idx|idx.columns.first().and_then(Option::as_ref)==Some(&column.name)));
                     let foreign=info.is_some_and(|info|info.foreign_keys.iter().any(|fk|fk.columns.iter().any(|(name,_)|name==&column.name)));
                     let tags=format!("{}{}{}",if pk>0{format!(" PK{pk}")}else{String::new()},if indexed{" IX"}else{""},if foreign{" FK"}else{""});
-                    let sorted=self.browse.as_ref().filter(|b|b.sort==Some(i)).map_or("",|b|if b.descending{" ↓"}else{" ↑"});
+                    let sorted=self.browse.as_ref().filter(|b|b.sort==Some(i)).map_or("",|b|if b.descending{" descending"}else{" ascending"});
                     let (rect,response)=ui.allocate_exact_size(egui::vec2(self.tools.widths[i],30.0),egui::Sense::click());
                     response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,ui.is_enabled(),format!("Column {}{tags}{sorted}",column.name)));
                     let highlighted = self.tools.highlight_column.as_ref().is_some_and(|(table, name)| self.view == View::Browse && self.table.as_ref().is_some_and(|t| &t.name == table) && &column.name == name);
@@ -294,7 +294,7 @@ impl App {
                 response.context_menu(|ui| {
                     for key in &references {
                         if ui
-                            .button(format!("Follow → {} (FK {})", key.target, key.id))
+                            .button(format!("Parent: {} (FK {})", key.target, key.id))
                             .clicked()
                         {
                             action = Some(GridAction::Follow(row, key.clone()));

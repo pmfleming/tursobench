@@ -677,6 +677,11 @@ fn overview_and_table_views_preserve_camera_and_rejects_navigation_with_drafts()
     assert_eq!(app.result.current, ticket);
     assert_eq!(app.ui.diagram.selected.as_deref(), Some("a"));
     assert_eq!(app.table.as_ref().unwrap().name, "a");
+    app.overview();
+    app.activate_table("a".into());
+    assert_eq!(app.ui.nav, shell::Nav::Table);
+    assert_eq!(app.result.current, ticket);
+    assert!(app.has_drafts());
     app.drafts = None;
     app.close();
 }
@@ -959,7 +964,7 @@ fn sidebar_catalog_includes_views_when_map_is_incomplete_and_tools_preserve_rows
         );
         assert!(
             output.shapes.iter().any(
-                |s| matches!(&s.shape,egui::Shape::Text(t) if t.galley.job.text=="example_view")
+                |s| matches!(&s.shape,egui::Shape::Text(t) if t.galley.job.text.trim_start()=="example_view")
             )
         );
         output.textures_delta.clear();
@@ -999,5 +1004,153 @@ fn explicit_counts_keep_table_rows_and_drafts_owned_by_their_original_ticket() {
     app.commit_drafts();
     wait(&mut app, &ctx);
     assert!(app.tools.counts.is_empty());
+    app.close();
+}
+
+#[test]
+fn v3_sidebar_header_and_transaction_controls_fit_the_minimum_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("minimum.db");
+    let name = "a_table_with_a_deliberately_long_name_to_exercise_header_truncation";
+    crate::test_support::create(
+        &path,
+        &[
+            &format!("CREATE TABLE {name}(id INTEGER PRIMARY KEY,value TEXT)"),
+            &format!(
+                "INSERT INTO {name} WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<200) SELECT x,'value' FROM n"
+            ),
+        ],
+    );
+    let (ctx, mut app) = connected(&path, false);
+    ctx.enable_accesskit();
+    app.browse_table(name.into());
+    wait(&mut app, &ctx);
+    for dark in [true, false] {
+        app.preferences.dark_mode = dark;
+        app.apply_theme(&ctx);
+        for (width, height) in [
+            (1280.0, 720.0),
+            (720.0, 480.0),
+            (960.0, 640.0),
+            (1920.0, 1080.0),
+        ] {
+            for details in [false, true] {
+                app.ui.inspector_open = details;
+                app.inspect = Some((0, 0));
+                for _ in 0..2 {
+                    let mut output = ctx.run_ui(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(width, height),
+                            )),
+                            ..Default::default()
+                        },
+                        |ui| app.render(ui),
+                    );
+                    output.textures_delta.clear();
+                    let tree = output.platform_output.accesskit_update.as_ref().unwrap();
+                    assert!(
+                        !tree
+                            .nodes
+                            .iter()
+                            .any(|(_, node)| node.label() == Some("Insert row"))
+                    );
+                }
+                assert!(app.ui.sidebar_rect.width() >= 180.0);
+                assert!(
+                    ctx.content_rect().contains_rect(app.ui.view_header),
+                    "{width}x{height}: {:?}",
+                    app.ui.view_header
+                );
+                assert!(app.ui.workspace_rect.contains_rect(app.ui.grid_rect));
+                if width == 1280.0 && !details {
+                    assert!(
+                        app.ui.visible_rows >= 15,
+                        "{} fully visible rows",
+                        app.ui.visible_rows
+                    );
+                }
+            }
+        }
+    }
+    app.run_text("BEGIN".into(), None);
+    wait(&mut app, &ctx);
+    app.ui.sql_open = false;
+    app.overview();
+    for _ in 0..2 {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(720.0, 480.0),
+                )),
+                ..Default::default()
+            },
+            |ui| app.render(ui),
+        );
+        output.textures_delta.clear();
+    }
+    assert_eq!(app.ui.transaction_rects.len(), 3);
+    for r in &app.ui.transaction_rects {
+        assert!(ctx.content_rect().contains_rect(*r), "{r:?}");
+    }
+    app.close();
+}
+
+#[test]
+fn escape_and_search_close_popups_without_replacing_the_retained_result() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("keyboard.db");
+    crate::test_support::create(
+        &path,
+        &[
+            "CREATE TABLE a(id INTEGER PRIMARY KEY)",
+            "INSERT INTO a VALUES(1)",
+        ],
+    );
+    let (ctx, mut app) = connected(&path, false);
+    app.browse_table("a".into());
+    wait(&mut app, &ctx);
+    let ticket = app.result.current;
+    let popup = egui::Id::new("test-menu");
+    egui::Popup::open_id(&ctx, popup);
+    let key = |key, modifiers| egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    };
+    frame(
+        &mut app,
+        &ctx,
+        vec![key(egui::Key::Escape, egui::Modifiers::NONE)],
+    );
+    assert!(!egui::Popup::is_any_open(&ctx));
+    egui::Popup::open_id(&ctx, popup);
+    frame(
+        &mut app,
+        &ctx,
+        vec![key(egui::Key::K, egui::Modifiers::CTRL)],
+    );
+    assert!(app.ui.palette_open);
+    assert!(!egui::Popup::is_any_open(&ctx));
+    frame(
+        &mut app,
+        &ctx,
+        vec![key(egui::Key::Escape, egui::Modifiers::NONE)],
+    );
+    assert!(!app.ui.palette_open);
+    app.ui.sql_open = true;
+    app.ui.filter_open = true;
+    frame(
+        &mut app,
+        &ctx,
+        vec![key(egui::Key::Escape, egui::Modifiers::NONE)],
+    );
+    assert!(!app.ui.filter_open);
+    assert!(app.ui.sql_open);
+    assert_eq!(app.result.current, ticket);
     app.close();
 }

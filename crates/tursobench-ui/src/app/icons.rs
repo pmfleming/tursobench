@@ -7,6 +7,7 @@ pub(super) enum Icon {
     Next,
     Search,
     Database,
+    Folder,
     Map,
     Data,
     Structure,
@@ -44,7 +45,7 @@ pub(super) enum Icon {
 }
 
 pub(super) fn button(ui: &mut egui::Ui, icon: Icon, name: &str, shortcut: &str) -> egui::Response {
-    control(ui, icon, name, shortcut, false, false)
+    widget(ui, icon, name, shortcut, None, false)
 }
 
 pub(super) fn control(
@@ -55,18 +56,32 @@ pub(super) fn control(
     selected: bool,
     label: bool,
 ) -> egui::Response {
+    widget(ui, icon, name, shortcut, Some(selected), label)
+}
+
+fn widget(
+    ui: &mut egui::Ui,
+    icon: Icon,
+    name: &str,
+    shortcut: &str,
+    selected: Option<bool>,
+    label: bool,
+) -> egui::Response {
     let text = if label {
         format!("     {name}")
     } else {
         String::new()
     };
-    let response = ui.add(
-        egui::Button::new(text)
-            .min_size(egui::vec2(28.0, 28.0))
-            .selected(selected),
-    );
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), selected, name)
+    let mut native = egui::Button::new(text).min_size(egui::vec2(28.0, 28.0));
+    if let Some(selected) = selected {
+        native = native.selected(selected);
+    }
+    let response = ui.add(native);
+    response.widget_info(|| match selected {
+        Some(selected) => {
+            egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), selected, name)
+        }
+        None => egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), name),
     });
     let rect = egui::Rect::from_center_size(
         egui::pos2(response.rect.left() + 14.0, response.rect.center().y),
@@ -127,6 +142,15 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
             line(&[(4., 9.), (20., 9.)]);
             line(&[(4., 15.), (20., 15.)]);
         }
+        Folder => line(&[
+            (3., 20.),
+            (3., 5.),
+            (10., 5.),
+            (13., 8.),
+            (21., 8.),
+            (21., 20.),
+            (3., 20.),
+        ]),
         Map => {
             box_(2., 3., 8., 6.);
             box_(15., 3., 7., 6.);
@@ -373,5 +397,39 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
                 (12., 18.),
             ]);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn painter_buttons_expose_names_and_selected_state_to_accesskit() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            control(ui, Icon::Structure, "Structure", "Ctrl 2", true, false);
+            button(ui, Icon::Export, "Export retained rows", "Ctrl E");
+        });
+        output.textures_delta.clear();
+        let update = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("accessibility tree");
+        assert!(
+            update
+                .nodes
+                .iter()
+                .any(|(_, n)| n.label() == Some("Structure")
+                    && n.toggled() == Some(egui::accesskit::Toggled::True))
+        );
+        assert!(
+            update
+                .nodes
+                .iter()
+                .any(|(_, n)| n.label() == Some("Export retained rows") && n.toggled().is_none())
+        );
+        output.textures_delta.clear();
     }
 }

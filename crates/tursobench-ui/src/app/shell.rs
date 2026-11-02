@@ -151,12 +151,23 @@ impl App {
         }
         let layout = Layout::new(ui.available_width());
         self.status_bar(ui);
-        if self.session.is_some() {
+        {
             let panel = egui::Panel::left("workspace-sidebar")
                 .resizable(true)
-                .default_size(layout.sidebar_width)
+                .default_size(if self.session.is_none() && ui.available_width() >= 900.0 {
+                    300.0
+                } else {
+                    layout.sidebar_width
+                })
                 .size_range(180.0..=300.0)
-                .show(ui, |ui| self.navigation_sidebar(ui));
+                .show(ui, |ui| {
+                    if self.session.is_some() {
+                        self.navigation_sidebar(ui);
+                    } else {
+                        ui.heading("Databases");
+                        self.database_chooser_ui(ui);
+                    }
+                });
             #[cfg(test)]
             {
                 self.ui.sidebar_rect = panel.response.rect;
@@ -170,15 +181,19 @@ impl App {
             } else {
                 ui.available_height() * 0.30
             };
-            egui::Panel::bottom("sql-editor-dock")
-                .resizable(true)
-                .default_size(height.max(130.0))
-                .size_range(100.0..=(ui.available_height() * 0.75).max(100.0))
-                .show(ui, |ui| {
-                    egui::ScrollArea::vertical()
-                        .id_salt("sql-dock-scroll")
-                        .show(ui, |ui| self.editor_ui(ui));
-                });
+            egui::Panel::bottom(if self.ui.sql_expanded {
+                "sql-editor-expanded"
+            } else {
+                "sql-editor-dock"
+            })
+            .resizable(true)
+            .default_size(height.max(130.0))
+            .size_range(100.0..=(ui.available_height() * 0.75).max(100.0))
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("sql-dock-scroll")
+                    .show(ui, |ui| self.editor_ui(ui));
+            });
         }
         if self.ui.inspector_open && !self.ui.inspector_detached {
             if layout.bottom_inspector {
@@ -239,35 +254,60 @@ impl App {
         }
     }
     fn status_bar(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::bottom("status").exact_size(38.0).show(ui,|ui|{
-            ui.horizontal(|ui|{
-                ui.spacing_mut().item_spacing.x=4.0;
-                if self.session.is_some() && icons::control(ui,if self.writable{Icon::Edit}else{Icon::Lock},if self.writable{"Editing"}else{"Read-only"},"",false,true).clicked(){self.ui.access_dialog=true;self.ui.access_ack=false;}
-                let (state,color)=if self.uncertain_edit||self.transaction==TransactionState::Unknown{("UNKNOWN",ui.visuals().error_fg_color)}else if self.closing{("Closing",ui.visuals().warn_fg_color)}else if self.commit_ticket.is_some(){("Committing",ui.visuals().warn_fg_color)}else if self.active.is_some()||self.tools.count_request.is_some(){("Executing",ui.visuals().warn_fg_color)}else if self.ui.diagram.ticket.is_some(){("Loading schema",ui.visuals().weak_text_color())}else if !self.ready{("Disconnected",ui.visuals().weak_text_color())}else if self.result.completion.as_ref().is_some_and(|c|c.error.is_some()){("Failed",ui.visuals().error_fg_color)}else{("Connected",ui.visuals().selection.stroke.color)};
-                ui.colored_label(color,state).on_hover_text(&self.status);
-                if self.transaction!=TransactionState::Autocommit || self.ui.sql_open || self.writable&&self.ready {
-                    let active=self.transaction!=TransactionState::Autocommit;
-                    ui.colored_label(if active{ui.visuals().warn_fg_color}else{ui.visuals().weak_text_color()},format!("{:?}",self.transaction));
-                    for sql in ["BEGIN","COMMIT","ROLLBACK"] {
-                        let response=ui.add_enabled(self.ready&&!self.closing&&self.active.is_none()&&self.commit_ticket.is_none()&&!self.has_drafts(),egui::Button::new(sql)).on_hover_text("Persistent editor connection. Transactions also apply to read-only sessions.");
+        egui::Panel::bottom("status").exact_size(38.0).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                if self.session.is_some() && icons::control(
+                    ui, if self.writable { Icon::Edit } else { Icon::Lock },
+                    if self.writable { "Editing" } else { "Read-only" }, "", false, true,
+                ).on_hover_text("Turso 0.8.3 · FTS · click to close cleanly and change access").clicked() {
+                    self.ui.access_dialog = true;
+                    self.ui.access_ack = false;
+                }
+                let warn = ui.visuals().warn_fg_color;
+                let error = ui.visuals().error_fg_color;
+                let muted = ui.visuals().weak_text_color();
+                let (state, color) = if self.uncertain_edit || self.transaction == TransactionState::Unknown {
+                    ("UNKNOWN", error)
+                } else if self.closing { ("Closing", warn)
+                } else if self.commit_ticket.is_some() { ("Committing", warn)
+                } else if self.active.is_some() || self.tools.count_request.is_some() { ("Executing", warn)
+                } else if self.ui.diagram.ticket.is_some() { ("Loading schema", muted)
+                } else if !self.ready { ("Disconnected", muted)
+                } else if let Some(c) = &self.result.completion {
+                    if c.error.is_some() { ("Failed", error) } else {
+                        match c.delivery {
+                            tursobench_core::Delivery::Limited => ("Limited", warn),
+                            tursobench_core::Delivery::Discarded => ("Discarded", warn),
+                            tursobench_core::Delivery::Complete => ("Connected", ui.visuals().selection.stroke.color),
+                        }
+                    }
+                } else { ("Connected", ui.visuals().selection.stroke.color) };
+                ui.colored_label(color, state).on_hover_text(&self.status);
+                if self.transaction != TransactionState::Autocommit || self.ui.sql_open || self.writable && self.ready {
+                    ui.colored_label(if self.transaction != TransactionState::Autocommit { warn } else { muted }, format!("{:?}", self.transaction));
+                    for sql in ["BEGIN", "COMMIT", "ROLLBACK"] {
+                        let enabled = self.ready && !self.closing && self.active.is_none() && self.commit_ticket.is_none() && !self.has_drafts();
+                        let response = ui.add_enabled(enabled, egui::Button::new(sql)).on_hover_text("Persistent editor connection. Transactions also apply to read-only sessions.");
                         #[cfg(test)] self.ui.transaction_rects.push(response.rect);
-                        if response.clicked(){self.submit(Operation::Execute{sql:sql.into(),parameters:vec![],budget:Budget::default()},View::Query);}
+                        if response.clicked() { self.submit(Operation::Execute { sql: sql.into(), parameters: vec![], budget: Budget::default() }, View::Query); }
                     }
                 }
-                if self.has_drafts(){
-                    let n=self.drafts.as_ref().map_or(0,|d|d.edits.len());
-                    if ui.button(format!("Review {n}")).clicked(){self.show_preview=true;}
+                if self.has_drafts() {
+                    let count = self.drafts.as_ref().map_or(0, |d| d.edits.len());
+                    if ui.button(format!("Review {count}")).clicked() { self.show_preview = true; }
                 }
-                if self.active.is_some() && ui.button("Discard results").on_hover_text("Suppresses delivery only; execution and writes continue. Does not roll back.").clicked(){
-                    if let (Some(s),Some(t))=(&self.session,self.active){s.discard_results(t.request);}
-                    self.discard_ticket=self.active;self.result.rows.clear();self.status="Delivery suppressed; awaiting execution outcome".into();
+                if self.active.is_some() && ui.button("Discard results").on_hover_text("Suppresses delivery only; execution and writes continue. Does not roll back.").clicked() {
+                    if let (Some(session), Some(ticket)) = (&self.session, self.active) { session.discard_results(ticket.request); }
+                    self.discard_ticket = self.active;
+                    self.result.rows.clear();
+                    self.status = "Delivery suppressed; awaiting execution outcome".into();
                 }
-                if let Some(c)=&self.result.completion {
-                    let outcome=if c.error.is_some(){"Failed"}else{match c.delivery{tursobench_core::Delivery::Complete=>"Complete",tursobench_core::Delivery::Limited=>"Limited",tursobench_core::Delivery::Discarded=>"Discarded"}};
-                    if ui.available_width()>160.0 {ui.small(format!("{outcome} · {} ms",c.elapsed_ms)).on_hover_text(&self.status);}
+                if let Some(c) = &self.result.completion && ui.available_width() > 200.0 {
+                    ui.small(format!("{:?} · {} ms", c.delivery, c.elapsed_ms)).on_hover_text(self.export_scope());
                 }
-                if icons::control(ui,Icon::History,"Outcomes","",self.ui.outcomes,false).clicked(){self.ui.outcomes= !self.ui.outcomes;}
-                if ui.available_width()>145.0{ui.add(egui::Label::new(&self.status).truncate()).on_hover_text(&self.status);}
+                if icons::control(ui, Icon::History, "Outcomes", "", self.ui.outcomes, false).clicked() { self.ui.outcomes = !self.ui.outcomes; }
+                if ui.available_width() > 145.0 { ui.add(egui::Label::new(&self.status).truncate()).on_hover_text(&self.status); }
             });
         });
     }
@@ -399,12 +439,13 @@ impl App {
                 {
                     self.ui.filter_open = !self.ui.filter_open;
                 }
-                if ui
-                    .add_enabled_ui(self.can_edit(), |ui| {
-                        icons::button(ui, Icon::Plus, "Insert row", "")
-                    })
-                    .inner
-                    .clicked()
+                if self.writable
+                    && ui
+                        .add_enabled_ui(self.can_edit(), |ui| {
+                            icons::button(ui, Icon::Plus, "Insert row", "")
+                        })
+                        .inner
+                        .clicked()
                 {
                     self.begin_insert();
                 }
@@ -422,7 +463,8 @@ impl App {
             }
             if ui
                 .add_enabled_ui(
-                    self.ready
+                    self.view == View::Browse
+                        && self.ready
                         && !self.closing
                         && !self.has_drafts()
                         && self.commit_ticket.is_none(),
@@ -442,13 +484,17 @@ impl App {
             }
             let more = icons::button(ui, Icon::More, "More actions", "");
             egui::Popup::menu(&more).show(|ui| {
-                if ui.button("Add typed filter").clicked() {
+                if self.browse.is_some()
+                    && self.view == View::Browse
+                    && ui.button("Add typed filter").clicked()
+                {
                     self.ui.filter_open = true;
                     ui.close();
                 }
-                if ui
-                    .add_enabled(self.can_edit(), egui::Button::new("Insert row…"))
-                    .clicked()
+                if self.writable
+                    && ui
+                        .add_enabled(self.can_edit(), egui::Button::new("Insert row…"))
+                        .clicked()
                 {
                     self.begin_insert();
                     ui.close();

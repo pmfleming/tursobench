@@ -51,13 +51,13 @@ are unsupported. The exclusive-use checkbox is an acknowledgement, not an OS loc
 ## Features
 
 - Startup database discovery across application data/state and development folders, with recent files, Turso/SQLite/unknown type icons, a per-file SQLite override, and search-folder controls. See [discovery behavior and limits](docs/database-discovery.md).
-- Map-first dark/light workspace with an expandable Data/Structure drawer and docked/pop-out row inspector.
+- Persistent database/schema sidebar, full-height Data/Structure views, compact icon controls and docked/pop-out row detail.
 - Engine-enforced read-only opening by default; read/write is explicit opt-in.
 - Searchable schema/DDL, native index/FK details, related-row navigation and read-only diagnostics.
 - Relationship-arranged schema home: tables, keys, composite/self/cyclic FKs, Map/List fallback and saved map layout.
 - 100-row table pages, sorting, typed AND filter chips, linked FK cells and incoming-reference navigation.
 - Virtualized results, resizable columns, typed cell/record inspection and clipboard copy.
-- Ctrl K command/table/column search; Ctrl J SQL drawer with highlighting, selection execution, completion and EXPLAIN.
+- Ctrl K command/table/column search; Ctrl J SQL dock with highlighting, selection execution, completion and EXPLAIN.
 - Single-statement SQL including CTEs, PRAGMAs and RETURNING; typed positional/named bindings.
 - Native Turso FTS and experimental index methods enabled: open existing FTS
   databases, create `USING fts(...)` indexes and query with `fts_match(...)`.
@@ -70,8 +70,12 @@ are unsupported. The exclusive-use checkbox is an acknowledgement, not an OS loc
 - Retained-result exports: typed JSONL/JSON, annotated CSV/TSV and SQL INSERTs.
 
 See the [UI guide and capability map](docs/ui-redesign.md) for workspace navigation,
-responsive behavior, diagram limits and validation. The table and SQL drawers share one
+responsive behavior, diagram limits and validation. The table browser and SQL dock share one
 editor and one retained result; they are not independent transaction tabs.
+Back restores typed filters, sorting, paging and matching row selection. Explicit
+row counts preserve the grid and drafts. Painter icons include accessible names;
+native AccessKit integration is enabled. At 1280×720, the default table view shows
+at least 15 complete rows with SQL and row detail closed.
 
 See the [tursotui functionality review](docs/tursotui-review.md) for changes,
 shortcuts, evidence and the remaining gaps—not a claim of complete parity.

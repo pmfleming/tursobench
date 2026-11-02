@@ -134,7 +134,7 @@ impl App {
             for key in &info.foreign_keys {
                 if ui
                     .button(format!(
-                        "Follow → {} ({})",
+                        "Parent: {} ({})",
                         key.target,
                         key.columns
                             .iter()
@@ -258,7 +258,7 @@ impl App {
                     .is_some_and(|v| *v != Value::Null)
             });
             let label = format!(
-                "{} ({}) → rows",
+                "Rows from {} ({})",
                 child,
                 key.columns
                     .iter()
@@ -327,7 +327,7 @@ impl App {
             let mut open = true;
             egui::Window::new("Keyboard and safety reference").open(&mut open).default_width(560.0).show(ctx,|ui|{
                 egui::ScrollArea::vertical().max_height(500.0).show(ui,|ui|{
-                    for line in ["Map / List: schema home; History / Saved / Checks / Settings: Tools menu","Ctrl+K: tables / columns / commands · Ctrl+J: SQL drawer · Expand / Return to map","Ctrl+O: database chooser · Folder icon / Alt+Enter: file dialog · F1: help · Ctrl+T: theme","Database chooser: Down enters results; Up/Down browses; Enter selects; typing resumes search","In SQL editor: Ctrl+Enter / F5 runs one statement; Ctrl+Shift+Enter runs selection/current statement; Ctrl+Space completes","Ctrl+Shift+C: copy visible retained results as TSV · Alt+Left: back from row reference","Click cell: typed inspector · double-click: record detail · right-click: copy/delete","Drag header edge or right-click: resize column · click table header: sort","Map: drag background to pan, wheel to zoom, drag headers to arrange; click a table for Data / Structure","Escape: close inspector, restore expanded drawer, then close drawer. Map camera is saved on close.","Exports/copies never rerun SQL and exclude staged overlays","Discard suppresses delivery; execution and writes continue until the worker reports completion","Closing waits for actual execution and rollback acknowledgement","Writable SQL autocommits unless you BEGIN; staged edits require review and explicit commit"]{ui.label(line);}
+                    for line in ["Overview: schema map; History / Saved / Checks / Settings: sidebar footer","Ctrl+K: tables / columns / commands · Ctrl+J: SQL dock · Ctrl+1 / Ctrl+2: Data / Structure","Ctrl+O: database chooser · Folder icon / Alt+Enter: file dialog · F1: help · Ctrl+T: theme","Database chooser: Down enters results; Up/Down browses; Enter selects; typing resumes search","In SQL editor: Ctrl+Enter / F5 runs one statement; Ctrl+Shift+Enter runs selection/current statement; Ctrl+Space completes","Ctrl+Shift+C: retained TSV · Ctrl+E: export · Alt+Left: Back / return to table","Click cell: record detail · double-click: typed cell editor · right-click: copy/delete","Drag header edge or right-click: resize column · click table header: sort","Map: pan background, wheel zoom, drag headers; click a table for full-height Data / Structure","Escape: close menu/dialog/tool/filter/inspector before hiding SQL. Map camera is saved on close.","Exports/copies never rerun SQL and exclude staged overlays","Discard suppresses delivery; execution and writes continue until the worker reports completion","Closing waits for actual execution and rollback acknowledgement","Writable SQL autocommits unless you BEGIN; staged edits require review and explicit commit"]{ui.label(line);}
                 });
             });
             self.tools.help = open;

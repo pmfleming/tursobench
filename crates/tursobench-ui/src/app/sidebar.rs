@@ -15,6 +15,16 @@ impl App {
         }
     }
 
+    pub(super) fn activate_table(&mut self, name: String) {
+        if self.view == View::Browse && self.table.as_ref().is_some_and(|table| table.name == name)
+        {
+            self.ui.nav = Nav::Table;
+            self.ui.unfolded = Some(name);
+        } else {
+            self.browse_table(name);
+        }
+    }
+
     pub(super) fn loaded_inspection(&self, name: &str) -> Option<Inspection> {
         self.tools
             .inspection
@@ -140,13 +150,14 @@ impl App {
                                 if !unfolded&&self.loaded_inspection(&object.name).is_none(){self.request_inspection(object.name.clone());}
                             }
                             let display=self.tools.counts.get(&object.name).map_or_else(||object.name.clone(),|n|format!("{} · {n}",object.name));
-                            let label=if related.contains(&object.name){egui::RichText::new(&display).color(ui.visuals().hyperlink_color)}else{egui::RichText::new(&display)};
+                            let painted_label=format!("    {display}");
+                            let label=if related.contains(&object.name){egui::RichText::new(&painted_label).color(ui.visuals().hyperlink_color)}else{egui::RichText::new(&painted_label)};
                             let response=ui.add_sized([ui.available_width(),28.0],egui::Button::new(label).selected(selected).truncate()).on_hover_text(&object.name);
                             let r=egui::Rect::from_center_size(response.rect.left_center()+egui::vec2(8.0,0.0),egui::vec2(10.0,10.0));
-                            // The type is available in the tooltip and AccessKit name; the leading icon marks views/system.
-                            if kind!="table"{icons::paint(ui.painter(),r,icon,ui.visuals().weak_text_color());}
+                            response.widget_info(||egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel,ui.is_enabled(),selected,format!("{} · {}",object.name,object.kind)));
+                            icons::paint(ui.painter(),r,icon,ui.visuals().weak_text_color());
                             if response.hovered(){hovered=Some(object.name.clone());}
-                            if response.clicked(){self.browse_table(object.name.clone());}
+                            if response.clicked(){self.activate_table(object.name.clone());}
                         });
                         if unfolded {self.sidebar_table(ui,&object.name);}
                     }

@@ -414,6 +414,11 @@ impl App {
                 if let EventKind::Finished(c) = &event.kind {
                     self.transaction = c.transaction;
                 }
+                let failure = if let EventKind::Failed(error) = &event.kind {
+                    Some(error.to_string())
+                } else {
+                    None
+                };
                 let (_, result) = self.tools.count_request.as_mut().unwrap();
                 result.apply(event);
                 if finished {
@@ -426,8 +431,10 @@ impl App {
                         self.tools.counts.insert(name.clone(), *n);
                         self.status = format!("{name}: {n} rows · explicit full scan");
                     } else {
-                        self.status =
-                            format!("Count failed or incomplete: {:?}", result.completion);
+                        self.status = failure.map_or_else(
+                            || format!("Count failed or incomplete: {:?}", result.completion),
+                            |error| format!("Count failed: {error}"),
+                        );
                     }
                     self.log_outcome(self.status.clone());
                 }

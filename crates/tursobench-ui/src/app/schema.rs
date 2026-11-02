@@ -293,7 +293,10 @@ impl App {
                         key.columns
                             .iter()
                             .map(|(from, to)| {
-                                format!("{from} → {}", to.as_deref().unwrap_or("unresolved PK"))
+                                format!(
+                                    "{from} references {}",
+                                    to.as_deref().unwrap_or("unresolved PK")
+                                )
                             })
                             .collect::<Vec<_>>()
                             .join(", "),

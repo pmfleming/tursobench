@@ -19,7 +19,7 @@ impl App {
                         ui.heading("Open database");
                         ui.label("Choose a recent database or browse for a local file.");
                         ui.add_space(12.0);
-                        self.database_chooser_ui(ui);
+
                         if self.path.is_empty() {
                             let edit = ui.link("Enter a path…");
                             #[cfg(test)]
