@@ -187,9 +187,12 @@ impl App {
                         self.tools.scroll_to_column = self.tools.highlight_column.is_some();
                     }
                 }
-                Command::Map | Command::List => {
+                Command::List => {
+                    self.select_tool(ToolPanel::Schema);
+                }
+                Command::Map => {
                     self.overview();
-                    self.ui.map_list = matches!(action, Command::List);
+                    self.ui.sidebar = ToolPanel::Schema;
 
                     if self.ui.diagram.data.is_none() {
                         self.load_diagram();
@@ -203,8 +206,7 @@ impl App {
                     self.load_diagram();
                 }
                 Command::Panel(panel) => {
-                    self.ui.sidebar = panel;
-                    self.ui.sidebar_open = true;
+                    self.select_tool(panel);
                 }
                 Command::Export => self.ui.export_open = true,
                 Command::Review => self.show_preview = true,

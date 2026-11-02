@@ -214,14 +214,6 @@ impl App {
             {
                 self.tools.complete = !self.tools.complete;
             }
-            if icons::button(ui, Icon::History, "History", "").clicked() {
-                self.ui.sidebar = shell::ToolPanel::History;
-                self.ui.sidebar_open = true;
-            }
-            if icons::button(ui, Icon::Saved, "Saved queries", "").clicked() {
-                self.ui.sidebar = shell::ToolPanel::Saved;
-                self.ui.sidebar_open = true;
-            }
             if icons::control(
                 ui,
                 Icon::Fit,
@@ -245,7 +237,6 @@ impl App {
                 }
                 if ui.button("Bookmark editor SQL").clicked() {
                     self.ui.sidebar = shell::ToolPanel::Saved;
-                    self.ui.sidebar_open = true;
                     ui.close();
                 }
             });
@@ -364,7 +355,6 @@ impl App {
                     &mut self.show_preview,
                     &mut self.ui.export_open,
                     &mut self.ui.outcomes,
-                    &mut self.ui.sidebar_open,
                     &mut self.tools.help,
                     &mut self.ui.filter_open,
                     &mut self.ui.inspector_open,
@@ -401,7 +391,6 @@ impl App {
             }
             if consumed(egui::Modifiers::CTRL, egui::Key::S) {
                 self.ui.sidebar = shell::ToolPanel::Saved;
-                self.ui.sidebar_open = true;
             }
         }
         if consumed(egui::Modifiers::NONE, egui::Key::F5) {
@@ -450,8 +439,7 @@ impl App {
             self.store.save(&self.preferences);
         }
         if consumed(egui::Modifiers::CTRL, egui::Key::Comma) {
-            self.ui.sidebar = shell::ToolPanel::Settings;
-            self.ui.sidebar_open = true;
+            self.select_tool(shell::ToolPanel::Settings);
         }
         if consumed(egui::Modifiers::ALT, egui::Key::ArrowLeft) {
             if self.view == View::Browse {

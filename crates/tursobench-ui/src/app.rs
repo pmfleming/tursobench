@@ -33,6 +33,7 @@ enum View {
     Diagnostics,
 }
 pub struct App {
+    pending_database: Option<std::path::PathBuf>,
     path: String,
     tools: tools::Tools,
     ui: shell::UiState,
@@ -96,6 +97,7 @@ impl App {
         };
         let smoke = args.get(1).is_some_and(|a| a == "--smoke-test");
         let mut app = Self {
+            pending_database: None,
             tools: tools::Tools::new(),
             ui: shell::UiState::new(ctx),
             smoke: smoke.then(smoke::Smoke::new),
@@ -201,7 +203,6 @@ impl App {
                 self.catalog = ResultSet::default();
                 self.catalog_ticket = None;
                 self.catalog_error.clear();
-                self.ui.map_list = false;
                 self.ui.diagram = Default::default();
                 self.ui.table_view = shell::TableView::Data;
                 self.ui.unfolded = None;
@@ -539,6 +540,12 @@ impl App {
                 self.ready = false;
                 self.active = None;
                 self.closing = false;
+                if let Some(path) = self.pending_database.take().filter(|_| {
+                    self.transaction != TransactionState::Unknown && !self.uncertain_edit
+                }) {
+                    self.set_database_path(path.to_string_lossy().into_owned());
+                    self.ui.nav = shell::Nav::Databases;
+                }
                 if let Some(writable) = reopen {
                     self.writable = writable;
                     self.open(ctx);

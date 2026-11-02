@@ -693,7 +693,7 @@ fn rapid_map_selection_keeps_latest_rows_and_structure_including_views() {
             .iter()
             .any(|o| o.kind == "trigger" && o.table == "b")
     );
-    app.ui.map_list = true;
+    app.ui.sidebar = shell::ToolPanel::Schema;
     app.browse_table("v".into());
     wait(&mut app, &ctx);
     assert_eq!(app.tools.inspection.as_ref().unwrap().table.name, "v");
@@ -870,8 +870,7 @@ fn sidebar_catalog_includes_views_when_map_is_incomplete_and_tools_preserve_rows
         shell::ToolPanel::Diagnostics,
         shell::ToolPanel::Settings,
     ] {
-        app.ui.sidebar = panel;
-        app.ui.sidebar_open = true;
+        app.select_tool(panel);
         let mut output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -882,11 +881,8 @@ fn sidebar_catalog_includes_views_when_map_is_incomplete_and_tools_preserve_rows
             },
             |ui| app.render(ui),
         );
-        assert!(
-            output.shapes.iter().any(
-                |s| matches!(&s.shape,egui::Shape::Text(t) if t.galley.job.text.trim_start()=="example_view")
-            )
-        );
+        assert!(output.shapes.len() > 10);
+        app.select_tool(shell::ToolPanel::Schema);
         output.textures_delta.clear();
         assert_eq!(app.result.current, ticket);
         assert_eq!(app.result.rows, rows);

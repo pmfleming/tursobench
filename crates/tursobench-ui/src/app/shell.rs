@@ -23,6 +23,7 @@ pub(super) enum Nav {
     Overview,
     Table,
     Result,
+    Settings,
 }
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub(super) enum DetailMode {
@@ -40,7 +41,6 @@ pub(super) enum TableView {
 
 pub(super) struct UiState {
     pub sidebar: ToolPanel,
-    pub sidebar_open: bool,
     pub unfolded: Option<String>,
     pub hover_table: Option<String>,
     pub nav: Nav,
@@ -50,7 +50,6 @@ pub(super) struct UiState {
     pub inspector_detached: bool,
     pub outcomes: bool,
     pub diagram: diagram::DiagramState,
-    pub map_list: bool,
     pub sql_open: bool,
     pub sql_expanded: bool,
     pub params_open: bool,
@@ -81,7 +80,6 @@ impl UiState {
     pub fn new(ctx: &egui::Context) -> Self {
         Self {
             sidebar: ToolPanel::Schema,
-            sidebar_open: false,
             unfolded: None,
             hover_table: None,
             nav: Nav::Databases,
@@ -91,7 +89,6 @@ impl UiState {
             inspector_detached: false,
             outcomes: false,
             diagram: Default::default(),
-            map_list: false,
             sql_open: false,
             sql_expanded: false,
             params_open: false,
@@ -151,6 +148,12 @@ impl App {
         }
         let layout = Layout::new(ui.available_width());
         self.status_bar(ui);
+        if self.session.is_some() {
+            egui::Panel::left("activity-rail")
+                .exact_size(44.0)
+                .resizable(false)
+                .show(ui, |ui| self.activity_rail(ui));
+        }
         {
             let panel = egui::Panel::left("workspace-sidebar")
                 .resizable(true)
@@ -215,14 +218,14 @@ impl App {
             egui::Window::new("Close writable database?").anchor(egui::Align2::CENTER_CENTER,egui::Vec2::ZERO).collapsible(false).max_width((ctx.content_rect().width()-48.0).min(520.0)).show(&ctx,|ui|{
                 ui.label("Local drafts will be discarded. Active execution will finish. Any remaining editor transaction will be explicitly rolled back. This does not undo committed writes.");
                 if ui.button("Wait, roll back transaction, and close").clicked(){self.close();}
-                if ui.button("Keep open").clicked(){self.confirm_close=false;self.quit=false;}
+                if ui.button("Keep open").clicked(){self.confirm_close=false;self.quit=false;self.pending_database=None;}
             });
         }
         self.edit_windows(&ctx);
         self.inspection_surfaces(&ctx);
         self.command_palette(&ctx);
         self.access_dialog(&ctx);
-        self.tool_window(&ctx);
+
         if self.ui.outcomes {
             let mut open = true;
             egui::Window::new("Execution outcomes")
@@ -334,15 +337,13 @@ impl App {
                     .on_hover_text(&self.tools.database_scope);
             });
         }
+        if self.ui.nav == Nav::Settings {
+            egui::ScrollArea::vertical().show(ui, |ui| self.settings_ui(ui));
+            return;
+        }
         self.workspace_header(ui);
         if self.ui.nav == Nav::Overview {
-            if self.ui.map_list {
-                egui::ScrollArea::vertical()
-                    .id_salt("catalog-fallback")
-                    .show(ui, |ui| self.schema_panel(ui));
-            } else {
-                self.diagram_ui(ui);
-            }
+            self.diagram_ui(ui);
             return;
         }
         if self.ui.nav == Nav::Table && self.ui.table_view == TableView::Structure {
@@ -406,22 +407,6 @@ impl App {
                 }
             }
             if self.ui.nav == Nav::Overview {
-                if icons::control(
-                    ui,
-                    Icon::Structure,
-                    "List fallback",
-                    "",
-                    self.ui.map_list,
-                    false,
-                )
-                .clicked()
-                {
-                    self.ui.map_list = !self.ui.map_list;
-                }
-                if icons::button(ui, Icon::Refresh, "Refresh schema", "F5").clicked() {
-                    self.refresh_catalog();
-                    self.load_diagram();
-                }
                 return;
             }
             let narrow = ui.available_width() < 380.0;

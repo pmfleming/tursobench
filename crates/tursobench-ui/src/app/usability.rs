@@ -38,9 +38,6 @@ impl App {
             shell::ToolPanel::Settings => self.settings_ui(ui),
             _ => {}
         }
-        if ui.button("Keyboard / safety help · F1").clicked() {
-            self.tools.help = true;
-        }
     }
     fn saved_queries_ui(&mut self, ui: &mut egui::Ui) {
         ui.heading("Saved queries");
@@ -147,7 +144,7 @@ impl App {
         if ui.button("Clear ALL stored history").clicked(){self.preferences.query_history.clear();self.preferences.history.clear();self.store.save(&self.preferences);}
     });
     }
-    fn settings_ui(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn settings_ui(&mut self, ui: &mut egui::Ui) {
         ui.heading("Settings");
         ui.label(&self.ui.font_label);
         ui.vertical(|ui| {
