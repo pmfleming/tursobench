@@ -23,6 +23,27 @@ review edits before committing. Currently a **Linux preview**, pinned to Turso 0
 
 Read-only by default · Local history and bookmarks · JSON, CSV, TSV and SQL exports
 
+## A look inside
+
+Browse tables, inspect their columns and follow foreign-key links.
+
+![Table browser showing synthetic project tasks, typed columns and foreign-key links](docs/assets/ui/table-browser.png)
+
+<details>
+<summary>See the relationship map and SQL editor</summary>
+
+**Explore relationships** between tables, primary keys and foreign keys.
+
+![Schema map linking people, projects and tasks](docs/assets/ui/relationships.png)
+
+**Write SQL** with syntax highlighting and view query results above the editor.
+
+![SQL editor joining tasks, projects and people, with the resulting rows](docs/assets/ui/sql-editor.png)
+
+</details>
+
+*Captured from the Linux app with synthetic data and the emerald dark theme.*
+
 ## Get started
 
 With the pinned Rust toolchain and Linux desktop dependencies installed:
