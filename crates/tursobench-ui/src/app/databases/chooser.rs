@@ -112,8 +112,16 @@ impl App {
     }
 
     fn database_search_field(&mut self, ui: &mut egui::Ui) -> bool {
-        let (rect, _) =
-            ui.allocate_exact_size(egui::vec2(ui.available_width(), 52.0), egui::Sense::hover());
+        let (toolbar, _) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 44.0), egui::Sense::hover());
+        let browse_rect = egui::Rect::from_min_max(
+            egui::pos2(toolbar.right() - 136.0, toolbar.top()),
+            toolbar.right_bottom(),
+        );
+        let rect = egui::Rect::from_min_max(
+            toolbar.left_top(),
+            egui::pos2(browse_rect.left() - 8.0, toolbar.bottom()),
+        );
         let id = egui::Id::new(SEARCH_ID);
         if std::mem::take(&mut self.databases.focus_filter) {
             ui.memory_mut(|m| m.request_focus(id));
@@ -121,11 +129,11 @@ impl App {
         }
         let editing = ui.memory(|m| m.has_focus(id)) && !self.databases.navigating;
         ui.painter()
-            .rect_filled(rect, 26.0, ui.visuals().widgets.inactive.weak_bg_fill);
+            .rect_filled(rect, 12.0, ui.visuals().extreme_bg_color);
         if editing {
             ui.painter().rect_stroke(
                 rect,
-                26.0,
+                12.0,
                 egui::Stroke::new(1.0, ui.visuals().selection.stroke.color),
                 egui::StrokeKind::Inside,
             );
@@ -135,13 +143,9 @@ impl App {
             egui::vec2(22.0, 22.0),
         );
         search_icon(ui.painter(), icon_rect, ui.visuals().weak_text_color());
-        let browse_rect = egui::Rect::from_center_size(
-            egui::pos2(rect.right() - 28.0, rect.center().y),
-            egui::vec2(40.0, 40.0),
-        );
         let edit_rect = egui::Rect::from_min_max(
             egui::pos2(rect.left() + 46.0, rect.center().y - 14.0),
-            egui::pos2(browse_rect.left() - 8.0, rect.center().y + 14.0),
+            egui::pos2(rect.right() - 12.0, rect.center().y + 14.0),
         );
         let before = self.databases.filter.clone();
         ui.scope(|ui| {
@@ -176,38 +180,14 @@ impl App {
             self.databases.list_offset = 0.0;
             self.databases.reveal_highlight = true;
         }
-        let response = ui.interact(
-            browse_rect,
-            id.with("browse"),
-            if self.picker.is_none() {
-                egui::Sense::click()
-            } else {
-                egui::Sense::hover()
-            },
-        );
-        response.widget_info(|| {
-            egui::WidgetInfo::labeled(
-                egui::WidgetType::Button,
-                self.picker.is_none(),
-                "Browse database files",
-            )
-        });
-        if response.hovered() {
-            ui.painter().rect_filled(
-                browse_rect.shrink(2.0),
-                18.0,
-                ui.visuals().widgets.hovered.weak_bg_fill,
-            );
-        }
-        folder_icon(
-            ui.painter(),
-            browse_rect.shrink(10.0),
-            if self.picker.is_none() {
-                ui.visuals().text_color()
-            } else {
-                ui.visuals().weak_text_color()
-            },
-        );
+        let response = ui
+            .add_enabled_ui(self.picker.is_none(), |ui| {
+                ui.put(
+                    browse_rect,
+                    egui::Button::new("Browse files…").corner_radius(10.0),
+                )
+            })
+            .inner;
         #[cfg(test)]
         {
             self.databases.search_rect = Some(rect);
@@ -249,10 +229,11 @@ impl App {
             } else {
                 "No matching databases"
             });
-            ui.small("Use the folder icon to browse for a database.");
+            ui.small("Browse files or enter a database path below.");
             ui.add_space(16.0);
         } else {
-            let reserve = if self.path.is_empty() { 110.0 } else { 280.0 };
+            // Leave the access review and primary action visible on laptop screens.
+            let reserve = if self.path.is_empty() { 110.0 } else { 340.0 };
             let height = (ui.available_height() - reserve).clamp(96.0, 360.0);
             let stride = ROW_HEIGHT + ui.spacing().item_spacing.y;
             let mut scroll = egui::ScrollArea::vertical()
@@ -277,6 +258,7 @@ impl App {
                 for &index in &filtered[range] {
                     let entry = &self.databases.entries[index];
                     let highlighted = self.databases.highlighted.as_ref() == Some(&entry.path);
+                    let selected_path = std::path::Path::new(&self.path) == entry.path;
                     let available = entry.selectable() && self.picker.is_none();
                     let (rect, _) = ui.allocate_exact_size(
                         egui::vec2(ui.available_width(), ROW_HEIGHT),
@@ -288,13 +270,13 @@ impl App {
                         egui::WidgetInfo::selected(
                             egui::WidgetType::SelectableLabel,
                             available,
-                            highlighted,
+                            selected_path,
                             entry.path.to_string_lossy(),
                         )
                     });
-                    let fill = if highlighted {
+                    let fill = if selected_path {
                         ui.visuals().selection.bg_fill
-                    } else if response.hovered() {
+                    } else if response.hovered() || (highlighted && self.databases.navigating) {
                         ui.visuals().widgets.hovered.weak_bg_fill
                     } else {
                         ui.visuals().faint_bg_color
@@ -338,12 +320,31 @@ impl App {
                         .size(12.0),
                     );
                     let width = (rect.width() - 76.0).max(0.0);
+                    let badge_color = if entry.selectable() {
+                        ui.visuals().weak_text_color()
+                    } else {
+                        ui.visuals().warn_fg_color
+                    };
+                    let badge =
+                        egui::WidgetText::from(egui::RichText::new(entry.badge()).size(12.0))
+                            .into_galley(
+                                ui,
+                                Some(egui::TextWrapMode::Truncate),
+                                width * 0.45,
+                                egui::TextStyle::Small,
+                            );
+                    let title_width = (width - badge.size().x - 12.0).max(0.0);
+                    ui.painter().galley(
+                        egui::pos2(rect.right() - 16.0 - badge.size().x, rect.top() + 13.0),
+                        badge,
+                        badge_color,
+                    );
                     ui.painter().galley(
                         rect.left_top() + egui::vec2(58.0, 11.0),
                         title.into_galley(
                             ui,
                             Some(egui::TextWrapMode::Truncate),
-                            width,
+                            title_width,
                             egui::TextStyle::Body,
                         ),
                         color,
@@ -398,7 +399,7 @@ impl App {
         if let Some(path) = forget {
             self.forget_database(&path);
         }
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if self.databases.job.is_some() {
                 ui.spinner();
                 ui.small(if self.databases.cancelling {
@@ -413,9 +414,15 @@ impl App {
                     if filtered.len() == 1 { "" } else { "s" }
                 ));
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.small("Up/Down to choose · Enter to select");
-            });
+            ui.small("· ↑↓ to choose · Enter to select");
+            let settings = ui.link("Search settings…");
+            #[cfg(test)]
+            {
+                self.databases.settings_rect = Some(settings.rect);
+            }
+            if settings.clicked() {
+                self.databases.settings_open = true;
+            }
         });
         if let Some(message) = &self.databases.message {
             ui.label(message);
@@ -423,18 +430,18 @@ impl App {
         if let Some(summary) = &self.databases.summary {
             if let Some(error) = &summary.error {
                 ui.colored_label(ui.visuals().warn_fg_color, error);
-            } else if summary.limited {
-                ui.small("Search limit reached. Add a folder in Search options to look further.");
+            } else if summary.limited && self.databases.job.is_none() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.small("Searched part of the configured locations.");
+                    if ui
+                        .add_enabled(self.picker.is_none(), egui::Button::new("Search a folder…"))
+                        .clicked()
+                    {
+                        self.browse_search_folder(ui.ctx());
+                    }
+                });
             }
         }
-        egui::CollapsingHeader::new("Search options").id_salt("discovery-settings").show(ui, |ui| {
-            if self.databases.job.is_some() {
-                if ui.add_enabled(!self.databases.cancelling, egui::Button::new("Stop search")).clicked() { self.databases.cancel(); }
-            } else if ui.add_enabled(self.picker.is_none(), egui::Button::new("Refresh databases")).clicked() { self.start_discovery(ui.ctx(), None); }
-            self.discovery_settings_ui(ui);
-            if let Some(summary) = &self.databases.summary { ui.small(format!("{} headers checked · {} folders · {} locations unavailable · {} skipped", summary.probes, summary.directories, summary.unavailable, summary.skipped)); }
-            ui.small("Discovery finds SQLite-format candidates; Turso compatibility is checked when opening.");
-        });
         ui.add_space(8.0);
     }
 }
@@ -449,21 +456,6 @@ fn search_icon(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) 
         ],
         egui::Stroke::new(1.6, color),
     );
-}
-fn folder_icon(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
-    let p = |x, y| rect.left_top() + egui::vec2(x * rect.width(), y * rect.height());
-    painter.add(egui::Shape::closed_line(
-        vec![
-            p(0.0, 0.2),
-            p(0.35, 0.2),
-            p(0.48, 0.35),
-            p(1.0, 0.35),
-            p(1.0, 0.9),
-            p(0.0, 0.9),
-        ],
-        egui::Stroke::new(1.6, color),
-    ));
-    painter.line_segment([p(0.0, 0.45), p(1.0, 0.45)], egui::Stroke::new(1.3, color));
 }
 fn database_icon(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
     painter.rect_stroke(

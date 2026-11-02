@@ -137,6 +137,7 @@ fn typing_a_different_database_path_resets_consent() {
     app.path = "previous.db".into();
     app.exclusive = true;
     app.writable = true;
+    app.databases.editing_path = true;
     frame(&mut app, &ctx, vec![]);
     ctx.memory_mut(|memory| memory.request_focus(egui::Id::new("database-path")));
     frame(&mut app, &ctx, vec![egui::Event::Text("x".into())]);

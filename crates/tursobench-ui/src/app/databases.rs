@@ -1,5 +1,6 @@
 use super::*;
 mod chooser;
+mod connection;
 use crate::{
     discovery::{self, Availability, Event, Job, Request, Root, Summary},
     storage::{CachedDatabase, DiscoveryPreferences, normalized_absolute},
@@ -25,6 +26,20 @@ struct Entry {
     last_opened: Option<u64>,
 }
 impl Entry {
+    fn badge(&self) -> &'static str {
+        match self.state {
+            State::Checked(Availability::Missing) => "Missing",
+            State::Checked(Availability::Unavailable) => "Unreadable",
+            State::Checked(Availability::NotDatabase) => "Not a database",
+            State::Checked(Availability::Skipped) => "Outside search scope",
+            State::Checked(Availability::ExcludedApplication) => "Use Browse",
+            _ if self.path.to_str().is_none() => "Unsupported path",
+            _ if self.last_opened.is_some() => "Recent",
+            State::Remembered => "Unchecked",
+            State::Found => "Found",
+        }
+    }
+
     fn label(&self) -> &'static str {
         match (self.state, self.last_opened.is_some()) {
             (State::Remembered, true) => "Opened before · awaiting header check",
@@ -65,6 +80,8 @@ pub(super) struct Chooser {
     exclude_input: String,
     pub focus_filter: bool,
     pub picking_folder: bool,
+    pub editing_path: bool,
+    settings_open: bool,
     pub message: Option<String>,
     summary: Option<Summary>,
     cancelling: bool,
@@ -76,6 +93,16 @@ pub(super) struct Chooser {
     pub browse_rect: Option<egui::Rect>,
     #[cfg(test)]
     pub search_rect: Option<egui::Rect>,
+    #[cfg(test)]
+    pub edit_path_rect: Option<egui::Rect>,
+    #[cfg(test)]
+    pub open_rect: Option<egui::Rect>,
+    #[cfg(test)]
+    pub open_enabled: bool,
+    #[cfg(test)]
+    pub acknowledgement_rect: Option<egui::Rect>,
+    #[cfg(test)]
+    pub settings_rect: Option<egui::Rect>,
 }
 impl Chooser {
     pub(super) fn new(prefs: &DiscoveryPreferences) -> Self {
@@ -416,6 +443,22 @@ impl App {
     }
 
     pub(super) fn discovery_settings_ui(&mut self, ui: &mut egui::Ui) {
+        if self.databases.job.is_some() {
+            if ui
+                .add_enabled(!self.databases.cancelling, egui::Button::new("Stop search"))
+                .clicked()
+            {
+                self.databases.cancel();
+            }
+        } else if ui
+            .add_enabled(
+                self.picker.is_none(),
+                egui::Button::new("Refresh databases"),
+            )
+            .clicked()
+        {
+            self.start_discovery(ui.ctx(), None);
+        }
         if ui
             .checkbox(
                 &mut self.preferences.discovery.enabled,
@@ -508,6 +551,17 @@ impl App {
             self.databases.message =
                 Some("Exclusion removed. Refresh to search that location.".into());
         }
+        ui.separator();
+        if let Some(summary) = &self.databases.summary {
+            ui.small(format!(
+                "{} headers checked · {} folders · {} locations unavailable · {} skipped",
+                summary.probes, summary.directories, summary.unavailable, summary.skipped
+            ));
+            if summary.limited {
+                ui.small("Search budget reached. Search a narrower folder to look further.");
+            }
+        }
+        ui.small("Discovery finds SQLite-format candidates; Turso compatibility is checked when opening.");
     }
 }
 
@@ -833,7 +887,8 @@ mod tests {
         let row = app.databases.row_rects[0].1;
         let browse = app.databases.browse_rect.unwrap();
         let search = app.databases.search_rect.unwrap();
-        assert!(search.contains_rect(browse));
+        assert!(browse.left() > search.right());
+        assert_eq!(browse.top(), search.top());
         assert!(row.top() > search.bottom());
         click(&mut app, &ctx, row.center());
         assert_eq!(app.path, "/work/agenda.db");

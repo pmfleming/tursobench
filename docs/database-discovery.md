@@ -4,12 +4,15 @@ TursoBench starts one background search when the application launches. The Open
 database screen immediately shows remembered files, then appends new candidates
 without changing the selected path, access mode, keyboard focus or scroll
 position. Recent successful opens appear first on the next launch. **Ctrl+O**
-returns to this chooser and focuses its name/path filter. The folder icon inside
+returns to this chooser and focuses its name/path filter. **Browse files…** beside
 the search field opens the native file dialog; **Alt+Enter** does the same while
-search is focused. Manual entry is available under **Enter a path manually**.
+search is focused. Manual entry is available under **Enter a path…**, and a selected
+file's path can be changed with **Edit path…**.
 
-The chooser follows Shelllist's search/list pattern: one rounded search field
-above full-width filename/path rows. Down from search enters the first selectable
+The centered chooser has a rounded search field above full-width filename/path
+rows. Recent successful opens appear first and carry a **Recent** label; other
+rows show their discovery or availability status. A selected file has a filled
+row, while keyboard navigation uses a separate browsing marker. Down from search enters the first selectable
 result; Up/Down browses results, skipping unavailable files. Up from the first
 result returns to search. PageUp/PageDown moves through longer lists and reveals
 the highlighted row. Typing or pasting while browsing edits the search at its
@@ -17,9 +20,11 @@ retained cursor/selection. Enter selects the highlighted file for access review;
 clicking a row also selects it. Browsing alone does not replace a command-line or
 previously selected path, and incoming discoveries preserve the highlight.
 
-Selecting a candidate does not connect to it. The existing access review and
-exclusive-use acknowledgement still precede Open. Changing the selected path
-resets write access and acknowledgement. Command-line paths keep priority.
+Selecting a candidate does not connect to it. A compact access panel directly
+below the results shows the selected file, read-only/write choice, exclusive-use
+acknowledgement and **Open database**. Long paths are truncated with the full path
+on hover. Changing the selected path resets write access and acknowledgement.
+Command-line paths keep priority.
 
 ## Scope and controls
 
@@ -30,8 +35,11 @@ directory, files directly in the home directory, common development folders
 have a five-level recursion limit, recent parents one, application data three,
 and home zero. Launching from home never makes all of home recursive.
 
-**Search options** in the chooser, also available as Database discovery in Settings,
-provides a startup toggle, folder picker, typed folder entry and exclusions.
+**Search settings…** opens a separate scrollable dialog with a startup toggle,
+folder picker, typed folder entry, exclusions, refresh/stop controls and scan
+statistics. These controls are also available as Database discovery in Settings.
+When a search reaches its budget, **Search a folder…** is available below the
+results to search a narrower location directly.
 **Save and search this folder** saves an absolute folder and searches that folder
 immediately, including extensionless files, to five levels. This manual search
 also works when startup discovery is disabled. Use a narrower folder to look
@@ -104,8 +112,8 @@ directories, depth limits, permissions, mount boundaries, symlinks, hard links,
 sidecars, native paths, cancellation and channel backpressure. A real Turso 0.8.3
 fixture is checked byte-for-byte, including sidecars, before and after discovery.
 Headless egui tests exercise filtering, native search-cursor retention, arrow-key
-and page navigation, scrolling, the folder icon's placement inside the search
-field, pointer selection, stable asynchronous result order, access resets and
+and page navigation, scrolling, the Browse button beside the search field,
+pointer selection, stable asynchronous result order, access resets and
 native-folder-result routing. Engine lifecycle tests
 verify successful-open-only history.
 
