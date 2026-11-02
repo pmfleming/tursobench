@@ -179,7 +179,12 @@ impl App {
             None
         };
         let info = if diagram {
-            node.as_ref().and_then(|n| n.inspection.clone())
+            self.tools
+                .inspection
+                .as_ref()
+                .filter(|i| Some(&i.table.name) == self.ui.diagram.selected.as_ref())
+                .cloned()
+                .or_else(|| node.as_ref().and_then(|n| n.inspection.clone()))
         } else {
             self.tools.inspection.clone()
         };
@@ -187,13 +192,13 @@ impl App {
             self.tools.ddl.clone()
         } else {
             let name = if diagram {
-                node.as_ref().map(|n| n.name.as_str())
+                self.ui.diagram.selected.as_deref()
             } else {
                 info.as_ref().map(|i| i.table.name.as_str())
             };
             name.and_then(|name| self.schema.iter().find(|o| o.name == name).cloned())
         };
-        if diagram && node.is_none() {
+        if diagram && self.ui.diagram.selected.is_none() {
             ui.label(
                 "Select any table in the diagram to inspect keys, constraints and relationships.",
             );
@@ -218,11 +223,8 @@ impl App {
                 )
                 .clicked()
             {
-                if diagram {
-                    self.load_diagram();
-                } else {
-                    self.request_inspection(info.table.name.clone());
-                }
+                self.request_inspection(info.table.name.clone());
+                self.refresh_catalog();
             }
             if info.table.engine_managed() {
                 ui.colored_label(
@@ -322,6 +324,38 @@ impl App {
                 &self.tools.inspection_error
             });
         }
+        if info.is_none() && !self.tools.inspection_error.is_empty() {
+            ui.colored_label(ui.visuals().error_fg_color, &self.tools.inspection_error);
+        }
+        let owner = info
+            .as_ref()
+            .map(|i| i.table.name.as_str())
+            .or_else(|| object.as_ref().map(|o| o.table.as_str()));
+        if let Some(owner) = owner {
+            let objects: Vec<_> = self
+                .schema
+                .iter()
+                .filter(|o| o.table == owner && (o.kind == "index" || o.kind == "trigger"))
+                .cloned()
+                .collect();
+            ui.separator();
+            ui.strong("Indexes and triggers · original definitions");
+            for object in objects {
+                ui.collapsing(format!("{} {}", object.kind, object.name), |ui| {
+                    if let Some(ddl) = &object.ddl {
+                        if ui.button("Copy definition").clicked() {
+                            ui.ctx().copy_text(ddl.clone());
+                        }
+                        ui.monospace(ddl);
+                    } else {
+                        ui.label("Engine-generated object; no CREATE statement returned.");
+                    }
+                });
+            }
+            ui.small(
+                "CHECK clauses, index expressions and FTS methods are shown in the original DDL.",
+            );
+        }
         if let Some(object) = object {
             ui.separator();
             ui.strong(format!("{} {} — original DDL", object.kind, object.name));
@@ -330,12 +364,14 @@ impl App {
                     ui.ctx().copy_text(ddl.clone());
                 }
                 let mut ddl_view = ddl.as_str();
-                ui.add(
-                    egui::TextEdit::multiline(&mut ddl_view)
-                        .code_editor()
-                        .desired_width(ui.available_width())
-                        .desired_rows(8),
-                );
+                ui.collapsing("CREATE statement", |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut ddl_view)
+                            .code_editor()
+                            .desired_width(ui.available_width())
+                            .desired_rows(8),
+                    );
+                });
             } else {
                 ui.small("No SQL definition returned by Turso");
             }
@@ -416,6 +452,8 @@ impl App {
             }
             self.browse = None;
             self.table = None;
+            self.ui.diagram.selected = Some(key.target.clone());
+            self.tools.ddl = None;
             self.tools.related = Some((key.target, keys));
         }
     }
@@ -432,13 +470,16 @@ impl App {
         };
         if self.submit(operation, View::Browse).is_some() {
             self.tools.back.pop();
+            self.tools.ddl = None;
             self.table = None;
             match destination {
                 Destination::Page(b) => {
+                    self.ui.diagram.selected = Some(b.table.clone());
                     self.browse = Some(b);
                     self.tools.related = None;
                 }
                 Destination::Related(t, k) => {
+                    self.ui.diagram.selected = Some(t.clone());
                     self.browse = None;
                     self.tools.related = Some((t, k));
                 }

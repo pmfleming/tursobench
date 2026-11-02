@@ -1,15 +1,20 @@
 use super::{App, View, shell};
 use eframe::egui;
-use tursobench_core::Value;
+use tursobench_core::{ForeignKey, Value};
 
 enum GridAction {
     Cell(usize, usize),
     Record(usize),
     Copy(usize),
     Delete(usize),
+    Follow(usize, ForeignKey),
 }
 impl App {
     pub(super) fn grid_contents(&mut self, ui: &mut egui::Ui) {
+        #[cfg(test)]
+        {
+            self.fk_cell_rect = None;
+        }
         let mut action = None;
         let editable = self.can_edit();
         let remaining = (ui.clip_rect().bottom() - ui.cursor().top() - 65.0).clamp(140.0, 900.0);
@@ -48,12 +53,15 @@ impl App {
             }
             Some(GridAction::Copy(r)) => self.copy_row(ui.ctx(), r),
             Some(GridAction::Delete(r)) => self.stage_delete(r),
+            Some(GridAction::Follow(r, key)) => self.follow_key(r, key),
             None => {}
         }
         if self.result.columns.is_empty() && self.active.is_none() {
             ui.label(
                 "No retained row result. Browse a table, run SQL, or choose a read-only check.",
             );
+        } else if self.result.rows.is_empty() && self.active.is_none() {
+            ui.label("No rows in this page or lookup.");
         }
     }
     fn grid_header(&mut self, ui: &mut egui::Ui) {
@@ -121,6 +129,7 @@ impl App {
                 ),
             );
             for (col, value) in values.iter().enumerate() {
+                let references = self.cell_references(row, col);
                 let staged = self.drafts.as_ref().and_then(|d| d.displayed(values, col));
                 let displayed = staged.unwrap_or(value);
                 let text = match displayed {
@@ -164,7 +173,9 @@ impl App {
                     );
                 }
                 let numeric = matches!(displayed, Value::Integer(_) | Value::Real(_));
-                let color = if matches!(displayed, Value::Null) {
+                let color = if !references.is_empty() {
+                    ui.visuals().hyperlink_color
+                } else if matches!(displayed, Value::Null) {
                     ui.visuals().weak_text_color()
                 } else {
                     ui.visuals().text_color()
@@ -185,6 +196,19 @@ impl App {
                     rect.left_center() + egui::vec2(7.0, -galley.size().y * 0.5)
                 };
                 painter.galley(position, galley, color);
+                if !references.is_empty() {
+                    painter.line_segment(
+                        [
+                            rect.left_bottom() + egui::vec2(7.0, -3.0),
+                            rect.right_bottom() + egui::vec2(-7.0, -3.0),
+                        ],
+                        egui::Stroke::new(0.5, color),
+                    );
+                    #[cfg(test)]
+                    {
+                        self.fk_cell_rect = Some(rect);
+                    }
+                }
                 if deleted {
                     painter.line_segment(
                         [
@@ -206,12 +230,43 @@ impl App {
                     self.first_cell_rect = Some(rect);
                 }
                 if response.clicked() {
-                    action = Some(GridAction::Cell(row, col));
+                    action = Some(if references.len() == 1 {
+                        GridAction::Follow(row, references[0].clone())
+                    } else {
+                        GridAction::Cell(row, col)
+                    });
                 }
                 if response.double_clicked() {
                     action = Some(GridAction::Record(row));
                 }
+                let response = if references.is_empty() {
+                    response
+                } else {
+                    response
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(if references.len() == 1 {
+                            format!(
+                                "Follow reference to {} · right-click to inspect or edit",
+                                references[0].target
+                            )
+                        } else {
+                            "Multiple references: right-click to choose a target".into()
+                        })
+                };
                 response.context_menu(|ui| {
+                    for key in &references {
+                        if ui
+                            .button(format!("Follow → {} (FK {})", key.target, key.id))
+                            .clicked()
+                        {
+                            action = Some(GridAction::Follow(row, key.clone()));
+                            ui.close();
+                        }
+                    }
+                    if ui.button("Inspect / edit cell").clicked() {
+                        action = Some(GridAction::Cell(row, col));
+                        ui.close();
+                    }
                     if ui.button("Copy stored cell").clicked() {
                         ui.ctx().copy_text(crate::export::cell_text(value));
                         ui.close();
@@ -235,6 +290,42 @@ impl App {
             }
         });
         action
+    }
+    pub(super) fn cell_references(&self, row: usize, col: usize) -> Vec<ForeignKey> {
+        if self.view != View::Browse {
+            return vec![];
+        }
+        let (Some(table), Some(info), Some(values)) = (
+            &self.table,
+            &self.tools.inspection,
+            self.result.rows.get(row),
+        ) else {
+            return vec![];
+        };
+        if table.name != info.table.name {
+            return vec![];
+        }
+        let Some(column) = table.columns.get(col) else {
+            return vec![];
+        };
+        info.foreign_keys
+            .iter()
+            .filter(|key| {
+                key.columns
+                    .iter()
+                    .any(|(name, _)| name.eq_ignore_ascii_case(&column.name))
+                    && key.columns.iter().all(|(source, target)| {
+                        target.is_some()
+                            && table
+                                .columns
+                                .iter()
+                                .position(|c| c.name.eq_ignore_ascii_case(source))
+                                .and_then(|i| values.get(i))
+                                .is_some_and(|v| *v != Value::Null)
+                    })
+            })
+            .cloned()
+            .collect()
     }
 }
 

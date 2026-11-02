@@ -72,6 +72,8 @@ pub struct App {
     uncertain_edit: bool,
     #[cfg(test)]
     first_cell_rect: Option<egui::Rect>,
+    #[cfg(test)]
+    fk_cell_rect: Option<egui::Rect>,
 }
 impl App {
     pub fn new(ctx: &egui::Context) -> Self {
@@ -134,6 +136,8 @@ impl App {
             uncertain_edit: false,
             #[cfg(test)]
             first_cell_rect: None,
+            #[cfg(test)]
+            fk_cell_rect: None,
         };
         // Tests and desktop smoke runs must never inspect the user's filesystem.
         if !cfg!(test) && !smoke && app.preferences.discovery.enabled {

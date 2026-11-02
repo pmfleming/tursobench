@@ -200,18 +200,21 @@ impl App {
                         self.ui.inspector_detached = false;
                     }
                     ui.horizontal_wrapped(|ui| {
-                        ui.add_enabled_ui(self.ui.workspace != shell::Workspace::Diagram, |ui| {
-                            ui.selectable_value(
-                                &mut self.ui.inspector,
-                                shell::Inspector::Cell,
-                                "Cell",
-                            );
-                            ui.selectable_value(
-                                &mut self.ui.inspector,
-                                shell::Inspector::Record,
-                                "Record",
-                            );
-                        });
+                        ui.add_enabled_ui(
+                            self.ui.workspace != shell::Workspace::Diagram || self.ui.drawer.open,
+                            |ui| {
+                                ui.selectable_value(
+                                    &mut self.ui.inspector,
+                                    shell::Inspector::Cell,
+                                    "Cell",
+                                );
+                                ui.selectable_value(
+                                    &mut self.ui.inspector,
+                                    shell::Inspector::Record,
+                                    "Record",
+                                );
+                            },
+                        );
                         ui.selectable_value(
                             &mut self.ui.inspector,
                             shell::Inspector::Structure,

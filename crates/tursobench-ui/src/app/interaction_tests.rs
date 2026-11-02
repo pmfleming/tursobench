@@ -548,8 +548,31 @@ fn selection_named_history_metadata_reference_back_and_tools_render() {
     wait(&mut app, &ctx);
     assert!(app.tools.inspection_error.is_empty());
     let key = app.tools.inspection.as_ref().unwrap().foreign_keys[0].clone();
-    app.follow_key(0, key.clone());
+    assert!(app.cell_references(1, 1).is_empty());
+    app.ui.drawer.expanded = true;
+    frame(&mut app, &ctx, vec![]);
+    let pos = app
+        .fk_cell_rect
+        .expect("composite FK rendered as a link")
+        .center();
+    for pressed in [true, false] {
+        frame(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+    }
     wait(&mut app, &ctx);
+    assert_eq!(app.ui.workspace, shell::Workspace::Diagram);
+    assert_eq!(app.ui.diagram.selected.as_deref(), Some("parent"));
     assert_eq!(app.table.as_ref().unwrap().name, "parent");
     assert_eq!(app.result.rows.len(), 1);
     assert_eq!(app.export_scope(), "related-row-lookup");
@@ -561,6 +584,7 @@ fn selection_named_history_metadata_reference_back_and_tools_render() {
     app.navigate_back();
     wait(&mut app, &ctx);
     assert_eq!(app.table.as_ref().unwrap().name, "child");
+    assert_eq!(app.ui.diagram.selected.as_deref(), Some("child"));
     assert_eq!(app.result.rows.len(), 2);
     app.follow_key(1, key);
     assert!(app.status.contains("NULL foreign key"));
@@ -645,5 +669,43 @@ fn map_home_drawer_preserves_camera_and_rejects_navigation_with_drafts() {
     assert_eq!(app.ui.diagram.selected.as_deref(), Some("a"));
     assert_eq!(app.table.as_ref().unwrap().name, "a");
     app.drafts = None;
+    app.close();
+}
+
+#[test]
+fn rapid_map_selection_keeps_latest_rows_and_structure_including_views() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("selection.db");
+    crate::test_support::create(
+        &path,
+        &[
+            "CREATE TABLE a(id INTEGER PRIMARY KEY)",
+            "INSERT INTO a VALUES(1)",
+            "CREATE TABLE b(id INTEGER PRIMARY KEY)",
+            "INSERT INTO b VALUES(2)",
+            "CREATE VIEW v AS SELECT * FROM b",
+            "CREATE TRIGGER b_insert AFTER INSERT ON b BEGIN SELECT 1; END",
+        ],
+    );
+    let (ctx, mut app) = connected(&path, false);
+    app.browse_table("a".into());
+    app.browse_table("b".into());
+    wait(&mut app, &ctx);
+    assert_eq!(app.result.rows, vec![vec![Value::Integer(2)]]);
+    assert_eq!(app.table.as_ref().unwrap().name, "b");
+    assert_eq!(app.ui.diagram.selected.as_deref(), Some("b"));
+    assert!(
+        app.schema
+            .iter()
+            .any(|o| o.kind == "trigger" && o.table == "b")
+    );
+    app.ui.map_list = true;
+    app.browse_table("v".into());
+    wait(&mut app, &ctx);
+    assert_eq!(app.tools.inspection.as_ref().unwrap().table.name, "v");
+    assert!(!app.can_edit());
+    app.ui.drawer.view = shell::TableView::Structure;
+    frame(&mut app, &ctx, vec![]);
+    assert_eq!(app.ui.diagram.selected.as_deref(), Some("v"));
     app.close();
 }

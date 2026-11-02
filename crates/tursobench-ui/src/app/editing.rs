@@ -92,6 +92,9 @@ impl App {
         }
     }
     pub(super) fn edit_controls(&mut self, ui: &mut egui::Ui) {
+        if !self.writable && !self.has_drafts() {
+            return;
+        }
         ui.horizontal_wrapped(|ui| {
             if ui
                 .add_enabled(self.can_edit(), egui::Button::new("Stage insert…"))
