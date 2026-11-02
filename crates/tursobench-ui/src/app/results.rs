@@ -167,7 +167,7 @@ impl App {
     pub(super) fn open_cell(&mut self, row: usize, column: usize) {
         if let Some(value) = self.result.rows.get(row).and_then(|r| r.get(column)) {
             self.inspect = Some((row, column));
-            self.ui.inspector = shell::Inspector::Cell;
+            self.ui.inspector = shell::DetailMode::Cell;
             self.ui.inspector_open = true;
             self.tools.cell_kind = match value {
                 Value::Null => CellKind::Null,

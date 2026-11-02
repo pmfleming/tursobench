@@ -1,4 +1,7 @@
-use super::App;
+use super::{
+    App,
+    icons::{self, Icon},
+};
 use eframe::egui;
 use tursobench_core::{Inspection, SchemaDiagram, Ticket};
 use tursobench_db::{Operation, Request};
@@ -14,7 +17,8 @@ pub(super) struct DiagramState {
     pub error: String,
     pub stale: bool,
     pub selected: Option<String>,
-    pub search: String,
+    pub show_system: bool,
+    visible: Option<SchemaDiagram>,
     pub all_columns: bool,
     pub zoom: f32,
     pub pan: egui::Vec2,
@@ -69,8 +73,29 @@ impl DiagramState {
     pub fn freeze_camera(&mut self) {
         self.auto_fit = false;
     }
+    fn rebuild_visible(&mut self) {
+        self.visible = self
+            .data
+            .as_ref()
+            .filter(|g| {
+                !self.show_system
+                    && g.tables
+                        .iter()
+                        .any(|n| n.name.starts_with("__turso_internal_"))
+            })
+            .map(|g| SchemaDiagram {
+                limited: g.limited,
+                tables: g
+                    .tables
+                    .iter()
+                    .filter(|n| !n.name.starts_with("__turso_internal_"))
+                    .cloned()
+                    .collect(),
+            });
+    }
     pub fn loaded(&mut self, data: SchemaDiagram) {
         self.data = Some(data);
+        self.rebuild_visible();
         self.ticket = None;
         self.error.clear();
         self.stale = false;
@@ -277,65 +302,6 @@ impl App {
     pub(super) fn diagram_ui(&mut self, ui: &mut egui::Ui) {
         #[cfg(test)]
         self.ui.diagram.table_rects.clear();
-        let mut found = None;
-        ui.horizontal_wrapped(|ui| {
-            ui.heading("Schema map");
-            if ui.button("Arrange").clicked() {
-                self.ui.diagram.positions.clear();
-                self.ui.diagram.fit = true;
-                self.ui.diagram.focus_selected = false;
-            }
-            if ui
-                .add_enabled(
-                    self.ready && !self.closing && self.ui.diagram.ticket.is_none(),
-                    egui::Button::new("Refresh all tables"),
-                )
-                .clicked()
-            {
-                self.load_diagram();
-            }
-            if ui.button("Fit all").clicked() {
-                self.ui.diagram.fit = true;
-                self.ui.diagram.focus_selected = false;
-                self.ui.diagram.auto_fit = true;
-            }
-            if ui.button("100%").clicked() {
-                self.ui.diagram.reset_zoom = true;
-                self.ui.diagram.auto_fit = false;
-            }
-            if ui
-                .checkbox(&mut self.ui.diagram.all_columns, "All columns")
-                .changed()
-            {
-                self.ui.diagram.positions.clear();
-                self.ui.diagram.fit = true;
-                self.ui.diagram.auto_fit = true;
-            }
-            ui.add(
-                egui::TextEdit::singleline(&mut self.ui.diagram.search)
-                    .hint_text("Find table…")
-                    .desired_width(150.0),
-            );
-            if ui.button("Find").clicked()
-                && let Some(graph) = &self.ui.diagram.data
-                && let Some(table) = graph.tables.iter().find(|t| {
-                    t.name
-                        .to_lowercase()
-                        .contains(&self.ui.diagram.search.to_lowercase())
-                })
-            {
-                found = Some(table.name.clone());
-            }
-        });
-        if let Some(name) = found {
-            let previous = self.result.current;
-            self.browse_table(name);
-            if self.result.current != previous {
-                self.ui.diagram.focus_selected = true;
-                self.ui.diagram.fit = true;
-            }
-        }
-        ui.small("Declared relationships only · PK = primary-key position · UQ = unique-index member · FK = foreign-key member. Drag background to pan; wheel to zoom; drag table headers; click a table to open its Data / Structure drawer.");
         if self.ui.diagram.ticket.is_some() {
             ui.label(
                 "Loading committed metadata on the worker… Closing still waits for active work.",
@@ -344,7 +310,13 @@ impl App {
         if !self.ui.diagram.error.is_empty() {
             ui.colored_label(ui.visuals().error_fg_color, &self.ui.diagram.error);
         }
-        let Some(graph) = &self.ui.diagram.data else {
+        let Some(graph) = self
+            .ui
+            .diagram
+            .visible
+            .as_ref()
+            .or(self.ui.diagram.data.as_ref())
+        else {
             ui.label("Open a database and choose Refresh all tables. No row scans or inferred relationships.");
             return;
         };
@@ -356,10 +328,12 @@ impl App {
             .sum();
         let errors = graph.tables.iter().filter(|t| t.error.is_some()).count();
         ui.horizontal_wrapped(|ui| {
-            ui.label(format!(
-                "{} tables · {relationships} foreign keys · {errors} metadata errors",
-                graph.tables.len()
-            ));
+            if graph.limited || errors > 0 {
+                ui.small(format!(
+                    "{} tables · {relationships} links · {errors} metadata errors",
+                    graph.tables.len()
+                ));
+            }
             if graph.limited {
                 ui.colored_label(
                     ui.visuals().warn_fg_color,
@@ -557,7 +531,7 @@ impl App {
                     } else {
                         1.0
                     },
-                    if is_selected {
+                    if is_selected || relatives.contains(&node.name) {
                         accent
                     } else {
                         ui.visuals().widgets.noninteractive.bg_stroke.color
@@ -713,6 +687,73 @@ impl App {
         if unresolved > 0 {
             painter.text(canvas.left_bottom()+egui::vec2(10.0,-10.0),egui::Align2::LEFT_BOTTOM,format!("{unresolved} unresolved relationship endpoints — inspect Structure; no targets invented"),egui::FontId::proportional(12.0),ui.visuals().warn_fg_color);
         }
+        ui.scope_builder(
+            egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                canvas.right_bottom() - egui::vec2(244.0, 42.0),
+                egui::vec2(236.0, 34.0),
+            )),
+            |ui| {
+                egui::Frame::new()
+                    .fill(ui.visuals().panel_fill)
+                    .corner_radius(6.0)
+                    .inner_margin(3.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            if icons::button(ui, Icon::Fit, "Fit all", "0").clicked() {
+                                self.ui.diagram.fit = true;
+                                self.ui.diagram.focus_selected = false;
+                                self.ui.diagram.auto_fit = true;
+                            }
+                            if icons::button(ui, Icon::Arrange, "Auto-arrange", "").clicked() {
+                                self.ui.diagram.positions.clear();
+                                self.ui.diagram.fit = true;
+                                self.ui.diagram.focus_selected = false;
+                            }
+                            if icons::control(
+                                ui,
+                                Icon::Columns,
+                                "All columns",
+                                "",
+                                self.ui.diagram.all_columns,
+                                false,
+                            )
+                            .clicked()
+                            {
+                                self.ui.diagram.all_columns = !self.ui.diagram.all_columns;
+                                self.ui.diagram.positions.clear();
+                                self.ui.diagram.fit = true;
+                                self.ui.diagram.auto_fit = true;
+                            }
+                            if icons::control(
+                                ui,
+                                Icon::System,
+                                "System tables",
+                                "",
+                                self.ui.diagram.show_system,
+                                false,
+                            )
+                            .clicked()
+                            {
+                                self.ui.diagram.show_system = !self.ui.diagram.show_system;
+                                self.ui.diagram.rebuild_visible();
+                                self.ui.diagram.fit = true;
+                            }
+                            if icons::button(ui, Icon::Search, "Find table", "Ctrl K").clicked() {
+                                self.open_palette();
+                            }
+                            if ui
+                                .small_button("100%")
+                                .on_hover_text("Reset zoom")
+                                .clicked()
+                            {
+                                self.ui.diagram.reset_zoom = true;
+                                self.ui.diagram.auto_fit = false;
+                            }
+                        });
+                    });
+            },
+        );
         if let Some(name) = browse.or(selected) {
             self.browse_table(name);
         }

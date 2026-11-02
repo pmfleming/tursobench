@@ -41,7 +41,6 @@ pub(super) enum Icon {
     Link,
     Up,
     Down,
-    Theme,
 }
 
 pub(super) fn button(ui: &mut egui::Ui, icon: Icon, name: &str, shortcut: &str) -> egui::Response {
@@ -373,10 +372,6 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
                 (16., 18.),
                 (12., 18.),
             ]);
-        }
-        Theme => {
-            circle(12., 12., 9.);
-            line(&[(12., 3.), (12., 21.)]);
         }
     }
 }

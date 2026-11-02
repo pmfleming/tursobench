@@ -91,52 +91,12 @@ impl App {
             Err(error) => self.status = error.to_string(),
         }
     }
-    pub(super) fn edit_controls(&mut self, ui: &mut egui::Ui) {
-        if !self.writable && !self.has_drafts() {
-            return;
-        }
-        ui.horizontal_wrapped(|ui| {
-            if ui
-                .add_enabled(self.can_edit(), egui::Button::new("Stage insert…"))
-                .clicked()
-                && let Some(table) = &self.table
-            {
-                let json = serde_json::to_string_pretty(&vec![None::<&Value>; table.columns.len()]);
-                self.prepare_insert(json);
-            }
-            ui.label(format!(
-                "{} staged operations",
-                self.drafts.as_ref().map_or(0, |d| d.edits.len())
-            ));
-            if ui
-                .add_enabled(
-                    self.has_drafts() && self.commit_ticket.is_none(),
-                    egui::Button::new("Preview edits…"),
-                )
-                .clicked()
-            {
-                self.show_preview = true;
-            }
-            if ui
-                .add_enabled(
-                    self.has_drafts() && self.commit_ticket.is_none(),
-                    egui::Button::new("Discard drafts"),
-                )
-                .clicked()
-            {
-                self.drafts = None;
-                self.show_preview = false;
-                self.status = "Local drafts discarded; no database write".into();
-            }
-        });
-        if self.writable && self.transaction != TransactionState::Autocommit {
-            ui.small("Finish the SQL-editor transaction before staging changes. Staged commits use a separate connection.");
-        }
-        if self.view == View::Browse
-            && self.writable
-            && !self.table.as_ref().is_some_and(Table::editable)
+    pub(super) fn begin_insert(&mut self) {
+        if self.can_edit()
+            && let Some(table) = &self.table
         {
-            ui.small("Read-only table result: editing requires a non-engine-managed base table with a primary key and supported columns.");
+            let json = serde_json::to_string_pretty(&vec![None::<&Value>; table.columns.len()]);
+            self.prepare_insert(json);
         }
     }
     pub(super) fn edit_windows(&mut self, ctx: &egui::Context) {

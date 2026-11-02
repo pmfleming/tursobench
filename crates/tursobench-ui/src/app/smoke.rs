@@ -53,7 +53,7 @@ impl App {
                 && self.catalog_ticket.is_none()
                 && self.ui.diagram.ticket.is_none() =>
             {
-                assert_eq!(self.ui.workspace, shell::Workspace::Diagram);
+                assert_eq!(self.ui.nav, shell::Nav::Overview);
                 assert!(self.ui.diagram.data.is_some());
                 self.browse_table(smoke.table.clone());
                 smoke.stage = 2;
@@ -88,13 +88,13 @@ impl App {
                 smoke.stage = 9;
             }
             9 => {
-                assert!(self.ui.drawer.open);
-                self.ui.drawer.expanded = true;
+                assert_eq!(self.ui.nav, shell::Nav::Table);
+                self.ui.table_view = shell::TableView::Structure;
                 smoke.stage = 10;
             }
             10 => {
-                self.ui.drawer.expanded = false;
-                self.ui.workspace = shell::Workspace::Diagram;
+                self.ui.table_view = shell::TableView::Data;
+                self.ui.nav = shell::Nav::Overview;
                 self.show_structure();
                 self.load_diagram();
                 smoke.stage = 7;

@@ -10,35 +10,38 @@ impl App {
         };
         let mut changed = false;
         let mut remove = None;
-        ui.horizontal_wrapped(|ui| {
-            for (index, filter) in next.filters.iter().enumerate() {
-                let name = table
-                    .columns
-                    .get(filter.column)
-                    .map_or("?", |c| c.name.as_str());
-                let value = if filter.op.unary() {
-                    String::new()
-                } else {
-                    filter.value.preview()
-                };
-                if ui
-                    .button(format!("{name} {} {value} ×", filter.op.label()))
-                    .on_hover_text("Remove filter")
-                    .clicked()
-                {
-                    remove = Some(index);
+        if !next.filters.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                for (index, filter) in next.filters.iter().enumerate() {
+                    let name = table
+                        .columns
+                        .get(filter.column)
+                        .map_or("?", |c| c.name.as_str());
+                    let value = if filter.op.unary() {
+                        String::new()
+                    } else {
+                        filter.value.preview()
+                    };
+                    if ui
+                        .button(format!("{name} {} {value} ×", filter.op.label()))
+                        .on_hover_text("Remove filter")
+                        .clicked()
+                    {
+                        remove = Some(index);
+                    }
                 }
-            }
-            if !next.filters.is_empty() && ui.button("Clear filters").clicked() {
-                changed = true;
-                next.filters.clear();
-            }
-        });
+                if !next.filters.is_empty() && ui.button("Clear filters").clicked() {
+                    changed = true;
+                    next.filters.clear();
+                }
+            });
+        }
         if let Some(index) = remove.filter(|&i| i < next.filters.len()) {
             next.filters.remove(index);
             changed = true;
         }
-        ui.collapsing("+ Filter", |ui| {
+        if self.ui.filter_open {
+            ui.group(|ui| {
             ui.horizontal_wrapped(|ui| {
                 self.filter_column = self.filter_column.min(table.columns.len().saturating_sub(1));
                 egui::ComboBox::from_id_salt("filter-column").selected_text(table.columns.get(self.filter_column).map_or("Column", |c| c.name.as_str()))
@@ -67,6 +70,7 @@ impl App {
             }) { ui.small("Possible table scan: no declared leading index for this column. Use EXPLAIN to check the actual plan."); }
             ui.small("All filters must match. Choose the stored value type explicitly. Contains treats % and _ literally; equality includes NULL.");
         });
+        }
         if changed {
             next.offset = 0;
             if self

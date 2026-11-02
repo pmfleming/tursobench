@@ -1,16 +1,14 @@
 use super::{
     App, View,
     icons::{self, Icon},
-    shell::{Sidebar, TableView, Workspace},
+    shell::{Nav, TableView, ToolPanel},
 };
 use eframe::egui;
 use tursobench_core::Inspection;
 
 impl App {
     pub(super) fn overview(&mut self) {
-        self.ui.workspace = Workspace::Diagram;
-        self.ui.drawer.open = false;
-        self.ui.drawer.expanded = false;
+        self.ui.nav = Nav::Overview;
         self.ui.inspector_open = false;
         if self.ui.diagram.data.is_none() {
             self.load_diagram();
@@ -98,10 +96,10 @@ impl App {
                     self.toggle_sql();
                 }
                 for (icon, name, panel) in [
-                    (Icon::History, "History", Sidebar::History),
-                    (Icon::Saved, "Saved queries", Sidebar::Saved),
-                    (Icon::Checks, "Database checks", Sidebar::Diagnostics),
-                    (Icon::Settings, "Settings", Sidebar::Settings),
+                    (Icon::History, "History", ToolPanel::History),
+                    (Icon::Saved, "Saved queries", ToolPanel::Saved),
+                    (Icon::Checks, "Database checks", ToolPanel::Diagnostics),
+                    (Icon::Settings, "Settings", ToolPanel::Settings),
                 ] {
                     if icons::button(ui, icon, name, "").clicked() {
                         self.ui.sidebar = panel;
@@ -115,7 +113,7 @@ impl App {
         });
         egui::ScrollArea::vertical().id_salt("navigation-tree").show(ui,|ui| {
             ui.horizontal(|ui| {
-                if icons::control(ui,Icon::Map,"Overview","",!self.ui.drawer.open,true).clicked(){self.overview();}
+                if icons::control(ui,Icon::Map,"Overview","",self.ui.nav==Nav::Overview,true).clicked(){self.overview();}
                 if icons::button(ui,Icon::Refresh,"Refresh catalog and map","").clicked(){self.refresh_catalog();self.load_diagram();}
             });
             if self.catalog_ticket.is_some(){ui.spinner();}
@@ -134,14 +132,15 @@ impl App {
                 }).cloned().collect();
                 egui::CollapsingHeader::new(format!("{title} · {}",objects.len())).id_salt(("nav-group",kind)).default_open(kind!="system").show(ui,|ui| {
                     for object in objects {
-                        let selected=self.view==View::Browse&&self.ui.drawer.open&&self.ui.diagram.selected.as_deref()==Some(&object.name);
+                        let selected=self.view==View::Browse&&self.ui.nav==Nav::Table&&self.ui.diagram.selected.as_deref()==Some(&object.name);
                         let unfolded=self.ui.unfolded.as_deref()==Some(&object.name);
                         ui.horizontal(|ui| {
                             if icons::button(ui,if unfolded{Icon::Down}else{Icon::Next},if unfolded{"Collapse table"}else{"Expand table"},"").clicked(){
                                 self.ui.unfolded=if unfolded{None}else{Some(object.name.clone())};
                                 if !unfolded&&self.loaded_inspection(&object.name).is_none(){self.request_inspection(object.name.clone());}
                             }
-                            let label=if related.contains(&object.name){egui::RichText::new(&object.name).color(ui.visuals().hyperlink_color)}else{egui::RichText::new(&object.name)};
+                            let display=self.tools.counts.get(&object.name).map_or_else(||object.name.clone(),|n|format!("{} · {n}",object.name));
+                            let label=if related.contains(&object.name){egui::RichText::new(&display).color(ui.visuals().hyperlink_color)}else{egui::RichText::new(&display)};
                             let response=ui.add_sized([ui.available_width(),28.0],egui::Button::new(label).selected(selected).truncate()).on_hover_text(&object.name);
                             let r=egui::Rect::from_center_size(response.rect.left_center()+egui::vec2(8.0,0.0),egui::vec2(10.0,10.0));
                             // The type is available in the tooltip and AccessKit name; the leading icon marks views/system.
@@ -197,23 +196,23 @@ impl App {
                 return;
             }
         }
-        self.ui.drawer.open = true;
-        self.ui.drawer.view = TableView::Data;
+        self.ui.nav = Nav::Table;
+        self.ui.table_view = TableView::Data;
         self.tools.highlight_column = Some((name.into(), column.into()));
         self.tools.scroll_to_column = true;
     }
 
     pub(super) fn tool_window(&mut self, ctx: &egui::Context) {
-        if !self.ui.sidebar_open || self.ui.sidebar == Sidebar::Schema {
+        if !self.ui.sidebar_open || self.ui.sidebar == ToolPanel::Schema {
             return;
         }
         let mut open = true;
         let title = match self.ui.sidebar {
-            Sidebar::History => "History",
-            Sidebar::Saved => "Saved queries",
-            Sidebar::Diagnostics => "Database checks",
-            Sidebar::Settings => "Settings",
-            Sidebar::Schema => unreachable!(),
+            ToolPanel::History => "History",
+            ToolPanel::Saved => "Saved queries",
+            ToolPanel::Diagnostics => "Database checks",
+            ToolPanel::Settings => "Settings",
+            ToolPanel::Schema => unreachable!(),
         };
         egui::Window::new(title)
             .id(egui::Id::new("database-tools"))
@@ -223,7 +222,7 @@ impl App {
             .max_height((ctx.content_rect().height() - 80.0).max(100.0))
             .vscroll(true)
             .show(ctx, |ui| {
-                if self.ui.sidebar == Sidebar::Diagnostics {
+                if self.ui.sidebar == ToolPanel::Diagnostics {
                     self.diagnostics_ui(ui);
                 } else {
                     self.history_controls(ui);

@@ -203,7 +203,10 @@ impl App {
                 self.catalog_error.clear();
                 self.ui.map_list = false;
                 self.ui.diagram = Default::default();
-                self.ui.drawer = Default::default();
+                self.ui.table_view = shell::TableView::Data;
+                self.ui.unfolded = None;
+                self.tools.counts.clear();
+                self.tools.count_request = None;
                 self.ui.sql_open = false;
                 self.tools.ddl = None;
                 self.inspect = None;
@@ -259,21 +262,21 @@ impl App {
                     self.tools.result_return = Some(previous);
                 }
                 self.tools.restore_navigation = None;
+                self.tools.grid_scroll = egui::Vec2::ZERO;
+                self.tools.restore_scroll = None;
                 self.result.start(ticket);
                 self.active = Some(ticket);
                 self.view = view;
-                self.ui.workspace = if self.ui.workspace == shell::Workspace::Diagram {
-                    self.ui.drawer.open = true;
-                    if matches!(view, View::Query | View::Explain) {
-                        self.ui.sql_open = true;
-                    }
-                    self.ui.drawer.view = shell::TableView::Data;
-                    shell::Workspace::Diagram
-                } else if matches!(view, View::Query | View::Explain) {
-                    shell::Workspace::Query
+                self.ui.nav = if view == View::Browse {
+                    shell::Nav::Table
                 } else {
-                    shell::Workspace::Data
+                    shell::Nav::Result
                 };
+                self.ui.table_view = shell::TableView::Data;
+                self.ui.filter_open = false;
+                if matches!(view, View::Query | View::Explain) {
+                    self.ui.sql_open = true;
+                }
                 if view != View::Browse {
                     self.tools.export_table = "exported_rows".into();
                 }
@@ -401,6 +404,35 @@ impl App {
             {
                 continue;
             }
+            if self
+                .tools
+                .count_request
+                .as_ref()
+                .is_some_and(|(_, r)| r.current == Some(event.ticket))
+            {
+                let finished = matches!(event.kind, EventKind::Finished(_) | EventKind::Failed(_));
+                if let EventKind::Finished(c) = &event.kind {
+                    self.transaction = c.transaction;
+                }
+                let (_, result) = self.tools.count_request.as_mut().unwrap();
+                result.apply(event);
+                if finished {
+                    let (name, result) = self.tools.count_request.take().unwrap();
+                    if result.completion.as_ref().is_some_and(|c| {
+                        c.error.is_none() && c.delivery == tursobench_core::Delivery::Complete
+                    }) && let Some(Value::Integer(n)) =
+                        result.rows.first().and_then(|r| r.first())
+                    {
+                        self.tools.counts.insert(name.clone(), *n);
+                        self.status = format!("{name}: {n} rows · explicit full scan");
+                    } else {
+                        self.status =
+                            format!("Count failed or incomplete: {:?}", result.completion);
+                    }
+                    self.log_outcome(self.status.clone());
+                }
+                continue;
+            }
             if self.catalog_ticket == Some(event.ticket) {
                 let done = matches!(event.kind, EventKind::Finished(_) | EventKind::Failed(_));
                 if let EventKind::Finished(c) = &event.kind {
@@ -475,6 +507,7 @@ impl App {
                     self.commit_ticket = None;
                     match outcome {
                         CommitOutcome::Committed { operations } => {
+                            self.tools.counts.clear();
                             self.ui.diagram.stale = true;
                             self.drafts = None;
                             self.show_preview = false;
@@ -498,7 +531,7 @@ impl App {
                     self.ready = true;
                     self.record_database_open();
                     self.refresh_catalog();
-                    self.ui.workspace = shell::Workspace::Diagram;
+                    self.ui.nav = shell::Nav::Overview;
                     self.load_diagram();
                 }
                 EventKind::Closed { rollback } => {
@@ -509,6 +542,7 @@ impl App {
                         None
                     };
                     self.catalog_ticket = None;
+                    self.tools.count_request = None;
                     self.tools.pending_history.clear();
                     self.tools.inspection_ticket = None;
                     self.ui.diagram.ticket = None;
@@ -571,6 +605,9 @@ impl App {
                     self.table = Some(t);
                 }
                 EventKind::Finished(ref c) => {
+                    if c.changed > 0 {
+                        self.tools.counts.clear();
+                    }
                     if c.changed > 0
                         || self
                             .tools
@@ -622,6 +659,7 @@ impl App {
                 .is_some_and(|s| Some(s.id) == polled_session)
         {
             self.pending_access = None;
+            self.tools.count_request = None;
             self.catalog_ticket = None;
             self.uncertain_edit |= self.commit_ticket.take().is_some();
             self.log_outcome(
@@ -680,72 +718,6 @@ impl App {
     pub fn render(&mut self, ui: &mut egui::Ui) {
         self.shell(ui);
     }
-    fn browse_controls(&mut self, ui: &mut egui::Ui) {
-        if self.has_drafts() || self.commit_ticket.is_some() {
-            ui.label("Commit or discard drafts before changing pages, sort, or filters.");
-            return;
-        }
-        if !self.tools.back.is_empty() {
-            let trail = self
-                .tools
-                .back
-                .iter()
-                .map(|entry| entry.destination.table())
-                .collect::<Vec<_>>()
-                .join(" → ");
-            ui.small(format!("Reference trail: {trail}"));
-        }
-        if !self.tools.back.is_empty() || self.tools.related.is_some() {
-            ui.horizontal_wrapped(|ui| {
-                if ui
-                    .add_enabled(
-                        !self.tools.back.is_empty(),
-                        egui::Button::new("Back · Alt+Left"),
-                    )
-                    .clicked()
-                {
-                    self.navigate_back();
-                }
-                if let Some(destination) = &self.tools.related {
-                    ui.label(format!(
-                        "Related rows in {} — bounded lookup, up to 100 rows",
-                        destination.table()
-                    ));
-                }
-                if self.tools.related.is_some() && ui.button("Refresh lookup").clicked() {
-                    self.reload();
-                }
-            });
-        }
-        let Some(browse) = &mut self.browse else {
-            return;
-        };
-        let mut reload = false;
-        ui.horizontal_wrapped(|ui| {
-            ui.label(format!(
-                "Page {} · 100 rows/page · not a snapshot",
-                browse.offset / 100 + 1
-            ));
-            if ui
-                .add_enabled(browse.offset > 0, egui::Button::new("Previous"))
-                .clicked()
-            {
-                browse.offset = browse.offset.saturating_sub(100);
-                reload = true;
-            }
-            if ui.button("Next").clicked() {
-                browse.offset = browse.offset.saturating_add(100).min(1_000_000);
-                reload = true;
-            }
-            if ui.button("Refresh page").clicked() {
-                reload = true;
-            }
-        });
-        if reload {
-            self.reload();
-        }
-        self.filter_controls(ui);
-    }
 }
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -775,7 +747,7 @@ mod tests {
     fn renders_empty_and_large_cells_without_engine() {
         let ctx = egui::Context::default();
         let mut app = App::new(&ctx);
-        app.ui.workspace = shell::Workspace::Data;
+        app.ui.nav = shell::Nav::Table;
         app.result.columns = vec![Column {
             name: "data".into(),
             declared_type: None,

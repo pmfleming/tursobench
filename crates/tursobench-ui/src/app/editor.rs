@@ -1,4 +1,8 @@
-use super::{App, View, shell};
+use super::{
+    App, View,
+    icons::{self, Icon},
+    shell,
+};
 use eframe::egui;
 use tursobench_core::{Bindings, Budget, quote_identifier};
 use tursobench_db::Operation;
@@ -158,7 +162,94 @@ impl App {
         }
     }
     pub(super) fn editor_ui(&mut self, ui: &mut egui::Ui) {
-        ui.strong("SQL editor · one statement per execution");
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            if ui
+                .add_enabled(
+                    self.ready
+                        && !self.closing
+                        && !self.has_drafts()
+                        && self.commit_ticket.is_none(),
+                    egui::Button::new("Run"),
+                )
+                .on_hover_text("Run one statement · Ctrl Enter")
+                .clicked()
+            {
+                self.run_sql();
+            }
+            if icons::button(
+                ui,
+                Icon::Selection,
+                "Run selection / statement at cursor",
+                "Ctrl Shift Enter",
+            )
+            .clicked()
+            {
+                self.run_selection();
+            }
+            if icons::button(ui, Icon::Explain, "Explain query plan", "").clicked() {
+                self.run_text(self.sql.clone(), Some(false));
+            }
+            if icons::control(
+                ui,
+                Icon::Parameters,
+                "Typed parameters",
+                "",
+                self.ui.params_open,
+                false,
+            )
+            .clicked()
+            {
+                self.ui.params_open = !self.ui.params_open;
+            }
+            if icons::control(
+                ui,
+                Icon::Complete,
+                "Complete",
+                "Ctrl Space",
+                self.tools.complete,
+                false,
+            )
+            .clicked()
+            {
+                self.tools.complete = !self.tools.complete;
+            }
+            if icons::button(ui, Icon::History, "History", "").clicked() {
+                self.ui.sidebar = shell::ToolPanel::History;
+                self.ui.sidebar_open = true;
+            }
+            if icons::button(ui, Icon::Saved, "Saved queries", "").clicked() {
+                self.ui.sidebar = shell::ToolPanel::Saved;
+                self.ui.sidebar_open = true;
+            }
+            if icons::control(
+                ui,
+                Icon::Fit,
+                "Expand SQL editor",
+                "",
+                self.ui.sql_expanded,
+                false,
+            )
+            .clicked()
+            {
+                self.ui.sql_expanded = !self.ui.sql_expanded;
+            }
+            if icons::button(ui, Icon::Close, "Close SQL editor", "Ctrl J").clicked() {
+                self.ui.sql_open = false;
+            }
+            let more = icons::button(ui, Icon::More, "SQL actions", "");
+            egui::Popup::menu(&more).show(|ui| {
+                if ui.button("Explain bytecode").clicked() {
+                    self.run_text(self.sql.clone(), Some(true));
+                    ui.close();
+                }
+                if ui.button("Bookmark editor SQL").clicked() {
+                    self.ui.sidebar = shell::ToolPanel::Saved;
+                    self.ui.sidebar_open = true;
+                    ui.close();
+                }
+            });
+        });
         let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, width: f32| {
             highlighted(ui, text.as_str(), width)
         };
@@ -179,42 +270,8 @@ impl App {
             let range = cursor.as_sorted_char_range();
             self.tools.selection = range.start.0..range.end.0;
         }
-        ui.horizontal_wrapped(|ui| {
-            if ui
-                .add_enabled(
-                    self.ready && !self.closing,
-                    egui::Button::new("Run SQL · Ctrl+Enter"),
-                )
-                .clicked()
-            {
-                self.run_sql();
-            }
-            if ui
-                .add_enabled(
-                    self.ready && !self.closing,
-                    egui::Button::new("Run selection / at cursor"),
-                )
-                .clicked()
-            {
-                self.run_selection();
-            }
-            if ui.button("Complete · Ctrl+Space").clicked() {
-                self.tools.complete = !self.tools.complete;
-            }
-            if ui
-                .add_enabled(self.ready && !self.closing, egui::Button::new("Query plan"))
-                .clicked()
-            {
-                self.run_text(self.sql.clone(), Some(false));
-            }
-            if ui
-                .add_enabled(self.ready && !self.closing, egui::Button::new("Bytecode"))
-                .clicked()
-            {
-                self.run_text(self.sql.clone(), Some(true));
-            }
-        });
-        ui.horizontal_wrapped(|ui| {
+        if self.ui.params_open {
+            ui.horizontal_wrapped(|ui| {
             ui.label("Typed bindings (JSON):");ui.add(egui::TextEdit::singleline(&mut self.params).desired_width(ui.available_width().min(420.0)));
             if ui.button("Generate NULL bindings").clicked(){
                 let names=sql::parameter_names(&self.sql);
@@ -222,7 +279,8 @@ impl App {
                 else {self.params=serde_json::to_string(&sql::named_template(&self.sql)).unwrap_or_default();}
             }
         });
-        ui.small("?1: [{\"type\":\"Integer\",\"value\":42}]    :id: {\":id\":{\"type\":\"Integer\",\"value\":42}}. Values are never interpolated or persisted.");
+            ui.small("?1: [{\"type\":\"Integer\",\"value\":42}]    :id: {\":id\":{\"type\":\"Integer\",\"value\":42}}. Values are never interpolated or persisted.");
+        }
         if self.tools.complete {
             self.completion_ui(ui, output.response.id);
         }
@@ -291,31 +349,99 @@ impl App {
         });
     }
     pub(super) fn shortcuts(&mut self, ctx: &egui::Context) {
-        let consumed = |modifiers, key| ctx.input_mut(|i| i.consume_key(modifiers, key));
-        if self.ui.palette_open {
-            if consumed(egui::Modifiers::NONE, egui::Key::Escape) {
+        let consumed = |mods, key| ctx.input_mut(|i| i.consume_key(mods, key));
+        if consumed(egui::Modifiers::NONE, egui::Key::Escape) {
+            if egui::Popup::is_any_open(ctx) {
+                egui::Popup::close_all(ctx);
+            } else if self.ui.palette_open {
                 self.ui.palette_open = false;
+            } else if self.ui.access_dialog {
+                self.ui.access_dialog = false;
+            } else if self.confirm_close {
+                self.confirm_close = false;
+                self.quit = false;
+            } else if self.show_insert {
+                self.show_insert = false;
+            } else if self.show_preview {
+                self.show_preview = false;
+            } else if self.ui.export_open {
+                self.ui.export_open = false;
+            } else if self.ui.outcomes {
+                self.ui.outcomes = false;
+            } else if self.ui.sidebar_open {
+                self.ui.sidebar_open = false;
+            } else if self.tools.help {
+                self.tools.help = false;
+            } else if self.ui.filter_open {
+                self.ui.filter_open = false;
+            } else if self.ui.inspector_open {
+                self.ui.inspector_open = false;
+            } else if self.ui.sql_open {
+                self.ui.sql_open = false;
             }
             return;
         }
-        if (self.ui.workspace == shell::Workspace::Query || self.ui.sql_open && self.ui.drawer.open)
-            && consumed(
+        if consumed(egui::Modifiers::CTRL, egui::Key::K) {
+            egui::Popup::close_all(ctx);
+            self.open_palette();
+            return;
+        }
+        if self.ui.palette_open {
+            return;
+        }
+        if self.ui.sql_open {
+            if consumed(
                 egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
                 egui::Key::Enter,
-            )
-        {
-            self.run_selection();
-        } else if (self.ui.workspace == shell::Workspace::Query
-            || self.ui.sql_open && self.ui.drawer.open)
-            && (consumed(egui::Modifiers::CTRL, egui::Key::Enter)
-                || consumed(egui::Modifiers::NONE, egui::Key::F5))
-        {
-            self.run_sql();
+            ) {
+                self.run_selection();
+            } else if consumed(egui::Modifiers::CTRL, egui::Key::Enter) {
+                self.run_sql();
+            }
+            if consumed(egui::Modifiers::CTRL, egui::Key::Space) {
+                self.tools.complete = true;
+            }
+            if consumed(egui::Modifiers::CTRL, egui::Key::S) {
+                self.ui.sidebar = shell::ToolPanel::Saved;
+                self.ui.sidebar_open = true;
+            }
         }
-        if (self.ui.workspace == shell::Workspace::Query || self.ui.sql_open && self.ui.drawer.open)
-            && consumed(egui::Modifiers::CTRL, egui::Key::Space)
+        if consumed(egui::Modifiers::NONE, egui::Key::F5) {
+            if self.ui.sql_open && ctx.egui_wants_keyboard_input() {
+                self.run_sql();
+            } else if self.ui.nav == shell::Nav::Overview {
+                self.refresh_catalog();
+                self.load_diagram();
+            } else if self.view == View::Browse {
+                self.reload();
+            }
+        }
+        if consumed(egui::Modifiers::CTRL, egui::Key::J) {
+            self.toggle_sql();
+        }
+        if consumed(egui::Modifiers::CTRL, egui::Key::E) {
+            self.ui.export_open = true;
+        }
+        if consumed(egui::Modifiers::CTRL, egui::Key::F) && self.ui.nav == shell::Nav::Table {
+            self.ui.filter_open = true;
+        }
+        if consumed(egui::Modifiers::CTRL, egui::Key::Num1) {
+            self.ui.table_view = shell::TableView::Data;
+        }
+        if consumed(egui::Modifiers::CTRL, egui::Key::Num2) {
+            self.ui.table_view = shell::TableView::Structure;
+        }
+        if consumed(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::C)
+            && matches!(self.ui.nav, shell::Nav::Table | shell::Nav::Result)
         {
-            self.tools.complete = true;
+            self.copy_results(ctx, crate::export::Format::Tsv);
+        }
+        if consumed(egui::Modifiers::CTRL, egui::Key::O) {
+            if self.session.is_some() {
+                self.request_close();
+            } else {
+                self.choose_file(ctx);
+            }
         }
         if consumed(egui::Modifiers::NONE, egui::Key::F1) {
             self.tools.help = !self.tools.help;
@@ -325,37 +451,37 @@ impl App {
             self.apply_theme(ctx);
             self.store.save(&self.preferences);
         }
-        if (self.ui.workspace != shell::Workspace::Diagram
-            || self.ui.drawer.open && self.ui.drawer.view == shell::TableView::Data)
-            && consumed(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::C)
-        {
-            self.copy_results(ctx, crate::export::Format::Tsv);
-        }
-        if consumed(egui::Modifiers::CTRL, egui::Key::O) && self.session.is_none() {
-            self.choose_file(ctx);
-        }
-        if consumed(egui::Modifiers::CTRL, egui::Key::K) {
-            self.open_palette();
-        }
-        if consumed(egui::Modifiers::CTRL, egui::Key::J) {
-            self.toggle_sql();
-        }
-        if consumed(egui::Modifiers::NONE, egui::Key::Escape) {
-            if self.ui.palette_open {
-                self.ui.palette_open = false;
-            } else if self.ui.export_open {
-                self.ui.export_open = false;
-            } else if self.ui.inspector_open {
-                self.ui.inspector_open = false;
-            } else if self.ui.drawer.expanded {
-                self.ui.drawer.expanded = false;
-            } else {
-                self.ui.drawer.open = false;
-                self.ui.sql_open = false;
-            }
+        if consumed(egui::Modifiers::CTRL, egui::Key::Comma) {
+            self.ui.sidebar = shell::ToolPanel::Settings;
+            self.ui.sidebar_open = true;
         }
         if consumed(egui::Modifiers::ALT, egui::Key::ArrowLeft) {
-            self.navigate_back();
+            if self.view == View::Browse {
+                self.navigate_back();
+            } else {
+                self.return_to_table();
+            }
+        }
+        if !ctx.egui_wants_keyboard_input()
+            && !self.has_drafts()
+            && self.commit_ticket.is_none()
+            && self.ready
+            && !self.closing
+            && self.ui.nav == shell::Nav::Table
+        {
+            let delta = if consumed(egui::Modifiers::NONE, egui::Key::PageDown) {
+                100
+            } else if consumed(egui::Modifiers::NONE, egui::Key::PageUp) {
+                -100
+            } else {
+                0
+            };
+            if delta != 0
+                && let Some(b) = self.browse.as_mut()
+            {
+                b.offset = b.offset.saturating_add_signed(delta).min(1_000_000);
+                self.reload();
+            }
         }
     }
     pub(super) fn apply_theme(&self, ctx: &egui::Context) {

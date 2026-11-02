@@ -33,9 +33,9 @@ impl App {
     }
     pub(super) fn history_controls(&mut self, ui: &mut egui::Ui) {
         match self.ui.sidebar {
-            shell::Sidebar::Saved => self.saved_queries_ui(ui),
-            shell::Sidebar::History => self.query_history_ui(ui),
-            shell::Sidebar::Settings => self.settings_ui(ui),
+            shell::ToolPanel::Saved => self.saved_queries_ui(ui),
+            shell::ToolPanel::History => self.query_history_ui(ui),
+            shell::ToolPanel::Settings => self.settings_ui(ui),
             _ => {}
         }
         if ui.button("Keyboard / safety help · F1").clicked() {
@@ -84,14 +84,8 @@ impl App {
                     {
                         self.sql = bookmark.sql.clone();
                         self.params = "[]".into();
-                        self.ui.workspace = if self.session.is_some() {
-                            shell::Workspace::Diagram
-                        } else {
-                            shell::Workspace::Query
-                        };
                         self.ui.sql_open = true;
-                        self.ui.drawer.open = true;
-                        self.ui.drawer.view = shell::TableView::Data;
+                        self.ui.table_view = shell::TableView::Data;
                     }
                     if ui
                         .add(
@@ -143,7 +137,7 @@ impl App {
             for(index,h)in entries{
                 ui.horizontal(|ui| {
                     if ui.small_button("×").clicked() { remove=Some(index); }
-                    if ui.add_sized([ui.available_width().max(40.0),28.0],egui::Button::new(Value::Text(h.sql.clone()).preview()).truncate()).on_hover_text(&h.sql).clicked() { self.sql=h.sql.clone(); self.params="[]".into(); self.ui.workspace=shell::Workspace::Query; }
+                    if ui.add_sized([ui.available_width().max(40.0),28.0],egui::Button::new(Value::Text(h.sql.clone()).preview()).truncate()).on_hover_text(&h.sql).clicked() { self.sql=h.sql.clone(); self.params="[]".into(); self.ui.sql_open=true; }
                 });
                 let time=h.elapsed_ms.map_or("untimed".into(),|ms|format!("{ms} ms"));let label=format!("{time}{}{}{}",if h.failed{" · failed"}else{""},if h.elapsed_ms.is_some_and(|ms|ms>=threshold){" · slow"}else{""},if h.database.is_empty(){" · unscoped"}else{""});
                 if h.failed||h.elapsed_ms.is_some_and(|ms|ms>=threshold){ui.colored_label(egui::Color32::from_rgb(190,120,50),label);}else{ui.small(label);}

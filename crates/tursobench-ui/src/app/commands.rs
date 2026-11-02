@@ -1,6 +1,6 @@
 use super::{
     App,
-    shell::{Sidebar, TableView, Workspace},
+    shell::{Nav, TableView, ToolPanel},
 };
 use eframe::egui;
 
@@ -13,7 +13,7 @@ enum Command {
     Open,
     Close,
     Refresh,
-    Panel(Sidebar),
+    Panel(ToolPanel),
     Export,
     Review,
     Help,
@@ -37,7 +37,7 @@ impl App {
         }
         let mut open = true;
         egui::Window::new(if self.writable { "Reopen read-only?" } else { "Enable editing?" })
-            .open(&mut open).collapsible(false).show(ctx, |ui| {
+            .open(&mut open).anchor(egui::Align2::LEFT_BOTTOM, [12.0,-48.0]).max_width((ctx.content_rect().width()-40.0).min(520.0)).collapsible(false).show(ctx, |ui| {
                 ui.label("The current session will close and roll back any open transaction before reopening. Local drafts will be discarded. Committed writes are not undone.");
                 if !self.writable { ui.label("Back up the closed database with its WAL state before editing. SQL writes autocommit unless you BEGIN; grid edits are staged for review."); }
                 ui.checkbox(&mut self.ui.access_ack, "No other application has this database open");
@@ -57,21 +57,7 @@ impl App {
         self.ui.palette_index = 0;
     }
     pub(super) fn toggle_sql(&mut self) {
-        if self.session.is_none() {
-            self.ui.workspace = if self.ui.workspace == Workspace::Query {
-                Workspace::Connect
-            } else {
-                Workspace::Query
-            };
-            self.ui.sql_open = false;
-        } else {
-            self.ui.workspace = Workspace::Diagram;
-            self.ui.sql_open = !self.ui.sql_open;
-            if self.ui.sql_open {
-                self.ui.drawer.open = true;
-                self.ui.drawer.view = TableView::Data;
-            }
-        }
+        self.ui.sql_open = !self.ui.sql_open;
     }
     pub(super) fn command_palette(&mut self, ctx: &egui::Context) {
         if !self.ui.palette_open {
@@ -107,13 +93,13 @@ impl App {
                     ("Open database · Ctrl O".into(), Command::Open),
                     ("Close database".into(), Command::Close),
                     ("Refresh schema map and catalog".into(), Command::Refresh),
-                    ("History".into(), Command::Panel(Sidebar::History)),
-                    ("Saved queries".into(), Command::Panel(Sidebar::Saved)),
+                    ("History".into(), Command::Panel(ToolPanel::History)),
+                    ("Saved queries".into(), Command::Panel(ToolPanel::Saved)),
                     (
                         "Database info and checks".into(),
-                        Command::Panel(Sidebar::Diagnostics),
+                        Command::Panel(ToolPanel::Diagnostics),
                     ),
-                    ("Settings".into(), Command::Panel(Sidebar::Settings)),
+                    ("Settings".into(), Command::Panel(ToolPanel::Settings)),
                     ("Export and copy retained result".into(), Command::Export),
                     ("Review staged edits".into(), Command::Review),
                     ("Toggle theme".into(), Command::Theme),
@@ -177,7 +163,7 @@ impl App {
                         }
                     });
                 ui.small(
-                    "↑ ↓ choose · Enter open · Esc close. Column search uses loaded map metadata.",
+                    "Up/Down choose · Enter open · Esc close. Column search uses loaded map metadata.",
                 );
             });
         self.ui.palette_open = open;
@@ -188,17 +174,16 @@ impl App {
                     let before = self.result.current;
                     self.browse_table(name.clone());
                     if self.result.current != before {
-                        self.ui.workspace = Workspace::Diagram;
-                        self.ui.drawer.open = true;
-                        self.ui.drawer.view = TableView::Data;
+                        self.ui.nav = Nav::Table;
+                        self.ui.table_view = TableView::Data;
                         self.tools.highlight_column = column.map(|column| (name, column));
                         self.tools.scroll_to_column = self.tools.highlight_column.is_some();
                     }
                 }
                 Command::Map | Command::List => {
-                    self.ui.workspace = Workspace::Diagram;
+                    self.overview();
                     self.ui.map_list = matches!(action, Command::List);
-                    self.ui.drawer.expanded = false;
+
                     if self.ui.diagram.data.is_none() {
                         self.load_diagram();
                     }

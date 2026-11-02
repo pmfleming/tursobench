@@ -1,10 +1,37 @@
-use super::{App, View, shell, tools};
+use super::{
+    App, View,
+    icons::{self, Icon},
+    shell, tools,
+};
 use eframe::egui;
 use tursobench_core::{ForeignKey, Value};
 use tursobench_db::{Operation, Request};
 
 use tools::{Destination, NavigationEntry};
 impl App {
+    pub(super) fn count_table(&mut self, name: String) {
+        if self.tools.count_request.is_some() || !self.ready || self.closing {
+            return;
+        }
+        let Some(session) = &self.session else {
+            return;
+        };
+        self.sequence += 1;
+        let ticket = session.ticket(self.sequence, self.generation);
+        match session.submit(Request {
+            ticket,
+            operation: Operation::Count(name.clone()),
+        }) {
+            Ok(()) => {
+                let mut result = tursobench_core::ResultSet::default();
+                result.start(ticket);
+                self.tools.count_request = Some((name, result));
+                self.status =
+                    "Counting rows; full scan, discard does not interrupt execution".into();
+            }
+            Err(e) => self.status = e.to_string(),
+        }
+    }
     pub(super) fn request_inspection(&mut self, name: String) {
         self.tools.inspection = None;
         self.tools.inspection_error.clear();
@@ -127,7 +154,7 @@ impl App {
                 )
                 .clicked()
             {
-                self.submit(Operation::Count(table.name), View::Diagnostics);
+                self.count_table(table.name);
             }
         }
         ui.small("Committed browse connection. Uncommitted editor changes are not visible. No automatic row counts.");
@@ -160,227 +187,174 @@ impl App {
         }
     }
     pub(super) fn structure_inspector(&mut self, ui: &mut egui::Ui) {
-        let diagram = self.ui.workspace == shell::Workspace::Diagram && self.tools.ddl.is_none();
-        let node = if diagram {
-            self.ui
-                .diagram
-                .data
-                .as_ref()
-                .and_then(|g| {
-                    g.tables
-                        .iter()
-                        .find(|t| Some(&t.name) == self.ui.diagram.selected.as_ref())
-                })
-                .cloned()
-        } else {
-            None
-        };
-        let info = if diagram {
-            self.tools
-                .inspection
-                .as_ref()
-                .filter(|i| Some(&i.table.name) == self.ui.diagram.selected.as_ref())
-                .cloned()
-                .or_else(|| node.as_ref().and_then(|n| n.inspection.clone()))
-        } else {
-            self.tools.inspection.clone()
-        };
-        let object = if !diagram && self.tools.ddl.is_some() {
-            self.tools.ddl.clone()
-        } else {
-            let name = if diagram {
-                self.ui.diagram.selected.as_deref()
-            } else {
-                info.as_ref().map(|i| i.table.name.as_str())
-            };
-            name.and_then(|name| self.schema.iter().find(|o| o.name == name).cloned())
-        };
-        if diagram && self.ui.diagram.selected.is_none() {
-            ui.label(
-                "Select any table in the diagram to inspect keys, constraints and relationships.",
-            );
+        let name = self
+            .tools
+            .ddl
+            .as_ref()
+            .map(|o| o.name.clone())
+            .or_else(|| self.ui.diagram.selected.clone());
+        let Some(name) = name else {
+            ui.label("Choose a table to inspect its structure.");
             return;
-        }
-        if let Some(node) = &node
+        };
+        let info = self.loaded_inspection(&name);
+        let object = self
+            .tools
+            .ddl
+            .clone()
+            .or_else(|| self.schema.iter().find(|o| o.name == name).cloned());
+        if let Some(node) = self
+            .ui
+            .diagram
+            .data
+            .as_ref()
+            .and_then(|g| g.tables.iter().find(|n| n.name == name))
             && let Some(error) = &node.error
         {
-            ui.heading(&node.name);
             ui.colored_label(ui.visuals().error_fg_color, error);
         }
-        if let Some(info) = info
-            .as_ref()
-            .filter(|i| object.as_ref().is_none_or(|o| o.name == i.table.name))
-        {
-            ui.heading(&info.table.name);
-            ui.small("Metadata snapshot from the committed browse connection.");
-            if ui
-                .add_enabled(
-                    self.ready && !self.closing,
-                    egui::Button::new("Refresh structure"),
-                )
-                .clicked()
-            {
-                self.request_inspection(info.table.name.clone());
-                self.refresh_catalog();
-            }
+        if self.tools.inspection_ticket.is_some() {
+            ui.small("Loading structure…");
+        }
+        if !self.tools.inspection_error.is_empty() {
+            ui.colored_label(ui.visuals().error_fg_color, &self.tools.inspection_error);
+        }
+        if let Some(info) = &info {
             if info.table.engine_managed() {
                 ui.colored_label(
                     ui.visuals().warn_fg_color,
-                    "Engine-managed storage — generated edits disabled. Do not modify directly.",
+                    "Engine-managed storage · generated edits disabled",
                 );
             }
-            ui.horizontal_wrapped(|ui| {
-                if ui
-                    .add_enabled(
-                        self.ready && !self.closing,
-                        egui::Button::new("Browse table"),
-                    )
-                    .clicked()
-                {
-                    self.browse_table(info.table.name.clone());
-                }
-                if ui
-                    .add_enabled(self.ready && !self.closing, egui::Button::new("Count rows"))
-                    .on_hover_text(
-                        "Explicit full scan on the browse worker; no interruption guarantee",
-                    )
-                    .clicked()
-                {
-                    self.submit(Operation::Count(info.table.name.clone()), View::Diagnostics);
+            ui.strong("Columns").on_hover_text(
+                "Committed browse metadata. Uncommitted editor changes are not visible.",
+            );
+            ui.group(|ui| {
+                for c in &info.table.columns {
+                    ui.horizontal_wrapped(|ui| {
+                        if c.primary_key > 0 {
+                            let (r, _) = ui
+                                .allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+                            icons::paint(ui.painter(), r, Icon::Key, ui.visuals().warn_fg_color);
+                        }
+                        ui.monospace(&c.name);
+                        ui.weak(&c.declared_type);
+                        if c.primary_key > 0 {
+                            ui.small(format!("PK {}", c.primary_key));
+                        }
+                        if c.not_null {
+                            ui.small("NOT NULL");
+                        }
+                        if c.hidden > 0 {
+                            ui.small(format!("hidden {}", c.hidden));
+                        }
+                        if let Some(default) = &c.default_sql {
+                            ui.small(format!("DEFAULT {default}"));
+                        }
+                    });
+                    ui.separator();
                 }
             });
-            ui.separator();
-            ui.strong("Columns / keys");
-            for c in &info.table.columns {
-                ui.monospace(format!("{} · {}", c.name, c.declared_type));
-                ui.small(format!(
-                    "{} · PK position {} · hidden {}",
-                    if c.not_null {
-                        "NOT NULL"
-                    } else {
-                        "NOT NULL not reported"
-                    },
-                    c.primary_key,
-                    c.hidden
-                ));
-                if let Some(default) = &c.default_sql {
-                    ui.label(format!("DEFAULT {default}"));
-                }
-            }
-            ui.separator();
             ui.strong("Indexes");
             if info.indexes.is_empty() {
-                ui.small("None returned");
+                ui.weak("No declared indexes returned");
             }
             for index in &info.indexes {
-                ui.monospace(&index.name);
-                ui.label(format!(
-                    "{} · {} ({})",
-                    if index.unique { "UNIQUE" } else { "non-unique" },
-                    if index.partial { "partial" } else { "full" },
-                    index
-                        .columns
-                        .iter()
-                        .map(|c| c
-                            .as_deref()
-                            .unwrap_or("<expression / method metadata unavailable>"))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ));
+                ui.group(|ui| {
+                    ui.monospace(&index.name);
+                    ui.horizontal_wrapped(|ui| {
+                        if index.unique {
+                            ui.small("UNIQUE");
+                        }
+                        if index.partial {
+                            ui.small("partial");
+                        }
+                        ui.label(
+                            index
+                                .columns
+                                .iter()
+                                .map(|c| c.as_deref().unwrap_or("expression / method: see DDL"))
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                        );
+                    });
+                });
             }
-            ui.separator();
-            ui.strong("Foreign keys / relationships");
+            ui.strong("Foreign keys");
             if info.foreign_keys.is_empty() {
-                ui.small("None declared — relationships are never inferred from names");
+                ui.weak("No declared foreign keys");
             }
-            for fk in &info.foreign_keys {
-                ui.monospace(format!(
-                    "FK {}: {} → {} ({})",
-                    fk.id,
-                    fk.columns
-                        .iter()
-                        .map(|(s, _)| s.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    fk.target,
-                    fk.columns
-                        .iter()
-                        .map(|(_, t)| t.as_deref().unwrap_or("<unresolved PK>"))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ));
-                ui.small(format!(
-                    "ON UPDATE {} · ON DELETE {}",
-                    fk.on_update, fk.on_delete
-                ));
+            for key in &info.foreign_keys {
+                ui.group(|ui| {
+                    if ui.link(&key.target).clicked() {
+                        self.browse_table(key.target.clone());
+                    }
+                    ui.monospace(
+                        key.columns
+                            .iter()
+                            .map(|(from, to)| {
+                                format!("{from} → {}", to.as_deref().unwrap_or("unresolved PK"))
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    );
+                    ui.small(format!(
+                        "ON UPDATE {} · ON DELETE {}",
+                        key.on_update, key.on_delete
+                    ));
+                });
             }
-        } else if !diagram && object.is_none() {
-            ui.label(if self.tools.inspection_error.is_empty() {
-                "Choose a table or schema object. Select a browse cell to follow row references."
-            } else {
-                &self.tools.inspection_error
-            });
-        }
-        if info.is_none() && !self.tools.inspection_error.is_empty() {
-            ui.colored_label(ui.visuals().error_fg_color, &self.tools.inspection_error);
+        } else if self.tools.inspection_ticket.is_none() && ui.button("Load structure").clicked() {
+            self.request_inspection(name.clone());
         }
         let owner = info
             .as_ref()
             .map(|i| i.table.name.as_str())
             .or_else(|| object.as_ref().map(|o| o.table.as_str()));
         if let Some(owner) = owner {
-            let objects: Vec<_> = self
+            let definitions: Vec<_> = self
                 .schema
                 .iter()
                 .filter(|o| o.table == owner && (o.kind == "index" || o.kind == "trigger"))
                 .cloned()
                 .collect();
-            ui.separator();
-            ui.strong("Indexes and triggers · original definitions");
-            for object in objects {
+            if !definitions.is_empty() {
+                ui.strong("Index and trigger definitions");
+            }
+            for object in definitions {
                 ui.collapsing(format!("{} {}", object.kind, object.name), |ui| {
                     if let Some(ddl) = &object.ddl {
-                        if ui.button("Copy definition").clicked() {
+                        if icons::button(ui, Icon::Copy, "Copy definition", "").clicked() {
                             ui.ctx().copy_text(ddl.clone());
                         }
                         ui.monospace(ddl);
                     } else {
-                        ui.label("Engine-generated object; no CREATE statement returned.");
+                        ui.weak("Engine-generated definition");
                     }
                 });
             }
-            ui.small(
-                "CHECK clauses, index expressions and FTS methods are shown in the original DDL.",
-            );
         }
-        if let Some(object) = object {
-            ui.separator();
-            ui.strong(format!("{} {} — original DDL", object.kind, object.name));
-            if let Some(ddl) = object.ddl {
-                if ui.button("Copy DDL").clicked() {
+        ui.strong("Definition");
+        ui.weak(
+            "CHECK clauses, index expressions and FTS methods are preserved in the original DDL.",
+        );
+        if let Some(object) = object
+            && let Some(ddl) = object.ddl
+        {
+            ui.collapsing("CREATE statement", |ui| {
+                if icons::button(ui, Icon::Copy, "Copy original DDL", "").clicked() {
                     ui.ctx().copy_text(ddl.clone());
                 }
-                let mut ddl_view = ddl.as_str();
-                ui.collapsing("CREATE statement", |ui| {
-                    ui.add(
-                        egui::TextEdit::multiline(&mut ddl_view)
-                            .code_editor()
-                            .desired_width(ui.available_width())
-                            .desired_rows(8),
-                    );
-                });
-            } else {
-                ui.small("No SQL definition returned by Turso");
-            }
-            if (object.kind == "index" || object.kind == "trigger")
-                && ui
-                    .button(format!("Browse owning table: {}", object.table))
-                    .clicked()
-            {
-                self.browse_table(object.table);
-            }
-        } else if diagram {
-            ui.small("DDL was not retained in the schema catalog. Refresh schema to retrieve it within display budgets.");
+                let mut text = ddl.as_str();
+                ui.add(
+                    egui::TextEdit::multiline(&mut text)
+                        .code_editor()
+                        .desired_width(ui.available_width())
+                        .desired_rows(8),
+                );
+            });
+        } else {
+            ui.weak("DDL not retained; refresh the catalog.");
         }
     }
     pub(super) fn follow_key(&mut self, row: usize, key: ForeignKey) {
@@ -511,7 +485,7 @@ impl App {
                 .tools
                 .detail
                 .and_then(|r| self.result.rows.get(r).cloned()),
-            structure: self.ui.drawer.view == shell::TableView::Structure,
+            structure: self.ui.table_view == shell::TableView::Structure,
             scroll: self.tools.grid_scroll,
         })
     }
@@ -525,6 +499,7 @@ impl App {
         self.tools.ddl = None;
         self.table = None;
         self.ui.diagram.selected = Some(entry.destination.table().into());
+        self.ui.unfolded = Some(entry.destination.table().into());
         match &entry.destination {
             Destination::Page(b) => {
                 self.browse = Some(b.clone());
@@ -535,7 +510,7 @@ impl App {
                 self.tools.related = Some(related.clone());
             }
         }
-        self.ui.drawer.view = if entry.structure {
+        self.ui.table_view = if entry.structure {
             shell::TableView::Structure
         } else {
             shell::TableView::Data

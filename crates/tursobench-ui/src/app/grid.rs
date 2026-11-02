@@ -1,9 +1,14 @@
-use super::{App, View, shell};
+use super::{
+    App, View,
+    icons::{self, Icon},
+    shell,
+};
 use eframe::egui;
 use tursobench_core::{ForeignKey, Value};
 
 enum GridAction {
     Cell(usize, usize),
+    Edit(usize, usize),
     Record(usize),
     Copy(usize),
     Delete(usize),
@@ -17,7 +22,11 @@ impl App {
         }
         let mut action = None;
         let editable = self.can_edit();
-        let remaining = (ui.clip_rect().bottom() - ui.cursor().top() - 65.0).clamp(140.0, 900.0);
+        let remaining = (ui.available_height() - 38.0).max(0.0);
+        #[cfg(test)]
+        {
+            self.ui.grid_rect = ui.available_rect_before_wrap();
+        }
         self.tools.widths.resize(self.result.columns.len(), 180.0);
         if self.view == View::Explain
             && let Some(detail) = self
@@ -40,6 +49,16 @@ impl App {
                     .id_salt("result-rows")
                     .max_height(remaining)
                     .show_rows(ui, 24.0, self.result.rows.len(), |ui, range| {
+                        #[cfg(test)]
+                        {
+                            self.ui.visible_rows = range
+                                .clone()
+                                .filter(|r| {
+                                    (*r + 1) as f32 * (24.0 + ui.spacing().item_spacing.y)
+                                        <= remaining
+                                })
+                                .count();
+                        }
                         for row in range {
                             if let Some(selected) = self.grid_row(ui, row, editable) {
                                 action = Some(selected);
@@ -50,10 +69,15 @@ impl App {
             });
         self.tools.grid_scroll.x = horizontal.state.offset.x;
         match action {
-            Some(GridAction::Cell(r, c)) => self.open_cell(r, c),
+            Some(GridAction::Cell(r, c)) => {
+                self.open_cell(r, c);
+                self.tools.detail = Some(r);
+                self.ui.inspector = shell::DetailMode::Record;
+            }
+            Some(GridAction::Edit(r, c)) => self.open_cell(r, c),
             Some(GridAction::Record(r)) => {
                 self.tools.detail = Some(r);
-                self.ui.inspector = shell::Inspector::Record;
+                self.ui.inspector = shell::DetailMode::Record;
                 self.ui.inspector_open = true;
             }
             Some(GridAction::Copy(r)) => self.copy_row(ui.ctx(), r),
@@ -72,7 +96,7 @@ impl App {
     fn grid_header(&mut self, ui: &mut egui::Ui) {
         let mut sort = None;
         ui.horizontal(|ui|{
-                ui.add_sized([44.0,42.0],egui::Label::new("#"));
+                ui.add_sized([44.0,30.0],egui::Label::new("#"));
                 for(i,column)in self.result.columns.iter().enumerate(){
                     let info=self.tools.inspection.as_ref().filter(|info|self.view==View::Browse&&self.table.as_ref().is_some_and(|t|t.name==info.table.name));
                     let pk=info.and_then(|info|info.table.columns.get(i)).map_or(0,|c|c.primary_key);
@@ -80,14 +104,21 @@ impl App {
                     let foreign=info.is_some_and(|info|info.foreign_keys.iter().any(|fk|fk.columns.iter().any(|(name,_)|name==&column.name)));
                     let tags=format!("{}{}{}",if pk>0{format!(" PK{pk}")}else{String::new()},if indexed{" IX"}else{""},if foreign{" FK"}else{""});
                     let sorted=self.browse.as_ref().filter(|b|b.sort==Some(i)).map_or("",|b|if b.descending{" ↓"}else{" ↑"});
-                    let (rect,response)=ui.allocate_exact_size(egui::vec2(self.tools.widths[i],42.0),egui::Sense::click());
+                    let (rect,response)=ui.allocate_exact_size(egui::vec2(self.tools.widths[i],30.0),egui::Sense::click());
                     response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,ui.is_enabled(),format!("Column {}{tags}{sorted}",column.name)));
                     let highlighted = self.tools.highlight_column.as_ref().is_some_and(|(table, name)| self.view == View::Browse && self.table.as_ref().is_some_and(|t| &t.name == table) && &column.name == name);
                     if highlighted && self.tools.scroll_to_column { ui.scroll_to_rect(rect, Some(egui::Align::Center)); self.tools.scroll_to_column = false; }
                     let painter=ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));painter.rect_filled(rect,2.0,if highlighted { ui.visuals().selection.bg_fill } else { ui.visuals().faint_bg_color });
-                    painter.text(rect.left_top()+egui::vec2(7.0,4.0),egui::Align2::LEFT_TOP,format!("{}{tags}{sorted}",column.name),egui::FontId::monospace(12.0),ui.visuals().text_color());
-                    painter.text(rect.left_bottom()+egui::vec2(7.0,-5.0),egui::Align2::LEFT_BOTTOM,column.declared_type.as_deref().unwrap_or("runtime type"),egui::FontId::proportional(11.0),ui.visuals().weak_text_color());
-                    let response=response.on_hover_text(format!("{}\nPK = key position; IX = declared leading index; FK = foreign key. Index method/partial predicate may not apply. Drag the right edge or right-click to resize.",column.name));
+                    let mut left=rect.left()+7.0;
+                    for (show,icon) in [(pk>0,Icon::Key),(foreign,Icon::Link)] {
+                        if show { icons::paint(&painter,egui::Rect::from_min_size(egui::pos2(left,rect.center().y-6.0),egui::vec2(12.0,12.0)),icon,if foreign{ui.visuals().hyperlink_color}else{ui.visuals().warn_fg_color});left+=15.0; }
+                    }
+                    let ty=match column.declared_type.as_deref().unwrap_or("").to_uppercase().as_str(){"TEXT"=>"T","INTEGER"=>"#","REAL"=>"1.0","BLOB"=>"01",_=>"?"};
+                    painter.text(egui::pos2(left,rect.center().y),egui::Align2::LEFT_CENTER,&column.name,egui::FontId::proportional(12.0),ui.visuals().text_color());
+                    painter.rect_filled(egui::Rect::from_min_size(rect.right_top()+egui::vec2(-32.0,6.0),egui::vec2(25.0,18.0)),3.0,ui.visuals().panel_fill);
+                    painter.text(rect.right_center()-egui::vec2(19.0,0.0),egui::Align2::CENTER_CENTER,ty,egui::FontId::monospace(10.0),ui.visuals().weak_text_color());
+                    if !sorted.is_empty(){icons::paint(&painter,egui::Rect::from_min_size(rect.right_top()+egui::vec2(-47.0,8.0),egui::vec2(12.0,12.0)),if self.browse.as_ref().is_some_and(|b|b.descending){Icon::Down}else{Icon::Up},ui.visuals().selection.stroke.color);}
+                    let response=response.on_hover_text(format!("{} · {}\nPK = key position; IX = declared leading index; FK = foreign key. Index method/partial predicate may not apply. Drag the right edge or right-click to resize.",column.name,column.declared_type.as_deref().unwrap_or("runtime type")));
                     response.context_menu(|ui|{ui.label("Column width");ui.add(egui::Slider::new(&mut self.tools.widths[i],60.0..=640.0));});
                     let handle=egui::Rect::from_min_max(egui::pos2(rect.right()-6.0,rect.top()),rect.right_bottom());
                     let drag=ui.interact(handle,ui.id().with(("resize-column",i)),egui::Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
@@ -244,7 +275,7 @@ impl App {
                     });
                 }
                 if response.double_clicked() {
-                    action = Some(GridAction::Record(row));
+                    action = Some(GridAction::Edit(row, col));
                 }
                 let response = if references.is_empty() {
                     response
@@ -271,7 +302,7 @@ impl App {
                         }
                     }
                     if ui.button("Inspect / edit cell").clicked() {
-                        action = Some(GridAction::Cell(row, col));
+                        action = Some(GridAction::Edit(row, col));
                         ui.close();
                     }
                     if ui.button("Copy stored cell").clicked() {

@@ -1,4 +1,8 @@
-use super::{App, View, results, shell};
+use super::{
+    App, View,
+    icons::{self, Icon},
+    results, shell,
+};
 use eframe::egui;
 use tursobench_core::Value;
 
@@ -67,7 +71,7 @@ impl App {
             }
             if ui.button("Record").clicked() {
                 self.tools.detail = Some(row);
-                self.ui.inspector = shell::Inspector::Record;
+                self.ui.inspector = shell::DetailMode::Record;
             }
         });
         if self.can_edit() {
@@ -100,7 +104,7 @@ impl App {
                 }
             }
             ui.horizontal_wrapped(|ui| {
-                if ui.button("Revert cell draft").clicked()
+                if icons::button(ui, Icon::Undo, "Revert cell draft", "").clicked()
                     && let (Some(d), Some(original)) = (&mut self.drafts, self.result.rows.get(row))
                 {
                     d.revert_cell(original, col);
@@ -110,7 +114,8 @@ impl App {
                 {
                     d.revert_row(original);
                 }
-                if ui.button("Stage row deletion").clicked() {
+                if icons::control(ui, Icon::Trash, "Stage row deletion", "", false, true).clicked()
+                {
                     self.stage_delete(row);
                 }
                 if ui.button("Clone as new row…").clicked() {
@@ -155,8 +160,31 @@ impl App {
         {
             ui.label(format!("Table: {}", table.name));
         }
-        if ui.button("Copy row (annotated TSV)").clicked() {
+        if icons::button(ui, Icon::Copy, "Copy row as annotated TSV", "").clicked() {
             self.copy_row(ui.ctx(), row);
+        }
+        if let Some(info) = self
+            .tools
+            .inspection
+            .as_ref()
+            .filter(|i| {
+                self.view == View::Browse
+                    && self.table.as_ref().is_some_and(|t| t.name == i.table.name)
+            })
+            .cloned()
+        {
+            for key in info.foreign_keys {
+                if ui
+                    .add_enabled(
+                        !self.has_drafts() && self.active.is_none(),
+                        egui::Button::new(format!("Parent: {}", key.target)),
+                    )
+                    .clicked()
+                {
+                    self.follow_key(row, key);
+                    return;
+                }
+            }
         }
         self.incoming_references(ui, row);
         if let Some(values) = self.result.rows.get(row) {
@@ -260,7 +288,7 @@ impl App {
     pub(super) fn inspection_surfaces(&mut self, ctx: &egui::Context) {
         if self.ui.inspector_detached && self.ui.inspector_open {
             let mut open = true;
-            egui::Window::new("Inspector")
+            egui::Window::new("DetailMode")
                 .open(&mut open)
                 .default_size([420.0, 500.0])
                 .default_pos(egui::pos2(
@@ -273,24 +301,21 @@ impl App {
                         self.ui.inspector_detached = false;
                     }
                     ui.horizontal_wrapped(|ui| {
-                        ui.add_enabled_ui(
-                            self.ui.workspace != shell::Workspace::Diagram || self.ui.drawer.open,
-                            |ui| {
-                                ui.selectable_value(
-                                    &mut self.ui.inspector,
-                                    shell::Inspector::Cell,
-                                    "Cell",
-                                );
-                                ui.selectable_value(
-                                    &mut self.ui.inspector,
-                                    shell::Inspector::Record,
-                                    "Record",
-                                );
-                            },
-                        );
+                        ui.add_enabled_ui(self.ui.nav != shell::Nav::Overview, |ui| {
+                            ui.selectable_value(
+                                &mut self.ui.inspector,
+                                shell::DetailMode::Cell,
+                                "Cell",
+                            );
+                            ui.selectable_value(
+                                &mut self.ui.inspector,
+                                shell::DetailMode::Record,
+                                "Record",
+                            );
+                        });
                         ui.selectable_value(
                             &mut self.ui.inspector,
-                            shell::Inspector::Structure,
+                            shell::DetailMode::Structure,
                             "Structure",
                         );
                     });

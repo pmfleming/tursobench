@@ -39,7 +39,7 @@ impl App {
         if self.picker.is_some() || self.session.is_some() {
             return;
         }
-        self.ui.workspace = shell::Workspace::Connect;
+        self.ui.nav = shell::Nav::Databases;
         self.databases.focus_filter = true;
         ctx.request_repaint();
     }
@@ -119,7 +119,7 @@ impl App {
             Ok(Some(path)) if self.session.is_none() => {
                 if let Some(path) = path.to_str() {
                     self.set_database_path(path.to_owned());
-                    self.ui.workspace = shell::Workspace::Connect;
+                    self.ui.nav = shell::Nav::Databases;
                     self.status =
                         "File selected. Review access and exclusive use before opening.".into();
                 } else {
@@ -174,11 +174,11 @@ mod tests {
         deliver(&mut app, Ok(Some("previous.db".into())));
         assert!(app.exclusive && app.writable);
 
-        app.ui.workspace = shell::Workspace::Query;
+        app.ui.nav = shell::Nav::Result;
         deliver(&mut app, Ok(Some("different.db".into())));
         assert_eq!(app.path, "different.db");
         assert!(!app.exclusive && !app.writable);
-        assert_eq!(app.ui.workspace, shell::Workspace::Connect);
+        assert_eq!(app.ui.nav, shell::Nav::Databases);
     }
 
     #[test]
