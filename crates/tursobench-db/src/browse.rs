@@ -1,4 +1,4 @@
-use crate::worker::{failure, from_engine};
+use crate::connection::{failure, from_engine};
 use turso::Connection;
 use tursobench_core::{Browse, Failure, FilterOp, Table, TableColumn, Value, quote_identifier};
 
@@ -70,7 +70,7 @@ pub(crate) async fn describe(c: &Connection, name: &str) -> Result<Table, Failur
     })
 }
 
-pub(crate) fn browse_sql(table: &Table, spec: &Browse) -> Result<(String, Vec<Value>), Failure> {
+pub(crate) fn browse_sql(table: &Table, spec: Browse) -> Result<(String, Vec<Value>), Failure> {
     if table.columns.is_empty() || table.columns.iter().any(|c| c.hidden != 0) {
         return Err(Failure::input(
             "Hidden/generated columns are not supported by this browser",
@@ -92,21 +92,23 @@ pub(crate) fn browse_sql(table: &Table, spec: &Browse) -> Result<(String, Vec<Va
         ));
     }
     let mut predicates = Vec::new();
-    for filter in &spec.filters {
+    for filter in spec.filters {
         let col = column(filter.column)?;
+        let op = match filter.op {
+            FilterOp::Equal => "IS",
+            FilterOp::NotEqual => "IS NOT",
+            FilterOp::Less => "<",
+            FilterOp::Greater => ">",
+            FilterOp::Contains => "LIKE",
+            FilterOp::IsNull => "IS NULL",
+            FilterOp::IsNotNull => "IS NOT NULL",
+        };
         if filter.op.unary() {
-            predicates.push(format!(
-                "{col} {}",
-                if filter.op == FilterOp::IsNull {
-                    "IS NULL"
-                } else {
-                    "IS NOT NULL"
-                }
-            ));
+            predicates.push(format!("{col} {op}"));
             continue;
         }
         let value = if filter.op == FilterOp::Contains {
-            let Value::Text(text) = &filter.value else {
+            let Value::Text(text) = filter.value else {
                 return Err(Failure::input("Contains requires a TEXT value"));
             };
             Value::Text(format!(
@@ -116,26 +118,15 @@ pub(crate) fn browse_sql(table: &Table, spec: &Browse) -> Result<(String, Vec<Va
                     .replace('_', "\\_")
             ))
         } else {
-            filter.value.clone()
+            filter.value
         };
         params.push(value);
-        let op = match filter.op {
-            FilterOp::Equal => "IS",
-            FilterOp::NotEqual => "IS NOT",
-            FilterOp::Less => "<",
-            FilterOp::Greater => ">",
-            FilterOp::Contains => "LIKE",
-            _ => unreachable!(),
+        let suffix = if filter.op == FilterOp::Contains {
+            " ESCAPE '\\'"
+        } else {
+            ""
         };
-        predicates.push(format!(
-            "{col} {op} ?{}{}",
-            params.len(),
-            if filter.op == FilterOp::Contains {
-                " ESCAPE '\\'"
-            } else {
-                ""
-            }
-        ));
+        predicates.push(format!("{col} {op} ?{}{suffix}", params.len()));
     }
     let filter = if predicates.is_empty() {
         String::new()

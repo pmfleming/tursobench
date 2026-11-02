@@ -137,7 +137,7 @@ impl App {
                                             ui.strong(format!("Operation {}",i+1));
                                             if ui.add_enabled(self.commit_ticket.is_none(),egui::Button::new("Remove operation")).clicked() { remove = Some(i); }
                                         });
-                                        let mut sql = statement.sql.clone();
+                                        let mut sql = statement.sql.as_str();
                                         ui.add(egui::TextEdit::multiline(&mut sql).code_editor().interactive(false).desired_width(ui.available_width()).desired_rows(2));
                                         ui.small("Exact typed bindings (including original-value predicates):");
                                         let mut parameters=serde_json::to_string(&statement.parameters).unwrap_or_default();

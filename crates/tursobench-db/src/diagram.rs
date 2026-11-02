@@ -1,5 +1,5 @@
 //! Bounded committed-schema discovery; no table scans and no inferred relationships.
-use crate::{inspection, worker::failure};
+use crate::{connection::failure, inspection};
 use turso::Connection;
 use tursobench_core::{
     DiagramTable, Failure, ForeignKey, IndexInfo, Inspection, SchemaDiagram, TableColumn,

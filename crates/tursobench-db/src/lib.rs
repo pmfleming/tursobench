@@ -4,6 +4,7 @@ use tursobench_core::{
     Ticket, Value,
 };
 mod browse;
+mod connection;
 mod diagram;
 mod edits;
 mod inspection;

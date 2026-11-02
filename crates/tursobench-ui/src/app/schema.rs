@@ -1,14 +1,81 @@
+use super::results::code_view;
 use super::{
     App, View,
     icons::{self, Icon},
     shell, tools,
 };
 use eframe::egui;
+use tursobench_core::{Event, EventKind, SchemaObject};
 use tursobench_core::{ForeignKey, Value};
 use tursobench_db::{Operation, Request};
 
 use tools::{Destination, NavigationEntry};
 impl App {
+    pub(super) fn finish_count(&mut self, failure: Option<String>) {
+        let Some((name, result)) = self.tools.count_request.take() else {
+            return;
+        };
+        if result
+            .completion
+            .as_ref()
+            .is_some_and(|c| c.error.is_none() && c.delivery == tursobench_core::Delivery::Complete)
+            && let Some(Value::Integer(n)) = result.rows.first().and_then(|r| r.first())
+        {
+            self.status = format!("{name}: {n} rows · explicit full scan");
+            self.tools.counts.insert(name, *n);
+        } else {
+            self.status = failure.map_or_else(
+                || format!("Count failed or incomplete: {:?}", result.completion),
+                |error| format!("Count failed: {error}"),
+            );
+        }
+        self.log_outcome(self.status.clone());
+    }
+    pub(super) fn catalog_event(&mut self, event: Event) {
+        let done = matches!(event.kind, EventKind::Finished(_) | EventKind::Failed(_));
+        let error = match &event.kind {
+            EventKind::Finished(c) => {
+                self.transaction = c.transaction;
+                c.error.as_ref()
+            }
+            EventKind::Failed(error) => Some(error),
+            _ => None,
+        };
+        if let Some(error) = error {
+            self.catalog_error = error.to_string();
+            self.status.clone_from(&self.catalog_error);
+        }
+        self.catalog.apply(event);
+        if done {
+            self.catalog_ticket = None;
+            self.schema = self
+                .catalog
+                .rows
+                .drain(..)
+                .filter_map(|row| {
+                    let [
+                        Value::Text(kind),
+                        Value::Text(name),
+                        Value::Text(table),
+                        ddl,
+                    ]: [Value; 4] = row.try_into().ok()?
+                    else {
+                        return None;
+                    };
+                    Some(SchemaObject {
+                        kind,
+                        name,
+                        table,
+                        ddl: match ddl {
+                            Value::Text(sql) => Some(sql),
+                            _ => None,
+                        },
+                    })
+                })
+                .collect();
+        }
+    }
+
     pub(super) fn count_table(&mut self, name: String) {
         if self.tools.count_request.is_some() || !self.ready || self.closing {
             return;
@@ -169,7 +236,6 @@ impl App {
                 )
                 .clicked()
             {
-                self.tools.diagnostic = diagnostic;
                 self.submit(Operation::Diagnostic(diagnostic), View::Diagnostics);
             }
         }
@@ -178,13 +244,6 @@ impl App {
         ui.small(
             "Checks run on the browse worker and may be slow. Discard does not interrupt them.",
         );
-    }
-    pub(super) fn schema_windows(&mut self, _ctx: &egui::Context) {
-        // Compatibility with existing action state: route metadata to the dock.
-        if self.tools.show_metadata {
-            self.show_structure();
-            self.tools.show_metadata = false;
-        }
     }
     pub(super) fn structure_inspector(&mut self, ui: &mut egui::Ui) {
         let name = self
@@ -201,8 +260,10 @@ impl App {
         let object = self
             .tools
             .ddl
-            .clone()
-            .or_else(|| self.schema.iter().find(|o| o.name == name).cloned());
+            .as_ref()
+            .or_else(|| self.schema.iter().find(|o| o.name == name));
+        let mut browse = None;
+        let mut load = false;
         if let Some(node) = self
             .ui
             .diagram
@@ -287,7 +348,7 @@ impl App {
             for key in &info.foreign_keys {
                 ui.group(|ui| {
                     if ui.link(&key.target).clicked() {
-                        self.browse_table(key.target.clone());
+                        browse = Some(key.target.clone());
                     }
                     ui.monospace(
                         key.columns
@@ -308,7 +369,7 @@ impl App {
                 });
             }
         } else if self.tools.inspection_ticket.is_none() && ui.button("Load structure").clicked() {
-            self.request_inspection(name.clone());
+            load = true;
         }
         let owner = info
             .as_ref()
@@ -319,7 +380,6 @@ impl App {
                 .schema
                 .iter()
                 .filter(|o| o.table == owner && (o.kind == "index" || o.kind == "trigger"))
-                .cloned()
                 .collect();
             if !definitions.is_empty() {
                 ui.strong("Index and trigger definitions");
@@ -342,22 +402,22 @@ impl App {
             "CHECK clauses, index expressions and FTS methods are preserved in the original DDL.",
         );
         if let Some(object) = object
-            && let Some(ddl) = object.ddl
+            && let Some(ddl) = &object.ddl
         {
             ui.collapsing("CREATE statement", |ui| {
                 if icons::button(ui, Icon::Copy, "Copy original DDL", "").clicked() {
                     ui.ctx().copy_text(ddl.clone());
                 }
-                let mut text = ddl.as_str();
-                ui.add(
-                    egui::TextEdit::multiline(&mut text)
-                        .code_editor()
-                        .desired_width(ui.available_width())
-                        .desired_rows(8),
-                );
+                code_view(ui, ddl, 8);
             });
         } else {
             ui.weak("DDL not retained; refresh the catalog.");
+        }
+        if load {
+            self.request_inspection(name);
+        }
+        if let Some(table) = browse {
+            self.browse_table(table);
         }
     }
     pub(super) fn follow_key(&mut self, row: usize, key: ForeignKey) {

@@ -1,6 +1,6 @@
 use super::*;
 use std::time::{Duration, Instant};
-use tursobench_core::Budget;
+use tursobench_core::{Budget, Value};
 fn inspect_selected(app: &mut App, ctx: &egui::Context) {
     let start = Instant::now();
     loop {
@@ -42,19 +42,25 @@ fn connected(path: &std::path::Path, writable: bool) -> (egui::Context, App) {
     wait(&mut app, &ctx);
     (ctx, app)
 }
-fn frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) {
-    let mut out = ctx.run_ui(
+fn frame_at(
+    app: &mut App,
+    ctx: &egui::Context,
+    size: egui::Vec2,
+    events: Vec<egui::Event>,
+) -> egui::FullOutput {
+    let mut output = ctx.run_ui(
         egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(1400.0, 900.0),
-            )),
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
             events,
             ..Default::default()
         },
         |ui| app.render(ui),
     );
-    out.textures_delta.clear();
+    output.textures_delta.clear();
+    output
+}
+fn frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) {
+    frame_at(app, ctx, egui::vec2(1400.0, 900.0), events);
 }
 
 #[test]
@@ -146,22 +152,6 @@ fn failed_open_completes_pending_exit_after_any_export() {
 }
 
 #[test]
-fn typing_a_different_database_path_resets_consent() {
-    let ctx = egui::Context::default();
-    let mut app = App::new(&ctx);
-    app.path = "previous.db".into();
-    app.exclusive = true;
-    app.writable = true;
-    app.databases.editing_path = true;
-    frame(&mut app, &ctx, vec![]);
-    ctx.memory_mut(|memory| memory.request_focus(egui::Id::new("database-path")));
-    frame(&mut app, &ctx, vec![egui::Event::Text("x".into())]);
-    assert_ne!(app.path, "previous.db");
-    assert!(app.path.contains('x'));
-    assert!(!app.exclusive && !app.writable);
-}
-
-#[test]
 fn diagram_preserves_drafts_and_result_ownership_and_chrome_fits_both_themes() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("layout.db");
@@ -207,17 +197,7 @@ fn diagram_preserves_drafts_and_result_ownership_and_chrome_fits_both_themes() {
                 app.ui.nav = mode;
                 app.ui.diagram.fit = true;
                 for _ in 0..2 {
-                    let mut output = ctx.run_ui(
-                        egui::RawInput {
-                            screen_rect: Some(egui::Rect::from_min_size(
-                                egui::Pos2::ZERO,
-                                egui::vec2(width, height),
-                            )),
-                            ..Default::default()
-                        },
-                        |ui| app.render(ui),
-                    );
-                    output.textures_delta.clear();
+                    let output = frame_at(&mut app, &ctx, egui::vec2(width, height), vec![]);
                     assert!(!output.shapes.is_empty());
                     assert_eq!(app.ui.transaction_rects.len(), 3);
                     for rect in &app.ui.transaction_rects {
@@ -582,7 +562,7 @@ fn selection_named_history_metadata_reference_back_and_tools_render() {
     wait(&mut app, &ctx);
     assert_eq!(app.ui.diagram.selected.as_deref(), Some("parent"));
     app.tools.detail = Some(0);
-    app.tools.show_metadata = true;
+    app.show_structure();
     app.tools.help = true;
     app.tools.ddl = app.schema.iter().find(|o| o.name == "parent").cloned();
     frame(&mut app, &ctx, vec![]);
@@ -806,66 +786,6 @@ fn access_switch_waits_for_closed_then_opens_a_new_session() {
 }
 
 #[test]
-fn table_headers_fit_small_large_and_scaled_viewports_in_both_themes() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("drawer-viewports.db");
-    crate::test_support::create(
-        &path,
-        &[
-            "CREATE TABLE a(id INTEGER PRIMARY KEY, text TEXT)",
-            "INSERT INTO a VALUES(1,'value')",
-        ],
-    );
-    let (ctx, mut app) = connected(&path, false);
-    app.browse_table("a".into());
-    wait(&mut app, &ctx);
-    for dark in [true, false] {
-        app.preferences.dark_mode = dark;
-        app.apply_theme(&ctx);
-        for (width, height, scale) in [
-            (960.0, 640.0, 1.0),
-            (1280.0, 720.0, 1.0),
-            (1366.0, 768.0, 1.0),
-            (1920.0, 1080.0, 1.0),
-            (3440.0, 1440.0, 1.0),
-            (1440.0, 960.0, 1.5),
-        ] {
-            ctx.set_pixels_per_point(scale);
-            for sql_open in [false, true] {
-                for structure in [false, true] {
-                    app.ui.sql_open = sql_open;
-                    app.ui.table_view = if structure {
-                        shell::TableView::Structure
-                    } else {
-                        shell::TableView::Data
-                    };
-                    for _ in 0..2 {
-                        let mut out = ctx.run_ui(
-                            egui::RawInput {
-                                screen_rect: Some(egui::Rect::from_min_size(
-                                    egui::Pos2::ZERO,
-                                    egui::vec2(width, height),
-                                )),
-                                ..Default::default()
-                            },
-                            |ui| app.render(ui),
-                        );
-                        out.textures_delta.clear();
-                    }
-                    assert!(
-                        ctx.content_rect().contains_rect(app.ui.view_header),
-                        "{width}x{height}, sql_open={sql_open}: {:?}",
-                        app.ui.view_header
-                    );
-                    assert!(app.ui.view_header.width() > 200.0);
-                }
-            }
-        }
-    }
-    app.close();
-}
-
-#[test]
 fn navigation_restores_typed_browse_context_and_query_return_without_dropping_drafts() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("navigation.db");
@@ -1001,6 +921,13 @@ fn explicit_counts_keep_table_rows_and_drafts_owned_by_their_original_ticket() {
     assert_eq!(app.result.current, ticket);
     assert_eq!(app.result.rows, rows);
     assert!(app.has_drafts());
+    app.count_table("missing table".into());
+    wait(&mut app, &ctx);
+    assert!(app.status.contains("Count failed"));
+    assert!(!app.tools.counts.contains_key("missing table"));
+    assert_eq!(app.result.current, ticket);
+    assert_eq!(app.result.rows, rows);
+    assert!(app.has_drafts());
     app.commit_drafts();
     wait(&mut app, &ctx);
     assert!(app.tools.counts.is_empty());
@@ -1008,7 +935,7 @@ fn explicit_counts_keep_table_rows_and_drafts_owned_by_their_original_ticket() {
 }
 
 #[test]
-fn v3_sidebar_header_and_transaction_controls_fit_the_minimum_window() {
+fn table_views_sidebar_and_transactions_fit_themes_and_scaled_viewports() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("minimum.db");
     let name = "a_table_with_a_deliberately_long_name_to_exercise_header_truncation";
@@ -1028,27 +955,33 @@ fn v3_sidebar_header_and_transaction_controls_fit_the_minimum_window() {
     for dark in [true, false] {
         app.preferences.dark_mode = dark;
         app.apply_theme(&ctx);
-        for (width, height) in [
-            (1280.0, 720.0),
-            (720.0, 480.0),
-            (960.0, 640.0),
-            (1920.0, 1080.0),
+        for (width, height, scale) in [
+            (1280.0, 720.0, 1.0),
+            (720.0, 480.0, 1.0),
+            (960.0, 640.0, 1.0),
+            (1366.0, 768.0, 1.0),
+            (1920.0, 1080.0, 1.0),
+            (3440.0, 1440.0, 1.0),
+            (1440.0, 960.0, 1.5),
         ] {
-            for details in [false, true] {
+            ctx.set_pixels_per_point(scale);
+            for (sql, structure, details) in [
+                (false, false, false),
+                (false, false, true),
+                (false, true, false),
+                (true, false, false),
+                (true, true, false),
+            ] {
+                app.ui.sql_open = sql;
+                app.ui.table_view = if structure {
+                    shell::TableView::Structure
+                } else {
+                    shell::TableView::Data
+                };
                 app.ui.inspector_open = details;
                 app.inspect = Some((0, 0));
                 for _ in 0..2 {
-                    let mut output = ctx.run_ui(
-                        egui::RawInput {
-                            screen_rect: Some(egui::Rect::from_min_size(
-                                egui::Pos2::ZERO,
-                                egui::vec2(width, height),
-                            )),
-                            ..Default::default()
-                        },
-                        |ui| app.render(ui),
-                    );
-                    output.textures_delta.clear();
+                    let output = frame_at(&mut app, &ctx, egui::vec2(width, height), vec![]);
                     let tree = output.platform_output.accesskit_update.as_ref().unwrap();
                     assert!(
                         !tree
@@ -1063,8 +996,11 @@ fn v3_sidebar_header_and_transaction_controls_fit_the_minimum_window() {
                     "{width}x{height}: {:?}",
                     app.ui.view_header
                 );
-                assert!(app.ui.workspace_rect.contains_rect(app.ui.grid_rect));
-                if width == 1280.0 && !details {
+                assert!(app.ui.view_header.width() > 200.0);
+                if !structure {
+                    assert!(app.ui.workspace_rect.contains_rect(app.ui.grid_rect));
+                }
+                if width == 1280.0 && !details && !sql && !structure {
                     assert!(
                         app.ui.visible_rows >= 15,
                         "{} fully visible rows",
@@ -1074,22 +1010,13 @@ fn v3_sidebar_header_and_transaction_controls_fit_the_minimum_window() {
             }
         }
     }
+    ctx.set_pixels_per_point(1.0);
     app.run_text("BEGIN".into(), None);
     wait(&mut app, &ctx);
     app.ui.sql_open = false;
     app.overview();
     for _ in 0..2 {
-        let mut output = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(720.0, 480.0),
-                )),
-                ..Default::default()
-            },
-            |ui| app.render(ui),
-        );
-        output.textures_delta.clear();
+        frame_at(&mut app, &ctx, egui::vec2(720.0, 480.0), vec![]);
     }
     assert_eq!(app.ui.transaction_rects.len(), 3);
     for r in &app.ui.transaction_rects {

@@ -146,66 +146,56 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{App, PathBuf, mpsc, shell, start_picker};
+    use eframe::egui;
     use std::time::Duration;
 
-    fn deliver(app: &mut App, result: PickResult) {
-        let (tx, rx) = mpsc::sync_channel(1);
-        app.picker = Some(rx);
-        tx.send(result).unwrap();
-        app.poll_picker();
-        assert!(app.picker.is_none());
-    }
-
     #[test]
-    fn new_file_resets_consent_while_same_file_and_cancel_preserve_it() {
+    fn picker_outcomes_preserve_consent_until_a_new_selection_and_allow_retry() {
         let ctx = egui::Context::default();
-        let mut app = App::new(&ctx);
-        app.path = "previous.db".into();
-        app.exclusive = true;
-        app.writable = true;
-
-        deliver(&mut app, Ok(None));
-        assert_eq!(app.path, "previous.db");
-        assert!(app.exclusive && app.writable);
-        assert!(app.status.contains("No file selected"));
-        assert!(app.status.contains("enter the database path manually"));
-
-        deliver(&mut app, Ok(Some("previous.db".into())));
-        assert!(app.exclusive && app.writable);
-
-        app.ui.nav = shell::Nav::Result;
-        deliver(&mut app, Ok(Some("different.db".into())));
-        assert_eq!(app.path, "different.db");
-        assert!(!app.exclusive && !app.writable);
-        assert_eq!(app.ui.nav, shell::Nav::Databases);
-    }
-
-    #[test]
-    fn errors_and_disconnected_workers_are_visible_and_allow_retry() {
-        let ctx = egui::Context::default();
-        let mut app = App::new(&ctx);
-        app.path = "previous.db".into();
-        app.exclusive = true;
-        app.writable = true;
-
-        deliver(&mut app, Err("test failure".into()));
-        assert!(app.status.contains("test failure"));
-        assert!(app.status.contains("try again"));
-        assert_eq!(app.path, "previous.db");
-        assert!(app.exclusive && app.writable);
-
-        let (tx, rx) = mpsc::sync_channel(1);
-        app.picker = Some(rx);
-        drop(tx);
-        app.poll_picker();
-        assert!(app.picker.is_none());
-        assert!(app.status.contains("disconnected unexpectedly"));
-        assert_eq!(app.path, "previous.db");
-
-        deliver(&mut app, Ok(Some("retry.db".into())));
-        assert_eq!(app.path, "retry.db");
-        assert!(!app.exclusive && !app.writable);
+        let mut cases = vec![
+            (Some(Ok(None)), "No file selected"),
+            (Some(Ok(Some("previous.db".into()))), "File selected"),
+            (Some(Err("test failure".into())), "test failure"),
+            (None, "disconnected unexpectedly"),
+        ];
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            cases.push((
+                Some(Ok(Some(
+                    std::ffi::OsString::from_vec(b"invalid-\xff.db".to_vec()).into(),
+                ))),
+                "Only UTF-8 database paths",
+            ));
+        }
+        for (result, message) in cases {
+            let mut app = App::new(&ctx);
+            app.path = "previous.db".into();
+            app.exclusive = true;
+            app.writable = true;
+            let (tx, rx) = mpsc::sync_channel(1);
+            app.picker = Some(rx);
+            app.poll_picker();
+            assert!(app.picker.is_some(), "pending picker must remain pending");
+            if let Some(result) = result {
+                tx.send(result).unwrap();
+            }
+            drop(tx);
+            app.poll_picker();
+            assert!(app.picker.is_none());
+            assert!(app.status.contains(message), "{}", app.status);
+            assert_eq!(app.path, "previous.db");
+            assert!(app.exclusive && app.writable);
+            app.ui.nav = shell::Nav::Result;
+            let (tx, rx) = mpsc::sync_channel(1);
+            app.picker = Some(rx);
+            tx.send(Ok(Some("retry.db".into()))).unwrap();
+            app.poll_picker();
+            assert_eq!(app.path, "retry.db");
+            assert!(!app.exclusive && !app.writable);
+            assert_eq!(app.ui.nav, shell::Nav::Databases);
+        }
     }
 
     #[test]
@@ -244,21 +234,5 @@ mod tests {
         tx.send(Ok(Some("selected.db".into()))).unwrap();
         app.poll_picker();
         assert_eq!(app.path, "selected.db");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn invalid_utf8_selection_keeps_the_previous_path_and_reports_an_error() {
-        use std::os::unix::ffi::OsStringExt;
-        let ctx = egui::Context::default();
-        let mut app = App::new(&ctx);
-        app.path = "previous.db".into();
-        let path = std::ffi::OsString::from_vec(b"invalid-\xff.db".to_vec());
-        deliver(&mut app, Ok(Some(path.into())));
-        assert_eq!(app.path, "previous.db");
-        assert!(
-            app.status
-                .contains("Only UTF-8 database paths are supported")
-        );
     }
 }

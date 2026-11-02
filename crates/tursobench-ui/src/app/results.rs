@@ -3,11 +3,12 @@ use eframe::egui;
 use tursobench_core::{Ticket, Value};
 
 use crate::export::{self, Format};
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum CellKind {
     Null,
     Integer,
     Real,
+    #[default]
     Text,
     Blob,
 }
@@ -51,6 +52,15 @@ impl CellKind {
         })
     }
 }
+pub(super) fn code_view(ui: &mut egui::Ui, mut text: &str, rows: usize) {
+    ui.add(
+        egui::TextEdit::multiline(&mut text)
+            .code_editor()
+            .desired_width(ui.available_width())
+            .desired_rows(rows),
+    );
+}
+
 pub(super) fn detail_text(value: &Value) -> String {
     let Value::Text(text) = value else {
         return export::cell_text(value);
@@ -178,7 +188,7 @@ impl App {
             };
             self.tools.cell_input = match value {
                 Value::Null => String::new(),
-                Value::Blob(b) => b.iter().map(|b| format!("{b:02x}")).collect(),
+                Value::Blob(b) => export::hex(b),
                 _ => export::cell_text(value),
             };
         }

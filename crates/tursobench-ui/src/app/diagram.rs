@@ -23,7 +23,6 @@ pub(super) struct DiagramState {
     pub zoom: f32,
     pub pan: egui::Vec2,
     pub fit: bool,
-    focus_selected: bool,
     auto_fit: bool,
     last_canvas_size: egui::Vec2,
     reset_zoom: bool,
@@ -174,11 +173,10 @@ fn cards(graph: &SchemaDiagram, all: bool) -> Vec<(egui::Rect, Vec<usize>)> {
     let mut unseen: BTreeSet<_> = (0..count).collect();
     let mut shelf = egui::Pos2::ZERO;
     let mut shelf_height = 0.0f32;
-    while !unseen.is_empty() {
-        let root = *unseen
-            .iter()
-            .max_by_key(|&&i| (outgoing[i] == 0, incoming[i], std::cmp::Reverse(i)))
-            .unwrap();
+    while let Some(&root) = unseen
+        .iter()
+        .max_by_key(|&&i| (outgoing[i] == 0, incoming[i], std::cmp::Reverse(i)))
+    {
         unseen.remove(&root);
         let mut queue = VecDeque::from([(root, 0usize)]);
         let mut levels: Vec<Vec<usize>> = Vec::new();
@@ -278,6 +276,200 @@ fn route(
         )
     }
 }
+struct DiagramDrawing<'a> {
+    graph: &'a SchemaDiagram,
+    layout: &'a [(egui::Rect, Vec<usize>)],
+    canvas: egui::Rect,
+    zoom: f32,
+    pan: egui::Vec2,
+    selected: Option<&'a str>,
+}
+impl DiagramDrawing<'_> {
+    fn point(&self, p: egui::Pos2) -> egui::Pos2 {
+        self.canvas.min + self.pan + p.to_vec2() * self.zoom
+    }
+    fn row_y(&self, table: usize, name: Option<&str>) -> f32 {
+        let (rect, rows) = &self.layout[table];
+        let row = self.graph.tables[table]
+            .inspection
+            .as_ref()
+            .zip(name)
+            .and_then(|(info, name)| {
+                rows.iter()
+                    .position(|&c| info.table.columns[c].name.eq_ignore_ascii_case(name))
+            });
+        row.map_or(rect.top() + 22.0, |row| {
+            rect.top() + 48.0 + row as f32 * LINE
+        })
+    }
+    fn details(&self, ui: &egui::Ui, painter: &egui::Painter, index: usize) {
+        let (world, columns) = &self.layout[index];
+        let node = &self.graph.tables[index];
+        let zoom = self.zoom;
+        let canvas = self.canvas;
+        if let Some(info) = &node.inspection {
+            for (row, &c) in columns.iter().enumerate() {
+                if zoom < KEY_LABEL_ZOOM {
+                    break;
+                }
+                let y = self
+                    .point(world.min + egui::vec2(10.0, 48.0 + row as f32 * LINE))
+                    .y;
+                if y < canvas.top() - LINE * zoom || y > canvas.bottom() + LINE * zoom {
+                    continue;
+                }
+                let col = &info.table.columns[c];
+                let pk = if col.primary_key > 0 {
+                    format!("PK{} ", col.primary_key)
+                } else {
+                    String::new()
+                };
+                let fk = if info.foreign_keys.iter().any(|f| {
+                    f.columns
+                        .iter()
+                        .any(|(n, _)| n.eq_ignore_ascii_case(&col.name))
+                }) {
+                    "FK "
+                } else {
+                    ""
+                };
+                let uq = if info.indexes.iter().any(|i| {
+                    i.unique
+                        && i.columns
+                            .iter()
+                            .flatten()
+                            .any(|n| n.eq_ignore_ascii_case(&col.name))
+                }) {
+                    "UQ "
+                } else {
+                    ""
+                };
+                painter.text(
+                    self.point(world.min + egui::vec2(10.0, 48.0 + row as f32 * LINE)),
+                    egui::Align2::LEFT_CENTER,
+                    format!(
+                        "{pk}{fk}{uq}{}  {}",
+                        short(&col.name, 24),
+                        short(&col.declared_type, 12)
+                    ),
+                    egui::FontId::monospace((12.0 * zoom).max(9.0)),
+                    ui.visuals().text_color(),
+                );
+            }
+            painter.text(
+                self.point(egui::pos2(world.left() + 10.0, world.bottom() - 16.0)),
+                egui::Align2::LEFT_CENTER,
+                if zoom < KEY_LABEL_ZOOM {
+                    format!(
+                        "{} columns · {} FKs",
+                        info.table.columns.len(),
+                        info.foreign_keys.len()
+                    )
+                } else {
+                    format!(
+                        "{} columns · {} indexes · {} FKs",
+                        info.table.columns.len(),
+                        info.indexes.len(),
+                        info.foreign_keys.len()
+                    )
+                },
+                egui::FontId::proportional(if zoom >= 0.35 {
+                    (12.0 * zoom).max(9.0)
+                } else {
+                    12.0 * zoom
+                }),
+                ui.visuals().weak_text_color(),
+            );
+        } else {
+            painter.text(
+                self.point(world.min + egui::vec2(10.0, 50.0)),
+                egui::Align2::LEFT_CENTER,
+                "Metadata unavailable — inspect error",
+                egui::FontId::proportional(12.0 * zoom),
+                ui.visuals().error_fg_color,
+            );
+        }
+    }
+    fn links(&self, ui: &egui::Ui, painter: &egui::Painter) -> usize {
+        let Self {
+            graph,
+            layout,
+            canvas,
+            zoom,
+            ..
+        } = *self;
+        let accent = ui.visuals().selection.stroke.color;
+        let index: BTreeMap<_, _> = graph
+            .tables
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (t.name.to_ascii_lowercase(), i))
+            .collect();
+        let mut unresolved = 0;
+        for (source, node) in graph.tables.iter().enumerate() {
+            let Some(info) = &node.inspection else {
+                continue;
+            };
+            for fk in &info.foreign_keys {
+                let Some(&target) = index.get(&fk.target.to_ascii_lowercase()) else {
+                    unresolved += fk.columns.len();
+                    continue;
+                };
+                for (part, (from, to)) in fk.columns.iter().enumerate() {
+                    if !graph.tables[target].inspection.as_ref().is_some_and(|i| {
+                        to.as_ref().is_some_and(|name| {
+                            i.table
+                                .columns
+                                .iter()
+                                .any(|c| c.name.eq_ignore_ascii_case(name))
+                        })
+                    }) {
+                        unresolved += 1;
+                    }
+                    let (path, end_side) = route(
+                        layout[source].0,
+                        layout[target].0,
+                        self.row_y(source, Some(from)),
+                        self.row_y(target, to.as_deref()),
+                        part,
+                    );
+                    let points: Vec<_> = path.into_iter().map(|p| self.point(p)).collect();
+                    let start = points[0];
+                    let Some(&end) = points.last() else {
+                        continue;
+                    };
+                    if !egui::Rect::from_two_pos(start, end)
+                        .expand(100.0 * zoom)
+                        .intersects(canvas)
+                    {
+                        continue;
+                    }
+                    let highlighted = self
+                        .selected
+                        .as_ref()
+                        .is_some_and(|n| n == &node.name || n.eq_ignore_ascii_case(&fk.target));
+                    let color = if highlighted {
+                        accent
+                    } else {
+                        ui.visuals().weak_text_color()
+                    };
+                    painter.add(egui::Shape::line(
+                        points,
+                        egui::Stroke::new(if highlighted { 2.0 } else { 1.0 }, color),
+                    ));
+                    if zoom >= 0.25 {
+                        painter.arrow(
+                            end + egui::vec2(end_side * 10.0, 0.0),
+                            egui::vec2(-end_side * 10.0, 0.0),
+                            egui::Stroke::new(1.5, color),
+                        );
+                    }
+                }
+            }
+        }
+        unresolved
+    }
+}
 impl App {
     pub(super) fn load_diagram(&mut self) {
         if !self.ready || self.closing || self.ui.diagram.ticket.is_some() {
@@ -370,17 +562,7 @@ impl App {
             self.ui.diagram.zoom = 1.0;
         }
         if self.ui.diagram.fit && bounds.is_finite() {
-            let focus = if self.ui.diagram.focus_selected {
-                self.ui
-                    .diagram
-                    .selected
-                    .as_ref()
-                    .and_then(|s| graph.tables.iter().position(|t| &t.name == s))
-                    .map(|i| layout[i].0)
-            } else {
-                None
-            };
-            let target = focus.unwrap_or(bounds).expand(60.0);
+            let target = bounds.expand(60.0);
             self.ui.diagram.zoom = ((canvas.width() - 40.0) / target.width())
                 .min((canvas.height() - 40.0) / target.height())
                 .clamp(0.0001, 1.25);
@@ -417,102 +599,24 @@ impl App {
         let point = |p: egui::Pos2| canvas.min + pan + p.to_vec2() * zoom;
         let rect = |r: egui::Rect| egui::Rect::from_min_max(point(r.min), point(r.max));
         let accent = ui.visuals().selection.stroke.color;
-        let index: BTreeMap<_, _> = graph
-            .tables
-            .iter()
-            .enumerate()
-            .map(|(i, t)| (t.name.to_ascii_lowercase(), i))
-            .collect();
         let relatives = self
             .ui
             .hover_table
             .as_deref()
             .map(|t| self.related_tables(t))
             .unwrap_or_default();
-        let mut unresolved = 0;
-        for (source, node) in graph.tables.iter().enumerate() {
-            let Some(info) = &node.inspection else {
-                continue;
-            };
-            for fk in &info.foreign_keys {
-                let Some(&target) = index.get(&fk.target.to_ascii_lowercase()) else {
-                    unresolved += fk.columns.len();
-                    continue;
-                };
-                for (part, (from, to)) in fk.columns.iter().enumerate() {
-                    if !graph.tables[target].inspection.as_ref().is_some_and(|i| {
-                        to.as_ref().is_some_and(|name| {
-                            i.table
-                                .columns
-                                .iter()
-                                .any(|c| c.name.eq_ignore_ascii_case(name))
-                        })
-                    }) {
-                        unresolved += 1;
-                    }
-                    let row_y = |i: usize, name: Option<&str>| {
-                        let card = &layout[i];
-                        graph.tables[i]
-                            .inspection
-                            .as_ref()
-                            .and_then(|info| {
-                                name.and_then(|name| {
-                                    card.1.iter().position(|&c| {
-                                        info.table.columns[c].name.eq_ignore_ascii_case(name)
-                                    })
-                                })
-                            })
-                            .map_or(card.0.top() + 22.0, |r| {
-                                card.0.top() + 48.0 + r as f32 * LINE
-                            })
-                    };
-                    let (path, end_side) = route(
-                        layout[source].0,
-                        layout[target].0,
-                        row_y(source, Some(from)),
-                        row_y(target, to.as_deref()),
-                        part,
-                    );
-                    let points: Vec<_> = path.into_iter().map(point).collect();
-                    let start = points[0];
-                    let Some(&end) = points.last() else {
-                        continue;
-                    };
-                    if !egui::Rect::from_two_pos(start, end)
-                        .expand(100.0 * zoom)
-                        .intersects(canvas)
-                    {
-                        continue;
-                    }
-                    let highlighted = self
-                        .ui
-                        .diagram
-                        .selected
-                        .as_ref()
-                        .is_some_and(|n| n == &node.name || n.eq_ignore_ascii_case(&fk.target));
-                    let color = if highlighted {
-                        accent
-                    } else {
-                        ui.visuals().weak_text_color()
-                    };
-                    painter.add(egui::Shape::line(
-                        points,
-                        egui::Stroke::new(if highlighted { 2.0 } else { 1.0 }, color),
-                    ));
-                    if zoom >= 0.25 {
-                        painter.arrow(
-                            end + egui::vec2(end_side * 10.0, 0.0),
-                            egui::vec2(-end_side * 10.0, 0.0),
-                            egui::Stroke::new(1.5, color),
-                        );
-                    }
-                }
-            }
-        }
+        let drawing = DiagramDrawing {
+            graph,
+            layout: &layout,
+            canvas,
+            zoom,
+            pan,
+            selected: self.ui.diagram.selected.as_deref(),
+        };
+        let unresolved = drawing.links(ui, &painter);
         let mut selected = None;
-        let mut browse = None;
         for (i, node) in graph.tables.iter().enumerate() {
-            let (world, columns) = &layout[i];
+            let (world, _) = &layout[i];
             let r = rect(*world);
             if !r.intersects(canvas) {
                 continue;
@@ -560,9 +664,6 @@ impl App {
             if response.clicked() {
                 selected = Some(node.name.clone());
             }
-            if response.double_clicked() {
-                browse = Some(node.name.clone());
-            }
             response.on_hover_text(format!(
                 "{}\n{}",
                 node.name,
@@ -578,9 +679,6 @@ impl App {
             if drag.clicked() {
                 selected = Some(node.name.clone());
             }
-            if drag.double_clicked() {
-                browse = Some(node.name.clone());
-            }
             if drag.dragged() {
                 self.ui.diagram.auto_fit = false;
                 self.ui
@@ -588,86 +686,7 @@ impl App {
                     .positions
                     .insert(node.name.clone(), world.min + drag.drag_delta() / zoom);
             }
-            if let Some(info) = &node.inspection {
-                for (row, &c) in columns.iter().enumerate() {
-                    if zoom < KEY_LABEL_ZOOM {
-                        break;
-                    }
-                    let y = point(world.min + egui::vec2(10.0, 48.0 + row as f32 * LINE)).y;
-                    if y < canvas.top() - LINE * zoom || y > canvas.bottom() + LINE * zoom {
-                        continue;
-                    }
-                    let col = &info.table.columns[c];
-                    let pk = if col.primary_key > 0 {
-                        format!("PK{} ", col.primary_key)
-                    } else {
-                        String::new()
-                    };
-                    let fk = if info.foreign_keys.iter().any(|f| {
-                        f.columns
-                            .iter()
-                            .any(|(n, _)| n.eq_ignore_ascii_case(&col.name))
-                    }) {
-                        "FK "
-                    } else {
-                        ""
-                    };
-                    let uq = if info.indexes.iter().any(|i| {
-                        i.unique
-                            && i.columns
-                                .iter()
-                                .flatten()
-                                .any(|n| n.eq_ignore_ascii_case(&col.name))
-                    }) {
-                        "UQ "
-                    } else {
-                        ""
-                    };
-                    painter.text(
-                        point(world.min + egui::vec2(10.0, 48.0 + row as f32 * LINE)),
-                        egui::Align2::LEFT_CENTER,
-                        format!(
-                            "{pk}{fk}{uq}{}  {}",
-                            short(&col.name, 24),
-                            short(&col.declared_type, 12)
-                        ),
-                        egui::FontId::monospace((12.0 * zoom).max(9.0)),
-                        ui.visuals().text_color(),
-                    );
-                }
-                painter.text(
-                    point(egui::pos2(world.left() + 10.0, world.bottom() - 16.0)),
-                    egui::Align2::LEFT_CENTER,
-                    if zoom < KEY_LABEL_ZOOM {
-                        format!(
-                            "{} columns · {} FKs",
-                            info.table.columns.len(),
-                            info.foreign_keys.len()
-                        )
-                    } else {
-                        format!(
-                            "{} columns · {} indexes · {} FKs",
-                            info.table.columns.len(),
-                            info.indexes.len(),
-                            info.foreign_keys.len()
-                        )
-                    },
-                    egui::FontId::proportional(if zoom >= 0.35 {
-                        (12.0 * zoom).max(9.0)
-                    } else {
-                        12.0 * zoom
-                    }),
-                    ui.visuals().weak_text_color(),
-                );
-            } else {
-                painter.text(
-                    point(world.min + egui::vec2(10.0, 50.0)),
-                    egui::Align2::LEFT_CENTER,
-                    "Metadata unavailable — inspect error",
-                    egui::FontId::proportional(12.0 * zoom),
-                    ui.visuals().error_fg_color,
-                );
-            }
+            drawing.details(ui, &painter, i);
         }
         painter.text(
             canvas.left_top() + egui::vec2(10.0, 8.0),
@@ -702,13 +721,11 @@ impl App {
                             ui.spacing_mut().item_spacing.x = 2.0;
                             if icons::button(ui, Icon::Fit, "Fit all", "0").clicked() {
                                 self.ui.diagram.fit = true;
-                                self.ui.diagram.focus_selected = false;
                                 self.ui.diagram.auto_fit = true;
                             }
                             if icons::button(ui, Icon::Arrange, "Auto-arrange", "").clicked() {
                                 self.ui.diagram.positions.clear();
                                 self.ui.diagram.fit = true;
-                                self.ui.diagram.focus_selected = false;
                             }
                             if icons::control(
                                 ui,
@@ -754,19 +771,20 @@ impl App {
                     });
             },
         );
-        if let Some(name) = browse.or(selected) {
+        if let Some(name) = selected {
             self.browse_table(name);
         }
     }
 }
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Inspection, SchemaDiagram, WIDTH, cards, route};
+    use eframe::egui;
     use tursobench_core::DiagramTable;
     #[test]
-    fn relationship_layers_group_parents_children_and_cycles_deterministically() {
+    fn layouts_keep_relationships_deterministic_and_all_cards_separate() {
         use tursobench_core::{ForeignKey, Table};
-        let graph = SchemaDiagram {
+        let mut graph = SchemaDiagram {
             tables: [
                 ("child", vec!["parent"]),
                 ("cycle_a", vec!["cycle_b"]),
@@ -799,7 +817,14 @@ mod tests {
             .collect(),
             limited: false,
         };
+        graph.tables.extend((0..508).map(|i| DiagramTable {
+            name: format!("isolated{i}"),
+            inspection: None,
+            error: Some("unavailable".into()),
+        }));
+        assert!(cards(&SchemaDiagram::default(), false).is_empty());
         let layout = cards(&graph, false);
+        assert_eq!(layout.len(), 512);
         assert_eq!(layout, cards(&graph, false));
         assert!(layout[3].0.left() < layout[0].0.left());
         assert_eq!(layout[3].0.top(), layout[0].0.top());
@@ -823,25 +848,5 @@ mod tests {
         assert_eq!(side, 1.0);
         let (cycle, _) = route(left, left, 48.0, 48.0, 0);
         assert!(cycle[1..cycle.len() - 1].iter().all(|p| p.x > left.right()));
-    }
-    #[test]
-    fn isolated_and_failed_tables_still_have_non_overlapping_cards() {
-        let graph = SchemaDiagram {
-            tables: (0..512)
-                .map(|i| DiagramTable {
-                    name: format!("table{i}"),
-                    inspection: None,
-                    error: Some("unavailable".into()),
-                })
-                .collect(),
-            limited: false,
-        };
-        let layout = cards(&graph, false);
-        assert_eq!(layout.len(), 512);
-        for (i, (a, _)) in layout.iter().enumerate() {
-            for (b, _) in &layout[i + 1..] {
-                assert!(!a.intersects(*b));
-            }
-        }
     }
 }

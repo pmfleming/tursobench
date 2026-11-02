@@ -40,7 +40,14 @@ impl DatabaseKind {
     }
 
     pub(super) fn from_header(header: &[u8; 100]) -> Self {
-        let number = |offset| u32::from_be_bytes(header[offset..offset + 4].try_into().unwrap());
+        let number = |offset| {
+            u32::from_be_bytes([
+                header[offset],
+                header[offset + 1],
+                header[offset + 2],
+                header[offset + 3],
+            ])
+        };
         let counter = number(24);
         let valid_for = number(92);
         let writer = number(96);
@@ -64,39 +71,28 @@ impl DatabaseKind {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::DatabaseKind::{self, LikelySqlite, LikelyTurso, Unknown};
 
     #[test]
-    fn shared_version_is_not_enough_to_claim_turso() {
-        let mut header = [0; 100];
-        header[96..100].copy_from_slice(&3_047_000u32.to_be_bytes());
-        assert_eq!(
-            DatabaseKind::from_header(&header),
-            DatabaseKind::LikelySqlite
-        );
-        header[24..28].copy_from_slice(&7u32.to_be_bytes());
-        assert_eq!(DatabaseKind::from_header(&header), DatabaseKind::Unknown);
-        header[92..96].copy_from_slice(&7u32.to_be_bytes());
-        assert_eq!(
-            DatabaseKind::from_header(&header),
-            DatabaseKind::LikelySqlite
-        );
-        header[24..28].copy_from_slice(&1u32.to_be_bytes());
-        header[92..96].copy_from_slice(&3_047_000u32.to_be_bytes());
-        header[18..20].copy_from_slice(&[2, 2]);
-        header[44..48].copy_from_slice(&4u32.to_be_bytes());
-        assert_eq!(
-            DatabaseKind::from_header(&header),
-            DatabaseKind::LikelyTurso
-        );
-    }
-
-    #[test]
-    fn missing_or_unrecognized_writer_information_stays_unknown() {
-        for writer in [0u32, 1, 4_000_000, u32::MAX] {
+    fn header_classification_requires_the_complete_writer_signature() {
+        for (writer, counter, valid_for, wal, schema, expected) in [
+            (3_047_000u32, 0u32, 0u32, 0, 0u32, LikelySqlite),
+            (3_047_000, 7, 0, 0, 0, Unknown),
+            (3_047_000, 7, 7, 0, 0, LikelySqlite),
+            (3_047_000, 1, 3_047_000, 2, 4, LikelyTurso),
+            (3_047_000, 1, 3_047_000, 1, 4, Unknown),
+            (3_047_000, 1, 3_047_000, 2, 3, Unknown),
+            (0, 0, 0, 0, 0, Unknown),
+            (1, 0, 0, 0, 0, Unknown),
+            (4_000_000, 0, 0, 0, 0, Unknown),
+            (u32::MAX, 0, 0, 0, 0, Unknown),
+        ] {
             let mut header = [0; 100];
-            header[96..100].copy_from_slice(&writer.to_be_bytes());
-            assert_eq!(DatabaseKind::from_header(&header), DatabaseKind::Unknown);
+            for (offset, value) in [(96, writer), (24, counter), (92, valid_for), (44, schema)] {
+                header[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
+            }
+            header[18..20].fill(wal);
+            assert_eq!(DatabaseKind::from_header(&header), expected, "{header:?}");
         }
     }
 }

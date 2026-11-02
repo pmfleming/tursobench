@@ -353,31 +353,29 @@ impl App {
         if consumed(egui::Modifiers::NONE, egui::Key::Escape) {
             if egui::Popup::is_any_open(ctx) {
                 egui::Popup::close_all(ctx);
-            } else if self.ui.palette_open {
-                self.ui.palette_open = false;
-            } else if self.ui.access_dialog {
-                self.ui.access_dialog = false;
-            } else if self.confirm_close {
-                self.confirm_close = false;
-                self.quit = false;
-            } else if self.show_insert {
-                self.show_insert = false;
-            } else if self.show_preview {
-                self.show_preview = false;
-            } else if self.ui.export_open {
-                self.ui.export_open = false;
-            } else if self.ui.outcomes {
-                self.ui.outcomes = false;
-            } else if self.ui.sidebar_open {
-                self.ui.sidebar_open = false;
-            } else if self.tools.help {
-                self.tools.help = false;
-            } else if self.ui.filter_open {
-                self.ui.filter_open = false;
-            } else if self.ui.inspector_open {
-                self.ui.inspector_open = false;
-            } else if self.ui.sql_open {
-                self.ui.sql_open = false;
+            } else {
+                // Close only the topmost surface, preserving Escape's priority.
+                let was_confirming_close = self.confirm_close;
+                let surfaces = [
+                    &mut self.ui.palette_open,
+                    &mut self.ui.access_dialog,
+                    &mut self.confirm_close,
+                    &mut self.show_insert,
+                    &mut self.show_preview,
+                    &mut self.ui.export_open,
+                    &mut self.ui.outcomes,
+                    &mut self.ui.sidebar_open,
+                    &mut self.tools.help,
+                    &mut self.ui.filter_open,
+                    &mut self.ui.inspector_open,
+                    &mut self.ui.sql_open,
+                ];
+                if let Some(surface) = surfaces.into_iter().find(|open| **open) {
+                    *surface = false;
+                }
+                if was_confirming_close && !self.confirm_close {
+                    self.quit = false;
+                }
             }
             return;
         }

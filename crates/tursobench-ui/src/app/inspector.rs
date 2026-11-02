@@ -6,7 +6,7 @@ use super::{
 use eframe::egui;
 use tursobench_core::Value;
 
-use results::{CellKind, detail_text};
+use results::{CellKind, code_view, detail_text};
 impl App {
     pub(super) fn cell_inspector(&mut self, ui: &mut egui::Ui, row: usize, col: usize) {
         let Some(value) = self.result.rows.get(row).and_then(|r| r.get(col)) else {
@@ -43,27 +43,15 @@ impl App {
         if let Some(value) = staged {
             ui.colored_label(ui.visuals().warn_fg_color, "Staged value — not yet written");
             let text = typed(value);
-            let mut text = text.as_str();
-            ui.add(
-                egui::TextEdit::multiline(&mut text)
-                    .code_editor()
-                    .desired_width(ui.available_width())
-                    .desired_rows(3),
-            );
+            code_view(ui, &text, 3);
         }
         ui.label("Stored value");
         let text = typed(value);
-        let mut text = text.as_str();
         egui::ScrollArea::vertical()
             .id_salt("stored-cell")
             .max_height(180.0)
             .show(ui, |ui| {
-                ui.add(
-                    egui::TextEdit::multiline(&mut text)
-                        .code_editor()
-                        .desired_width(ui.available_width())
-                        .desired_rows(3),
-                );
+                code_view(ui, &text, 3);
             });
         ui.horizontal_wrapped(|ui| {
             if ui.button("Copy stored value").clicked() {

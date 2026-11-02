@@ -1,6 +1,6 @@
 use crate::{
     browse::describe,
-    worker::{failure, from_engine},
+    connection::{failure, from_engine},
 };
 use turso::Connection;
 use tursobench_core::{Failure, ForeignKey, IndexInfo, Inspection, Table, Value, quote_identifier};
@@ -137,7 +137,7 @@ pub(crate) async fn inspect(c: &Connection, name: &str) -> Result<Inspection, Fa
 }
 pub(crate) fn lookup_sql(
     table: &Table,
-    keys: &[(String, Value)],
+    keys: Vec<(String, Value)>,
 ) -> Result<(String, Vec<Value>), Failure> {
     if keys.is_empty()
         || keys.len() > table.columns.len()
@@ -151,12 +151,12 @@ pub(crate) fn lookup_sql(
         if !table
             .columns
             .iter()
-            .any(|c| c.name.eq_ignore_ascii_case(name))
+            .any(|c| c.name.eq_ignore_ascii_case(&name))
         {
             return Err(Failure::input("Referenced column no longer exists"));
         }
-        values.push(value.clone());
-        predicates.push(format!("{} IS ?{}", quote_identifier(name), values.len()));
+        values.push(value);
+        predicates.push(format!("{} IS ?{}", quote_identifier(&name), values.len()));
     }
     let names = table
         .columns

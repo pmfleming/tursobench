@@ -156,8 +156,10 @@ fn discard_unblocks_backpressure() {
 fn close_discards_queued_work_and_rejects_new_submissions() {
     let (_dir, path) = fixture();
     let s = common::opened(&path, Access::ReadWrite);
+    // 1,000 retained rows exceed the eight 64-row event slots, so execution
+    // cannot finish while we receive only Columns. Keep draining cheap under coverage.
     s.submit(Request { ticket: s.ticket(1, 0), operation: Operation::Execute {
-        sql: "WITH RECURSIVE x(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM x WHERE n<100000) SELECT n FROM x".into(), parameters: vec![], budget: Budget::default()
+        sql: "WITH RECURSIVE x(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM x WHERE n<1000) SELECT n FROM x".into(), parameters: vec![], budget: Budget::default()
     } }).unwrap();
     assert!(matches!(
         s.events.recv_timeout(Duration::from_secs(5)).unwrap().kind,

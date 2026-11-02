@@ -219,7 +219,6 @@ impl App {
             });
         }
         self.edit_windows(&ctx);
-        self.schema_windows(&ctx);
         self.inspection_surfaces(&ctx);
         self.command_palette(&ctx);
         self.access_dialog(&ctx);

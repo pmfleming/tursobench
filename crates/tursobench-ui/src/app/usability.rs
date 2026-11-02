@@ -218,7 +218,6 @@ impl App {
                 let rows = self.result.rows.clone();
                 let format = self.tools.format;
                 let table = self.tools.export_table.clone();
-                let scope = scope.to_string();
                 let wake = ui.ctx().clone();
                 let (tx, rx) = std::sync::mpsc::sync_channel(1);
                 self.export_job = Some(rx);
@@ -229,7 +228,7 @@ impl App {
                         .save_file()
                     {
                         let written = crate::export::write_result_as(
-                            &path, format, &scope, &columns, &rows, &table,
+                            &path, format, scope, &columns, &rows, &table,
                         );
                         written.map(|_| {
                             format!(

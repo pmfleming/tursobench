@@ -128,74 +128,100 @@ fn render(
             }
             writeln!(w, "],\"end\":{{\"rows\":{}}}}}", rows.len()).map_err(error)?;
         }
-        Format::Csv | Format::Tsv => {
-            let delimiter = if format == Format::Csv { ',' } else { '\t' };
-            writeln!(w, "# TursoBench scope={} rows={}; NULL=\\N, blobs=X'hex', text formula-safe; skip this metadata line", scope.replace(['\r','\n'], " "), rows.len()).map_err(error)?;
-            for (i, col) in columns.iter().enumerate() {
-                if i > 0 {
-                    write!(w, "{delimiter}").map_err(error)?;
-                }
-                csv_field(w, &spreadsheet_text(&col.name))?;
-            }
-            w.write_all(b"\r\n").map_err(error)?;
-            for row in rows {
-                for (i, v) in row.iter().enumerate() {
-                    if i > 0 {
-                        write!(w, "{delimiter}").map_err(error)?;
-                    }
-                    match v {
-                        Value::Null => w.write_all(b"\\N").map_err(error)?,
-                        Value::Text(s) => csv_field(w, &spreadsheet_text(s))?,
-                        _ => csv_field(w, &cell_text(v))?,
-                    }
-                }
-                w.write_all(b"\r\n").map_err(error)?;
-            }
-        }
-        Format::Sql => {
-            if table.is_empty() || table.len() > 1024 || columns.is_empty() {
-                return Err("SQL export requires a target table and named columns".into());
-            }
-            let unique: std::collections::BTreeSet<_> =
-                columns.iter().map(|c| c.name.to_lowercase()).collect();
-            if unique.len() != columns.len() {
-                return Err(
-                    "Duplicate result column names cannot form an unambiguous INSERT".into(),
-                );
-            }
-            writeln!(
-                w,
-                "-- TursoBench scope={} rows={}; target schema must already exist",
-                scope.replace(['\r', '\n'], " "),
-                rows.len()
-            )
-            .map_err(error)?;
-            for row in rows {
-                write!(
-                    w,
-                    "INSERT INTO {} ({}) VALUES (",
-                    quote_identifier(table),
-                    columns
-                        .iter()
-                        .map(|c| quote_identifier(&c.name))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-                .map_err(error)?;
-                for (i, value) in row.iter().enumerate() {
-                    if i > 0 {
-                        w.write_all(b", ").map_err(error)?;
-                    }
-                    w.write_all(sql_literal(value)?.as_bytes()).map_err(error)?;
-                }
-                w.write_all(b");\n").map_err(error)?;
-            }
-        }
+        Format::Csv | Format::Tsv => render_delimited(w, format, scope, columns, rows)?,
+        Format::Sql => render_sql(w, scope, columns, rows, table)?,
     }
     Ok(())
 }
-fn csv_field(w: &mut impl Write, value: &str) -> Result<(), String> {
-    write!(w, "\"{}\"", value.replace('"', "\"\"")).map_err(|e| e.to_string())
+fn render_delimited(
+    w: &mut impl Write,
+    format: Format,
+    scope: &str,
+    columns: &[Column],
+    rows: &[Vec<Value>],
+) -> Result<(), String> {
+    let error = |e: std::io::Error| e.to_string();
+    let delimiter = if format == Format::Csv { "," } else { "\t" };
+    writeln!(w, "# TursoBench scope={} rows={}; NULL=\\N, blobs=X'hex', text formula-safe; skip this metadata line", scope.replace(['\r','\n'], " "), rows.len()).map_err(error)?;
+    separated(
+        w,
+        columns
+            .iter()
+            .map(|c| Ok(csv_field(&spreadsheet_text(&c.name)))),
+        delimiter,
+    )?;
+    w.write_all(b"\r\n").map_err(error)?;
+    for row in rows {
+        separated(
+            w,
+            row.iter().map(|value| {
+                Ok(match value {
+                    Value::Null => "\\N".into(),
+                    Value::Text(text) => csv_field(&spreadsheet_text(text)),
+                    _ => csv_field(&cell_text(value)),
+                })
+            }),
+            delimiter,
+        )?;
+        w.write_all(b"\r\n").map_err(error)?;
+    }
+    Ok(())
+}
+fn render_sql(
+    w: &mut impl Write,
+    scope: &str,
+    columns: &[Column],
+    rows: &[Vec<Value>],
+    table: &str,
+) -> Result<(), String> {
+    let error = |e: std::io::Error| e.to_string();
+    if table.is_empty() || table.len() > 1024 || columns.is_empty() {
+        return Err("SQL export requires a target table and named columns".into());
+    }
+    let unique: std::collections::BTreeSet<_> =
+        columns.iter().map(|c| c.name.to_lowercase()).collect();
+    if unique.len() != columns.len() {
+        return Err("Duplicate result column names cannot form an unambiguous INSERT".into());
+    }
+    writeln!(
+        w,
+        "-- TursoBench scope={} rows={}; target schema must already exist",
+        scope.replace(['\r', '\n'], " "),
+        rows.len()
+    )
+    .map_err(error)?;
+    let prefix = format!(
+        "INSERT INTO {} ({}) VALUES (",
+        quote_identifier(table),
+        columns
+            .iter()
+            .map(|c| quote_identifier(&c.name))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    for row in rows {
+        w.write_all(prefix.as_bytes()).map_err(error)?;
+        separated(w, row.iter().map(sql_literal), ", ")?;
+        w.write_all(b");\n").map_err(error)?;
+    }
+    Ok(())
+}
+fn separated(
+    w: &mut impl Write,
+    values: impl IntoIterator<Item = Result<String, String>>,
+    separator: &str,
+) -> Result<(), String> {
+    for (i, value) in values.into_iter().enumerate() {
+        if i > 0 {
+            w.write_all(separator.as_bytes())
+                .map_err(|e| e.to_string())?;
+        }
+        w.write_all(value?.as_bytes()).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+fn csv_field(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
 }
 fn spreadsheet_text(value: &str) -> String {
     if value.trim_start().starts_with(['=', '+', '-', '@']) {
@@ -204,7 +230,7 @@ fn spreadsheet_text(value: &str) -> String {
         value.into()
     }
 }
-fn hex(bytes: &[u8]) -> String {
+pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 pub fn cell_text(value: &Value) -> String {

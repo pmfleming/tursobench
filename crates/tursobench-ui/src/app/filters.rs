@@ -5,7 +5,7 @@ use tursobench_db::Operation;
 
 impl App {
     pub(super) fn filter_controls(&mut self, ui: &mut egui::Ui) {
-        let (Some(table), Some(mut next)) = (self.table.clone(), self.browse.clone()) else {
+        let (Some(table), Some(mut next)) = (self.table.as_ref(), self.browse.clone()) else {
             return;
         };
         let mut changed = false;

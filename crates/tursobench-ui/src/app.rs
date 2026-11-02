@@ -1,6 +1,6 @@
 use tursobench_core::{
-    Access, Browse, CommitOutcome, ConnectionSettings, DraftBatch, EventKind, ResultSet,
-    SchemaObject, Table, Ticket, TransactionState, Value,
+    Access, Browse, CommitOutcome, ConnectionSettings, DraftBatch, Event, EventKind, ResultSet,
+    SchemaObject, Table, Ticket, TransactionState,
 };
 mod commands;
 mod databases;
@@ -96,7 +96,7 @@ impl App {
         };
         let smoke = args.get(1).is_some_and(|a| a == "--smoke-test");
         let mut app = Self {
-            tools: tools::Tools::default(),
+            tools: tools::Tools::new(),
             ui: shell::UiState::new(ctx),
             smoke: smoke.then(smoke::Smoke::new),
             databases: databases::Chooser::new(&preferences.discovery),
@@ -397,267 +397,7 @@ impl App {
             }
         }
         for event in events {
-            if self
-                .session
-                .as_ref()
-                .is_none_or(|s| s.id != event.ticket.session)
-            {
-                continue;
-            }
-            if self
-                .tools
-                .count_request
-                .as_ref()
-                .is_some_and(|(_, r)| r.current == Some(event.ticket))
-            {
-                let finished = matches!(event.kind, EventKind::Finished(_) | EventKind::Failed(_));
-                if let EventKind::Finished(c) = &event.kind {
-                    self.transaction = c.transaction;
-                }
-                let failure = if let EventKind::Failed(error) = &event.kind {
-                    Some(error.to_string())
-                } else {
-                    None
-                };
-                let (_, result) = self.tools.count_request.as_mut().unwrap();
-                result.apply(event);
-                if finished {
-                    let (name, result) = self.tools.count_request.take().unwrap();
-                    if result.completion.as_ref().is_some_and(|c| {
-                        c.error.is_none() && c.delivery == tursobench_core::Delivery::Complete
-                    }) && let Some(Value::Integer(n)) =
-                        result.rows.first().and_then(|r| r.first())
-                    {
-                        self.tools.counts.insert(name.clone(), *n);
-                        self.status = format!("{name}: {n} rows · explicit full scan");
-                    } else {
-                        self.status = failure.map_or_else(
-                            || format!("Count failed or incomplete: {:?}", result.completion),
-                            |error| format!("Count failed: {error}"),
-                        );
-                    }
-                    self.log_outcome(self.status.clone());
-                }
-                continue;
-            }
-            if self.catalog_ticket == Some(event.ticket) {
-                let done = matches!(event.kind, EventKind::Finished(_) | EventKind::Failed(_));
-                if let EventKind::Finished(c) = &event.kind {
-                    self.transaction = c.transaction;
-                    if let Some(e) = &c.error {
-                        self.status = e.to_string();
-                        self.catalog_error = e.to_string();
-                    }
-                }
-                if let EventKind::Failed(e) = &event.kind {
-                    self.status = e.to_string();
-                    self.catalog_error = e.to_string();
-                }
-                self.catalog.apply(event);
-                if done {
-                    self.catalog_ticket = None;
-                    self.schema = self
-                        .catalog
-                        .rows
-                        .iter()
-                        .filter_map(|r| match r.as_slice() {
-                            [
-                                Value::Text(kind),
-                                Value::Text(name),
-                                Value::Text(table),
-                                ddl,
-                            ] => Some(SchemaObject {
-                                kind: kind.clone(),
-                                name: name.clone(),
-                                table: table.clone(),
-                                ddl: if let Value::Text(s) = ddl {
-                                    Some(s.clone())
-                                } else {
-                                    None
-                                },
-                            }),
-                            _ => None,
-                        })
-                        .collect();
-                }
-                continue;
-            }
-            if self.discard_ticket == Some(event.ticket)
-                && matches!(event.kind, EventKind::Rows(_) | EventKind::Columns(_))
-            {
-                continue;
-            }
-            match event.kind {
-                EventKind::Diagram(graph) if self.ui.diagram.ticket == Some(event.ticket) => {
-                    let first_load = self.ui.diagram.data.is_none();
-                    self.ui.diagram.loaded(graph);
-                    if first_load
-                        && let Some(layout) = self
-                            .preferences
-                            .map_layouts
-                            .iter()
-                            .find(|l| l.database == self.tools.database_scope)
-                    {
-                        self.ui.diagram.restore(layout);
-                    }
-                }
-                EventKind::Failed(e) if self.ui.diagram.ticket == Some(event.ticket) => {
-                    self.ui.diagram.ticket = None;
-                    self.ui.diagram.error = e.to_string();
-                    self.ui.diagram.stale = true;
-                }
-                EventKind::EditsCommitted(outcome) if self.commit_ticket == Some(event.ticket) => {
-                    self.log_outcome(format!(
-                        "Request {} staged commit: {outcome:?}",
-                        event.ticket.request
-                    ));
-                    self.commit_ticket = None;
-                    match outcome {
-                        CommitOutcome::Committed { operations } => {
-                            self.tools.counts.clear();
-                            self.ui.diagram.stale = true;
-                            self.drafts = None;
-                            self.show_preview = false;
-                            self.inspect = None;
-                            self.reload();
-                            self.status = format!(
-                                "Committed {operations} staged operations; refreshing page"
-                            );
-                        }
-                        CommitOutcome::Rejected(e) => {
-                            self.status = format!("No edits committed; drafts retained: {e}")
-                        }
-                        CommitOutcome::Unknown(e) => {
-                            self.uncertain_edit = true;
-                            self.status =
-                                format!("UNKNOWN outcome; drafts retained. Do not retry: {e}");
-                        }
-                    }
-                }
-                EventKind::Opened => {
-                    self.ready = true;
-                    self.record_database_open();
-                    self.refresh_catalog();
-                    self.ui.nav = shell::Nav::Overview;
-                    self.load_diagram();
-                }
-                EventKind::Closed { rollback } => {
-                    let reopen = if rollback.is_ok() && !self.uncertain_edit && !self.quit {
-                        self.pending_access.take()
-                    } else {
-                        self.pending_access = None;
-                        None
-                    };
-                    self.catalog_ticket = None;
-                    self.tools.count_request = None;
-                    self.tools.pending_history.clear();
-                    self.tools.inspection_ticket = None;
-                    self.ui.diagram.ticket = None;
-                    self.ui.diagram.stale = true;
-                    if rollback.is_err() {
-                        self.quit = false;
-                        self.transaction = TransactionState::Unknown;
-                    }
-                    self.status = match rollback {
-                        Ok(()) if self.uncertain_edit => "Closed; editor cleanup confirmed, but the earlier staged commit outcome remains UNKNOWN".into(),
-                        Ok(()) => "Closed; transaction cleanup confirmed".into(),
-                        Err(e) => format!("Close outcome uncertain: {e}"),
-                    };
-                    self.session = None;
-                    self.ready = false;
-                    self.active = None;
-                    self.closing = false;
-                    if let Some(writable) = reopen {
-                        self.writable = writable;
-                        self.open(ctx);
-                    }
-                    if self.quit && self.export_job.is_none() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                }
-                EventKind::Inspection(info)
-                    if self.tools.inspection_ticket == Some(event.ticket) =>
-                {
-                    self.tools.inspection = Some(info);
-                    self.tools.inspection_ticket = None;
-                    self.tools.inspection_error.clear();
-                }
-                EventKind::Failed(e) if self.tools.inspection_ticket == Some(event.ticket) => {
-                    self.tools.inspection_ticket = None;
-                    self.tools.inspection_error = e.to_string();
-                }
-                EventKind::Failed(e) => {
-                    self.record_history(event.ticket, None, true);
-                    self.log_outcome(format!("Request {} ERROR: {e}", event.ticket.request));
-                    if event.ticket.request == 0 {
-                        self.status = e.to_string();
-                        self.session = None;
-                        self.ready = false;
-                        self.active = None;
-                        self.closing = false;
-                        self.confirm_close = false;
-                        // Failed opens never send Closed: there is no live session left
-                        // to acknowledge a pending close or application exit.
-                        if self.quit && self.export_job.is_none() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                        }
-                    } else if self.active == Some(event.ticket) {
-                        self.status = e.to_string();
-                        self.active = None;
-                    }
-                }
-                EventKind::Table(t) if self.result.current == Some(event.ticket) => {
-                    self.tools.export_table = t.name.clone();
-                    self.request_inspection(t.name.clone());
-                    self.table = Some(t);
-                }
-                EventKind::Finished(ref c) => {
-                    if c.changed > 0 {
-                        self.tools.counts.clear();
-                    }
-                    if c.changed > 0
-                        || self
-                            .tools
-                            .pending_history
-                            .contains_key(&event.ticket.request)
-                    {
-                        self.ui.diagram.stale = self.ui.diagram.data.is_some();
-                    }
-                    self.record_history(event.ticket, Some(c.elapsed_ms), c.error.is_some());
-                    self.log_outcome(format!(
-                        "Request {}: {:?}, {} rows seen, {} changes, editor {:?}{}",
-                        event.ticket.request,
-                        c.delivery,
-                        c.rows_seen,
-                        c.changed,
-                        c.transaction,
-                        c.error
-                            .as_ref()
-                            .map_or(String::new(), |e| format!("; ERROR {e}"))
-                    ));
-                    self.transaction = c.transaction;
-                    if self.result.current == Some(event.ticket) {
-                        self.tools.last_elapsed = c.elapsed_ms;
-                        self.status = format!(
-                            "{} ms · {:?}: {} rows seen, {} changes; transaction {:?}{}",
-                            c.elapsed_ms,
-                            c.delivery,
-                            c.rows_seen,
-                            c.changed,
-                            c.transaction,
-                            c.error
-                                .as_ref()
-                                .map_or(String::new(), |e| format!("; ERROR {e}"))
-                        );
-                        self.active = None;
-                        self.result.apply(event);
-                        self.restore_browse_selection();
-                    }
-                }
-                _ => {
-                    self.result.apply(event);
-                }
-            }
+            self.handle_event(ctx, event);
         }
         if disconnected
             && self
@@ -684,6 +424,209 @@ impl App {
             self.ui.diagram.stale = true;
             self.status =
                 "Worker disconnected unexpectedly; execution and rollback outcome UNKNOWN".into();
+        }
+    }
+    fn handle_event(&mut self, ctx: &egui::Context, event: Event) {
+        if self
+            .session
+            .as_ref()
+            .is_none_or(|s| s.id != event.ticket.session)
+        {
+            return;
+        }
+        if let Some((_, result)) = &mut self.tools.count_request
+            && result.current == Some(event.ticket)
+        {
+            let finished = matches!(event.kind, EventKind::Finished(_) | EventKind::Failed(_));
+            if let EventKind::Finished(c) = &event.kind {
+                self.transaction = c.transaction;
+            }
+            let failure = match &event.kind {
+                EventKind::Failed(error) => Some(error.to_string()),
+                _ => None,
+            };
+            result.apply(event);
+            if finished {
+                self.finish_count(failure);
+            }
+            return;
+        }
+        if self.catalog_ticket == Some(event.ticket) {
+            self.catalog_event(event);
+            return;
+        }
+        if self.discard_ticket == Some(event.ticket)
+            && matches!(event.kind, EventKind::Rows(_) | EventKind::Columns(_))
+        {
+            return;
+        }
+        match event.kind {
+            EventKind::Diagram(graph) if self.ui.diagram.ticket == Some(event.ticket) => {
+                let first_load = self.ui.diagram.data.is_none();
+                self.ui.diagram.loaded(graph);
+                if first_load
+                    && let Some(layout) = self
+                        .preferences
+                        .map_layouts
+                        .iter()
+                        .find(|l| l.database == self.tools.database_scope)
+                {
+                    self.ui.diagram.restore(layout);
+                }
+            }
+            EventKind::Failed(e) if self.ui.diagram.ticket == Some(event.ticket) => {
+                self.ui.diagram.ticket = None;
+                self.ui.diagram.error = e.to_string();
+                self.ui.diagram.stale = true;
+            }
+            EventKind::EditsCommitted(outcome) if self.commit_ticket == Some(event.ticket) => {
+                self.log_outcome(format!(
+                    "Request {} staged commit: {outcome:?}",
+                    event.ticket.request
+                ));
+                self.commit_ticket = None;
+                match outcome {
+                    CommitOutcome::Committed { operations } => {
+                        self.tools.counts.clear();
+                        self.ui.diagram.stale = true;
+                        self.drafts = None;
+                        self.show_preview = false;
+                        self.inspect = None;
+                        self.reload();
+                        self.status =
+                            format!("Committed {operations} staged operations; refreshing page");
+                    }
+                    CommitOutcome::Rejected(e) => {
+                        self.status = format!("No edits committed; drafts retained: {e}")
+                    }
+                    CommitOutcome::Unknown(e) => {
+                        self.uncertain_edit = true;
+                        self.status =
+                            format!("UNKNOWN outcome; drafts retained. Do not retry: {e}");
+                    }
+                }
+            }
+            EventKind::Opened => {
+                self.ready = true;
+                self.record_database_open();
+                self.refresh_catalog();
+                self.ui.nav = shell::Nav::Overview;
+                self.load_diagram();
+            }
+            EventKind::Closed { rollback } => {
+                let reopen = if rollback.is_ok() && !self.uncertain_edit && !self.quit {
+                    self.pending_access.take()
+                } else {
+                    self.pending_access = None;
+                    None
+                };
+                self.catalog_ticket = None;
+                self.tools.count_request = None;
+                self.tools.pending_history.clear();
+                self.tools.inspection_ticket = None;
+                self.ui.diagram.ticket = None;
+                self.ui.diagram.stale = true;
+                if rollback.is_err() {
+                    self.quit = false;
+                    self.transaction = TransactionState::Unknown;
+                }
+                self.status = match rollback {
+                    Ok(()) if self.uncertain_edit => "Closed; editor cleanup confirmed, but the earlier staged commit outcome remains UNKNOWN".into(),
+                    Ok(()) => "Closed; transaction cleanup confirmed".into(),
+                    Err(e) => format!("Close outcome uncertain: {e}"),
+                };
+                self.session = None;
+                self.ready = false;
+                self.active = None;
+                self.closing = false;
+                if let Some(writable) = reopen {
+                    self.writable = writable;
+                    self.open(ctx);
+                }
+                if self.quit && self.export_job.is_none() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+            EventKind::Inspection(info) if self.tools.inspection_ticket == Some(event.ticket) => {
+                self.tools.inspection = Some(info);
+                self.tools.inspection_ticket = None;
+                self.tools.inspection_error.clear();
+            }
+            EventKind::Failed(e) if self.tools.inspection_ticket == Some(event.ticket) => {
+                self.tools.inspection_ticket = None;
+                self.tools.inspection_error = e.to_string();
+            }
+            EventKind::Failed(e) => {
+                self.record_history(event.ticket, None, true);
+                self.log_outcome(format!("Request {} ERROR: {e}", event.ticket.request));
+                if event.ticket.request == 0 {
+                    self.status = e.to_string();
+                    self.session = None;
+                    self.ready = false;
+                    self.active = None;
+                    self.closing = false;
+                    self.confirm_close = false;
+                    // Failed opens never send Closed: there is no live session left
+                    // to acknowledge a pending close or application exit.
+                    if self.quit && self.export_job.is_none() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                } else if self.active == Some(event.ticket) {
+                    self.status = e.to_string();
+                    self.active = None;
+                }
+            }
+            EventKind::Table(t) if self.result.current == Some(event.ticket) => {
+                self.tools.export_table = t.name.clone();
+                self.request_inspection(t.name.clone());
+                self.table = Some(t);
+            }
+            EventKind::Finished(ref c) => {
+                if c.changed > 0 {
+                    self.tools.counts.clear();
+                }
+                if c.changed > 0
+                    || self
+                        .tools
+                        .pending_history
+                        .contains_key(&event.ticket.request)
+                {
+                    self.ui.diagram.stale = self.ui.diagram.data.is_some();
+                }
+                self.record_history(event.ticket, Some(c.elapsed_ms), c.error.is_some());
+                self.log_outcome(format!(
+                    "Request {}: {:?}, {} rows seen, {} changes, editor {:?}{}",
+                    event.ticket.request,
+                    c.delivery,
+                    c.rows_seen,
+                    c.changed,
+                    c.transaction,
+                    c.error
+                        .as_ref()
+                        .map_or(String::new(), |e| format!("; ERROR {e}"))
+                ));
+                self.transaction = c.transaction;
+                if self.result.current == Some(event.ticket) {
+                    self.tools.last_elapsed = c.elapsed_ms;
+                    self.status = format!(
+                        "{} ms · {:?}: {} rows seen, {} changes; transaction {:?}{}",
+                        c.elapsed_ms,
+                        c.delivery,
+                        c.rows_seen,
+                        c.changed,
+                        c.transaction,
+                        c.error
+                            .as_ref()
+                            .map_or(String::new(), |e| format!("; ERROR {e}"))
+                    );
+                    self.active = None;
+                    self.result.apply(event);
+                    self.restore_browse_selection();
+                }
+            }
+            _ => {
+                self.result.apply(event);
+            }
         }
     }
     fn log_outcome(&mut self, message: String) {
@@ -750,6 +693,7 @@ impl eframe::App for App {
 mod tests {
     use super::*;
     use tursobench_core::Column;
+    use tursobench_core::Value;
     #[test]
     fn renders_empty_and_large_cells_without_engine() {
         let ctx = egui::Context::default();

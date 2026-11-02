@@ -1039,6 +1039,7 @@ mod tests {
         let fifo =
             std::ffi::CString::new(temp.path().join("pipe.db").as_os_str().as_encoded_bytes())
                 .unwrap();
+        // SAFETY: fifo is a live, NUL-terminated path; mkfifo retains no pointer.
         assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
         let (events, summary) = run(request(temp.path()));
         assert_eq!(summary.found, 2);
@@ -1124,18 +1125,20 @@ mod tests {
     #[test]
     fn permission_failures_do_not_abort_other_roots() {
         use std::os::unix::fs::PermissionsExt;
-        if unsafe { libc::geteuid() } == 0 {
-            return;
-        }
         let temp = tempfile::tempdir().unwrap();
         let denied = temp.path().join("denied");
         database(&denied.join("private.db"));
         database(&temp.path().join("public.db"));
         fs::set_permissions(&denied, fs::Permissions::from_mode(0o0)).unwrap();
+        // Privileged runners can still read mode-000 directories; test the actual
+        // permission boundary rather than calling an unsafe UID API.
+        let denied_is_readable = fs::read_dir(&denied).is_ok();
         let (_, summary) = run(request(temp.path()));
         fs::set_permissions(&denied, fs::Permissions::from_mode(0o700)).unwrap();
-        assert_eq!(summary.found, 1);
-        assert!(summary.unavailable > 0);
+        if !denied_is_readable {
+            assert_eq!(summary.found, 1);
+            assert!(summary.unavailable > 0);
+        }
     }
     #[test]
     fn root_defaults_are_shallow_for_home_and_never_scan_the_filesystem_root() {

@@ -25,12 +25,11 @@ impl App {
         }
     }
 
-    pub(super) fn loaded_inspection(&self, name: &str) -> Option<Inspection> {
+    pub(super) fn loaded_inspection(&self, name: &str) -> Option<&Inspection> {
         self.tools
             .inspection
             .as_ref()
             .filter(|i| i.table.name == name)
-            .cloned()
             .or_else(|| {
                 self.ui
                     .diagram
@@ -40,7 +39,7 @@ impl App {
                     .iter()
                     .find(|n| n.name == name)?
                     .inspection
-                    .clone()
+                    .as_ref()
             })
     }
 
@@ -139,32 +138,95 @@ impl App {
                 let objects:Vec<_>=self.schema.iter().filter(|o| {
                     let system=o.name.starts_with("__turso_internal_");
                     (if kind=="system"{o.kind=="table"&&system}else{o.kind==kind&&!system}) && o.name.to_lowercase().contains(&filter)
-                }).cloned().collect();
+                }).map(|o| o.name.clone()).collect();
                 egui::CollapsingHeader::new(format!("{title} · {}",objects.len())).id_salt(("nav-group",kind)).default_open(kind!="system").show(ui,|ui| {
-                    for object in objects {
-                        let selected=self.view==View::Browse&&self.ui.nav==Nav::Table&&self.ui.diagram.selected.as_deref()==Some(&object.name);
-                        let unfolded=self.ui.unfolded.as_deref()==Some(&object.name);
-                        ui.horizontal(|ui| {
-                            if icons::button(ui,if unfolded{Icon::Down}else{Icon::Next},if unfolded{"Collapse table"}else{"Expand table"},"").clicked(){
-                                self.ui.unfolded=if unfolded{None}else{Some(object.name.clone())};
-                                if !unfolded&&self.loaded_inspection(&object.name).is_none(){self.request_inspection(object.name.clone());}
-                            }
-                            let display=self.tools.counts.get(&object.name).map_or_else(||object.name.clone(),|n|format!("{} · {n}",object.name));
-                            let painted_label=format!("    {display}");
-                            let label=if related.contains(&object.name){egui::RichText::new(&painted_label).color(ui.visuals().hyperlink_color)}else{egui::RichText::new(&painted_label)};
-                            let response=ui.add_sized([ui.available_width(),28.0],egui::Button::new(label).selected(selected).truncate()).on_hover_text(&object.name);
-                            let r=egui::Rect::from_center_size(response.rect.left_center()+egui::vec2(8.0,0.0),egui::vec2(10.0,10.0));
-                            response.widget_info(||egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel,ui.is_enabled(),selected,format!("{} · {}",object.name,object.kind)));
-                            icons::paint(ui.painter(),r,icon,ui.visuals().weak_text_color());
-                            if response.hovered(){hovered=Some(object.name.clone());}
-                            if response.clicked(){self.activate_table(object.name.clone());}
-                        });
-                        if unfolded {self.sidebar_table(ui,&object.name);}
+                    for name in objects {
+                        if self.sidebar_object(ui, &name, if kind == "system" { "table" } else { kind }, icon, related.contains(&name)) {
+                            hovered = Some(name);
+                        }
                     }
                 });
             }
             self.ui.hover_table=hovered;
         });
+    }
+
+    fn sidebar_object(
+        &mut self,
+        ui: &mut egui::Ui,
+        name: &str,
+        kind: &str,
+        icon: Icon,
+        related: bool,
+    ) -> bool {
+        let mut hovered = false;
+        let selected = self.view == View::Browse
+            && self.ui.nav == Nav::Table
+            && self.ui.diagram.selected.as_deref() == Some(name);
+        let unfolded = self.ui.unfolded.as_deref() == Some(name);
+        ui.horizontal(|ui| {
+            if icons::button(
+                ui,
+                if unfolded { Icon::Down } else { Icon::Next },
+                if unfolded {
+                    "Collapse table"
+                } else {
+                    "Expand table"
+                },
+                "",
+            )
+            .clicked()
+            {
+                self.ui.unfolded = if unfolded {
+                    None
+                } else {
+                    Some(name.to_owned())
+                };
+                if !unfolded && self.loaded_inspection(name).is_none() {
+                    self.request_inspection(name.to_owned());
+                }
+            }
+            let display = self
+                .tools
+                .counts
+                .get(name)
+                .map_or_else(|| name.to_owned(), |n| format!("{} · {n}", name));
+            let painted_label = format!("    {display}");
+            let label = if related {
+                egui::RichText::new(&painted_label).color(ui.visuals().hyperlink_color)
+            } else {
+                egui::RichText::new(&painted_label)
+            };
+            let response = ui
+                .add_sized(
+                    [ui.available_width(), 28.0],
+                    egui::Button::new(label).selected(selected).truncate(),
+                )
+                .on_hover_text(name);
+            let r = egui::Rect::from_center_size(
+                response.rect.left_center() + egui::vec2(8.0, 0.0),
+                egui::vec2(10.0, 10.0),
+            );
+            response.widget_info(|| {
+                egui::WidgetInfo::selected(
+                    egui::WidgetType::SelectableLabel,
+                    ui.is_enabled(),
+                    selected,
+                    format!("{} · {}", name, kind),
+                )
+            });
+            icons::paint(ui.painter(), r, icon, ui.visuals().weak_text_color());
+            if response.hovered() {
+                hovered = true;
+            }
+            if response.clicked() {
+                self.activate_table(name.to_owned());
+            }
+        });
+        if unfolded {
+            self.sidebar_table(ui, name);
+        }
+        hovered
     }
 
     fn sidebar_table(&mut self, ui: &mut egui::Ui, name: &str) {
@@ -178,25 +240,33 @@ impl App {
             }
             return;
         };
+        let mut column = None;
+        let mut table = None;
         ui.indent(("columns",name),|ui| {
             for c in &info.table.columns {
                 ui.horizontal(|ui| {
                     let fk=info.foreign_keys.iter().any(|k|k.columns.iter().any(|(n,_)|n==&c.name));
                     let icon=if c.primary_key>0{Icon::Key}else if fk{Icon::Link}else{Icon::Columns};
-                    if icons::button(ui,icon,&format!("{} · {}",c.name,c.declared_type),"").clicked(){self.highlight_sidebar_column(name,&c.name);}
-                    if ui.add(egui::Button::new(egui::RichText::new(&c.name).monospace()).frame_when_inactive(false).truncate()).on_hover_text(&c.declared_type).clicked(){self.highlight_sidebar_column(name,&c.name);}
+                    if icons::button(ui,icon,&format!("{} · {}",c.name,c.declared_type),"").clicked(){column = Some(c.name.clone());}
+                    if ui.add(egui::Button::new(egui::RichText::new(&c.name).monospace()).frame_when_inactive(false).truncate()).on_hover_text(&c.declared_type).clicked(){column = Some(c.name.clone());}
                 });
             }
-            let mut links:Vec<(String,String)>=info.foreign_keys.iter().map(|k|(k.target.clone(),format!("Parent: {}",k.target))).collect();
+            let mut links:Vec<(&str,String)>=info.foreign_keys.iter().map(|k|(k.target.as_str(),format!("Parent: {}",k.target))).collect();
             if let Some(graph)=&self.ui.diagram.data {
                 for node in &graph.tables {
-                    if node.inspection.as_ref().is_some_and(|i|i.foreign_keys.iter().any(|k|k.target==name)) {links.push((node.name.clone(),format!("Referenced by: {}",node.name)));}
+                    if node.inspection.as_ref().is_some_and(|i|i.foreign_keys.iter().any(|k|k.target==name)) {links.push((node.name.as_str(),format!("Referenced by: {}",node.name)));}
                 }
             }
             for (target,label) in links {
-                if ui.link(label).on_hover_text("Open table without a row filter. Select a record to follow a specific key.").clicked(){self.browse_table(target);}
+                if ui.link(label).on_hover_text("Open table without a row filter. Select a record to follow a specific key.").clicked(){table = Some(target.to_owned());}
             }
         });
+        if let Some(column) = column {
+            self.highlight_sidebar_column(name, &column);
+        }
+        if let Some(table) = table {
+            self.browse_table(table);
+        }
     }
 
     fn highlight_sidebar_column(&mut self, name: &str, column: &str) {
@@ -214,7 +284,7 @@ impl App {
     }
 
     pub(super) fn tool_window(&mut self, ctx: &egui::Context) {
-        if !self.ui.sidebar_open || self.ui.sidebar == ToolPanel::Schema {
+        if !self.ui.sidebar_open {
             return;
         }
         let mut open = true;
@@ -223,7 +293,7 @@ impl App {
             ToolPanel::Saved => "Saved queries",
             ToolPanel::Diagnostics => "Database checks",
             ToolPanel::Settings => "Settings",
-            ToolPanel::Schema => unreachable!(),
+            ToolPanel::Schema => return,
         };
         egui::Window::new(title)
             .id(egui::Id::new("database-tools"))

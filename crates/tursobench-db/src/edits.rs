@@ -1,6 +1,6 @@
 use crate::{
     browse::describe,
-    worker::{configure, failure, rollback, to_engine},
+    connection::{configure, failure, rollback, to_engine},
 };
 use turso::params_from_iter;
 use tursobench_core::{Access, CommitOutcome, ConnectionSettings, DraftBatch, ErrorKind, Failure};
