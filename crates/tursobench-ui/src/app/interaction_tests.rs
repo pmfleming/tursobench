@@ -858,3 +858,61 @@ fn drawer_headers_fit_small_large_and_scaled_viewports_in_both_themes() {
     }
     app.close();
 }
+
+#[test]
+fn navigation_restores_typed_browse_context_and_query_return_without_dropping_drafts() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("navigation.db");
+    crate::test_support::create(
+        &path,
+        &[
+            "CREATE TABLE a(id INTEGER PRIMARY KEY, value TEXT)",
+            "INSERT INTO a VALUES(1,'first'),(2,'second')",
+            "CREATE TABLE b(id INTEGER PRIMARY KEY)",
+        ],
+    );
+    let (ctx, mut app) = connected(&path, true);
+    app.browse_table("a".into());
+    wait(&mut app, &ctx);
+    let browse = app.browse.as_mut().unwrap();
+    browse.sort = Some(1);
+    browse.descending = true;
+    browse.filters.push(tursobench_core::Filter {
+        column: 0,
+        op: tursobench_core::FilterOp::Equal,
+        value: Value::Integer(2),
+    });
+    app.reload();
+    wait(&mut app, &ctx);
+    app.inspect = Some((0, 1));
+    app.tools.detail = Some(0);
+    app.tools.grid_scroll = egui::vec2(40.0, 20.0);
+    app.browse_table("b".into());
+    wait(&mut app, &ctx);
+    app.navigate_back();
+    wait(&mut app, &ctx);
+    assert_eq!(app.browse.as_ref().unwrap().sort, Some(1));
+    assert!(app.browse.as_ref().unwrap().descending);
+    assert_eq!(
+        app.result.rows,
+        vec![vec![Value::Integer(2), Value::Text("second".into())]]
+    );
+    assert_eq!(app.inspect, Some((0, 1)));
+    assert_eq!(app.tools.detail, Some(0));
+    assert_eq!(app.tools.restore_scroll, Some(egui::vec2(40.0, 20.0)));
+    app.run_text("SELECT 42".into(), None);
+    wait(&mut app, &ctx);
+    assert!(!app.can_edit());
+    assert!(app.tools.result_return.is_some());
+    app.return_to_table();
+    wait(&mut app, &ctx);
+    assert_eq!(app.inspect, Some((0, 1)));
+    app.stage_cell(0, 1, Value::Text("draft".into()));
+    let ticket = app.result.current;
+    app.browse_table("b".into());
+    app.run_text("SELECT 99".into(), None);
+    app.navigate_back();
+    assert_eq!(app.result.current, ticket);
+    assert!(app.has_drafts());
+    app.close();
+}

@@ -3,7 +3,7 @@ use eframe::egui;
 use tursobench_core::{ForeignKey, Value};
 use tursobench_db::{Operation, Request};
 
-use tools::Destination;
+use tools::{Destination, NavigationEntry};
 impl App {
     pub(super) fn request_inspection(&mut self, name: String) {
         self.tools.inspection = None;
@@ -99,7 +99,6 @@ impl App {
                                         .on_hover_text(&object.name);
                                     if button.clicked() {
                                         if kind == "table" || kind == "view" || kind == "system" {
-                                            self.tools.back.clear();
                                             self.browse_table(object.name.clone());
                                         } else {
                                             self.tools.ddl = Some(object.clone());
@@ -427,11 +426,7 @@ impl App {
             }
             keys.push((target, value.clone()));
         }
-        let previous = self
-            .tools
-            .related
-            .clone()
-            .or_else(|| self.browse.clone().map(Destination::Page));
+        let previous = self.navigation_entry();
         if self
             .submit(
                 Operation::Lookup {
@@ -483,11 +478,7 @@ impl App {
             bound.push(value.clone());
         }
         let destination = Destination::References(child.clone(), key, bound);
-        let previous = self
-            .tools
-            .related
-            .clone()
-            .or_else(|| self.browse.clone().map(Destination::Page));
+        let previous = self.navigation_entry();
         if self.submit(destination.operation(), View::Browse).is_some() {
             if let Some(previous) = previous {
                 self.tools.back.push(previous);
@@ -502,27 +493,90 @@ impl App {
             self.tools.related = Some(destination);
         }
     }
-    pub(super) fn navigate_back(&mut self) {
-        let Some(destination) = self.tools.back.last().cloned() else {
-            return;
-        };
-        let operation = destination.operation();
-        if self.submit(operation, View::Browse).is_some() {
-            self.tools.back.pop();
-            self.tools.ddl = None;
-            self.table = None;
-            match destination {
-                Destination::Page(b) => {
-                    self.ui.diagram.selected = Some(b.table.clone());
-                    self.browse = Some(b);
-                    self.tools.related = None;
-                }
-                related => {
-                    self.ui.diagram.selected = Some(related.table().into());
-                    self.browse = None;
-                    self.tools.related = Some(related);
-                }
+    pub(super) fn navigation_entry(&self) -> Option<NavigationEntry> {
+        if self.view != View::Browse {
+            return None;
+        }
+        let destination = self
+            .tools
+            .related
+            .clone()
+            .or_else(|| self.browse.clone().map(Destination::Page))?;
+        Some(NavigationEntry {
+            destination,
+            cell: self
+                .inspect
+                .and_then(|(r, c)| self.result.rows.get(r).cloned().map(|row| (row, c))),
+            record: self
+                .tools
+                .detail
+                .and_then(|r| self.result.rows.get(r).cloned()),
+            structure: self.ui.drawer.view == shell::TableView::Structure,
+            scroll: self.tools.grid_scroll,
+        })
+    }
+    pub(super) fn restore_destination(&mut self, entry: NavigationEntry) -> bool {
+        if self
+            .submit(entry.destination.operation(), View::Browse)
+            .is_none()
+        {
+            return false;
+        }
+        self.tools.ddl = None;
+        self.table = None;
+        self.ui.diagram.selected = Some(entry.destination.table().into());
+        match &entry.destination {
+            Destination::Page(b) => {
+                self.browse = Some(b.clone());
+                self.tools.related = None;
+            }
+            related => {
+                self.browse = None;
+                self.tools.related = Some(related.clone());
             }
         }
+        self.ui.drawer.view = if entry.structure {
+            shell::TableView::Structure
+        } else {
+            shell::TableView::Data
+        };
+        self.tools.restore_navigation = Some(entry);
+        true
+    }
+    pub(super) fn navigate_back(&mut self) {
+        let Some(entry) = self.tools.back.last().cloned() else {
+            return;
+        };
+        if self.restore_destination(entry) {
+            self.tools.back.pop();
+        }
+    }
+    pub(super) fn return_to_table(&mut self) {
+        let Some(entry) = self.tools.result_return.clone() else {
+            return;
+        };
+        if self.restore_destination(entry) {
+            self.tools.result_return = None;
+        }
+    }
+    pub(super) fn restore_browse_selection(&mut self) {
+        let Some(entry) = self.tools.restore_navigation.take() else {
+            return;
+        };
+        self.inspect = entry.cell.and_then(|(values, column)| {
+            (column < self.result.columns.len())
+                .then(|| {
+                    self.result
+                        .rows
+                        .iter()
+                        .position(|r| *r == values)
+                        .map(|row| (row, column))
+                })
+                .flatten()
+        });
+        self.tools.detail = entry
+            .record
+            .and_then(|values| self.result.rows.iter().position(|r| *r == values));
+        self.tools.restore_scroll = Some(entry.scroll);
     }
 }

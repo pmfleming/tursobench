@@ -211,6 +211,8 @@ impl App {
                 self.tools.inspection_ticket = None;
                 self.tools.related = None;
                 self.tools.back.clear();
+                self.tools.result_return = None;
+                self.tools.restore_navigation = None;
                 let path = std::path::PathBuf::from(&self.path);
                 self.tools.database_scope = if path.is_absolute() {
                     self.path.clone()
@@ -236,6 +238,7 @@ impl App {
                 "Commit or discard staged edits before navigating or executing SQL".into();
             return None;
         }
+        let previous = self.navigation_entry();
         let s = self.session.as_ref()?;
         if !self.ready || self.closing {
             return None;
@@ -248,6 +251,12 @@ impl App {
                 if let Some(old) = self.active {
                     s.discard_results(old.request);
                 }
+                if view != View::Browse
+                    && let Some(previous) = previous
+                {
+                    self.tools.result_return = Some(previous);
+                }
+                self.tools.restore_navigation = None;
                 self.result.start(ticket);
                 self.active = Some(ticket);
                 self.view = view;
@@ -289,6 +298,7 @@ impl App {
             self.status = "Open a database before browsing; retained values are unchanged".into();
             return;
         }
+        let previous = self.navigation_entry();
         let browse = Browse {
             table: name.clone(),
             offset: 0,
@@ -300,6 +310,12 @@ impl App {
             .submit(Operation::Browse(browse.clone()), View::Browse)
             .is_some()
         {
+            if let Some(previous) = previous {
+                self.tools.back.push(previous);
+                if self.tools.back.len() > 32 {
+                    self.tools.back.remove(0);
+                }
+            }
             self.table = None;
             self.tools.ddl = None;
             self.tools.related = None;
@@ -588,6 +604,7 @@ impl App {
                         );
                         self.active = None;
                         self.result.apply(event);
+                        self.restore_browse_selection();
                     }
                 }
                 _ => {
@@ -670,7 +687,7 @@ impl App {
                 .tools
                 .back
                 .iter()
-                .map(tools::Destination::table)
+                .map(|entry| entry.destination.table())
                 .collect::<Vec<_>>()
                 .join(" → ");
             ui.small(format!("Reference trail: {trail}"));

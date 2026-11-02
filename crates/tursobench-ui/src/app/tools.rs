@@ -30,6 +30,16 @@ impl Destination {
         }
     }
 }
+/// A browse destination owns typed predicates, not a display-only table name.
+/// Selection is matched by retained values after reload, never by a stale index.
+#[derive(Clone)]
+pub(super) struct NavigationEntry {
+    pub destination: Destination,
+    pub cell: Option<(Vec<Value>, usize)>,
+    pub record: Option<Vec<Value>>,
+    pub structure: bool,
+    pub scroll: eframe::egui::Vec2,
+}
 pub(super) struct Tools {
     pub schema_filter: String,
     pub ddl: Option<SchemaObject>,
@@ -38,7 +48,11 @@ pub(super) struct Tools {
     pub inspection_error: String,
     pub show_metadata: bool,
     pub related: Option<Destination>,
-    pub back: Vec<Destination>,
+    pub back: Vec<NavigationEntry>,
+    pub result_return: Option<NavigationEntry>,
+    pub restore_navigation: Option<NavigationEntry>,
+    pub grid_scroll: eframe::egui::Vec2,
+    pub restore_scroll: Option<eframe::egui::Vec2>,
     pub cell_kind: results::CellKind,
     pub cell_input: String,
     pub selection: Range<usize>,
@@ -71,6 +85,10 @@ impl Default for Tools {
             show_metadata: false,
             related: None,
             back: vec![],
+            result_return: None,
+            restore_navigation: None,
+            grid_scroll: eframe::egui::Vec2::ZERO,
+            restore_scroll: None,
             cell_kind: results::CellKind::Text,
             cell_input: String::new(),
             selection: 0..0,

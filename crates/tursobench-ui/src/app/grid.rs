@@ -29,11 +29,14 @@ impl App {
             let scans=self.result.rows.iter().filter(|r|matches!(r.get(detail),Some(Value::Text(s))if s.to_uppercase().contains("SCAN "))).count();
             ui.label(format!("Planner notes: {scans} scan entries. Scans may be intentional; not a runtime profile."));
         }
-        egui::ScrollArea::horizontal()
+        let restore = self.tools.restore_scroll.take();
+        let horizontal = egui::ScrollArea::horizontal()
+            .horizontal_scroll_offset(restore.map_or(self.tools.grid_scroll.x, |s| s.x))
             .id_salt("result-columns")
             .show(ui, |ui| {
                 self.grid_header(ui);
-                egui::ScrollArea::vertical()
+                let vertical = egui::ScrollArea::vertical()
+                    .vertical_scroll_offset(restore.map_or(self.tools.grid_scroll.y, |s| s.y))
                     .id_salt("result-rows")
                     .max_height(remaining)
                     .show_rows(ui, 24.0, self.result.rows.len(), |ui, range| {
@@ -43,7 +46,9 @@ impl App {
                             }
                         }
                     });
+                self.tools.grid_scroll.y = vertical.state.offset.y;
             });
+        self.tools.grid_scroll.x = horizontal.state.offset.x;
         match action {
             Some(GridAction::Cell(r, c)) => self.open_cell(r, c),
             Some(GridAction::Record(r)) => {

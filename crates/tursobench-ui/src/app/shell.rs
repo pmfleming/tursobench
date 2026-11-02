@@ -454,6 +454,13 @@ impl App {
                     self.edit_controls(ui);
                 }
                 ui.menu_button("Result actions", |ui| {
+                    if self.view != View::Browse
+                        && self.tools.result_return.is_some()
+                        && ui.button("Return to table").clicked()
+                    {
+                        self.return_to_table();
+                        ui.close();
+                    }
                     if ui.button("Export / copy…").clicked() {
                         self.ui.export_open = true;
                         ui.close();
