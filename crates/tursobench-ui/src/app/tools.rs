@@ -44,6 +44,8 @@ pub(super) struct NavigationEntry {
 #[derive(Default)]
 pub(super) struct Tools {
     pub schema_filter: String,
+    pub sql_focus: Option<eframe::egui::Id>,
+    pub tree_focus: Option<eframe::egui::Id>,
     pub filter_focus: bool,
     pub filter_error: String,
     pub filter_value: String,
@@ -68,7 +70,9 @@ pub(super) struct Tools {
     pub complete: bool,
     pub help: bool,
     pub detail: Option<usize>,
+    pub summary_cache: Option<super::selection::SummaryCache>,
     pub grid_selection: Option<super::selection::Selection>,
+    pub grid_height: f32,
     pub grid_focus: Option<eframe::egui::Id>,
     pub dragging_selection: bool,
     pub scroll_to_cell: bool,

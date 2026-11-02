@@ -65,7 +65,7 @@ impl App {
                 row.get(i).filter(|v| **v != Value::Null).cloned()
             })
             .collect::<Option<_>>()?;
-        if values.is_empty() {
+        if values.is_empty() || values.iter().map(Value::bytes).sum::<usize>() > 32 * 1024 {
             return None;
         }
         let id = format!("{kind:?}:{child}:{key:?}:{values:?}");
@@ -156,6 +156,12 @@ impl App {
                 .iter()
                 .map(|c| {
                     c.key.len()
+                        + c.error.len()
+                        + c.result
+                            .columns
+                            .iter()
+                            .map(|c| c.name.len() + c.declared_type.as_ref().map_or(0, String::len))
+                            .sum::<usize>()
                         + c.result
                             .rows
                             .iter()
@@ -283,6 +289,11 @@ impl App {
                         None
                     }
                 });
+            let error = spec
+                .as_ref()
+                .and_then(|(id, _)| self.tools.context.cache.iter().find(|c| &c.key == id))
+                .map(|c| c.error.clone())
+                .unwrap_or_default();
             ui.horizontal(|ui| {
                 if ui
                     .add_enabled(
@@ -300,9 +311,16 @@ impl App {
                 if count.is_none()
                     && ui
                         .add_enabled(spec.is_some(), egui::Button::new("?"))
-                        .on_hover_text("Count matching rows (full scan, may be slow)")
+                        .on_hover_text(if error.is_empty() {
+                            "Count matching rows (full scan, may be slow)".to_owned()
+                        } else {
+                            format!("{error} · click to retry count")
+                        })
                         .clicked()
                 {
+                    if let Some((id, _)) = &spec {
+                        self.tools.context.cache.retain(|c| &c.key != id);
+                    }
                     self.request_context(row, &child, &key, ReadKind::Count);
                 }
             });
@@ -355,6 +373,10 @@ impl App {
         };
         if !c.error.is_empty() {
             ui.colored_label(ui.visuals().error_fg_color, &c.error);
+            if ui.button("Retry related rows").clicked() {
+                self.tools.context.cache.retain(|c| c.key != id);
+                self.request_context(row, &child, &key, ReadKind::Rows);
+            }
             return;
         }
         ui.small(format!(

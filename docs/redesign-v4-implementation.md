@@ -2,7 +2,7 @@
 
 Prepared against `e4ef7a9`, the revision reviewed by
 [redesign-v4-controls.html](redesign-v4-controls.html). This is an implementation
-plan; the application still implements v3. The HTML supplies the intended
+plan with the completed stages recorded below; the application implements the v4 controls and grid changes, with automatic counts deferred at the execution gate. The HTML supplies the intended
 placement and interactions. Existing backend and editing contracts supply the
 execution, ownership and safety rules.
 
@@ -229,3 +229,23 @@ nix develop -c bash scripts/local-project-smoke.sh
 Update `docs/ui-redesign.md`, `docs/desktop-smoke-test.md`, relevant backend/data
 format contracts and README claims when behavior ships. Preparation itself does
 not assert that runtime tests or visual acceptance have passed.
+
+## Implementation record
+
+Stages 1–7 are committed separately: rail/routing, responsive controls, canonical
+column presentation, typed filtering/facets, selection/inline staging, bounded
+scroll retention, and independently owned relationship context. Stage 8 integrates
+focus, real keyboard Enter/clipboard handling, compact defaults, cache invalidation,
+access review and updated contracts, with workspace and native smoke validation.
+
+Automatic background counts are **deferred**. Inspection of pinned Turso 0.8.3's
+public Connection API found no interruption/progress hook; busy_timeout is only a
+lock-wait budget. Adding automatic COUNT to the shared worker would fail the
+execution-budget gate. Explicit table and related counts are implemented. This
+is not a claim that the automatic-count portion of v4 is complete.
+
+Browse retention uses a 200-row minimum to reserve one 100-row fetch in flight;
+the retained window reserves 4 MiB and the pending page another 4 MiB. SQL still
+uses the exact configured row limit. The wide related preview shows at most 12
+columns and links to the full view. These practical limits are explicit in the UI
+guide and backend/data-format contracts.

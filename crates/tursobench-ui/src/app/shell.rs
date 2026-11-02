@@ -48,6 +48,8 @@ pub(super) struct UiState {
     pub inspector: DetailMode,
     pub inspector_open: bool,
     pub inspector_initialized: bool,
+    pub inspector_compact: Option<bool>,
+    pub settings_return: Option<Nav>,
     pub inspector_detached: bool,
     pub outcomes: bool,
     pub diagram: diagram::DiagramState,
@@ -88,6 +90,8 @@ impl UiState {
             inspector: DetailMode::Cell,
             inspector_open: false,
             inspector_initialized: false,
+            inspector_compact: None,
+            settings_return: None,
             inspector_detached: false,
             outcomes: false,
             diagram: Default::default(),
@@ -180,7 +184,14 @@ impl App {
             #[cfg(not(test))]
             let _ = panel;
         }
-        if self.ui.nav == Nav::Table && !self.ui.inspector_initialized {
+        if self.ui.nav == Nav::Table
+            && (!self.ui.inspector_initialized
+                || self.ui.inspector_compact != Some(layout.bottom_inspector)
+                    && !self
+                        .preferences
+                        .inspector_visibility
+                        .contains_key(&self.tools.database_scope))
+        {
             self.ui.inspector_open = self
                 .preferences
                 .inspector_visibility
@@ -188,6 +199,7 @@ impl App {
                 .copied()
                 .unwrap_or(!layout.bottom_inspector);
             self.ui.inspector_initialized = true;
+            self.ui.inspector_compact = Some(layout.bottom_inspector);
         }
         if self.ui.inspector_open
             && !self.ui.inspector_detached
@@ -308,7 +320,7 @@ impl App {
                 if self.transaction != TransactionState::Autocommit {
                     ui.colored_label(if self.transaction != TransactionState::Autocommit { warn } else { muted }, format!("{:?}", self.transaction));
                     for (label, sql) in [("Commit", "COMMIT"), ("Roll back", "ROLLBACK")] {
-                        let enabled = self.ready && !self.closing && self.active.is_none() && self.commit_ticket.is_none() && !self.has_drafts();
+                        let enabled = self.ready && !self.closing && self.active.is_none() && self.commit_ticket.is_none() && !self.has_drafts() && (sql!="COMMIT" || self.transaction==TransactionState::Active);
                         let response = ui.add_enabled(enabled, egui::Button::new(label)).on_hover_text("Persistent editor connection. Transactions also apply to read-only sessions.");
                         #[cfg(test)] self.ui.transaction_rects.push(response.rect);
                         if response.clicked() { self.submit(Operation::Execute { sql: sql.into(), parameters: vec![], budget: Budget::default() }, View::Query); }
@@ -490,7 +502,7 @@ impl App {
                     .inner
                     .clicked()
                 {
-                    self.reload();
+                    self.refresh_table();
                 }
                 if self.ui.nav == Nav::Table && self.ui.table_view == TableView::Data {
                     self.page_controls(ui);
@@ -555,7 +567,25 @@ impl App {
         }
         ui.small(format!("{}–{}",b.offset+usize::from(!self.result.rows.is_empty()),b.offset+self.result.rows.len())).on_hover_text("100 rows per fetch · retained window · OFFSET is not a snapshot · scroll back to reload evicted pages");
     }
+    pub(super) fn refresh_table(&mut self) {
+        if self.view != View::Browse || self.ui.nav != Nav::Table {
+            return;
+        }
+        if self.ui.table_view == TableView::Structure {
+            if let Some(name) = self.ui.diagram.selected.clone() {
+                self.request_inspection(name);
+            }
+            self.refresh_catalog();
+        } else {
+            self.reload();
+        }
+    }
     fn result_title(&self) -> &str {
+        if self.ui.table_view == TableView::Structure
+            && let Some(object) = &self.tools.ddl
+        {
+            return &object.name;
+        }
         match self.view {
             View::Browse => self.table.as_ref().map_or_else(
                 || self.ui.diagram.selected.as_deref().unwrap_or("Table data"),

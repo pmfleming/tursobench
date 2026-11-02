@@ -250,7 +250,7 @@ impl App {
                     self.tools.filter_focus = false;
                     self.ui.filter_open = false;
                 }
-                if response.has_focus()
+                if (response.has_focus() || response.lost_focus())
                     && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
                 {
                     match parse_filter(&self.filter, &table) {
@@ -263,7 +263,7 @@ impl App {
                         Err(e) => self.tools.filter_error = e,
                     }
                 }
-                if response.has_focus()
+                if (response.has_focus() || response.lost_focus())
                     && self.filter.is_empty()
                     && !next.filters.is_empty()
                     && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace))

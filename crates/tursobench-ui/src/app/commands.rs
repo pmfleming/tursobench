@@ -18,6 +18,14 @@ enum Command {
     Review,
     Help,
     Theme,
+    Begin,
+    Filter,
+    Inspector,
+    Insert,
+    FitColumns,
+    ShowColumns,
+    CopySelection,
+    RefreshTable,
 }
 
 fn fuzzy(label: &str, query: &str) -> bool {
@@ -97,6 +105,14 @@ impl App {
                     ("Open database · Ctrl O".into(), Command::Open),
                     ("Close database".into(), Command::Close),
                     ("Refresh schema map and catalog".into(), Command::Refresh),
+                    ("Refresh current table".into(),Command::RefreshTable),
+                    ("BEGIN editor transaction".into(),Command::Begin),
+                    ("Filter rows · Ctrl F".into(),Command::Filter),
+                    ("Toggle inspector · Space".into(),Command::Inspector),
+                    ("New row (staged)".into(),Command::Insert),
+                    ("Fit all columns".into(),Command::FitColumns),
+                    ("Show hidden columns".into(),Command::ShowColumns),
+                    ("Copy selected cells · Ctrl C".into(),Command::CopySelection),
                     ("History".into(), Command::Panel(ToolPanel::History)),
                     ("Saved queries".into(), Command::Panel(ToolPanel::Saved)),
                     (
@@ -199,7 +215,34 @@ impl App {
                     }
                 }
                 Command::Sql => self.toggle_sql(),
-                Command::Open => self.choose_file(ctx),
+                Command::Open => {
+                    if self.session.is_some() {
+                        self.request_close();
+                    } else {
+                        self.choose_file(ctx);
+                    }
+                }
+                Command::Begin => {
+                    if self.transaction == tursobench_core::TransactionState::Autocommit {
+                        self.run_text("BEGIN".into(), None);
+                    }
+                }
+                Command::Filter => {
+                    self.ui.filter_open = true;
+                    self.tools.filter_focus = true;
+                }
+                Command::Inspector => self.toggle_inspector(),
+                Command::Insert => self.begin_insert(),
+                Command::FitColumns => {
+                    self.tools.columns.manual.clear();
+                    self.tools.columns.refit = true;
+                }
+                Command::ShowColumns => self.tools.columns.hidden.clear(),
+                Command::CopySelection => match self.selection_tsv() {
+                    Ok(text) => ctx.copy_text(text),
+                    Err(e) => self.status = e,
+                },
+                Command::RefreshTable => self.refresh_table(),
                 Command::Close => self.request_close(),
                 Command::Refresh => {
                     self.refresh_catalog();

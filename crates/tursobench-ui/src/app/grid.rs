@@ -24,6 +24,32 @@ impl App {
             self.fk_cell_rect = None;
         }
         ui.spacing_mut().item_spacing.y = 1.0;
+        let grid_id = ui.id().with("grid-keyboard");
+        self.tools.grid_focus = Some(grid_id);
+        let grid_response = ui.interact(
+            ui.available_rect_before_wrap(),
+            grid_id,
+            egui::Sense::click(),
+        );
+        grid_response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::Other,
+                ui.is_enabled(),
+                "Result grid · arrows move, Shift selects, Enter edits or follows",
+            )
+        });
+        if grid_response.has_focus() {
+            ui.ctx().memory_mut(|m| {
+                m.set_focus_lock_filter(
+                    grid_id,
+                    egui::EventFilter {
+                        horizontal_arrows: true,
+                        vertical_arrows: true,
+                        ..Default::default()
+                    },
+                )
+            });
+        }
         self.tools.context.hovered = None;
         let mut action = None;
         let editable = self.can_edit();
@@ -31,6 +57,7 @@ impl App {
             self.tools.dragging_selection = false;
         }
         let remaining = (ui.available_height() - 38.0).max(0.0);
+        self.tools.grid_height = remaining;
         #[cfg(test)]
         {
             self.ui.grid_rect = ui.available_rect_before_wrap();
@@ -121,12 +148,24 @@ impl App {
             }
             if !self.tools.pages.error.is_empty() {
                 ui.colored_label(ui.visuals().error_fg_color, &self.tools.pages.error);
-                if ui.button("Retry next page").clicked() {
-                    self.request_page(false);
+                if ui.button("Retry page").clicked() {
+                    self.request_page(self.tools.pages.retry_previous);
                 }
             }
         }
-        if self.writable && icons::control(ui, Icon::Plus, "New row", "", false, true).clicked() {
+        if self.writable
+            && self.view == View::Browse
+            && self
+                .table
+                .as_ref()
+                .is_some_and(tursobench_core::Table::editable)
+            && ui
+                .add_enabled_ui(self.can_edit(), |ui| {
+                    icons::control(ui, Icon::Plus, "New row", "", false, true)
+                })
+                .inner
+                .clicked()
+        {
             self.begin_insert();
         }
         if self.result.columns.is_empty() && self.active.is_none() {
@@ -158,10 +197,7 @@ impl App {
                     for (show,icon) in [(pk>0,Icon::Key),(foreign,Icon::Link)] {
                         if show { icons::paint(&painter,egui::Rect::from_min_size(egui::pos2(left,rect.center().y-6.0),egui::vec2(12.0,12.0)),icon,if foreign{ui.visuals().hyperlink_color}else{ui.visuals().warn_fg_color});left+=15.0; }
                     }
-                    let ty=match column.declared_type.as_deref().unwrap_or("").to_uppercase().as_str(){"TEXT"=>"T","INTEGER"=>"#","REAL"=>"1.0","BLOB"=>"01",_=>"?"};
-                    painter.text(egui::pos2(left,rect.center().y),egui::Align2::LEFT_CENTER,&column.name,egui::FontId::proportional(12.0),ui.visuals().text_color());
-                    painter.rect_filled(egui::Rect::from_min_size(rect.right_top()+egui::vec2(-32.0,6.0),egui::vec2(25.0,18.0)),3.0,ui.visuals().panel_fill);
-                    painter.text(rect.right_center()-egui::vec2(19.0,0.0),egui::Align2::CENTER_CENTER,ty,egui::FontId::monospace(10.0),ui.visuals().weak_text_color());
+                    painter.with_clip_rect(egui::Rect::from_min_max(rect.min,egui::pos2(rect.right()-if sorted.is_empty(){28.0}else{44.0},rect.bottom())).intersect(ui.clip_rect())).text(egui::pos2(left,rect.center().y),egui::Align2::LEFT_CENTER,&column.name,egui::FontId::proportional(12.0),ui.visuals().text_color());
                     if !sorted.is_empty(){icons::paint(&painter,egui::Rect::from_min_size(rect.right_top()+egui::vec2(-47.0,8.0),egui::vec2(12.0,12.0)),if self.browse.as_ref().is_some_and(|b|b.descending){Icon::Down}else{Icon::Up},ui.visuals().selection.stroke.color);}
                     let response=response.on_hover_text(format!("{} · {}\nPK = key position; IX = declared leading index; FK = foreign key. Index method/partial predicate may not apply. Drag the right edge or right-click to resize.",column.name,column.declared_type.as_deref().unwrap_or("runtime type")));
                     response.context_menu(|ui|{
@@ -252,7 +288,7 @@ impl App {
                     egui::WidgetInfo::selected(
                         egui::WidgetType::SelectableLabel,
                         ui.is_enabled(),
-                        self.inspect == Some((row, col)),
+                        self.cell_selected(row, col),
                         format!(
                             "Row {} · {}: {}{text}",
                             offset + row + 1,
@@ -292,7 +328,7 @@ impl App {
                                 }
                             });
                     });
-                    if response.has_focus()
+                    if (response.has_focus() || response.lost_focus())
                         && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
                     {
                         match edit.kind.parse(&edit.input) {
@@ -389,8 +425,9 @@ impl App {
                         cursor: (row, col),
                     });
                     self.tools.dragging_selection = true;
-                    self.tools.grid_focus = Some(response.id);
-                    response.request_focus();
+                    if let Some(id) = self.tools.grid_focus {
+                        ui.ctx().memory_mut(|m| m.request_focus(id));
+                    }
                 }
                 if response.hovered()
                     && self.tools.dragging_selection
@@ -401,9 +438,10 @@ impl App {
                     }
                     action = Some(GridAction::Cell(row, col));
                 }
-                if response.clicked() {
-                    response.request_focus();
-                    self.tools.grid_focus = Some(response.id);
+                if response.clicked()
+                    && let Some(id) = self.tools.grid_focus
+                {
+                    ui.ctx().memory_mut(|m| m.request_focus(id));
                 }
                 if response.clicked() && ui.input(|i| i.modifiers.alt) && self.browse.is_some() {
                     action = Some(GridAction::Filter(tursobench_core::Filter {

@@ -1273,3 +1273,342 @@ fn contextual_reads_and_wide_related_grid_preserve_parent_result_and_selection()
     assert_eq!(app.result.rows, vec![vec![Value::Integer(654)]]);
     app.close();
 }
+
+#[test]
+fn actual_grid_keys_extend_copy_and_stage_inline_without_writing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("keys.db");
+    crate::test_support::create(
+        &path,
+        &[
+            "CREATE TABLE sample(id INTEGER PRIMARY KEY,n INTEGER,text TEXT)",
+            "INSERT INTO sample VALUES(1,9007199254740993,'')",
+        ],
+    );
+    let (ctx, mut app) = connected(&path, true);
+    app.browse_table("sample".into());
+    wait(&mut app, &ctx);
+    frame(&mut app, &ctx, vec![]);
+    frame(&mut app, &ctx, vec![]);
+    let pos = app.first_cell_rect.unwrap().center();
+    for pressed in [true, false] {
+        frame(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+    }
+    let key = |key, modifiers| egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    };
+    let send = |app: &mut App, mods, mut events: Vec<egui::Event>| {
+        events.insert(0, egui::Event::ModifiersChanged(mods));
+        frame_at(app, &ctx, egui::vec2(1280.0, 720.0), events)
+    };
+    send(
+        &mut app,
+        egui::Modifiers::SHIFT,
+        vec![key(egui::Key::ArrowRight, egui::Modifiers::SHIFT)],
+    );
+    assert_eq!(app.selected_cells(), vec![(0, 0), (0, 1)]);
+    let output = send(
+        &mut app,
+        egui::Modifiers::CTRL,
+        vec![key(egui::Key::C, egui::Modifiers::CTRL)],
+    );
+    assert!(
+        output
+            .platform_output
+            .commands
+            .iter()
+            .any(|c| matches!(c,egui::OutputCommand::CopyText(t) if t=="1\t9007199254740993"))
+    );
+    send(
+        &mut app,
+        egui::Modifiers::NONE,
+        vec![key(egui::Key::ArrowRight, egui::Modifiers::NONE)],
+    );
+    send(
+        &mut app,
+        egui::Modifiers::NONE,
+        vec![key(egui::Key::Enter, egui::Modifiers::NONE)],
+    );
+    assert!(app.tools.inline.is_some());
+    send(
+        &mut app,
+        egui::Modifiers::NONE,
+        vec![
+            egui::Event::Text("draft".into()),
+            key(egui::Key::Enter, egui::Modifiers::NONE),
+        ],
+    );
+    assert!(app.tools.inline.is_none());
+    assert!(app.has_drafts());
+    assert_eq!(app.result.rows[0][2], Value::Text(String::new()));
+    app.close();
+}
+
+#[test]
+fn token_entry_enter_retains_typed_filter_and_empty_clipboard_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tokens.db");
+    crate::test_support::create(
+        &path,
+        &[
+            "CREATE TABLE sample(id INTEGER PRIMARY KEY,n INTEGER,text TEXT)",
+            "INSERT INTO sample VALUES(1,1,''),(2,2,'two')",
+        ],
+    );
+    let (ctx, mut app) = connected(&path, false);
+    app.browse_table("sample".into());
+    wait(&mut app, &ctx);
+    app.tools.filter_focus = true;
+    frame(&mut app, &ctx, vec![]);
+    frame(
+        &mut app,
+        &ctx,
+        vec![
+            egui::Event::Text("n>=2".into()),
+            egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+    );
+    wait(&mut app, &ctx);
+    assert_eq!(app.result.rows.len(), 1);
+    assert_eq!(app.result.rows[0][0], Value::Integer(2));
+    assert_eq!(
+        app.browse.as_ref().unwrap().filters[0].op,
+        tursobench_core::FilterOp::GreaterOrEqual
+    );
+    app.browse_table("sample".into());
+    wait(&mut app, &ctx);
+    frame(&mut app, &ctx, vec![]);
+    app.tools.columns.move_before(2, 0);
+    app.select_cell(0, 2, false);
+    app.select_cell(0, 0, true);
+    assert_eq!(app.selection_tsv().unwrap(), "\t1");
+    app.close();
+}
+
+#[test]
+fn clipboard_columns_fit_large_docked_workspace_and_defaults_follow_breakpoints() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("clipboard.db");
+    crate::test_support::run(crate::local_project_fixtures::create(&path, "clipboard")).unwrap();
+    let (ctx, mut app) = connected(&path, false);
+    app.browse_table("entries".into());
+    wait(&mut app, &ctx);
+    for _ in 0..2 {
+        frame_at(&mut app, &ctx, egui::vec2(1280.0, 720.0), vec![]);
+    }
+    assert!(!app.ui.inspector_open);
+    for _ in 0..2 {
+        frame_at(&mut app, &ctx, egui::vec2(1920.0, 1080.0), vec![]);
+    }
+    assert!(app.ui.inspector_open);
+    assert_eq!(app.result.columns.len(), 11);
+    let width: f32 = app.tools.columns.widths.iter().sum::<f32>()
+        + 44.0
+        + app.result.columns.len() as f32 * ctx.style_of(egui::Theme::Dark).spacing.item_spacing.x;
+    assert!(
+        width <= app.ui.grid_rect.width() + 1.0,
+        "columns {width} > grid {}",
+        app.ui.grid_rect.width()
+    );
+    assert!(app.ui.visible_rows >= 37, "{} rows", app.ui.visible_rows);
+    app.toggle_inspector();
+    assert!(!app.ui.inspector_open);
+    for _ in 0..2 {
+        frame_at(&mut app, &ctx, egui::vec2(2560.0, 1440.0), vec![]);
+    }
+    assert!(!app.ui.inspector_open);
+    app.close();
+}
+
+#[test]
+fn incomplete_page_keeps_primary_rows_and_does_not_invent_end_of_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("page-error.db");
+    crate::test_support::create(
+        &path,
+        &[
+            "CREATE TABLE sample(id INTEGER PRIMARY KEY)",
+            "INSERT INTO sample WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<250) SELECT x FROM n",
+        ],
+    );
+    let (ctx, mut app) = connected(&path, false);
+    app.browse_table("sample".into());
+    wait(&mut app, &ctx);
+    let original = app.result.rows.clone();
+    let owner = app.result.current;
+    app.request_page(false);
+    let ticket = app
+        .tools
+        .pages
+        .pending
+        .as_ref()
+        .unwrap()
+        .result
+        .current
+        .unwrap();
+    app.handle_event(
+        &ctx,
+        Event {
+            ticket,
+            kind: EventKind::Finished(tursobench_core::Completion {
+                elapsed_ms: 1,
+                delivery: tursobench_core::Delivery::Limited,
+                rows_seen: 100,
+                changed: 0,
+                transaction: TransactionState::Autocommit,
+                error: None,
+            }),
+        },
+    );
+    assert!(app.tools.pages.pending.is_none());
+    assert!(!app.tools.pages.error.is_empty());
+    assert!(app.tools.pages.end.is_none());
+    assert_eq!(app.result.rows, original);
+    assert_eq!(app.result.current, owner);
+    app.close();
+}
+
+#[test]
+fn query_back_restores_a_multi_page_window_before_matching_the_cursor() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("back-window.db");
+    crate::test_support::create(
+        &path,
+        &[
+            "CREATE TABLE sample(id INTEGER PRIMARY KEY)",
+            "INSERT INTO sample WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<600) SELECT x FROM n",
+        ],
+    );
+    let (ctx, mut app) = connected(&path, false);
+    app.preferences.row_limit = 400;
+    app.browse_table("sample".into());
+    wait(&mut app, &ctx);
+    for _ in 0..2 {
+        app.request_page(false);
+        wait(&mut app, &ctx);
+    }
+    frame(&mut app, &ctx, vec![]);
+    app.select_cell(150, 0, false);
+    app.tools.grid_scroll.y = 3000.0;
+    app.run_text("SELECT 765".into(), None);
+    wait(&mut app, &ctx);
+    app.return_to_table();
+    wait(&mut app, &ctx);
+    for _ in 0..2 {
+        frame(&mut app, &ctx, vec![]);
+        wait(&mut app, &ctx);
+    }
+    assert_eq!(app.result.rows.len(), 300);
+    assert_eq!(app.inspect, Some((150, 0)));
+    assert_eq!(app.tools.grid_selection.unwrap().cursor, (150, 0));
+    assert!(app.tools.restore_navigation.is_none());
+    app.close();
+}
+
+#[test]
+fn filtered_index_tree_opens_original_ddl_without_replacing_primary_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ddl-tree.db");
+    crate::test_support::create(
+        &path,
+        &[
+            "CREATE TABLE sample(id INTEGER PRIMARY KEY,value TEXT)",
+            "CREATE INDEX sample_value ON sample(value)",
+            "INSERT INTO sample VALUES(1,'one')",
+        ],
+    );
+    let (ctx, mut app) = connected(&path, false);
+    app.browse_table("sample".into());
+    wait(&mut app, &ctx);
+    app.tools.schema_filter = "sample_value".into();
+    frame(&mut app, &ctx, vec![]);
+    let output = frame_at(&mut app, &ctx, egui::vec2(1280.0, 720.0), vec![]);
+    let pos = output
+        .shapes
+        .iter()
+        .rev()
+        .find_map(|s| {
+            if let egui::Shape::Text(t) = &s.shape {
+                (t.galley.job.text == "sample_value").then_some(t.pos + egui::vec2(8.0, 6.0))
+            } else {
+                None
+            }
+        })
+        .expect("filtered index row");
+    let owner = app.result.current;
+    let rows = app.result.rows.clone();
+    for pressed in [true, false] {
+        frame(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+    }
+    assert_eq!(app.tools.ddl.as_ref().unwrap().name, "sample_value");
+    assert_eq!(app.ui.table_view, shell::TableView::Structure);
+    app.refresh_table();
+    wait(&mut app, &ctx);
+    assert_eq!(app.ui.table_view, shell::TableView::Structure);
+    assert_eq!(app.result.current, owner);
+    assert_eq!(app.result.rows, rows);
+    app.close();
+}
+
+#[test]
+fn cancelling_a_recent_database_switch_clears_the_pending_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("active.db");
+    crate::test_support::create(&path, &["CREATE TABLE sample(id INTEGER PRIMARY KEY)"]);
+    let (ctx, mut app) = connected(&path, true);
+    let session = app.session.as_ref().unwrap().id;
+    app.pending_database = Some(dir.path().join("other.db"));
+    app.request_close();
+    assert!(app.confirm_close);
+    frame(
+        &mut app,
+        &ctx,
+        vec![egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+    assert!(app.pending_database.is_none());
+    assert!(!app.confirm_close);
+    assert!(!app.closing);
+    assert_eq!(app.session.as_ref().unwrap().id, session);
+    assert_eq!(app.path, path.to_string_lossy());
+    app.close();
+}

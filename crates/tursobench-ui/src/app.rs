@@ -351,6 +351,7 @@ impl App {
         }
     }
     fn refresh_catalog(&mut self) {
+        self.tools.counts.clear();
         self.tools.context = Default::default();
         if !self.ready || self.closing || self.catalog_ticket.is_some() {
             return;
@@ -568,6 +569,7 @@ impl App {
                     Err(e) => format!("Close outcome uncertain: {e}"),
                 };
                 self.session = None;
+                self.ui.nav = shell::Nav::Databases;
                 self.ready = false;
                 self.active = None;
                 self.closing = false;
@@ -631,6 +633,8 @@ impl App {
                         .contains_key(&event.ticket.request)
                 {
                     self.ui.diagram.stale = self.ui.diagram.data.is_some();
+                    self.tools.context = Default::default();
+                    self.tools.counts.clear();
                 }
                 self.record_history(event.ticket, Some(c.elapsed_ms), c.error.is_some());
                 self.log_outcome(format!(
@@ -685,6 +689,7 @@ impl App {
     }
     fn request_close(&mut self) {
         if self.commit_ticket.is_some() {
+            self.pending_database = None;
             self.status = "Wait for the staged commit outcome before closing".into();
             return;
         }

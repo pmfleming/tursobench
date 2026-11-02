@@ -491,6 +491,9 @@ mod tests {
         prefs.record_query("db-a", "SELECT 149", Some(1000), true);
         assert_eq!(prefs.query_history.len(), 100);
         prefs.bookmark("db-a", "Quoted", "SELECT ';'");
+        prefs
+            .inspector_visibility
+            .insert("/home/test/a.db".into(), false);
         save(&path, &prefs).unwrap();
         assert_eq!(load(&path).unwrap().saved_queries[0].sql, "SELECT ';'");
         std::fs::write(
@@ -499,6 +502,7 @@ mod tests {
         )
         .unwrap();
         let legacy = load(&path).unwrap();
+        assert!(legacy.inspector_visibility.is_empty());
         assert_eq!(legacy.query_history[0].database, "");
         assert_eq!(legacy.saved_queries[0].sql, "SELECT 2");
         std::fs::write(&path, "bad JSON").unwrap();

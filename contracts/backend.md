@@ -59,7 +59,7 @@ Completion elapsed milliseconds cover worker execution and delivery/backpressure
 not queue wait or an isolated engine benchmark.
 
 Table browsing uses a separate connection and controlled generated SELECTs: 100
-rows/page, typed AND filters (`IS` / `IS NOT`, `<`, `>`, literal substring LIKE,
+rows/page, typed AND filters (`IS` / `IS NOT`, `<`, `>`, `<=`, `>=`, literal substring LIKE,
 IS NULL / IS NOT NULL), quoted identifiers,
 column sorting followed by primary-key and full-row tie breakers. Filters are capped at 32 predicates / 1 MiB of values. LIKE escapes backslash,
 percent and underscore; equality preserves NULL and typed bindings. Full-row
@@ -106,3 +106,27 @@ definitions before executing. They bind every non-NULL parent-key component and
 use EXISTS with parent columns on the left of comparisons, preserving parent
 collation/affinity without duplicating child rows. The result remains a bounded
 100-row lookup. No background counts or new connection lane are introduced.
+
+## v4 browse windows and auxiliary context
+
+Controlled Browse requests retain at most 100 rows / 4 MiB each, with the existing
+64 KiB cell cap. UI scroll windows reserve one 100-row page and 4 MiB in flight;
+retained plus pending browse values remain within 8 MiB. Effective browse row
+retention is clamp(configured rows, 200, 10000), with 100 rows reserved in flight.
+Query retention settings are unchanged. Page events have distinct tickets and
+are merged only into the matching primary owner, with complete delivery and
+unchanged table/column metadata. Drafts pause page fetch/eviction. Readouts and
+exports describe the retained window, not the complete table.
+
+`Peek` validates the current child FK definition before a bound parent lookup,
+retaining at most one row / 512 KiB. `ReferenceCount` validates the relationship
+and uses the same parent-side affinity/collation EXISTS predicates as References,
+without the 100-row lookup LIMIT. Both have auxiliary owners in the UI; completion
+still reports actual editor transaction state. Count is an explicit full scan,
+not an automatically scheduled operation. Context caches are bounded independently
+and invalidated on primary navigation, schema refresh and writes.
+
+Turso 0.8.3's public Connection exposes no interruption/progress API. Row/byte
+budgets and busy timeout do not bound scan execution. Automatic counts remain
+deferred until isolated cancellable execution is implemented and verified. No
+new execution-timeout or rollback guarantee is introduced by the redesign.

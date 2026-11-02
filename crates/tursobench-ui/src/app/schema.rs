@@ -277,7 +277,8 @@ impl App {
                         ));
                     });
                 }
-            } else if self.tools.inspection_ticket.is_none()
+            } else if object.is_none_or(|o| o.kind == "table" || o.kind == "view")
+                && self.tools.inspection_ticket.is_none()
                 && ui.button("Load structure").clicked()
             {
                 load = true;
@@ -492,7 +493,9 @@ impl App {
             shell::TableView::Data
         };
         self.tools.pages.restore_rows = if self.browse.is_some() {
-            entry.window_rows
+            entry
+                .window_rows
+                .min(self.preferences.row_limit.clamp(200, 10_000) - 100)
         } else {
             0
         };
@@ -538,6 +541,11 @@ impl App {
         self.tools.detail = entry
             .record
             .and_then(|values| self.result.rows.iter().position(|r| *r == values));
+        self.tools.grid_selection = self.inspect.map(|cell| super::selection::Selection {
+            ticket: self.result.current,
+            anchor: cell,
+            cursor: cell,
+        });
         self.tools.restore_scroll = Some(entry.scroll);
     }
 }

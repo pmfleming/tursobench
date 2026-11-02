@@ -10,6 +10,7 @@ pub(super) struct Pages {
     pub end: Option<usize>,
     pub error: String,
     pub restore_rows: usize,
+    pub retry_previous: bool,
 }
 pub(super) struct Pending {
     pub result: ResultSet,
@@ -58,6 +59,7 @@ impl App {
         };
         self.sequence += 1;
         let ticket = session.ticket(self.sequence, self.generation);
+        self.tools.pages.retry_previous = previous;
         match session.submit(Request {
             ticket,
             operation: Operation::Browse(spec.clone()),

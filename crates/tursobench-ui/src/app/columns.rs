@@ -101,7 +101,19 @@ impl App {
                         )
                         .size()
                         .x
-                        + 70.0;
+                        + 36.0
+                        + if self.view == View::Browse
+                            && self.tools.inspection.as_ref().is_some_and(|info| {
+                                info.table.columns.get(i).is_some_and(|c| c.primary_key > 0)
+                                    || info.foreign_keys.iter().any(|k| {
+                                        k.columns.iter().any(|(name, _)| name == &col.name)
+                                    })
+                            })
+                        {
+                            15.0
+                        } else {
+                            0.0
+                        };
                     self.result
                         .rows
                         .iter()

@@ -257,6 +257,7 @@ impl App {
                     .show(ui)
             })
             .inner;
+        self.tools.sql_focus = Some(output.response.id);
         if let Some(cursor) = output.cursor_range {
             let range = cursor.as_sorted_char_range();
             self.tools.selection = range.start.0..range.end.0;
@@ -368,6 +369,7 @@ impl App {
                     *surface = false;
                 }
                 if was_confirming_close && !self.confirm_close {
+                    self.pending_database = None;
                     self.quit = false;
                 }
             }
@@ -398,13 +400,19 @@ impl App {
             }
         }
         if consumed(egui::Modifiers::NONE, egui::Key::F5) {
-            if self.ui.sql_open && ctx.egui_wants_keyboard_input() {
+            if self.ui.sql_open
+                && self.tools.sql_focus.is_some()
+                && ctx.memory(|m| m.focused()) == self.tools.sql_focus
+            {
                 self.run_sql();
-            } else if self.ui.nav == shell::Nav::Overview {
+            } else if self.tools.tree_focus.is_some()
+                && ctx.memory(|m| m.focused()) == self.tools.tree_focus
+                || self.ui.nav == shell::Nav::Overview
+            {
                 self.refresh_catalog();
                 self.load_diagram();
             } else if self.view == View::Browse {
-                self.reload();
+                self.refresh_table();
             }
         }
         if consumed(egui::Modifiers::CTRL, egui::Key::J) {
@@ -452,12 +460,6 @@ impl App {
             } else {
                 self.return_to_table();
             }
-        }
-        if !ctx.egui_wants_keyboard_input()
-            && consumed(egui::Modifiers::NONE, egui::Key::Space)
-            && matches!(self.ui.nav, shell::Nav::Table | shell::Nav::Result)
-        {
-            self.toggle_inspector();
         }
         if !ctx.egui_wants_keyboard_input()
             && !self.has_drafts()

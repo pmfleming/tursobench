@@ -19,6 +19,7 @@ impl App {
         if self.view == View::Browse && self.table.as_ref().is_some_and(|table| table.name == name)
         {
             self.ui.nav = Nav::Table;
+            self.tools.ddl = None;
             self.ui.unfolded = Some(name);
         } else {
             self.browse_table(name);
@@ -107,11 +108,14 @@ impl App {
                 });
             return;
         }
-        ui.add(
+        let find = ui.add(
             egui::TextEdit::singleline(&mut self.tools.schema_filter)
                 .hint_text("Find tables or columns…")
                 .desired_width(ui.available_width()),
         );
+        if find.has_focus() {
+            self.tools.tree_focus = Some(find.id);
+        }
         ui.menu_button("Tables ⋯", |ui| {
             if ui.button("Refresh schema · F5").clicked() {
                 self.refresh_catalog();
@@ -128,12 +132,12 @@ impl App {
             let filter=self.tools.schema_filter.to_lowercase();
             let related=self.ui.hover_table.as_deref().map(|t|self.related_tables(t)).unwrap_or_default();
             let mut hovered=None;
-            for (kind,title,icon) in [("table","Tables",Icon::Data),("view","Views",Icon::Data),("system","System",Icon::System)] {
+            for (kind,title,icon) in [("table","Tables",Icon::Data),("view","Views",Icon::Data),("system","System",Icon::System),("index","Indexes",Icon::Columns),("trigger","Triggers",Icon::System)] {
                 let objects:Vec<_>=self.schema.iter().filter(|o| {
                     let system=o.name.starts_with("__turso_internal_");
                     (if kind=="system"{o.kind=="table"&&system}else{o.kind==kind&&!system}) && (o.name.to_lowercase().contains(&filter) || self.loaded_inspection(&o.name).is_some_and(|i| i.table.columns.iter().any(|c| c.name.to_lowercase().contains(&filter))))
                 }).map(|o| o.name.clone()).collect();
-                egui::CollapsingHeader::new(format!("{title} · {}",objects.len())).id_salt(("nav-group",kind)).default_open(kind!="system").show(ui,|ui| {
+                egui::CollapsingHeader::new(format!("{title} · {}",objects.len())).id_salt(("nav-group",kind)).default_open(kind=="table" || kind=="view" || !filter.is_empty()).show(ui,|ui| {
                     for name in objects {
                         if self.sidebar_object(ui, &name, if kind == "system" { "table" } else { kind }, icon, related.contains(&name)) {
                             hovered = Some(name);
@@ -153,6 +157,24 @@ impl App {
         icon: Icon,
         related: bool,
     ) -> bool {
+        if kind == "index" || kind == "trigger" {
+            let selected = self.tools.ddl.as_ref().is_some_and(|o| o.name == name);
+            let response = tree_row(ui, name, "DDL", icon, selected, false, (22.0, 0.0));
+            if response.has_focus() {
+                self.tools.tree_focus = Some(response.id);
+            }
+            if (response.clicked()
+                || response.has_focus()
+                    && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)))
+                && let Some(object) = self.schema.iter().find(|o| o.name == name).cloned()
+            {
+                self.ui.diagram.selected = Some(object.table.clone());
+                self.tools.ddl = Some(object);
+                self.ui.nav = Nav::Table;
+                self.ui.table_view = TableView::Structure;
+            }
+            return response.hovered();
+        }
         let mut hovered = false;
         let selected = self.view == View::Browse
             && self.ui.nav == Nav::Table
@@ -184,6 +206,9 @@ impl App {
                 format!("{name} · {kind}"),
             )
         });
+        if response.has_focus() {
+            self.tools.tree_focus = Some(response.id);
+        }
         if arrow.clicked()
             || response.has_focus()
                 && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight))
@@ -196,7 +221,10 @@ impl App {
             if !unfolded && self.loaded_inspection(name).is_none() {
                 self.request_inspection(name.to_owned());
             }
-        } else if response.clicked() {
+        } else if response.clicked()
+            || response.has_focus()
+                && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
+        {
             self.activate_table(name.to_owned());
         }
         if response.has_focus()
@@ -264,15 +292,22 @@ impl App {
 
     pub(super) fn select_tool(&mut self, panel: ToolPanel) {
         if panel == ToolPanel::Settings {
+            if self.ui.nav != Nav::Settings {
+                self.ui.settings_return = Some(self.ui.nav);
+            }
             self.ui.nav = Nav::Settings;
         } else {
             self.ui.sidebar = panel;
             if self.ui.nav == Nav::Settings {
-                self.ui.nav = if self.view == View::Browse {
-                    Nav::Table
-                } else {
-                    Nav::Result
-                };
+                self.ui.nav =
+                    self.ui
+                        .settings_return
+                        .take()
+                        .unwrap_or(if self.view == View::Browse {
+                            Nav::Table
+                        } else {
+                            Nav::Result
+                        });
             }
         }
     }

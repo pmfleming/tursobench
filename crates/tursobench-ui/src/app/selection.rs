@@ -2,11 +2,17 @@ use super::{App, results::CellKind, shell};
 use eframe::egui;
 use tursobench_core::{Ticket, Value};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct Selection {
     pub ticket: Option<Ticket>,
     pub anchor: (usize, usize),
     pub cursor: (usize, usize),
+}
+pub(super) struct SummaryCache {
+    selection: Option<Selection>,
+    visible: Vec<usize>,
+    rows: usize,
+    text: String,
 }
 pub(super) struct InlineEdit {
     pub row: usize,
@@ -91,7 +97,55 @@ impl App {
             })
             .collect()
     }
-    pub(super) fn selection_summary(&self) -> String {
+    pub(super) fn selection_tsv(&self) -> Result<String, String> {
+        let mut text = String::new();
+        let mut last = None;
+        for (r, c) in self.selected_cells() {
+            if let Some(previous) = last {
+                text.push(if previous == r { '\t' } else { '\n' });
+            }
+            last = Some(r);
+            let cell = crate::export::cell_text(&self.result.rows[r][c]);
+            if cell.contains(['\t', '\n', '\r', '"']) {
+                text.push('"');
+                text.push_str(&cell.replace('"', "\"\""));
+                text.push('"');
+            } else {
+                text.push_str(&cell);
+            }
+            if text.len() > 2 * 1024 * 1024 {
+                return Err("Selection exceeds 2 MiB clipboard budget; export instead".into());
+            }
+        }
+        Ok(text)
+    }
+    pub(super) fn selection_summary(&mut self) -> String {
+        let selection = self
+            .tools
+            .grid_selection
+            .filter(|s| s.ticket == self.result.current);
+        if selection.is_none() {
+            return String::new();
+        }
+        let visible = self.visible_columns();
+        let rows = self.result.rows.len();
+        if let Some(c) = &self.tools.summary_cache
+            && c.selection == selection
+            && c.visible == visible
+            && c.rows == rows
+        {
+            return c.text.clone();
+        }
+        let text = self.compute_selection_summary();
+        self.tools.summary_cache = Some(SummaryCache {
+            selection,
+            visible,
+            rows,
+            text: text.clone(),
+        });
+        text
+    }
+    fn compute_selection_summary(&self) -> String {
         let cells = self.selected_cells();
         if cells.is_empty() {
             return String::new();
@@ -216,28 +270,10 @@ impl App {
             return;
         };
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::C)) {
-            let mut rows = Vec::<Vec<String>>::new();
-            let mut last = None;
-            let mut bytes = 0;
-            for (r, c) in self.selected_cells() {
-                if last != Some(r) {
-                    rows.push(vec![]);
-                    last = Some(r);
-                }
-                let text = crate::export::cell_text(&self.result.rows[r][c]);
-                bytes += text.len() + 1;
-                if bytes > 8 * 1024 * 1024 {
-                    self.status = "Selection exceeds clipboard budget".into();
-                    return;
-                }
-                rows.last_mut().unwrap().push(text);
+            match self.selection_tsv() {
+                Ok(text) => ctx.copy_text(text),
+                Err(error) => self.status = error,
             }
-            ctx.copy_text(
-                rows.into_iter()
-                    .map(|r| r.join("\t"))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            );
             return;
         }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
@@ -282,6 +318,18 @@ impl App {
                 }
                 self.select_cell(row, cols[col], shift);
                 self.tools.scroll_to_cell = true;
+                let y = row as f32 * 25.0;
+                let current = self.tools.grid_scroll.y;
+                let next = if y < current {
+                    y
+                } else if y + 25.0 > current + self.tools.grid_height {
+                    (y + 25.0 - self.tools.grid_height).max(0.0)
+                } else {
+                    current
+                };
+                if next != current {
+                    self.tools.restore_scroll = Some(egui::vec2(self.tools.grid_scroll.x, next));
+                }
                 break;
             }
         }
