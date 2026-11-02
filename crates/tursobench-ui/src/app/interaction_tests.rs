@@ -17,6 +17,7 @@ fn wait(app: &mut App, ctx: &egui::Context) {
     loop {
         app.poll(ctx);
         if app.ready
+            && !app.closing
             && app.active.is_none()
             && app.catalog_ticket.is_none()
             && app.commit_ticket.is_none()
@@ -707,5 +708,82 @@ fn rapid_map_selection_keeps_latest_rows_and_structure_including_views() {
     app.ui.drawer.view = shell::TableView::Structure;
     frame(&mut app, &ctx, vec![]);
     assert_eq!(app.ui.diagram.selected.as_deref(), Some("v"));
+    app.close();
+}
+
+#[test]
+fn sql_drawer_keeps_result_identity_and_read_transactions_visible() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sql-drawer.db");
+    crate::test_support::create(
+        &path,
+        &[
+            "CREATE TABLE a(id INTEGER PRIMARY KEY)",
+            "INSERT INTO a VALUES(1)",
+        ],
+    );
+    let (ctx, mut app) = connected(&path, false);
+    frame(&mut app, &ctx, vec![]);
+    assert!(app.ui.transaction_rects.is_empty());
+    app.toggle_sql();
+    app.run_text("SELECT 42 AS answer".into(), None);
+    wait(&mut app, &ctx);
+    assert_eq!(app.ui.workspace, shell::Workspace::Diagram);
+    assert_eq!(app.view, View::Query);
+    assert!(app.table.is_none());
+    assert_eq!(app.result.rows, vec![vec![Value::Integer(42)]]);
+    let ticket = app.result.current;
+    app.toggle_sql();
+    assert!(!app.ui.sql_open);
+    frame(&mut app, &ctx, vec![]);
+    assert_eq!(app.result.current, ticket);
+    app.toggle_sql();
+    app.run_text("BEGIN".into(), None);
+    wait(&mut app, &ctx);
+    assert_eq!(app.transaction, TransactionState::Active);
+    app.toggle_sql();
+    app.ui.drawer.open = false;
+    frame(&mut app, &ctx, vec![]);
+    assert_eq!(app.ui.transaction_rects.len(), 3);
+    app.run_text("ROLLBACK".into(), None);
+    wait(&mut app, &ctx);
+    assert_eq!(app.transaction, TransactionState::Autocommit);
+    app.open_palette();
+    frame(&mut app, &ctx, vec![]);
+    app.ui.palette_query = "a.id".into();
+    frame(
+        &mut app,
+        &ctx,
+        vec![egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+    wait(&mut app, &ctx);
+    assert_eq!(app.table.as_ref().unwrap().name, "a");
+    assert_eq!(app.tools.highlight_column, Some(("a".into(), "id".into())));
+    assert!(!app.ui.palette_open);
+    app.close();
+}
+
+#[test]
+fn access_switch_waits_for_closed_then_opens_a_new_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("access.db");
+    crate::test_support::create(&path, &["CREATE TABLE a(id INTEGER PRIMARY KEY)"]);
+    let (ctx, mut app) = connected(&path, false);
+    let old_session = app.session.as_ref().unwrap().id;
+    app.pending_access = Some(true);
+    app.close();
+    assert!(app.closing);
+    assert!(!app.writable);
+    wait(&mut app, &ctx);
+    assert!(app.writable);
+    assert_ne!(app.session.as_ref().unwrap().id, old_session);
+    assert_eq!(app.ui.workspace, shell::Workspace::Diagram);
+    assert!(app.pending_access.is_none());
     app.close();
 }

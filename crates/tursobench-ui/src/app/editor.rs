@@ -292,20 +292,27 @@ impl App {
     }
     pub(super) fn shortcuts(&mut self, ctx: &egui::Context) {
         let consumed = |modifiers, key| ctx.input_mut(|i| i.consume_key(modifiers, key));
-        if self.ui.workspace == shell::Workspace::Query
+        if self.ui.palette_open {
+            if consumed(egui::Modifiers::NONE, egui::Key::Escape) {
+                self.ui.palette_open = false;
+            }
+            return;
+        }
+        if (self.ui.workspace == shell::Workspace::Query || self.ui.sql_open && self.ui.drawer.open)
             && consumed(
                 egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
                 egui::Key::Enter,
             )
         {
             self.run_selection();
-        } else if self.ui.workspace == shell::Workspace::Query
+        } else if (self.ui.workspace == shell::Workspace::Query
+            || self.ui.sql_open && self.ui.drawer.open)
             && (consumed(egui::Modifiers::CTRL, egui::Key::Enter)
                 || consumed(egui::Modifiers::NONE, egui::Key::F5))
         {
             self.run_sql();
         }
-        if self.ui.workspace == shell::Workspace::Query
+        if (self.ui.workspace == shell::Workspace::Query || self.ui.sql_open && self.ui.drawer.open)
             && consumed(egui::Modifiers::CTRL, egui::Key::Space)
         {
             self.tools.complete = true;
@@ -318,13 +325,34 @@ impl App {
             self.apply_theme(ctx);
             self.store.save(&self.preferences);
         }
-        if self.ui.workspace != shell::Workspace::Diagram
+        if (self.ui.workspace != shell::Workspace::Diagram
+            || self.ui.drawer.open && self.ui.drawer.view == shell::TableView::Data)
             && consumed(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::C)
         {
             self.copy_results(ctx, crate::export::Format::Tsv);
         }
         if consumed(egui::Modifiers::CTRL, egui::Key::O) && self.session.is_none() {
             self.choose_file(ctx);
+        }
+        if consumed(egui::Modifiers::CTRL, egui::Key::K) {
+            self.open_palette();
+        }
+        if consumed(egui::Modifiers::CTRL, egui::Key::J) {
+            self.toggle_sql();
+        }
+        if consumed(egui::Modifiers::NONE, egui::Key::Escape) {
+            if self.ui.palette_open {
+                self.ui.palette_open = false;
+            } else if self.ui.export_open {
+                self.ui.export_open = false;
+            } else if self.ui.inspector_open {
+                self.ui.inspector_open = false;
+            } else if self.ui.drawer.expanded {
+                self.ui.drawer.expanded = false;
+            } else {
+                self.ui.drawer.open = false;
+                self.ui.sql_open = false;
+            }
         }
         if consumed(egui::Modifiers::ALT, egui::Key::ArrowLeft) {
             self.navigate_back();

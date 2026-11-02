@@ -77,7 +77,8 @@ impl App {
                     let sorted=self.browse.as_ref().filter(|b|b.sort==Some(i)).map_or("",|b|if b.descending{" ↓"}else{" ↑"});
                     let (rect,response)=ui.allocate_exact_size(egui::vec2(self.tools.widths[i],42.0),egui::Sense::click());
                     response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,ui.is_enabled(),format!("Column {}{tags}{sorted}",column.name)));
-                    let painter=ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));painter.rect_filled(rect,2.0,ui.visuals().faint_bg_color);
+                    let highlighted = self.tools.highlight_column.as_ref().is_some_and(|(table, name)| self.view == View::Browse && self.table.as_ref().is_some_and(|t| &t.name == table) && &column.name == name);
+                    let painter=ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));painter.rect_filled(rect,2.0,if highlighted { ui.visuals().selection.bg_fill } else { ui.visuals().faint_bg_color });
                     painter.text(rect.left_top()+egui::vec2(7.0,4.0),egui::Align2::LEFT_TOP,format!("{}{tags}{sorted}",column.name),egui::FontId::monospace(12.0),ui.visuals().text_color());
                     painter.text(rect.left_bottom()+egui::vec2(7.0,-5.0),egui::Align2::LEFT_BOTTOM,column.declared_type.as_deref().unwrap_or("runtime type"),egui::FontId::proportional(11.0),ui.visuals().weak_text_color());
                     let response=response.on_hover_text(format!("{}\nPK = key position; IX = declared leading index; FK = foreign key. Index method/partial predicate may not apply. Drag the right edge or right-click to resize.",column.name));

@@ -84,7 +84,14 @@ impl App {
                     {
                         self.sql = bookmark.sql.clone();
                         self.params = "[]".into();
-                        self.ui.workspace = shell::Workspace::Query;
+                        self.ui.workspace = if self.session.is_some() {
+                            shell::Workspace::Diagram
+                        } else {
+                            shell::Workspace::Query
+                        };
+                        self.ui.sql_open = true;
+                        self.ui.drawer.open = true;
+                        self.ui.drawer.view = shell::TableView::Data;
                     }
                     if ui
                         .add(

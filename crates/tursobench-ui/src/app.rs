@@ -2,6 +2,7 @@ use tursobench_core::{
     Access, Browse, CommitOutcome, ConnectionSettings, DraftBatch, EventKind, ResultSet,
     SchemaObject, Table, Ticket, TransactionState, Value,
 };
+mod commands;
 mod databases;
 mod diagram;
 mod editing;
@@ -42,6 +43,7 @@ pub struct App {
     exclusive: bool,
     writable: bool,
     confirm_close: bool,
+    pending_access: Option<bool>,
     session: Option<Session>,
     ready: bool,
     closing: bool,
@@ -104,6 +106,7 @@ impl App {
             exclusive: false,
             writable: false,
             confirm_close: false,
+            pending_access: None,
             session: None,
             ready: false,
             closing: false,
@@ -191,6 +194,7 @@ impl App {
                 self.ui.map_list = false;
                 self.ui.diagram = Default::default();
                 self.ui.drawer = Default::default();
+                self.ui.sql_open = false;
                 self.tools.ddl = None;
                 self.inspect = None;
                 self.tools.detail = None;
@@ -239,16 +243,18 @@ impl App {
                 self.result.start(ticket);
                 self.active = Some(ticket);
                 self.view = view;
-                self.ui.workspace =
-                    if view == View::Browse && self.ui.workspace == shell::Workspace::Diagram {
-                        self.ui.drawer.open = true;
-                        self.ui.drawer.view = shell::TableView::Data;
-                        shell::Workspace::Diagram
-                    } else if matches!(view, View::Query | View::Explain) {
-                        shell::Workspace::Query
-                    } else {
-                        shell::Workspace::Data
-                    };
+                self.ui.workspace = if self.ui.workspace == shell::Workspace::Diagram {
+                    self.ui.drawer.open = true;
+                    if matches!(view, View::Query | View::Explain) {
+                        self.ui.sql_open = true;
+                    }
+                    self.ui.drawer.view = shell::TableView::Data;
+                    shell::Workspace::Diagram
+                } else if matches!(view, View::Query | View::Explain) {
+                    shell::Workspace::Query
+                } else {
+                    shell::Workspace::Data
+                };
                 if view != View::Browse {
                     self.tools.export_table = "exported_rows".into();
                 }
@@ -290,6 +296,7 @@ impl App {
             self.tools.ddl = None;
             self.tools.related = None;
             self.browse = Some(browse);
+            self.ui.sql_open = false;
             self.ui.diagram.selected = Some(name);
             self.ui.diagram.freeze_camera();
         }
@@ -343,6 +350,7 @@ impl App {
         self.poll_discovery(ctx);
         let mut events = Vec::new();
         let mut disconnected = false;
+        let polled_session = self.session.as_ref().map(|s| s.id);
         if let Some(s) = &self.session {
             loop {
                 match s.events.try_recv() {
@@ -451,6 +459,12 @@ impl App {
                     self.load_diagram();
                 }
                 EventKind::Closed { rollback } => {
+                    let reopen = if rollback.is_ok() && !self.uncertain_edit && !self.quit {
+                        self.pending_access.take()
+                    } else {
+                        self.pending_access = None;
+                        None
+                    };
                     self.catalog_ticket = None;
                     self.tools.pending_history.clear();
                     self.tools.inspection_ticket = None;
@@ -469,6 +483,10 @@ impl App {
                     self.ready = false;
                     self.active = None;
                     self.closing = false;
+                    if let Some(writable) = reopen {
+                        self.writable = writable;
+                        self.open(ctx);
+                    }
                     if self.quit && self.export_job.is_none() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
@@ -546,7 +564,14 @@ impl App {
                 }
             }
         }
-        if disconnected && self.session.is_some() {
+        if disconnected
+            && self
+                .session
+                .as_ref()
+                .is_some_and(|s| Some(s.id) == polled_session)
+        {
+            self.pending_access = None;
+            self.catalog_ticket = None;
             self.uncertain_edit |= self.commit_ticket.take().is_some();
             self.log_outcome(
                 "Worker disconnected unexpectedly; execution and rollback outcome UNKNOWN".into(),
