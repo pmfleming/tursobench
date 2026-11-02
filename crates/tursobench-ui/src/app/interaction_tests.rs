@@ -577,6 +577,13 @@ fn selection_named_history_metadata_reference_back_and_tools_render() {
     assert_eq!(app.table.as_ref().unwrap().name, "parent");
     assert_eq!(app.result.rows.len(), 1);
     assert_eq!(app.export_scope(), "related-row-lookup");
+    app.follow_incoming(0, "child".into(), key.clone());
+    wait(&mut app, &ctx);
+    assert_eq!(app.table.as_ref().unwrap().name, "child");
+    assert_eq!(app.result.rows.len(), 1);
+    app.navigate_back();
+    wait(&mut app, &ctx);
+    assert_eq!(app.ui.diagram.selected.as_deref(), Some("parent"));
     app.tools.detail = Some(0);
     app.tools.show_metadata = true;
     app.tools.help = true;
@@ -776,6 +783,8 @@ fn access_switch_waits_for_closed_then_opens_a_new_session() {
     crate::test_support::create(&path, &["CREATE TABLE a(id INTEGER PRIMARY KEY)"]);
     let (ctx, mut app) = connected(&path, false);
     let old_session = app.session.as_ref().unwrap().id;
+    app.ui.diagram.zoom = 0.7;
+    app.ui.diagram.pan = egui::vec2(30.0, 42.0);
     app.pending_access = Some(true);
     app.close();
     assert!(app.closing);
@@ -785,5 +794,67 @@ fn access_switch_waits_for_closed_then_opens_a_new_session() {
     assert_ne!(app.session.as_ref().unwrap().id, old_session);
     assert_eq!(app.ui.workspace, shell::Workspace::Diagram);
     assert!(app.pending_access.is_none());
+    assert_eq!(app.ui.diagram.zoom, 0.7);
+    assert_eq!(app.ui.diagram.pan, egui::vec2(30.0, 42.0));
+    app.close();
+}
+
+#[test]
+fn drawer_headers_fit_small_large_and_scaled_viewports_in_both_themes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("drawer-viewports.db");
+    crate::test_support::create(
+        &path,
+        &[
+            "CREATE TABLE a(id INTEGER PRIMARY KEY, text TEXT)",
+            "INSERT INTO a VALUES(1,'value')",
+        ],
+    );
+    let (ctx, mut app) = connected(&path, false);
+    app.browse_table("a".into());
+    wait(&mut app, &ctx);
+    for dark in [true, false] {
+        app.preferences.dark_mode = dark;
+        app.apply_theme(&ctx);
+        for (width, height, scale) in [
+            (960.0, 640.0, 1.0),
+            (1280.0, 720.0, 1.0),
+            (1366.0, 768.0, 1.0),
+            (1920.0, 1080.0, 1.0),
+            (3440.0, 1440.0, 1.0),
+            (1440.0, 960.0, 1.5),
+        ] {
+            ctx.set_pixels_per_point(scale);
+            for expanded in [false, true] {
+                for structure in [false, true] {
+                    app.ui.drawer.expanded = expanded;
+                    app.ui.drawer.view = if structure {
+                        shell::TableView::Structure
+                    } else {
+                        shell::TableView::Data
+                    };
+                    for _ in 0..2 {
+                        let mut out = ctx.run_ui(
+                            egui::RawInput {
+                                screen_rect: Some(egui::Rect::from_min_size(
+                                    egui::Pos2::ZERO,
+                                    egui::vec2(width, height),
+                                )),
+                                ..Default::default()
+                            },
+                            |ui| app.render(ui),
+                        );
+                        out.textures_delta.clear();
+                    }
+                    assert!(
+                        ctx.content_rect().contains_rect(app.ui.drawer_header),
+                        "{width}x{height}, expanded={expanded}: {:?}",
+                        app.ui.drawer_header
+                    );
+                    assert!(app.ui.drawer_header.width() > 200.0);
+                }
+            }
+        }
+    }
     app.close();
 }

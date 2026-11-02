@@ -28,7 +28,7 @@ fn persistent_editor_isolated_browse_foreign_keys_and_close_rollback() {
         offset: 0,
         sort: None,
         descending: false,
-        filter: None,
+        filters: vec![],
     }));
     let r = r.result;
     assert!(r.rows.is_empty());

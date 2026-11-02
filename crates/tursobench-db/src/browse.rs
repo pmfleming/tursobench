@@ -1,6 +1,6 @@
 use crate::worker::{failure, from_engine};
 use turso::Connection;
-use tursobench_core::{Browse, Failure, Table, TableColumn, Value, quote_identifier};
+use tursobench_core::{Browse, Failure, FilterOp, Table, TableColumn, Value, quote_identifier};
 
 pub(crate) async fn describe(c: &Connection, name: &str) -> Result<Table, Failure> {
     if name.len() > 64 * 1024 {
@@ -84,11 +84,63 @@ pub(crate) fn browse_sql(table: &Table, spec: &Browse) -> Result<(String, Vec<Va
             .ok_or_else(|| Failure::input("Invalid column index"))
     };
     let mut params = Vec::new();
-    let filter = if let Some((i, value)) = &spec.filter {
-        params.push(value.clone());
-        format!(" WHERE {} IS ?1", column(*i)?)
-    } else {
+    if spec.filters.len() > 32
+        || spec.filters.iter().map(|f| f.value.bytes()).sum::<usize>() > 1024 * 1024
+    {
+        return Err(Failure::input(
+            "Filters exceed the 32-predicate / 1 MiB budget",
+        ));
+    }
+    let mut predicates = Vec::new();
+    for filter in &spec.filters {
+        let col = column(filter.column)?;
+        if filter.op.unary() {
+            predicates.push(format!(
+                "{col} {}",
+                if filter.op == FilterOp::IsNull {
+                    "IS NULL"
+                } else {
+                    "IS NOT NULL"
+                }
+            ));
+            continue;
+        }
+        let value = if filter.op == FilterOp::Contains {
+            let Value::Text(text) = &filter.value else {
+                return Err(Failure::input("Contains requires a TEXT value"));
+            };
+            Value::Text(format!(
+                "%{}%",
+                text.replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_")
+            ))
+        } else {
+            filter.value.clone()
+        };
+        params.push(value);
+        let op = match filter.op {
+            FilterOp::Equal => "IS",
+            FilterOp::NotEqual => "IS NOT",
+            FilterOp::Less => "<",
+            FilterOp::Greater => ">",
+            FilterOp::Contains => "LIKE",
+            _ => unreachable!(),
+        };
+        predicates.push(format!(
+            "{col} {op} ?{}{}",
+            params.len(),
+            if filter.op == FilterOp::Contains {
+                " ESCAPE '\\'"
+            } else {
+                ""
+            }
+        ));
+    }
+    let filter = if predicates.is_empty() {
         String::new()
+    } else {
+        format!(" WHERE {}", predicates.join(" AND "))
     };
     let mut order = Vec::new();
     if let Some(i) = spec.sort {

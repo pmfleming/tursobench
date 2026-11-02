@@ -66,7 +66,11 @@ fn exact_project_schemas_open_browse_filter_page_and_preserve_readonly_files() {
             offset: 0,
             sort: Some(key),
             descending: true,
-            filter: Some((key, wanted)),
+            filters: vec![tursobench_core::Filter {
+                column: key,
+                op: tursobench_core::FilterOp::Equal,
+                value: wanted,
+            }],
         }));
         assert_eq!(filtered.result.rows, vec![first.rows[0].clone()]);
         assert_eq!(

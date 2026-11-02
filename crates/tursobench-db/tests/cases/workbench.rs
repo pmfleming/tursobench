@@ -315,3 +315,143 @@ fn named_parameters_and_explain_are_bound_and_non_mutating() {
     );
     client.close();
 }
+
+#[test]
+fn typed_filter_chips_bind_values_escape_contains_and_combine_null_predicates() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("filters.db");
+    common::create(
+        &path,
+        &[
+            r#"CREATE TABLE "filter rows"(id INTEGER PRIMARY KEY, "odd""col" TEXT, n INTEGER, bytes BLOB)"#,
+            r#"INSERT INTO "filter rows" VALUES(1,'100%_\literal',1,X'00FF'),(2,'x'' OR 1=1 --',3,X'01'),(3,NULL,9223372036854775807,NULL)"#,
+        ],
+    );
+    let before = snapshot(dir.path());
+    let mut c = Client::open(&path, Access::ReadOnly);
+    let mut run = |filters: Vec<Filter>| {
+        c.run(Operation::Browse(Browse {
+            table: "filter rows".into(),
+            offset: 0,
+            sort: None,
+            descending: false,
+            filters,
+        }))
+    };
+    let f = |column, op, value| Filter { column, op, value };
+    for (filters, ids) in [
+        (
+            vec![f(1, FilterOp::Contains, Value::Text("%_\\".into()))],
+            vec![1],
+        ),
+        (
+            vec![f(1, FilterOp::Equal, Value::Text("x' OR 1=1 --".into()))],
+            vec![2],
+        ),
+        (
+            vec![f(3, FilterOp::Equal, Value::Blob(vec![0, 255]))],
+            vec![1],
+        ),
+        (
+            vec![f(2, FilterOp::Equal, Value::Integer(i64::MAX))],
+            vec![3],
+        ),
+        (vec![f(1, FilterOp::IsNull, Value::Null)], vec![3]),
+        (vec![f(1, FilterOp::Equal, Value::Null)], vec![3]),
+        (vec![f(1, FilterOp::NotEqual, Value::Null)], vec![1, 2]),
+        (
+            vec![
+                f(1, FilterOp::IsNotNull, Value::Null),
+                f(0, FilterOp::Equal, Value::Integer(2)),
+            ],
+            vec![2],
+        ),
+        (
+            vec![
+                f(2, FilterOp::Greater, Value::Integer(1)),
+                f(2, FilterOp::Less, Value::Integer(4)),
+            ],
+            vec![2],
+        ),
+    ] {
+        let reply = run(filters);
+        assert!(reply.failure.is_none(), "{:?}", reply.failure);
+        assert!(
+            reply.result.completion.as_ref().unwrap().error.is_none(),
+            "{:?}",
+            reply.result.completion
+        );
+        assert_eq!(
+            reply
+                .result
+                .rows
+                .iter()
+                .map(|r| r[0].clone())
+                .collect::<Vec<_>>(),
+            ids.into_iter().map(Value::Integer).collect::<Vec<_>>()
+        );
+    }
+    assert!(
+        run(vec![f(0, FilterOp::Contains, Value::Integer(1))])
+            .failure
+            .is_some()
+    );
+    assert!(
+        run(vec![f(99, FilterOp::Equal, Value::Integer(1))])
+            .failure
+            .is_some()
+    );
+    assert!(
+        run(vec![f(0, FilterOp::Equal, Value::Integer(1)); 33])
+            .failure
+            .is_some()
+    );
+    c.close();
+    assert_eq!(snapshot(dir.path()), before);
+}
+
+#[test]
+fn reverse_references_use_parent_affinity_and_collation_and_reject_changed_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("reverse.db");
+    common::create(
+        &path,
+        &[
+            "CREATE TABLE parent(a INTEGER,b TEXT COLLATE NOCASE,PRIMARY KEY(a,b))",
+            "CREATE TABLE child(id INTEGER PRIMARY KEY,a TEXT,b TEXT,FOREIGN KEY(a,b) REFERENCES parent)",
+            "INSERT INTO parent VALUES(7,'Alpha')",
+            "INSERT INTO child VALUES(1,'007','alpha'),(2,'7','ALPHA'),(3,NULL,NULL)",
+        ],
+    );
+    let before = snapshot(dir.path());
+    let mut c = Client::open(&path, Access::ReadOnly);
+    let info = c.run(Operation::Inspect("child".into())).info.unwrap();
+    let key = info.foreign_keys[0].clone();
+    let values = vec![Value::Integer(7), Value::Text("Alpha".into())];
+    let reply = c.run(Operation::References {
+        table: "child".into(),
+        key: key.clone(),
+        values: values.clone(),
+    });
+    assert!(reply.failure.is_none(), "{:?}", reply.failure);
+    assert!(
+        reply.result.completion.as_ref().unwrap().error.is_none(),
+        "{:?}",
+        reply.result.completion
+    );
+    assert_eq!(reply.result.rows.len(), 2);
+    assert_eq!(reply.table.unwrap().name, "child");
+    let mut changed = key;
+    changed.columns[0].0 = "id".into();
+    assert!(
+        c.run(Operation::References {
+            table: "child".into(),
+            key: changed,
+            values
+        })
+        .failure
+        .is_some()
+    );
+    c.close();
+    assert_eq!(snapshot(dir.path()), before);
+}

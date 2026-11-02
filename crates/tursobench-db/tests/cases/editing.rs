@@ -26,7 +26,7 @@ fn composite_changed_keys_null_blob_and_defaults() {
         offset: 0,
         sort: None,
         descending: false,
-        filter: None,
+        filters: vec![],
     }));
     let ordered = nullable.result.rows;
     assert_eq!(ordered[0][2], Value::Text("A".into()));

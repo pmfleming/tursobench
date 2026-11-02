@@ -101,7 +101,7 @@ impl Client {
             offset,
             sort: None,
             descending: false,
-            filter: None,
+            filters: vec![],
         }));
         assert!(
             reply.result.completion.as_ref().unwrap().error.is_none(),

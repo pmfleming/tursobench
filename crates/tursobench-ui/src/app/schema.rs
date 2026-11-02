@@ -26,6 +26,12 @@ impl App {
     }
     pub(super) fn schema_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("Schema");
+        if self.catalog_ticket.is_some() {
+            ui.label("Loading catalog…");
+        }
+        if !self.catalog_error.is_empty() {
+            ui.colored_label(ui.visuals().error_fg_color, &self.catalog_error);
+        }
         ui.add(
             egui::TextEdit::singleline(&mut self.tools.schema_filter)
                 .hint_text("Search objects…")
@@ -40,14 +46,6 @@ impl App {
                 .clicked()
             {
                 self.refresh_catalog();
-            }
-            if ui.button("Diagram").clicked() {
-                self.ui.workspace = shell::Workspace::Diagram;
-                self.tools.ddl = None;
-                self.show_structure();
-                if self.ui.diagram.data.is_none() {
-                    self.load_diagram();
-                }
             }
         });
         let filter = self.tools.schema_filter.to_lowercase();
@@ -429,11 +427,11 @@ impl App {
             }
             keys.push((target, value.clone()));
         }
-        let previous = if let Some((table, keys)) = self.tools.related.clone() {
-            Some(Destination::Related(table, keys))
-        } else {
-            self.browse.clone().map(Destination::Page)
-        };
+        let previous = self
+            .tools
+            .related
+            .clone()
+            .or_else(|| self.browse.clone().map(Destination::Page));
         if self
             .submit(
                 Operation::Lookup {
@@ -454,20 +452,61 @@ impl App {
             self.table = None;
             self.ui.diagram.selected = Some(key.target.clone());
             self.tools.ddl = None;
-            self.tools.related = Some((key.target, keys));
+            self.tools.related = Some(Destination::Related(key.target, keys));
+        }
+    }
+    pub(super) fn follow_incoming(&mut self, row: usize, child: String, key: ForeignKey) {
+        if self.active.is_some() || self.view != View::Browse {
+            return;
+        }
+        let (Some(table), Some(values)) = (&self.table, self.result.rows.get(row)) else {
+            return;
+        };
+        if !table.name.eq_ignore_ascii_case(&key.target) {
+            return;
+        }
+        let mut bound = Vec::new();
+        for (_, target) in &key.columns {
+            let Some(target) = target else {
+                return;
+            };
+            let Some(index) = table
+                .columns
+                .iter()
+                .position(|c| c.name.eq_ignore_ascii_case(target))
+            else {
+                return;
+            };
+            let Some(value) = values.get(index).filter(|v| **v != Value::Null) else {
+                return;
+            };
+            bound.push(value.clone());
+        }
+        let destination = Destination::References(child.clone(), key, bound);
+        let previous = self
+            .tools
+            .related
+            .clone()
+            .or_else(|| self.browse.clone().map(Destination::Page));
+        if self.submit(destination.operation(), View::Browse).is_some() {
+            if let Some(previous) = previous {
+                self.tools.back.push(previous);
+                if self.tools.back.len() > 32 {
+                    self.tools.back.remove(0);
+                }
+            }
+            self.browse = None;
+            self.table = None;
+            self.tools.ddl = None;
+            self.ui.diagram.selected = Some(child);
+            self.tools.related = Some(destination);
         }
     }
     pub(super) fn navigate_back(&mut self) {
         let Some(destination) = self.tools.back.last().cloned() else {
             return;
         };
-        let operation = match &destination {
-            Destination::Page(b) => Operation::Browse(b.clone()),
-            Destination::Related(table, keys) => Operation::Lookup {
-                table: table.clone(),
-                keys: keys.clone(),
-            },
-        };
+        let operation = destination.operation();
         if self.submit(operation, View::Browse).is_some() {
             self.tools.back.pop();
             self.tools.ddl = None;
@@ -478,10 +517,10 @@ impl App {
                     self.browse = Some(b);
                     self.tools.related = None;
                 }
-                Destination::Related(t, k) => {
-                    self.ui.diagram.selected = Some(t.clone());
+                related => {
+                    self.ui.diagram.selected = Some(related.table().into());
                     self.browse = None;
-                    self.tools.related = Some((t, k));
+                    self.tools.related = Some(related);
                 }
             }
         }

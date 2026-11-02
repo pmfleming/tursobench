@@ -151,6 +151,16 @@ pub struct Preferences {
     pub slow_query_ms: u64,
     pub null_display: String,
     pub discovery: DiscoveryPreferences,
+    pub map_layouts: Vec<MapLayout>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MapLayout {
+    pub database: String,
+    pub positions: std::collections::BTreeMap<String, [f32; 2]>,
+    pub pan: [f32; 2],
+    pub zoom: f32,
+    pub all_columns: bool,
+    pub selected: Option<String>,
 }
 impl Default for Preferences {
     fn default() -> Self {
@@ -165,6 +175,7 @@ impl Default for Preferences {
             slow_query_ms: 500,
             null_display: "NULL".into(),
             discovery: DiscoveryPreferences::default(),
+            map_layouts: vec![],
         }
     }
 }
@@ -214,6 +225,35 @@ impl Preferences {
     }
     pub fn normalize(&mut self) {
         self.discovery.normalize();
+        self.map_layouts.truncate(20);
+        let mut layout_bytes = 0;
+        self.map_layouts.retain_mut(|layout| {
+            if layout.database.len() > 4096
+                || !Path::new(&layout.database).is_absolute()
+                || !layout.zoom.is_finite()
+                || !(0.0001..=2.5).contains(&layout.zoom)
+                || layout
+                    .pan
+                    .iter()
+                    .any(|n| !n.is_finite() || n.abs() > 10_000_000.0)
+            {
+                return false;
+            }
+            let mut count = 0;
+            layout.positions.retain(|name, pos| {
+                count += 1;
+                layout_bytes += name.len() + 16;
+                count <= 512
+                    && name.len() <= 4096
+                    && layout_bytes <= 256 * 1024
+                    && pos.iter().all(|n| n.is_finite() && n.abs() <= 10_000_000.0)
+            });
+            if layout.selected.as_ref().is_some_and(|s| s.len() > 4096) {
+                layout.selected = None;
+            }
+            layout_bytes += layout.database.len() + layout.selected.as_ref().map_or(0, String::len);
+            layout_bytes <= 256 * 1024
+        });
         self.row_limit = self.row_limit.clamp(1, 10_000);
         self.busy_timeout_ms = self.busy_timeout_ms.min(5000);
         self.slow_query_ms = self.slow_query_ms.clamp(1, 60_000);
@@ -380,6 +420,33 @@ mod tests {
         assert_eq!(loaded.discovery.excluded, prefs.discovery.excluded);
         fs_write(&path, r#"{"dark_mode":true}"#);
         assert!(load(&path).unwrap().discovery.enabled);
+    }
+    #[test]
+    fn map_layouts_round_trip_and_drop_invalid_geometry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let layout = MapLayout {
+            database: "/home/test/map.db".into(),
+            positions: [("table".into(), [32.0, 64.0])].into(),
+            pan: [10.0, 20.0],
+            zoom: 0.75,
+            all_columns: true,
+            selected: Some("table".into()),
+        };
+        let mut prefs = Preferences::default();
+        prefs.map_layouts.push(layout.clone());
+        save(&path, &prefs).unwrap();
+        assert_eq!(load(&path).unwrap().map_layouts, vec![layout.clone()]);
+        let mut invalid = layout.clone();
+        invalid.zoom = f32::NAN;
+        prefs.map_layouts.push(invalid);
+        prefs.map_layouts[0]
+            .positions
+            .insert("invalid".into(), [f32::INFINITY, 0.0]);
+        prefs.normalize();
+        assert_eq!(prefs.map_layouts, vec![layout]);
+        fs_write(&path, "{}");
+        assert!(load(&path).unwrap().map_layouts.is_empty());
     }
     fn fs_write(path: &Path, text: &str) {
         std::fs::write(path, text).unwrap();

@@ -195,12 +195,54 @@ impl Table {
     }
 }
 #[derive(Debug, Clone)]
+pub struct Filter {
+    pub column: usize,
+    pub op: FilterOp,
+    pub value: Value,
+}
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FilterOp {
+    #[default]
+    Equal,
+    NotEqual,
+    Less,
+    Greater,
+    Contains,
+    IsNull,
+    IsNotNull,
+}
+impl FilterOp {
+    pub const ALL: [Self; 7] = [
+        Self::Equal,
+        Self::NotEqual,
+        Self::Less,
+        Self::Greater,
+        Self::Contains,
+        Self::IsNull,
+        Self::IsNotNull,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Equal => "=",
+            Self::NotEqual => "≠",
+            Self::Less => "<",
+            Self::Greater => ">",
+            Self::Contains => "contains",
+            Self::IsNull => "is null",
+            Self::IsNotNull => "is not null",
+        }
+    }
+    pub fn unary(self) -> bool {
+        matches!(self, Self::IsNull | Self::IsNotNull)
+    }
+}
+#[derive(Debug, Clone)]
 pub struct Browse {
     pub table: String,
     pub offset: usize,
     pub sort: Option<usize>,
     pub descending: bool,
-    pub filter: Option<(usize, Value)>,
+    pub filters: Vec<Filter>,
 }
 
 #[derive(Debug, Clone)]
@@ -217,7 +259,7 @@ pub struct IndexInfo {
     pub partial: bool,
     pub columns: Vec<Option<String>>,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForeignKey {
     pub id: i64,
     pub target: String,

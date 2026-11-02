@@ -262,6 +262,14 @@ impl Worker<'_> {
                 self.output.send(ticket, EventKind::Table(table));
                 (self.browse, sql, parameters.into(), default)
             }
+            Operation::References { table: name, key, values } => {
+                let child = inspection::inspect(self.browse, &name).await?;
+                if !child.foreign_keys.contains(&key) { return Err(Failure::input("Relationship metadata changed; refresh the schema")); }
+                let parent = describe(self.browse, &key.target).await?;
+                let sql = inspection::references_sql(&child.table, &parent, &key, &values)?;
+                self.output.send(ticket, EventKind::Table(child.table));
+                (self.browse, sql, values.into(), default)
+            }
             Operation::Count(name) => (self.browse, format!("SELECT count(*) AS row_count FROM {}", quote_identifier(&name)), vec![].into(), default),
             Operation::Diagnostic(kind) => (self.browse, kind.sql().into(), vec![].into(), default),
             Operation::Schema => (self.browse, "SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY type, name".into(), vec![].into(), default),

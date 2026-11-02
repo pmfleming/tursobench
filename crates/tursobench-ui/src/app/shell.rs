@@ -64,6 +64,8 @@ pub(super) struct UiState {
     pub workspace_rect: egui::Rect,
     #[cfg(test)]
     pub transaction_rects: Vec<egui::Rect>,
+    #[cfg(test)]
+    pub drawer_header: egui::Rect,
 }
 impl UiState {
     pub fn new(ctx: &egui::Context) -> Self {
@@ -92,6 +94,8 @@ impl UiState {
             workspace_rect: egui::Rect::NOTHING,
             #[cfg(test)]
             transaction_rects: vec![],
+            #[cfg(test)]
+            drawer_header: egui::Rect::NOTHING,
         }
     }
 }
@@ -266,7 +270,10 @@ impl App {
                         self.show_preview = true;
                     }
                     if ui.button("Show data").clicked() {
-                        self.ui.workspace = Workspace::Data;
+                        self.ui.workspace = Workspace::Diagram;
+                        self.ui.drawer.open = true;
+                        self.ui.drawer.expanded = true;
+                        self.ui.drawer.view = TableView::Data;
                     }
                 }
                 if let Some(c) = &self.result.completion {
@@ -372,7 +379,7 @@ impl App {
         self.result_workspace(ui);
     }
     fn table_drawer(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
+        let header = ui.horizontal_wrapped(|ui| {
             ui.strong(if self.view == View::Browse {
                 self.ui.diagram.selected.as_deref().unwrap_or("Table")
             } else {
@@ -401,6 +408,12 @@ impl App {
                 self.ui.sql_open = false;
             }
         });
+        #[cfg(test)]
+        {
+            self.ui.drawer_header = header.response.rect;
+        }
+        #[cfg(not(test))]
+        let _ = header;
         ui.separator();
         if self.ui.drawer.view == TableView::Structure && self.view == View::Browse {
             egui::ScrollArea::vertical()
@@ -445,7 +458,9 @@ impl App {
                         self.ui.export_open = true;
                         ui.close();
                     }
-                    if ui.button("Count table rows (full scan)").clicked() {
+                    if self.view == View::Browse
+                        && ui.button("Count table rows (full scan)").clicked()
+                    {
                         if let Some(table) = &self.table {
                             self.submit(Operation::Count(table.name.clone()), View::Diagnostics);
                         }

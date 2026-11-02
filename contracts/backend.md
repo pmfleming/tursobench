@@ -10,8 +10,7 @@ Turso's `fts` Cargo feature and experimental index-method builder flag are enabl
 The same database capability configuration applies to read-only/read-write opens
 and all managed connection lanes. Native `USING fts(...)` indexes and `fts_match`
 queries are supported; other experimental flags remain disabled. Index creation
-and writes still require engine-enforced read/write access. The browser's typed
-column filter remains equality-based; use the SQL editor for full-text queries.
+and writes still require engine-enforced read/write access. The browser has typed AND filters; use the SQL editor for full-text queries.
 
 A session has persistent serialized editor and browse connections. All commands
 carry database/session/request/generation identities. Request numbers must be
@@ -60,8 +59,10 @@ Completion elapsed milliseconds cover worker execution and delivery/backpressure
 not queue wait or an isolated engine benchmark.
 
 Table browsing uses a separate connection and controlled generated SELECTs: 100
-rows/page, typed equality filters (`IS`, including NULL), quoted identifiers,
-column sorting followed by primary-key and full-row tie breakers. Full-row
+rows/page, typed AND filters (`IS` / `IS NOT`, `<`, `>`, literal substring LIKE,
+IS NULL / IS NOT NULL), quoted identifiers,
+column sorting followed by primary-key and full-row tie breakers. Filters are capped at 32 predicates / 1 MiB of values. LIKE escapes backslash,
+percent and underscore; equality preserves NULL and typed bindings. Full-row
 suffixes handle nullable primary keys; binary text collation and storage-class
 tie breakers distinguish case and numeric storage types. Tables without a primary
 key sort by all columns; identical duplicate rows are indistinguishable and not
@@ -98,3 +99,10 @@ transaction commands and scripts are rejected. It prepares only the prefixed
 EXPLAIN statement and never executes the source statement as a fallback. These
 operations still obey drain/discard/close semantics; expensive counts/checks are
 explicit user actions, not automatically scheduled scans.
+
+Catalog discovery is retained separately in the UI and does not overwrite table
+or SQL rows. Reverse-reference lookups re-inspect the child and reject changed FK
+definitions before executing. They bind every non-NULL parent-key component and
+use EXISTS with parent columns on the left of comparisons, preserving parent
+collation/affinity without duplicating child rows. The result remains a bounded
+100-row lookup. No background counts or new connection lane are introduced.

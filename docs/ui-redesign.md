@@ -1,102 +1,113 @@
-# Workbench UI redesign
+# Map: the schema is home
 
-The supplied HTML is **visual direction**, not an implementation of execution,
-transaction, binding or editing semantics. The native Rust parser, typed values,
-worker ownership, export formats and staged-commit checks remain authoritative.
-Turso 0.8.3 is still the only engine; native FTS remains enabled.
+TursoBench implements **Direction B** from the simplified redesign proposal.
+Opening a database loads an automatically arranged schema map. Select a table to
+open its **Data / Structure** drawer; **Expand** gives the drawer the workspace,
+and **Return to map** restores the map without changing its camera or selection.
+The native Rust parser, typed values, worker ownership, export formats and
+staged-commit checks remain authoritative. Turso 0.8.3 is the only engine.
 
-## Where to find existing capabilities
+## Navigation and surfaces
 
 | Surface | Capabilities |
 | --- | --- |
-| Connection bar | Open existing files, explicit exclusive-use acknowledgement, read-only default/write opt-in, acknowledged close, theme and F1 help |
-| Transaction bar | Editor transaction state, BEGIN / COMMIT / ROLLBACK; discard **delivery**, pending close and unknown-outcome warnings |
-| Schema rail | Searchable tables/views/indexes/triggers, refresh, DDL/copy, columns/defaults/keys/indexes/FKs, explicit row counts |
-| SQL editor workspace | Highlighting, prefix completion, single-statement and selection/cursor execution, exact typed positional/named JSON bindings, named NULL templates, query plan and bytecode |
-| Data / results workspace | Retained engine rows, page/sort/typed equality filter, PK/index/FK hints, drag/context-menu column widths, zebra rows, NULL/empty text distinction, selected cells, draft overlays |
-| Inspector | Exact stored types/values, structured cell editing, cell/row revert, deletion, key-omitting clone, bound FK navigation/back, record detail, conservative JSON formatting; dock or pop out |
-| Staged edits | Blank inserts with DEFAULT distinct from NULL, preview of real generated SQL and bindings, individual-operation removal, explicit atomic commit and local discard. Review remains reachable from the footer in every workspace |
-| Export and copy retained results | JSONL, JSON, annotated CSV/TSV, SQL INSERTs with explicit target; new-file-only publication, scope labels and bounded clipboard copy; never exports draft overlays or reruns queries |
-| History / Saved rails | Scoped timed history, failure/slow flags, slow filtering/sorting, named searchable bookmarks with rename/delete; recalls preserve EXPLAIN and clear bindings |
-| Checks rail | Read-only database/journal/page/free-page/integrity/FK diagnostics, on the worker |
-| Settings rail | Theme, busy timeout for the next open, query retention, slow threshold, NULL display, font source |
-| Outcomes footer | Last execution outcomes, including replaced requests; full status on hover |
+| Header | Database identity, read-only/editing badge, acknowledged close, schema home, command search, SQL toggle and Tools menu |
+| Map / List | Relationship-based table placement; Map has pan, zoom, Find, Fit all, Arrange, key/all-column labels and draggable headers. List includes views, system tables, indexes and triggers |
+| Data drawer | Retained rows, 100-row pages, sort, typed filter chips, linked foreign keys, reference trail and Back |
+| Structure drawer | Native columns/defaults/keys/indexes/FKs, original table DDL and owned index/trigger definitions, including CHECK clauses and FTS methods |
+| Row inspector | Exact stored values/types, cell edits and record detail, outgoing references and “Referenced by” lookups; dock or pop out |
+| SQL drawer | Highlighting, completion, single-statement/selection execution, typed JSON bindings, query plan/bytecode, History and Saved |
+| Tools / command search | History, Saved, database checks, settings, theme, help, export/copy and edit review |
+| Global status | Execution/close state, retained-result scope, staged changes with Review, execution outcomes and uncertain-commit warnings |
 
-SQL editor and Data are **presentation modes over one editor and one retained
-result**, not independent query tabs or transactions. The disconnected **Open database**
-mode is separate: offline SQL editing/bookmarking and inspection/copy/export of
-retained results remain available, with their source labelled. Opening another
-file clears the previous retained results/metadata.
+**Ctrl K** searches loaded tables, views, columns and commands. Up/Down selects;
+Enter activates; Escape closes. Column matches open their table and highlight the
+column header. **Ctrl J** toggles SQL. **Alt Left** returns along row references.
+Escape closes the inspector, restores an expanded drawer, or closes the drawer.
+F1 shows keyboard help. Ctrl Shift C copies visible retained data as TSV.
 
-Switching modes does not execute SQL or discard drafts. The result header identifies its real source.
-Execution/completion shortcuts operate only while the SQL editor is visible;
-result-copy shortcuts do not secretly copy a hidden result from Diagram mode.
+The SQL editor and table browser share **one retained result**, not independent
+query tabs. A query is labelled Query result, EXPLAIN result or Diagnostic result;
+it is never presented as the selected table's data. Catalog/map refreshes use
+separate tickets and do not replace rows or drafts. Offline SQL editing and
+inspection/copy/export of retained results remain available with source labels.
+Opening another database clears old results and metadata.
 
-## Diagram
+Table/FK navigation cannot discard staged edits. Failed submissions leave the
+previous selection intact; stale row events cannot replace a newer result.
+Back restores the page/filter/sort or related-row lookup. Related lookups retain
+at most 100 rows, without claiming a complete result or automatic counts.
 
-Choose **Diagram**, then click a table for Structure or double-click to browse.
-Drag the background to pan, scroll to zoom, drag headers to rearrange, and use
-**Find**, **Fit all**, **100%**, or **All columns**. At overview scales, key labels
-collapse; zoom in or use Structure for exact definitions. Fit follows viewport
-resizing until you manually pan/zoom/arrange. Refresh/all-columns reflows the layout;
-manual node positions are not persisted.
+## Schema map and relationships
 
-- Discovery comes from Turso's catalog and native metadata, not regexes or guesses
-  from column names. Includes disconnected/keyless tables and engine-managed Turso
-  tables, excluding reserved `sqlite_*` catalog/statistics objects.
-- PK positions, unique-index membership and FK membership identify key columns.
-  Structure lists native index metadata and composite FK column mappings; schema-object
-  DDL supplies predicates/expressions not returned by native metadata.
-  Arrows run from referencing columns to their declared targets. Self-links and
-  reverse-direction links use outside/facing ports.
-- Composite, implicit-parent-PK, cyclic, quoted and Unicode names are supported.
-  Missing/ambiguous target metadata stays explicitly unresolved, never fabricated.
-- Uses a separate ticketed response on the existing browse worker. It does not
-  overwrite query rows, selected table identity or staged drafts, and performs no
-  table scans, row counts or writes. Uncommitted editor DDL is not shown.
-- Discovery is bounded to **512 tables / 8 MiB owned metadata**, including container
-  capacities but excluding allocator overhead, temporary discovery/inspection data
-  and engine allocations. Per-table inspection limits still apply. A limit is
-  prominently labelled **LIMITED — not the entire schema**; per-table failures
-  remain visible as error nodes. Large graphs still require zoom/search.
-- This is a cached metadata view, not a live schema monitor. Subsequent executions
-  conservatively mark it potentially stale. Refresh explicitly after schema changes.
-  Closing waits for active metadata work too; no interruption promise is added.
+- Discovery uses native catalog/index/FK metadata, never column-name guesses.
+  Parent hubs begin deterministic breadth-first layers within connected groups;
+  disconnected groups are packed separately. Cycles and self-links are supported.
+- Manual positions, zoom, pan, selected node and column detail are saved per file
+  when closing. Reopening starts at the map with the drawer closed. Refresh keeps
+  manual positions for surviving objects; Arrange explicitly resets placement.
+- Discovery is bounded to **512 tables / 8 MiB owned metadata**. Limits and
+  per-table failures remain visible. List has its own bounded catalog and includes
+  views and tables beyond the graph cutoff; if that catalog is limited, use SQL to
+  inspect additional objects. Views have no invented dependency edges.
+- Arrows run from referencing columns to declared targets. Composite, implicit
+  parent-PK, cyclic, quoted and Unicode names are supported. Missing or ambiguous
+  metadata remains unresolved. “UQ” indicates membership, not individual-column
+  uniqueness in a composite/partial index.
+- FK cells link only when all key parts are non-NULL and resolved. Multiple FKs on
+  a cell are selectable in its context menu. Right-click also exposes inspection
+  and editing of FK values.
+- Record detail lists incoming relationships from loaded metadata, with an explicit
+  notice when cached/incomplete. Clicking performs a bound worker lookup that
+  revalidates the FK definition and applies the parent's affinity and collation.
+  No related-row counts are fetched automatically. Unresolved and NULL keys cannot
+  be followed. Structure displays original CHECK/FTS/trigger DDL without guessing
+  parsed badges from text.
+- Metadata is a committed-schema snapshot, separate from uncommitted editor DDL.
+  SQL execution and generated commits mark the graph potentially stale. Refresh
+  explicitly after schema changes. Metadata work has no interruption promise.
 
-Reserved `__turso_internal_` tables are inspectable but cannot receive generated
-edits. Finish a manual editor transaction before staging changes; generated commits
-continue to use a dedicated connection and never join the editor transaction.
+## Filters, editing and access
 
-## Laptop and widescreen behavior
+Filter chips combine with AND, with an explicit value type: text, integer, real,
+NULL or blob hex. Operators are equality/inequality, less/greater, contains,
+is null and is not null. Equality uses IS / IS NOT, including NULL. Contains
+escapes `%`, `_` and backslash for literal substring matching; native LIKE case
+behavior applies. Up to 32 predicates / 1 MiB of bound values are accepted.
+Identifiers are quoted and values are bound. Filters and row values are not saved
+in preferences. Row counts remain explicit full scans; paging remains OFFSET,
+without snapshot or bounded-execution guarantees.
 
-The startup viewport is 1280×720. Toolbars wrap rather than clipping ROLLBACK or
-other actions. Below 1500 logical points, a docked inspector replaces the sidebar;
-**Panels** or a rail button restores the sidebar, and **Inspector** restores the
-dock. Below 1100 points the inspector becomes a resizable bottom pane. Widescreens
-can keep both panes open. The editor, grid, inspector, insert and commit-review
-contents have independent bounded/scrollable regions.
+Opening still requires the existing exclusive-use acknowledgement for **both**
+access modes, and the SQLite classification override when applicable. Read-only
+is enforced by the engine. The access badge offers a confirmed clean close/reopen;
+it waits for Closed before starting the new session, discards local drafts and
+rolls back open editor transactions. Cleanup failure or an uncertain commit blocks
+automatic reopening. Consent is not remembered across database selections.
 
-Dark and light themes use restrained teal accents, monospace data and distinct
-selection/staged/deleted states. Fontconfig system sans/mono fonts are discovered,
-loaded and validated off-thread when available (16 MiB/file maximum). Built-in
-fonts remain the fallback. No network font requests or new bundled font assets.
+Grid edits remain staged, with typed editing, clone/insert, DEFAULT distinct from
+NULL, revert, generated SQL/bindings preview and explicit atomic commit. Views,
+keyless and engine-managed tables cannot receive generated edits. Editor SQL can
+autocommit writes; it does not use the grid's staging mechanism.
 
-## Validation and boundaries
+Transaction controls appear for writable sessions, while SQL is open, or whenever
+an editor transaction is active/unknown—including read-only transactions. Active
+transaction state survives hiding SQL. Execution/close/unknown-outcome status and
+staged-edit Review remain globally available. Discard suppresses delivery only;
+it does not interrupt execution or roll back writes.
 
-- Workspace tests exercise native diagram metadata and read-only file preservation,
-  composite/implicit/self/cyclic/missing/quoted/Unicode relationships, committed
-  schema isolation, the 512-table limit and engine-managed edit protection.
-- Egui interaction tests check diagram/result/draft ownership, selection and guarded
-  navigation, empty-draft identity reset, offline result/SQL access, and both themes
-  at 960×640, 1280×720, 1366×768, 1920×1080 and 3440×1440, plus a 1440×960 input surface at 1.5× UI scale. All three transaction
-  controls are checked for viewport containment.
-- Native desktop smokes now render table data and the diagram before exercising
-  typed SQL, read-only write rejection and acknowledged close.
+## Validation and limits
 
-This is not a port of every prototype feature: independent workspace buffers/tabs,
-a command palette, slot-aware graphical parameter forms and persisted diagram
-layouts are not claimed. Existing binding JSON remains fully supported. The diagram
-adds no schema-mutation actions; manual writable SQL still supports DDL. No graphical
-schema designer, profiling, graphical EXPLAIN or schema diff has been added.
-Remaining licensing, platform and production fault-injection gates are unchanged;
-see [release status](release.md).
+Workspace tests cover read-only byte preservation, native metadata, bound filters,
+reverse FK comparison rules, stale metadata rejection, result/draft ownership,
+rapid selection, real composite-FK clicks, Back, palette keyboard navigation,
+read-only transactions and clean access switching. Layout tests cover disconnected
+512-node graphs, relationships/cycles and both themes at 960×640, 1280×720,
+1366×768, 1920×1080 and 3440×1440, plus 1440×960 at 1.5× scale. Drawer headers are
+checked in both Data/Structure and expanded/collapsed states.
+
+Desktop smokes exercise map-first opening, table drawers, expand/return, typed SQL,
+read-only rejection and acknowledged close against disposable fixtures.
+No guessed relationships, schema designer, query tabs, background counts, live
+multiprocess opening, or graphical CHECK-expression parser is added. Platform and
+production fault-injection gates remain as documented in [release status](release.md).

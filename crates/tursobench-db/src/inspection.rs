@@ -173,3 +173,59 @@ pub(crate) fn lookup_sql(
         values,
     ))
 }
+
+// Compare parent columns on the left so parent affinity/collation govern FK
+// equality. EXISTS avoids duplicate children if invalid parent keys are present.
+pub(crate) fn references_sql(
+    child: &Table,
+    parent: &Table,
+    key: &ForeignKey,
+    values: &[Value],
+) -> Result<String, Failure> {
+    if key.columns.is_empty()
+        || key.columns.len() != values.len()
+        || child
+            .columns
+            .iter()
+            .chain(&parent.columns)
+            .any(|c| c.hidden != 0)
+        || values.contains(&Value::Null)
+    {
+        return Err(Failure::input("Unsupported or NULL reverse reference"));
+    }
+    let mut predicates = Vec::new();
+    for (i, (source, target)) in key.columns.iter().enumerate() {
+        let target = target
+            .as_ref()
+            .ok_or_else(|| Failure::input("Unresolved parent key"))?;
+        if !child
+            .columns
+            .iter()
+            .any(|c| c.name.eq_ignore_ascii_case(source))
+            || !parent
+                .columns
+                .iter()
+                .any(|c| c.name.eq_ignore_ascii_case(target))
+        {
+            return Err(Failure::input("Relationship columns no longer exist"));
+        }
+        let target = quote_identifier(target);
+        predicates.push(format!(
+            "p.{target} = c.{} AND p.{target} IS ?{}",
+            quote_identifier(source),
+            i + 1
+        ));
+    }
+    let columns = child
+        .columns
+        .iter()
+        .map(|c| format!("c.{}", quote_identifier(&c.name)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Ok(format!(
+        "SELECT {columns} FROM {} AS c WHERE EXISTS (SELECT 1 FROM {} AS p WHERE {}) LIMIT 100",
+        quote_identifier(&child.name),
+        quote_identifier(&parent.name),
+        predicates.join(" AND ")
+    ))
+}

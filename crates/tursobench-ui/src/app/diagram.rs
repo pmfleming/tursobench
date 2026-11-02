@@ -28,6 +28,44 @@ pub(super) struct DiagramState {
     positions: BTreeMap<String, egui::Pos2>,
 }
 impl DiagramState {
+    pub fn snapshot(&self, database: &str) -> Option<crate::storage::MapLayout> {
+        self.data.as_ref()?;
+        if self.zoom <= 0.0 {
+            return None;
+        }
+        Some(crate::storage::MapLayout {
+            database: database.into(),
+            positions: self
+                .positions
+                .iter()
+                .map(|(name, p)| (name.clone(), [p.x, p.y]))
+                .collect(),
+            pan: [self.pan.x, self.pan.y],
+            zoom: self.zoom,
+            all_columns: self.all_columns,
+            selected: self.selected.clone(),
+        })
+    }
+    pub fn restore(&mut self, layout: &crate::storage::MapLayout) {
+        let Some(graph) = &self.data else {
+            return;
+        };
+        self.positions = layout
+            .positions
+            .iter()
+            .filter(|(name, _)| graph.tables.iter().any(|t| &t.name == *name))
+            .map(|(name, p)| (name.clone(), egui::pos2(p[0], p[1])))
+            .collect();
+        self.pan = egui::vec2(layout.pan[0], layout.pan[1]);
+        self.zoom = layout.zoom;
+        self.all_columns = layout.all_columns;
+        self.selected = layout
+            .selected
+            .clone()
+            .filter(|name| graph.tables.iter().any(|t| &t.name == name));
+        self.fit = false;
+        self.auto_fit = false;
+    }
     pub fn freeze_camera(&mut self) {
         self.auto_fit = false;
     }
@@ -287,16 +325,15 @@ impl App {
                 })
             {
                 found = Some(table.name.clone());
-                self.tools.ddl = None;
-                self.ui.diagram.focus_selected = true;
-                self.ui.diagram.auto_fit = true;
-                self.ui.diagram.fit = true;
             }
         });
         if let Some(name) = found {
+            let previous = self.result.current;
             self.browse_table(name);
-            self.ui.diagram.focus_selected = true;
-            self.ui.diagram.fit = true;
+            if self.result.current != previous {
+                self.ui.diagram.focus_selected = true;
+                self.ui.diagram.fit = true;
+            }
         }
         ui.small("Declared relationships only · PK = primary-key position · UQ = unique-index member · FK = foreign-key member. Drag background to pan; wheel to zoom; drag table headers; click a table to open its Data / Structure drawer.");
         if self.ui.diagram.ticket.is_some() {

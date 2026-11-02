@@ -51,13 +51,13 @@ are unsupported. The exclusive-use checkbox is an acknowledgement, not an OS loc
 ## Features
 
 - Startup database discovery across application data/state and development folders, with recent files, Turso/SQLite/unknown type icons, a per-file SQLite override, and search-folder controls. See [discovery behavior and limits](docs/database-discovery.md).
-- Responsive dark/light workspaces, activity rail and docked/pop-out inspector for laptops and widescreens.
+- Map-first dark/light workspace with an expandable Data/Structure drawer and docked/pop-out row inspector.
 - Engine-enforced read-only opening by default; read/write is explicit opt-in.
 - Searchable schema/DDL, native index/FK details, related-row navigation and read-only diagnostics.
-- Zoomable schema diagram: tables, keys, composite/self/cyclic foreign keys, pan, arrange, inspect and browse.
-- 100-row table pages, sorting, typed equality filters and index-awareness hints.
+- Relationship-arranged schema home: tables, keys, composite/self/cyclic FKs, Map/List fallback and saved map layout.
+- 100-row table pages, sorting, typed AND filter chips, linked FK cells and incoming-reference navigation.
 - Virtualized results, resizable columns, typed cell/record inspection and clipboard copy.
-- Highlighted SQL, selection/current-statement execution, prefix completion and EXPLAIN.
+- Ctrl K command/table/column search; Ctrl J SQL drawer with highlighting, selection execution, completion and EXPLAIN.
 - Single-statement SQL including CTEs, PRAGMAs and RETURNING; typed positional/named bindings.
 - Native Turso FTS and experimental index methods enabled: open existing FTS
   databases, create `USING fts(...)` indexes and query with `fts_match(...)`.
@@ -70,7 +70,7 @@ are unsupported. The exclusive-use checkbox is an acknowledgement, not an OS loc
 - Retained-result exports: typed JSONL/JSON, annotated CSV/TSV and SQL INSERTs.
 
 See the [UI guide and capability map](docs/ui-redesign.md) for workspace navigation,
-responsive behavior, diagram limits and validation. The SQL/Data modes share one
+responsive behavior, diagram limits and validation. The table and SQL drawers share one
 editor and one retained result; they are not independent transaction tabs.
 
 See the [tursotui functionality review](docs/tursotui-review.md) for changes,

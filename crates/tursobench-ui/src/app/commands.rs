@@ -192,6 +192,7 @@ impl App {
                         self.ui.drawer.open = true;
                         self.ui.drawer.view = TableView::Data;
                         self.tools.highlight_column = column.map(|column| (name, column));
+                        self.tools.scroll_to_column = self.tools.highlight_column.is_some();
                     }
                 }
                 Command::Map | Command::List => {

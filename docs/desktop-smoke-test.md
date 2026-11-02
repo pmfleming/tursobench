@@ -35,7 +35,7 @@ for a retained fixture use `python3 tests/fixtures/generate.py /tmp/sample.db`.
 Automated headless egui render/pointer-interaction tests run in `cargo test`.
 `bash scripts/desktop-smoke.sh` runs the native app under Xvfb/Mesa against a
 100,000-row disposable fixture and isolates preferences. It also loads and renders
-the native-metadata diagram without replacing the retained table page. With Nix:
+the native-metadata map and expands/restores the table drawer without replacing the retained table page. With Nix:
 
 ```sh
 nix develop -c cargo build --locked -p tursobench-ui
@@ -75,12 +75,12 @@ For the workbench additions, also check on a disposable database:
 For the [responsive redesign](ui-redesign.md), also check both themes at 1280×720,
 1366×768, 1920×1080 and 3440×1440, plus a high-DPI/960×640 logical viewport:
 
-- All transaction actions, especially ROLLBACK, remain visible. Panels/Inspector
-  switches compact layouts in one click; rail labels and schema DDL buttons fit.
+- Active transaction actions, especially ROLLBACK, remain visible even with SQL
+  hidden. Map/List, drawer Expand/Return and Tools controls fit compact layouts.
 - Select/copy/edit a cell in the dock, switch to record/structure, pop out and dock
   again. Verify stage/preview/remove/commit and DEFAULT/NULL remain accessible.
 - Diagram includes disconnected tables, composite/self/cyclic FKs and engine-owned
-  storage. Select/zoom/pan/arrange/find/fit; double-click to browse. Unresolved and
+  storage. Select/zoom/pan/arrange/find/fit; click to open the Data/Structure drawer. Unresolved and
   limited metadata must be explicit, and generated edits to engine storage disabled.
 - Keep local drafts while loading the diagram: rows/drafts must not be replaced.
   Browse links must respect the draft guard. Explicit DDL selection must work while
@@ -90,3 +90,10 @@ For the [responsive redesign](ui-redesign.md), also check both themes at 1280×7
 
 Native dialog and interactive desktop checks still require a working desktop and
 are not replaced by Xvfb tests. Record platform results in release notes.
+
+- Ctrl K searches tables/columns/actions; arrow keys and Enter activate matches.
+  Ctrl J shows SQL without losing the map. Query results have their own label.
+- Combine typed filter chips, remove them, follow incoming/outgoing composite
+  references and return to the prior page. NULL references must not navigate.
+- Close/reopen to verify saved map camera/positions. Switch access via the badge;
+  the old session must acknowledge closure before a new session opens.

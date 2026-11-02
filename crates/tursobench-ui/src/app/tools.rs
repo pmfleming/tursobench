@@ -6,6 +6,29 @@ use std::{collections::BTreeMap, ops::Range};
 pub(super) enum Destination {
     Page(Browse),
     Related(String, Vec<(String, Value)>),
+    References(String, tursobench_core::ForeignKey, Vec<Value>),
+}
+impl Destination {
+    pub fn table(&self) -> &str {
+        match self {
+            Self::Page(b) => &b.table,
+            Self::Related(t, _) | Self::References(t, _, _) => t,
+        }
+    }
+    pub fn operation(&self) -> tursobench_db::Operation {
+        match self {
+            Self::Page(b) => tursobench_db::Operation::Browse(b.clone()),
+            Self::Related(table, keys) => tursobench_db::Operation::Lookup {
+                table: table.clone(),
+                keys: keys.clone(),
+            },
+            Self::References(table, key, values) => tursobench_db::Operation::References {
+                table: table.clone(),
+                key: key.clone(),
+                values: values.clone(),
+            },
+        }
+    }
 }
 pub(super) struct Tools {
     pub schema_filter: String,
@@ -14,7 +37,7 @@ pub(super) struct Tools {
     pub inspection_ticket: Option<Ticket>,
     pub inspection_error: String,
     pub show_metadata: bool,
-    pub related: Option<(String, Vec<(String, Value)>)>,
+    pub related: Option<Destination>,
     pub back: Vec<Destination>,
     pub cell_kind: results::CellKind,
     pub cell_input: String,
@@ -24,6 +47,7 @@ pub(super) struct Tools {
     pub detail: Option<usize>,
     pub widths: Vec<f32>,
     pub highlight_column: Option<(String, String)>,
+    pub scroll_to_column: bool,
     pub history_search: String,
     pub bookmark_search: String,
     pub bookmark_name: String,
@@ -55,6 +79,7 @@ impl Default for Tools {
             detail: None,
             widths: vec![],
             highlight_column: None,
+            scroll_to_column: false,
             history_search: String::new(),
             bookmark_search: String::new(),
             bookmark_name: String::new(),

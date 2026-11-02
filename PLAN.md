@@ -41,8 +41,9 @@ tursotui feature parity are not first-release requirements. Multiple database
 windows/tabs can follow the first single-database vertical slice; identities and
 session ownership must support them from the beginning.
 
-The subsequent UI redesign adds a bounded, read-only native-metadata schema diagram
-and responsive SQL/Data/Diagram presentation modes; independent database/query tabs
+The subsequent Direction B redesign makes the bounded native-metadata schema map
+the home screen, with expandable table/SQL drawers, Map/List fallback, command
+search, typed filters and reverse references. Independent database/query tabs
 remain deferred. See [UI implementation and capability map](docs/ui-redesign.md).
 
 Linux is the proposed first desktop target. Keep the design portable; confirm

@@ -8,6 +8,7 @@ mod diagram;
 mod editing;
 mod editor;
 mod files;
+mod filters;
 mod grid;
 mod inspector;
 #[cfg(test)]
@@ -56,6 +57,7 @@ pub struct App {
     schema: Vec<SchemaObject>,
     catalog: ResultSet,
     catalog_ticket: Option<Ticket>,
+    catalog_error: String,
     table: Option<Table>,
     browse: Option<Browse>,
     sql: String,
@@ -64,6 +66,8 @@ pub struct App {
     activity: std::collections::VecDeque<String>,
     filter: String,
     filter_column: usize,
+    filter_op: tursobench_core::FilterOp,
+    filter_kind: results::CellKind,
     inspect: Option<(usize, usize)>,
     transaction: TransactionState,
     drafts: Option<DraftBatch>,
@@ -119,6 +123,7 @@ impl App {
             schema: vec![],
             catalog: ResultSet::default(),
             catalog_ticket: None,
+            catalog_error: String::new(),
             table: None,
             browse: None,
             sql: "SELECT name, type FROM sqlite_schema ORDER BY name".into(),
@@ -127,8 +132,10 @@ impl App {
             status: load_error.unwrap_or_else(|| {
                 "Open a trusted local Turso database. Linux preview; exclusive use only.".into()
             }),
-            filter: "{\"type\":\"Text\",\"value\":\"\"}".into(),
+            filter: String::new(),
             filter_column: 0,
+            filter_op: Default::default(),
+            filter_kind: results::CellKind::Text,
             inspect: None,
             transaction: TransactionState::Autocommit,
             drafts: None,
@@ -191,6 +198,7 @@ impl App {
                 self.schema.clear();
                 self.catalog = ResultSet::default();
                 self.catalog_ticket = None;
+                self.catalog_error.clear();
                 self.ui.map_list = false;
                 self.ui.diagram = Default::default();
                 self.ui.drawer = Default::default();
@@ -286,7 +294,7 @@ impl App {
             offset: 0,
             sort: None,
             descending: false,
-            filter: None,
+            filters: vec![],
         };
         if self
             .submit(Operation::Browse(browse.clone()), View::Browse)
@@ -296,14 +304,16 @@ impl App {
             self.tools.ddl = None;
             self.tools.related = None;
             self.browse = Some(browse);
+            self.tools.highlight_column = None;
+            self.tools.scroll_to_column = false;
             self.ui.sql_open = false;
             self.ui.diagram.selected = Some(name);
             self.ui.diagram.freeze_camera();
         }
     }
     fn reload(&mut self) {
-        if let Some((table, keys)) = self.tools.related.clone() {
-            self.submit(Operation::Lookup { table, keys }, View::Browse);
+        if let Some(destination) = self.tools.related.clone() {
+            self.submit(destination.operation(), View::Browse);
         } else if let Some(b) = self.browse.clone() {
             self.submit(Operation::Browse(b), View::Browse);
         }
@@ -324,6 +334,7 @@ impl App {
             Ok(()) => {
                 self.catalog.start(ticket);
                 self.catalog_ticket = Some(ticket);
+                self.catalog_error.clear();
             }
             Err(e) => self.status = e.to_string(),
         }
@@ -377,10 +388,12 @@ impl App {
                     self.transaction = c.transaction;
                     if let Some(e) = &c.error {
                         self.status = e.to_string();
+                        self.catalog_error = e.to_string();
                     }
                 }
                 if let EventKind::Failed(e) = &event.kind {
                     self.status = e.to_string();
+                    self.catalog_error = e.to_string();
                 }
                 self.catalog.apply(event);
                 if done {
@@ -418,7 +431,17 @@ impl App {
             }
             match event.kind {
                 EventKind::Diagram(graph) if self.ui.diagram.ticket == Some(event.ticket) => {
+                    let first_load = self.ui.diagram.data.is_none();
                     self.ui.diagram.loaded(graph);
+                    if first_load
+                        && let Some(layout) = self
+                            .preferences
+                            .map_layouts
+                            .iter()
+                            .find(|l| l.database == self.tools.database_scope)
+                    {
+                        self.ui.diagram.restore(layout);
+                    }
                 }
                 EventKind::Failed(e) if self.ui.diagram.ticket == Some(event.ticket) => {
                     self.ui.diagram.ticket = None;
@@ -433,6 +456,7 @@ impl App {
                     self.commit_ticket = None;
                     match outcome {
                         CommitOutcome::Committed { operations } => {
+                            self.ui.diagram.stale = true;
                             self.drafts = None;
                             self.show_preview = false;
                             self.inspect = None;
@@ -528,7 +552,14 @@ impl App {
                     self.table = Some(t);
                 }
                 EventKind::Finished(ref c) => {
-                    self.ui.diagram.stale = self.ui.diagram.data.is_some();
+                    if c.changed > 0
+                        || self
+                            .tools
+                            .pending_history
+                            .contains_key(&event.ticket.request)
+                    {
+                        self.ui.diagram.stale = self.ui.diagram.data.is_some();
+                    }
                     self.record_history(event.ticket, Some(c.elapsed_ms), c.error.is_some());
                     self.log_outcome(format!(
                         "Request {}: {:?}, {} rows seen, {} changes, editor {:?}{}",
@@ -608,6 +639,14 @@ impl App {
         }
     }
     fn close(&mut self) {
+        if let Some(layout) = self.ui.diagram.snapshot(&self.tools.database_scope) {
+            self.preferences
+                .map_layouts
+                .retain(|l| l.database != layout.database);
+            self.preferences.map_layouts.insert(0, layout);
+            self.preferences.normalize();
+            self.store.save(&self.preferences);
+        }
         self.confirm_close = false;
         self.drafts = None;
         self.show_preview = false;
@@ -631,10 +670,7 @@ impl App {
                 .tools
                 .back
                 .iter()
-                .map(|d| match d {
-                    tools::Destination::Page(b) => b.table.as_str(),
-                    tools::Destination::Related(t, _) => t.as_str(),
-                })
+                .map(tools::Destination::table)
                 .collect::<Vec<_>>()
                 .join(" → ");
             ui.small(format!("Reference trail: {trail}"));
@@ -650,9 +686,10 @@ impl App {
                 {
                     self.navigate_back();
                 }
-                if let Some((table, _)) = &self.tools.related {
+                if let Some(destination) = &self.tools.related {
                     ui.label(format!(
-                        "Related rows in {table} — bounded lookup, up to 100 rows"
+                        "Related rows in {} — bounded lookup, up to 100 rows",
+                        destination.table()
                     ));
                 }
                 if self.tools.related.is_some() && ui.button("Refresh lookup").clicked() {
@@ -684,47 +721,10 @@ impl App {
                 reload = true;
             }
         });
-        if let Some(table) = &self.table {
-            ui.horizontal_wrapped(|ui| {
-                egui::ComboBox::from_id_salt("filter-column")
-                    .selected_text(
-                        table
-                            .columns
-                            .get(self.filter_column)
-                            .map_or("Column", |c| &c.name),
-                    )
-                    .show_ui(ui, |ui| {
-                        for (i, c) in table.columns.iter().enumerate() {
-                            ui.selectable_value(&mut self.filter_column, i, &c.name);
-                        }
-                    });
-                if self.tools.inspection.as_ref().is_some_and(|info| table.columns.get(self.filter_column).is_some_and(|c| c.primary_key != 1 && !info.indexes.iter().any(|index| index.columns.first().and_then(Option::as_ref) == Some(&c.name)))) {
-                    ui.label("⚠ Possible scan").on_hover_text("No declared leading index key found for this column. Use EXPLAIN to check the actual plan.");
-                }
-                ui.label("IS typed JSON:");
-                ui.add(egui::TextEdit::singleline(&mut self.filter).desired_width(190.0));
-                if ui.button("Filter").clicked() {
-                    match serde_json::from_str::<Value>(&self.filter) {
-                        Ok(v) => {
-                            let b = &mut *browse;
-                            b.filter = Some((self.filter_column, v));
-                            b.offset = 0;
-                            reload = true;
-                        }
-                        Err(e) => self.status = e.to_string(),
-                    }
-                }
-                if ui.button("Clear filter").clicked() {
-                    let b = &mut *browse;
-                    b.filter = None;
-                    b.offset = 0;
-                    reload = true;
-                }
-            });
-        }
         if reload {
             self.reload();
         }
+        self.filter_controls(ui);
     }
 }
 impl eframe::App for App {

@@ -158,6 +158,7 @@ impl App {
         if ui.button("Copy row (annotated TSV)").clicked() {
             self.copy_row(ui.ctx(), row);
         }
+        self.incoming_references(ui, row);
         if let Some(values) = self.result.rows.get(row) {
             for (column, value) in self.result.columns.iter().zip(values) {
                 ui.separator();
@@ -181,6 +182,78 @@ impl App {
                     Value::Text(_) => "TEXT · JSON tokens preserved when pretty-printing",
                     Value::Blob(_) => "BLOB (hex)",
                 });
+            }
+        }
+    }
+    fn incoming_references(&mut self, ui: &mut egui::Ui, row: usize) {
+        if self.view != View::Browse {
+            return;
+        }
+        let (Some(table), Some(graph)) = (&self.table, &self.ui.diagram.data) else {
+            return;
+        };
+        ui.separator();
+        ui.strong("Referenced by");
+        if graph.limited || self.ui.diagram.stale || graph.tables.iter().any(|n| n.error.is_some())
+        {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                "Cached or incomplete schema — this list may omit references.",
+            );
+        }
+        let references: Vec<_> = graph
+            .tables
+            .iter()
+            .flat_map(|node| {
+                node.inspection
+                    .iter()
+                    .flat_map(|i| i.foreign_keys.iter())
+                    .filter(|key| key.target.eq_ignore_ascii_case(&table.name))
+                    .map(|key| (node.name.clone(), key.clone()))
+            })
+            .collect();
+        if references.is_empty() {
+            ui.small("No incoming references found in loaded metadata.");
+        }
+        for (child, key) in references {
+            let available = key.columns.iter().all(|(_, target)| {
+                target
+                    .as_ref()
+                    .and_then(|target| {
+                        self.table
+                            .as_ref()?
+                            .columns
+                            .iter()
+                            .position(|c| c.name.eq_ignore_ascii_case(target))
+                    })
+                    .and_then(|i| self.result.rows.get(row)?.get(i))
+                    .is_some_and(|v| *v != Value::Null)
+            });
+            let label = format!(
+                "{} ({}) → rows",
+                child,
+                key.columns
+                    .iter()
+                    .map(|(c, _)| c.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            if ui
+                .add_enabled(
+                    available
+                        && self.active.is_none()
+                        && !self.has_drafts()
+                        && self.ready
+                        && !self.closing,
+                    egui::Button::new(label),
+                )
+                .on_hover_text(
+                    "Bound lookup, up to 100 rows. Counts are not fetched automatically.",
+                )
+                .clicked()
+            {
+                self.follow_incoming(row, child, key);
+                break;
             }
         }
     }
@@ -229,7 +302,7 @@ impl App {
             let mut open = true;
             egui::Window::new("Keyboard and safety reference").open(&mut open).default_width(560.0).show(ctx,|ui|{
                 egui::ScrollArea::vertical().max_height(500.0).show(ui,|ui|{
-                    for line in ["Schema / History / Saved / Checks / Settings: activity rail","SQL editor / Data and results / Diagram: workspace modes; one retained result, not separate transactions","Ctrl+O: database chooser · Folder icon / Alt+Enter: file dialog · F1: help · Ctrl+T: theme","Database chooser: Down enters results; Up/Down browses; Enter selects; typing resumes search","In SQL editor: Ctrl+Enter / F5 runs one statement; Ctrl+Shift+Enter runs selection/current statement; Ctrl+Space completes","Ctrl+Shift+C: copy retained results as TSV (outside Diagram) · Alt+Left: back from row reference","Click cell: typed inspector · double-click: record detail · right-click: copy/delete","Drag header edge or right-click: resize column · click table header: sort","Diagram: drag background to pan, wheel to zoom, drag headers to arrange; click table for structure, double-click to browse","Use Inspector / Panels to choose space on laptops; both can stay open on widescreens","Exports/copies never rerun SQL and exclude staged overlays","Discard suppresses delivery; execution and writes continue until the worker reports completion","Closing waits for actual execution and rollback acknowledgement","Writable SQL autocommits unless you BEGIN; staged edits require review and explicit commit"]{ui.label(line);}
+                    for line in ["Map / List: schema home; History / Saved / Checks / Settings: Tools menu","Ctrl+K: tables / columns / commands · Ctrl+J: SQL drawer · Expand / Return to map","Ctrl+O: database chooser · Folder icon / Alt+Enter: file dialog · F1: help · Ctrl+T: theme","Database chooser: Down enters results; Up/Down browses; Enter selects; typing resumes search","In SQL editor: Ctrl+Enter / F5 runs one statement; Ctrl+Shift+Enter runs selection/current statement; Ctrl+Space completes","Ctrl+Shift+C: copy visible retained results as TSV · Alt+Left: back from row reference","Click cell: typed inspector · double-click: record detail · right-click: copy/delete","Drag header edge or right-click: resize column · click table header: sort","Map: drag background to pan, wheel to zoom, drag headers to arrange; click a table for Data / Structure","Escape: close inspector, restore expanded drawer, then close drawer. Map camera is saved on close.","Exports/copies never rerun SQL and exclude staged overlays","Discard suppresses delivery; execution and writes continue until the worker reports completion","Closing waits for actual execution and rollback acknowledgement","Writable SQL autocommits unless you BEGIN; staged edits require review and explicit commit"]{ui.label(line);}
                 });
             });
             self.tools.help = open;
