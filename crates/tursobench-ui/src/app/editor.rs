@@ -449,6 +449,12 @@ impl App {
             }
         }
         if !ctx.egui_wants_keyboard_input()
+            && consumed(egui::Modifiers::NONE, egui::Key::Space)
+            && matches!(self.ui.nav, shell::Nav::Table | shell::Nav::Result)
+        {
+            self.toggle_inspector();
+        }
+        if !ctx.egui_wants_keyboard_input()
             && !self.has_drafts()
             && self.commit_ticket.is_none()
             && self.ready

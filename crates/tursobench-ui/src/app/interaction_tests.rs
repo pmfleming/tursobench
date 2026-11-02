@@ -199,7 +199,7 @@ fn diagram_preserves_drafts_and_result_ownership_and_chrome_fits_both_themes() {
                 for _ in 0..2 {
                     let output = frame_at(&mut app, &ctx, egui::vec2(width, height), vec![]);
                     assert!(!output.shapes.is_empty());
-                    assert_eq!(app.ui.transaction_rects.len(), 3);
+                    assert!(app.ui.transaction_rects.is_empty());
                     for rect in &app.ui.transaction_rects {
                         assert!(
                             ctx.content_rect().contains_rect(*rect),
@@ -737,7 +737,7 @@ fn sql_dock_keeps_result_identity_and_read_transactions_visible() {
     app.toggle_sql();
     app.overview();
     frame(&mut app, &ctx, vec![]);
-    assert_eq!(app.ui.transaction_rects.len(), 3);
+    assert_eq!(app.ui.transaction_rects.len(), 2);
     app.run_text("ROLLBACK".into(), None);
     wait(&mut app, &ctx);
     assert_eq!(app.transaction, TransactionState::Autocommit);
@@ -1014,7 +1014,7 @@ fn table_views_sidebar_and_transactions_fit_themes_and_scaled_viewports() {
     for _ in 0..2 {
         frame_at(&mut app, &ctx, egui::vec2(720.0, 480.0), vec![]);
     }
-    assert_eq!(app.ui.transaction_rects.len(), 3);
+    assert_eq!(app.ui.transaction_rects.len(), 2);
     for r in &app.ui.transaction_rects {
         assert!(ctx.content_rect().contains_rect(*r), "{r:?}");
     }

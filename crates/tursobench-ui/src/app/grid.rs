@@ -85,6 +85,9 @@ impl App {
             Some(GridAction::Follow(r, key)) => self.follow_key(r, key),
             None => {}
         }
+        if self.writable && icons::control(ui, Icon::Plus, "New row", "", false, true).clicked() {
+            self.begin_insert();
+        }
         if self.result.columns.is_empty() && self.active.is_none() {
             ui.label(
                 "No retained row result. Browse a table, run SQL, or choose a read-only check.",

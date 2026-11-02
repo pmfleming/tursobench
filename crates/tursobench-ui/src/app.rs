@@ -206,6 +206,7 @@ impl App {
                 self.ui.diagram = Default::default();
                 self.ui.table_view = shell::TableView::Data;
                 self.ui.unfolded = None;
+                self.ui.inspector_initialized = false;
                 self.tools.counts.clear();
                 self.tools.count_request = None;
                 self.ui.sql_open = false;

@@ -152,6 +152,7 @@ pub struct Preferences {
     pub null_display: String,
     pub discovery: DiscoveryPreferences,
     pub map_layouts: Vec<MapLayout>,
+    pub inspector_visibility: std::collections::BTreeMap<String, bool>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MapLayout {
@@ -176,6 +177,7 @@ impl Default for Preferences {
             null_display: "NULL".into(),
             discovery: DiscoveryPreferences::default(),
             map_layouts: vec![],
+            inspector_visibility: Default::default(),
         }
     }
 }
@@ -225,6 +227,11 @@ impl Preferences {
     }
     pub fn normalize(&mut self) {
         self.discovery.normalize();
+        self.inspector_visibility
+            .retain(|path, _| path.len() <= 4096 && Path::new(path).is_absolute());
+        while self.inspector_visibility.len() > 20 {
+            self.inspector_visibility.pop_first();
+        }
         self.map_layouts.truncate(20);
         let mut layout_bytes = 0;
         self.map_layouts.retain_mut(|layout| {

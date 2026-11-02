@@ -47,6 +47,7 @@ pub(super) struct UiState {
     pub table_view: TableView,
     pub inspector: DetailMode,
     pub inspector_open: bool,
+    pub inspector_initialized: bool,
     pub inspector_detached: bool,
     pub outcomes: bool,
     pub diagram: diagram::DiagramState,
@@ -86,6 +87,7 @@ impl UiState {
             table_view: TableView::Data,
             inspector: DetailMode::Cell,
             inspector_open: false,
+            inspector_initialized: false,
             inspector_detached: false,
             outcomes: false,
             diagram: Default::default(),
@@ -126,9 +128,9 @@ pub(super) struct Layout {
 impl Layout {
     pub fn new(width: f32) -> Self {
         Self {
-            bottom_inspector: width < 1400.0,
+            bottom_inspector: width < 1440.0,
             sidebar_width: if width < 900.0 { 190.0 } else { 240.0 },
-            inspector_width: if width >= 1800.0 { 370.0 } else { 310.0 },
+            inspector_width: if width >= 1920.0 { 360.0 } else { 320.0 },
         }
     }
 }
@@ -178,6 +180,38 @@ impl App {
             #[cfg(not(test))]
             let _ = panel;
         }
+        if self.ui.nav == Nav::Table && !self.ui.inspector_initialized {
+            self.ui.inspector_open = self
+                .preferences
+                .inspector_visibility
+                .get(&self.tools.database_scope)
+                .copied()
+                .unwrap_or(!layout.bottom_inspector);
+            self.ui.inspector_initialized = true;
+        }
+        if self.ui.inspector_open
+            && !self.ui.inspector_detached
+            && matches!(self.ui.nav, Nav::Table | Nav::Result)
+        {
+            if layout.bottom_inspector {
+                egui::Area::new(egui::Id::new("inspector-overlay"))
+                    .order(egui::Order::Foreground)
+                    .anchor(egui::Align2::RIGHT_TOP, [-8.0, 8.0])
+                    .show(&ctx, |ui| {
+                        egui::Frame::popup(ui.style()).show(ui, |ui| {
+                            ui.set_width(320.0_f32.min(ctx.content_rect().width() - 60.0));
+                            ui.set_max_height((ctx.content_rect().height() - 65.0).max(100.0));
+                            self.docked_inspector(ui);
+                        });
+                    });
+            } else {
+                egui::Panel::right("inspector-right")
+                    .resizable(true)
+                    .default_size(layout.inspector_width)
+                    .size_range(260.0..=420.0)
+                    .show(ui, |ui| self.docked_inspector(ui));
+            }
+        }
         if self.ui.sql_open {
             let height = if self.ui.sql_expanded {
                 ui.available_height() * 0.65
@@ -197,21 +231,6 @@ impl App {
                     .id_salt("sql-dock-scroll")
                     .show(ui, |ui| self.editor_ui(ui));
             });
-        }
-        if self.ui.inspector_open && !self.ui.inspector_detached {
-            if layout.bottom_inspector {
-                egui::Panel::bottom("inspector-bottom")
-                    .resizable(true)
-                    .default_size(180.0)
-                    .size_range(90.0..=(ui.available_height() * 0.4).max(90.0))
-                    .show(ui, |ui| self.docked_inspector(ui));
-            } else {
-                egui::Panel::right("inspector-right")
-                    .resizable(true)
-                    .default_size(layout.inspector_width)
-                    .size_range(260.0..=420.0)
-                    .show(ui, |ui| self.docked_inspector(ui));
-            }
         }
         egui::CentralPanel::default().show(ui, |ui| self.workspace_ui(ui));
         if self.confirm_close {
@@ -256,7 +275,7 @@ impl App {
         }
     }
     fn status_bar(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::bottom("status").exact_size(38.0).show(ui, |ui| {
+        egui::Panel::bottom("status").frame(egui::Frame::new().fill(ui.visuals().panel_fill).inner_margin(2.0)).exact_size(32.0).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 if self.session.is_some() && icons::control(
@@ -286,11 +305,11 @@ impl App {
                     }
                 } else { ("Connected", ui.visuals().selection.stroke.color) };
                 ui.colored_label(color, state).on_hover_text(&self.status);
-                if self.transaction != TransactionState::Autocommit || self.ui.sql_open || self.writable && self.ready {
+                if self.transaction != TransactionState::Autocommit {
                     ui.colored_label(if self.transaction != TransactionState::Autocommit { warn } else { muted }, format!("{:?}", self.transaction));
-                    for sql in ["BEGIN", "COMMIT", "ROLLBACK"] {
+                    for (label, sql) in [("Commit", "COMMIT"), ("Roll back", "ROLLBACK")] {
                         let enabled = self.ready && !self.closing && self.active.is_none() && self.commit_ticket.is_none() && !self.has_drafts();
-                        let response = ui.add_enabled(enabled, egui::Button::new(sql)).on_hover_text("Persistent editor connection. Transactions also apply to read-only sessions.");
+                        let response = ui.add_enabled(enabled, egui::Button::new(label)).on_hover_text("Persistent editor connection. Transactions also apply to read-only sessions.");
                         #[cfg(test)] self.ui.transaction_rects.push(response.rect);
                         if response.clicked() { self.submit(Operation::Execute { sql: sql.into(), parameters: vec![], budget: Budget::default() }, View::Query); }
                     }
@@ -309,7 +328,7 @@ impl App {
                     ui.small(format!("{:?} · {} ms", c.delivery, c.elapsed_ms)).on_hover_text(self.export_scope());
                 }
                 if icons::control(ui, Icon::History, "Outcomes", "", self.ui.outcomes, false).clicked() { self.ui.outcomes = !self.ui.outcomes; }
-                if ui.available_width() > 145.0 { ui.add(egui::Label::new(&self.status).truncate()).on_hover_text(&self.status); }
+
             });
         });
     }
@@ -359,174 +378,116 @@ impl App {
     }
     fn workspace_header(&mut self, ui: &mut egui::Ui) {
         let header = ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 3.0;
-            if self.ui.nav != Nav::Overview {
-                let can_back = if self.view == View::Browse {
-                    !self.tools.back.is_empty()
-                } else {
-                    self.tools.result_return.is_some()
-                };
-                if ui
-                    .add_enabled_ui(can_back, |ui| {
-                        icons::button(ui, Icon::Back, "Back", "Alt Left")
-                    })
-                    .inner
-                    .clicked()
-                {
-                    if self.view == View::Browse {
-                        self.navigate_back();
-                    } else {
-                        self.return_to_table();
-                    }
-                }
-            }
-            let title = if self.ui.nav == Nav::Overview {
-                "Overview".to_owned()
-            } else {
-                self.result_title().to_owned()
-            };
-            let title_width = if ui.available_width() < 600.0 {
-                70.0
-            } else {
-                (ui.available_width() * 0.25).min(180.0)
-            };
-            ui.add_sized(
-                [title_width, 28.0],
-                egui::Label::new(egui::RichText::new(&title).strong()).truncate(),
-            )
-            .on_hover_text(&title);
-            if self.ui.nav == Nav::Table {
-                for (view, icon, name, key) in [
-                    (TableView::Data, Icon::Data, "Data", "Ctrl 1"),
-                    (TableView::Structure, Icon::Structure, "Structure", "Ctrl 2"),
-                ] {
-                    let selected = self.ui.table_view == view;
-                    if icons::control(ui, icon, name, key, selected, selected).clicked() {
-                        self.ui.table_view = view;
-                    }
-                }
-            }
+            ui.spacing_mut().item_spacing.x = 4.0;
             if self.ui.nav == Nav::Overview {
+                ui.strong("Map");
                 return;
             }
-            let narrow = ui.available_width() < 380.0;
-            if self.ui.nav == Nav::Table && self.ui.table_view == TableView::Data && !narrow {
+            let can_back = !self.tools.back.is_empty() || self.tools.result_return.is_some();
+            if ui
+                .add_enabled_ui(can_back, |ui| {
+                    icons::button(ui, Icon::Back, "Back", "Alt Left")
+                })
+                .inner
+                .clicked()
+            {
+                if self.view == View::Browse {
+                    self.navigate_back();
+                } else {
+                    self.return_to_table();
+                }
+            }
+            let title = self.result_title().to_owned();
+            ui.add_sized(
+                [
+                    if ui.available_width() < 540.0 {
+                        55.0
+                    } else {
+                        120.0
+                    },
+                    28.0,
+                ],
+                egui::Label::new(egui::RichText::new(&title).strong()).truncate(),
+            )
+            .on_hover_text(title);
+            if self.ui.nav == Nav::Table {
+                for (view, label) in [
+                    (TableView::Data, "Data"),
+                    (TableView::Structure, "Structure"),
+                ] {
+                    ui.selectable_value(&mut self.ui.table_view, view, label);
+                }
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let more = icons::button(ui, Icon::More, "More actions", "");
+                egui::Popup::menu(&more).show(|ui| {
+                    if icons::control(
+                        ui,
+                        Icon::Export,
+                        "Export retained result…",
+                        "Ctrl E",
+                        false,
+                        true,
+                    )
+                    .clicked()
+                    {
+                        self.ui.export_open = true;
+                        ui.close();
+                    }
+                    if ui.button("Copy all retained rows as TSV").clicked() {
+                        self.copy_results(ui.ctx(), crate::export::Format::Tsv);
+                        ui.close();
+                    }
+                    if self.view == View::Browse
+                        && icons::control(
+                            ui,
+                            Icon::Filter,
+                            "Add typed filter",
+                            "Ctrl F",
+                            false,
+                            true,
+                        )
+                        .clicked()
+                    {
+                        self.ui.filter_open = true;
+                        ui.close();
+                    }
+                    if self.has_drafts() && ui.button("Show staged data").clicked() {
+                        self.ui.nav = Nav::Table;
+                        self.ui.table_view = TableView::Data;
+                        ui.close();
+                    }
+                });
                 if icons::control(
                     ui,
-                    Icon::Filter,
-                    "Add filter",
-                    "Ctrl F",
-                    self.ui.filter_open,
+                    Icon::Columns,
+                    "Inspector",
+                    "Space",
+                    self.ui.inspector_open,
                     false,
                 )
                 .clicked()
                 {
-                    self.ui.filter_open = !self.ui.filter_open;
+                    self.toggle_inspector();
                 }
-                if self.writable
-                    && ui
-                        .add_enabled_ui(self.can_edit(), |ui| {
-                            icons::button(ui, Icon::Plus, "Insert row", "")
-                        })
-                        .inner
-                        .clicked()
-                {
-                    self.begin_insert();
-                }
-            }
-            if !narrow
-                && icons::button(ui, Icon::Export, "Export retained rows", "Ctrl E").clicked()
-            {
-                self.ui.export_open = true;
-            }
-            if !narrow
-                && icons::button(ui, Icon::Copy, "Copy retained rows as TSV", "Ctrl Shift C")
+                if ui
+                    .add_enabled_ui(
+                        self.view == View::Browse
+                            && self.ready
+                            && !self.closing
+                            && !self.has_drafts()
+                            && self.commit_ticket.is_none(),
+                        |ui| icons::button(ui, Icon::Refresh, "Refresh table", "F5"),
+                    )
+                    .inner
                     .clicked()
-            {
-                self.copy_results(ui.ctx(), crate::export::Format::Tsv);
-            }
-            if ui
-                .add_enabled_ui(
-                    self.view == View::Browse
-                        && self.ready
-                        && !self.closing
-                        && !self.has_drafts()
-                        && self.commit_ticket.is_none(),
-                    |ui| icons::button(ui, Icon::Refresh, "Refresh", "F5"),
-                )
-                .inner
-                .clicked()
-            {
-                if self.ui.nav == Nav::Table && self.ui.table_view == TableView::Structure {
-                    if let Some(name) = self.ui.diagram.selected.clone() {
-                        self.request_inspection(name);
-                    }
-                    self.refresh_catalog();
-                } else if self.view == View::Browse {
+                {
                     self.reload();
                 }
-            }
-            let more = icons::button(ui, Icon::More, "More actions", "");
-            egui::Popup::menu(&more).show(|ui| {
-                if self.browse.is_some()
-                    && self.view == View::Browse
-                    && ui.button("Add typed filter").clicked()
-                {
-                    self.ui.filter_open = true;
-                    ui.close();
-                }
-                if self.writable
-                    && ui
-                        .add_enabled(self.can_edit(), egui::Button::new("Insert row…"))
-                        .clicked()
-                {
-                    self.begin_insert();
-                    ui.close();
-                }
-                if ui.button("Export retained result…").clicked() {
-                    self.ui.export_open = true;
-                    ui.close();
-                }
-                if ui.button("Copy retained TSV").clicked() {
-                    self.copy_results(ui.ctx(), crate::export::Format::Tsv);
-                    ui.close();
-                }
-                if self.view == View::Browse
-                    && ui
-                        .add_enabled_ui(
-                            self.ready && !self.closing && self.tools.count_request.is_none(),
-                            |ui| {
-                                icons::control(
-                                    ui,
-                                    Icon::Count,
-                                    "Count all rows (full scan)",
-                                    "",
-                                    false,
-                                    true,
-                                )
-                            },
-                        )
-                        .inner
-                        .clicked()
-                {
-                    if let Some(table) = &self.table {
-                        self.count_table(table.name.clone());
-                    }
-                    ui.close();
-                }
-                if self.has_drafts() && ui.button("Show staged data").clicked() {
-                    self.ui.nav = Nav::Table;
-                    self.ui.table_view = TableView::Data;
-                    ui.close();
-                }
-                if ui.button("Overview").clicked() {
-                    self.overview();
-                    ui.close();
+                if self.ui.nav == Nav::Table && self.ui.table_view == TableView::Data {
+                    self.page_controls(ui);
                 }
             });
-            if self.ui.nav == Nav::Table && self.ui.table_view == TableView::Data {
-                self.page_controls(ui);
-            }
         });
         #[cfg(test)]
         {
@@ -536,12 +497,29 @@ impl App {
         let _ = header;
         ui.separator();
     }
+    pub(super) fn toggle_inspector(&mut self) {
+        self.ui.inspector_open = !self.ui.inspector_open;
+        self.ui.inspector_initialized = true;
+        self.preferences
+            .inspector_visibility
+            .insert(self.tools.database_scope.clone(), self.ui.inspector_open);
+        self.preferences.normalize();
+        self.store.save(&self.preferences);
+    }
     fn page_controls(&mut self, ui: &mut egui::Ui) {
         let Some(b) = self.browse.clone() else {
             ui.small("Lookup ≤100")
                 .on_hover_text("Bound related-row lookup. Not a complete table.");
             return;
         };
+        if let Some(n) = self.tools.counts.get(&b.table) {
+            ui.small(format!("of {n} total"));
+        } else if icons::control(ui, Icon::Count, "?", "", false, true)
+            .on_hover_text("Count all table rows (full scan), independent of filters")
+            .clicked()
+        {
+            self.count_table(b.table.clone());
+        }
         let enabled =
             self.ready && !self.closing && !self.has_drafts() && self.commit_ticket.is_none();
         if ui
@@ -620,7 +598,7 @@ impl App {
                 self.ui.inspector_detached = true;
             }
             if icons::button(ui, Icon::Close, "Close inspector", "Esc").clicked() {
-                self.ui.inspector_open = false;
+                self.toggle_inspector();
             }
         });
         egui::ScrollArea::vertical()
