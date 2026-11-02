@@ -66,6 +66,7 @@ impl App {
     }
 
     fn database_access_ui(&mut self, ui: &mut egui::Ui) {
+        self.poll_database_inspection(ui.ctx());
         egui::Frame::new()
             .fill(ui.visuals().faint_bg_color)
             .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
@@ -93,6 +94,27 @@ impl App {
                 if self.databases.editing_path {
                     self.database_path_ui(ui, edit.clicked());
                 }
+                let inspection = &mut self.databases.inspection;
+                #[cfg(test)]
+                { self.databases.override_rect = None; }
+                if inspection.ready(&self.path) {
+                    let kind = inspection.kind(&self.path);
+                    ui.horizontal_wrapped(|ui| {
+                        let response = ui.label(format!("{} · {}", kind.symbol(), kind.label()))
+                            .on_hover_text(kind.explanation());
+                        if let Some(error) = inspection.error() {
+                            response.on_hover_text(format!("Header inspection unavailable: {error}. Opening will validate the file."));
+                        }
+                        if kind == crate::discovery::DatabaseKind::LikelySqlite {
+                            let response = ui.checkbox(&mut inspection.override_sqlite, "Open with Turso anyway");
+                            #[cfg(test)]
+                            { self.databases.override_rect = Some(response.rect); }
+                            response.on_hover_text("Override the engine guess for this selected file. Turso still validates compatibility; this does not convert the file.");
+                        }
+                    });
+                } else {
+                    ui.label("Checking database type…");
+                }
                 ui.add_space(8.0);
                 ui.horizontal_wrapped(|ui| {
                     ui.label("Access");
@@ -115,6 +137,7 @@ impl App {
                 let enabled = !self.path.is_empty()
                     && self.picker.is_none()
                     && self.exclusive
+                    && self.databases.inspection.allows_open(&self.path)
                     && !self.has_drafts();
                 let response = ui.add_enabled(
                     enabled,
@@ -200,6 +223,83 @@ mod tests {
         }
     }
 
+    fn inspect(app: &mut App, ctx: &egui::Context) {
+        let started = std::time::Instant::now();
+        loop {
+            app.poll_database_inspection(ctx);
+            if app.databases.inspection.ready(&app.path) {
+                break;
+            }
+            assert!(started.elapsed() < std::time::Duration::from_secs(5));
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn sqlite_guess_can_be_overridden_and_opens_with_turso() {
+        use crate::discovery::DatabaseKind;
+        use std::io::{Seek, SeekFrom, Write};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shared-format.db");
+        crate::test_support::create(&path, &["CREATE TABLE example(id INTEGER PRIMARY KEY)"]);
+        // A valid shared-format file whose writer metadata resembles SQLite.
+        // This exercises the user correcting a false negative for Turso.
+        let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.seek(SeekFrom::Start(92)).unwrap();
+        file.write_all(&1u32.to_be_bytes()).unwrap();
+        file.write_all(&3_047_000u32.to_be_bytes()).unwrap();
+        drop(file);
+        let before = crate::test_support::snapshot(dir.path());
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx);
+        app.set_database_path(path.to_str().unwrap().into());
+        app.exclusive = true;
+        inspect(&mut app, &ctx);
+        assert_eq!(
+            app.databases.inspection.kind(&app.path),
+            DatabaseKind::LikelySqlite
+        );
+        let texts = frame(&mut app, &ctx, vec![], egui::vec2(1280.0, 720.0));
+        assert!(texts.iter().any(|t| t.contains("Likely SQLite")));
+        assert!(!app.databases.open_enabled);
+        app.open(&ctx);
+        assert!(app.session.is_none());
+        assert!(app.status.contains("override"));
+        let checkbox = app.databases.override_rect.unwrap().center();
+        click(&mut app, &ctx, checkbox);
+        assert!(app.databases.inspection.override_sqlite);
+        assert!(app.databases.open_enabled);
+        assert_eq!(
+            crate::test_support::snapshot(dir.path()),
+            before,
+            "classification and override must not write database files"
+        );
+        app.open(&ctx);
+        let started = std::time::Instant::now();
+        while !app.ready || app.active.is_some() {
+            app.poll(&ctx);
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(5),
+                "{}",
+                app.status
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(app.schema.iter().any(|t| t.name == "example"));
+        app.close();
+        while app.session.is_some() {
+            app.poll(&ctx);
+            assert!(started.elapsed() < std::time::Duration::from_secs(5));
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        // Consent belongs to a selection, not a lasting preference.
+        app.set_database_path(dir.path().join("other.db").to_str().unwrap().into());
+        assert!(!app.databases.inspection.override_sqlite);
+        app.set_database_path(path.to_str().unwrap().into());
+        inspect(&mut app, &ctx);
+        assert!(!app.databases.inspection.allows_open(&app.path));
+    }
+
     #[test]
     fn access_panel_requires_consent_and_path_editing_resets_it() {
         let ctx = egui::Context::default();
@@ -213,6 +313,8 @@ mod tests {
 
         let acknowledgement = app.databases.acknowledgement_rect.unwrap().center();
         click(&mut app, &ctx, acknowledgement);
+        inspect(&mut app, &ctx);
+        frame(&mut app, &ctx, vec![], egui::vec2(1280.0, 720.0));
         assert!(app.exclusive && app.databases.open_enabled);
         assert!(!app.writable);
         let (_tx, rx) = std::sync::mpsc::sync_channel(1);
@@ -272,6 +374,7 @@ mod tests {
                     state: State::Remembered,
                     size: None,
                     last_opened: Some(1),
+                    kind: crate::discovery::DatabaseKind::Unknown,
                 });
                 for i in 0..80 {
                     app.databases.entries.push(Entry {
@@ -283,6 +386,7 @@ mod tests {
                         },
                         size: None,
                         last_opened: None,
+                        kind: crate::discovery::DatabaseKind::Unknown,
                     });
                 }
                 let size = egui::vec2(width, height);
@@ -291,7 +395,8 @@ mod tests {
                 let open = app.databases.open_rect.unwrap();
                 assert!(
                     app.ui.workspace_rect.contains_rect(open),
-                    "{width}x{height}: {open:?}"
+                    "{width}x{height}: {open:?}, workspace {:?}",
+                    app.ui.workspace_rect
                 );
                 assert!(app.databases.search_rect.unwrap().width() <= 800.0);
                 assert!(app.databases.row_rects.len() < 10);

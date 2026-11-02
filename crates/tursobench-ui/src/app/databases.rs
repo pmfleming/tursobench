@@ -1,8 +1,9 @@
 use super::*;
 mod chooser;
 mod connection;
+mod inspection;
 use crate::{
-    discovery::{self, Availability, Event, Job, Request, Root, Summary},
+    discovery::{self, Availability, DatabaseKind, Event, Job, Request, Root, Summary},
     storage::{CachedDatabase, DiscoveryPreferences, normalized_absolute},
 };
 use std::{
@@ -24,6 +25,7 @@ struct Entry {
     state: State,
     size: Option<u64>,
     last_opened: Option<u64>,
+    kind: DatabaseKind,
 }
 impl Entry {
     fn badge(&self) -> &'static str {
@@ -36,7 +38,7 @@ impl Entry {
             _ if self.path.to_str().is_none() => "Unsupported path",
             _ if self.last_opened.is_some() => "Recent",
             State::Remembered => "Unchecked",
-            State::Found => "Found",
+            State::Found => self.kind.label(),
         }
     }
 
@@ -69,6 +71,7 @@ impl Entry {
 
 #[derive(Default)]
 pub(super) struct Chooser {
+    pub inspection: inspection::Inspection,
     pub job: Option<Job>,
     entries: Vec<Entry>,
     filter: String,
@@ -103,6 +106,8 @@ pub(super) struct Chooser {
     pub acknowledgement_rect: Option<egui::Rect>,
     #[cfg(test)]
     pub settings_rect: Option<egui::Rect>,
+    #[cfg(test)]
+    pub override_rect: Option<egui::Rect>,
 }
 impl Chooser {
     pub(super) fn new(prefs: &DiscoveryPreferences) -> Self {
@@ -116,6 +121,7 @@ impl Chooser {
                 state: State::Remembered,
                 size: None,
                 last_opened: Some(recent.last_opened),
+                kind: DatabaseKind::Unknown,
             });
         }
         for cached in &prefs.cached {
@@ -127,6 +133,7 @@ impl Chooser {
                     state: State::Remembered,
                     size: Some(cached.size),
                     last_opened: None,
+                    kind: DatabaseKind::Unknown,
                 });
             }
         }
@@ -188,10 +195,12 @@ fn request(prefs: &DiscoveryPreferences, folder: Option<PathBuf>) -> Request {
         let home = std::env::var_os("HOME").map(PathBuf::from);
         let cwd = std::env::current_dir().ok();
         let data = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from);
+        let state = std::env::var_os("XDG_STATE_HOME").map(PathBuf::from);
         roots.extend(discovery::default_roots(
             home.as_deref(),
             cwd.as_deref(),
             data.as_deref(),
+            state.as_deref(),
         ));
     }
     Request {
@@ -218,6 +227,7 @@ impl App {
                 .is_none_or(|root| entry.path.starts_with(root))
             {
                 entry.state = State::Remembered;
+                entry.kind = DatabaseKind::Unknown;
             }
         }
         let wake = ctx.clone();
@@ -286,6 +296,7 @@ impl App {
                     .find(|e| e.path == candidate.path)
                 {
                     entry.state = State::Found;
+                    entry.kind = candidate.kind;
                     entry.size = Some(candidate.size);
                 } else {
                     // Append during a scan: preserve keyboard focus and scroll.
@@ -294,12 +305,14 @@ impl App {
                         state: State::Found,
                         size: Some(candidate.size),
                         last_opened: None,
+                        kind: candidate.kind,
                     });
                 }
             }
             Event::Checked(path, state) => {
                 if let Some(entry) = self.databases.entries.iter_mut().find(|e| e.path == path) {
                     entry.state = State::Checked(state);
+                    entry.kind = DatabaseKind::Unknown;
                 }
                 if matches!(
                     state,
@@ -363,6 +376,7 @@ impl App {
                     state: State::Remembered,
                     size: None,
                     last_opened: Some(time),
+                    kind: DatabaseKind::Unknown,
                 },
             );
         }
@@ -579,6 +593,7 @@ mod tests {
             path: path.into(),
             size: 4096,
             modified: Some(1),
+            kind: DatabaseKind::Unknown,
         })
     }
     fn frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>, width: f32) {

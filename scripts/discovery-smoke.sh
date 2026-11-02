@@ -22,10 +22,15 @@ binary, work = sys.argv[1], pathlib.Path(sys.argv[2])
 home = work / "home"
 project = home / "Projects/demo"
 data = home / ".local/share"
+state = home / ".local/state"
 config = home / ".config"
 prefs_path = config / "tursobench/preferences.json"
 prefs_path.parent.mkdir(parents=True)
-expected = {project / "app.db", data / "demo/state"}
+expected = {project / "app.db", data / "demo/state",
+            data / "clip-daemon/history/history.db",
+            state / "app-daemon/resource-history-turso-v1.db",
+            state / "bar-daemon/notifications-turso-v1.db",
+            state / "bar-daemon/agenda/agenda.db"}
 excluded = project / "private"
 ignored = {project / "target/ignored.db", data / "chromium/History", excluded / "secret.db",
            data / "captive-portal-chrome/Default/History", data / "unusual-profile-app/Default/History",
@@ -47,7 +52,8 @@ prefs_path.write_text(json.dumps({"discovery": {
                for path in [missing, data / "unusual-profile-app/Default/History", data / "pki/nssdb/key4.db"]]
 }}))
 environment = dict(os.environ, HOME=str(home), XDG_CONFIG_HOME=str(config),
-                   XDG_DATA_HOME=str(data), XDG_CACHE_HOME=str(home / ".cache"))
+                   XDG_DATA_HOME=str(data), XDG_STATE_HOME=str(state),
+                   XDG_CACHE_HOME=str(home / ".cache"))
 
 def snapshot():
     return {str(p.relative_to(home)): hashlib.sha256(p.read_bytes()).hexdigest()

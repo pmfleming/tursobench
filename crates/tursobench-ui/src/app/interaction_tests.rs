@@ -1,5 +1,16 @@
 use super::*;
 use std::time::{Duration, Instant};
+fn inspect_selected(app: &mut App, ctx: &egui::Context) {
+    let start = Instant::now();
+    loop {
+        app.poll_database_inspection(ctx);
+        if app.databases.inspection.ready(&app.path) {
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(5));
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
 fn wait(app: &mut App, ctx: &egui::Context) {
     let start = Instant::now();
     loop {
@@ -54,6 +65,7 @@ fn failed_open_after_close_can_retry_a_valid_database() {
     let mut app = App::new(&ctx);
     app.set_database_path(dir.path().join("missing.db").to_str().unwrap().into());
     app.exclusive = true;
+    inspect_selected(&mut app, &ctx);
     app.open(&ctx);
     assert!(app.session.is_some());
     app.request_close();
@@ -73,6 +85,7 @@ fn failed_open_after_close_can_retry_a_valid_database() {
 
     app.set_database_path(path.to_str().unwrap().into());
     app.exclusive = true;
+    inspect_selected(&mut app, &ctx);
     app.open(&ctx);
     wait(&mut app, &ctx);
     assert!(app.schema.iter().any(|table| table.name == "example"));
@@ -106,6 +119,7 @@ fn failed_open_completes_pending_exit_after_any_export() {
         app.set_database_path(dir.path().join("missing.db").to_str().unwrap().into());
         app.exclusive = true;
         app.writable = true;
+        inspect_selected(&mut app, &ctx);
         app.open(&ctx);
         app.quit = true;
         app.request_close();
@@ -162,6 +176,7 @@ fn diagram_preserves_drafts_and_result_ownership_and_chrome_fits_both_themes() {
     app.path = path.to_string_lossy().into_owned();
     app.exclusive = true;
     app.writable = true;
+    inspect_selected(&mut app, &ctx);
     app.open(&ctx);
     wait(&mut app, &ctx);
     app.browse_table("buffer_ids".into());
@@ -305,6 +320,7 @@ fn reverted_empty_batch_cannot_carry_identity_to_another_table() {
     app.path = path.to_string_lossy().into_owned();
     app.writable = true;
     app.exclusive = true;
+    inspect_selected(&mut app, &ctx);
     app.open(&ctx);
     wait(&mut app, &ctx);
     app.browse_table("a".into());
@@ -377,6 +393,7 @@ fn local_project_pages_and_fts_results_render_and_export() {
         let mut app = App::new(&ctx);
         app.path = path.to_string_lossy().into_owned();
         app.exclusive = true;
+        inspect_selected(&mut app, &ctx);
         app.open(&ctx);
         wait(&mut app, &ctx);
         let table = match name {
@@ -463,6 +480,7 @@ fn click_inspect_stage_no_write_failed_commit_retains_drafts() {
     app.path = path.to_string_lossy().into_owned();
     app.exclusive = true;
     app.writable = true;
+    inspect_selected(&mut app, &ctx);
     app.open(&ctx);
     wait(&mut app, &ctx);
     app.browse_table("items".into());
@@ -568,6 +586,7 @@ fn selection_named_history_metadata_reference_back_and_tools_render() {
     let mut app = App::new(&ctx);
     app.path = path.to_string_lossy().into_owned();
     app.exclusive = true;
+    inspect_selected(&mut app, &ctx);
     app.open(&ctx);
     wait(&mut app, &ctx);
     assert!(

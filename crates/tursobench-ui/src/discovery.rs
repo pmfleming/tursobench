@@ -13,6 +13,9 @@ use std::{
     time::{Duration, Instant, UNIX_EPOCH},
 };
 
+mod classification;
+pub use classification::DatabaseKind;
+
 #[derive(Clone, Debug)]
 pub struct Root {
     pub path: PathBuf,
@@ -54,6 +57,7 @@ pub struct Candidate {
     pub path: PathBuf,
     pub size: u64,
     pub modified: Option<u64>,
+    pub kind: DatabaseKind,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -129,8 +133,31 @@ impl Drop for Job {
 
 /// Build roots without touching the filesystem. Existence and mount checks run
 /// on the worker. A broad launch directory never becomes a recursive root.
-pub fn default_roots(home: Option<&Path>, cwd: Option<&Path>, data: Option<&Path>) -> Vec<Root> {
+pub fn default_roots(
+    home: Option<&Path>,
+    cwd: Option<&Path>,
+    data: Option<&Path>,
+    state: Option<&Path>,
+) -> Vec<Root> {
     let mut roots = Vec::new();
+    // Visit application storage before broad development trees consume the budget.
+    for (configured, fallback) in [(data, ".local/share"), (state, ".local/state")] {
+        if let Some(path) = configured
+            .filter(|p| p.is_absolute() && p.parent().is_some())
+            .map(Path::to_path_buf)
+            .or_else(|| {
+                home.filter(|p| p.is_absolute() && p.parent().is_some())
+                    .map(|p| p.join(fallback))
+            })
+        {
+            roots.push(Root {
+                path,
+                depth: 3,
+                extensionless: true,
+                explicit: false,
+            });
+        }
+    }
     if let Some(cwd) = cwd.filter(|p| p.is_absolute() && p.parent().is_some()) {
         roots.push(Root {
             path: cwd.into(),
@@ -166,24 +193,49 @@ pub fn default_roots(home: Option<&Path>, cwd: Option<&Path>, data: Option<&Path
                 explicit: false,
             });
         }
-        roots.push(Root {
-            path: data
-                .filter(|p| p.is_absolute())
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| home.join(".local/share")),
-            depth: 3,
-            extensionless: true,
-            explicit: false,
-        });
-    } else if let Some(data) = data.filter(|p| p.is_absolute()) {
-        roots.push(Root {
-            path: data.into(),
-            depth: 3,
-            extensionless: true,
-            explicit: false,
-        });
     }
     roots
+}
+
+/// Also used for explicit selections: bounded reads, no connection or sidecars.
+pub fn inspect_kind(path: &Path) -> io::Result<DatabaseKind> {
+    if !no_symlink_components(path)? {
+        return Err(io::Error::other("Symlink paths are not inspected"));
+    }
+    read_candidate(path)?
+        .map(|(_, candidate)| candidate.kind)
+        .ok_or_else(|| io::Error::other("No recognized database header"))
+}
+
+fn read_candidate(path: &Path) -> io::Result<Option<(Metadata, Candidate)>> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+    }
+    let mut file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() < 100 {
+        return Ok(None);
+    }
+    let mut header = [0; 100];
+    file.read_exact(&mut header)?;
+    if &header[..16] != b"SQLite format 3\0" {
+        return Ok(None);
+    }
+    let candidate = Candidate {
+        path: path.into(),
+        size: metadata.len(),
+        modified: metadata
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|t| t.as_secs()),
+        kind: DatabaseKind::from_header(&header),
+    };
+    Ok(Some((metadata, candidate)))
 }
 
 fn system_path(path: &Path) -> bool {
@@ -552,37 +604,9 @@ impl<F: FnMut(Event) -> bool> Scanner<'_, F> {
             return;
         }
         self.summary.probes += 1;
-        let result = (|| -> io::Result<Option<(Metadata, Candidate)>> {
-            // O_NONBLOCK prevents a file replaced with a FIFO from hanging the
-            // worker; O_NOFOLLOW prevents following a replaced file symlink.
-            let mut options = OpenOptions::new();
-            options.read(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
-            }
-            let mut file = options.open(path)?;
-            let metadata = file.metadata()?;
-            if !metadata.is_file() || metadata.len() < 100 {
-                return Ok(None);
-            }
-            let mut header = [0; 100];
-            file.read_exact(&mut header)?;
-            if &header[..16] != b"SQLite format 3\0" {
-                return Ok(None);
-            }
-            let candidate = Candidate {
-                path: path.into(),
-                size: metadata.len(),
-                modified: metadata
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                    .map(|t| t.as_secs()),
-            };
-            Ok(Some((metadata, candidate)))
-        })();
+        // O_NONBLOCK and O_NOFOLLOW keep replaced FIFOs and symlinks from
+        // blocking the worker or redirecting its header reads.
+        let result = read_candidate(path);
         match result {
             Ok(Some((metadata, candidate))) => {
                 let id = identity(&metadata, path);
@@ -1101,7 +1125,7 @@ mod tests {
     #[test]
     fn root_defaults_are_shallow_for_home_and_never_scan_the_filesystem_root() {
         let home = Path::new("/home/test");
-        let roots = default_roots(Some(home), Some(home), None);
+        let roots = default_roots(Some(home), Some(home), None, None);
         assert!(
             roots
                 .iter()
@@ -1113,7 +1137,41 @@ mod tests {
                 .iter()
                 .any(|r| r.path == home.join(".local/share") && r.extensionless)
         );
-        assert!(default_roots(None, Some(Path::new("/")), None).is_empty());
+        assert!(
+            roots
+                .iter()
+                .any(|r| r.path == home.join(".local/state") && r.extensionless)
+        );
+        assert_eq!(roots[0].path, home.join(".local/share"));
+        assert_eq!(roots[1].path, home.join(".local/state"));
+        assert!(default_roots(None, Some(Path::new("/")), None, None).is_empty());
+    }
+    #[test]
+    fn application_roots_respect_xdg_overrides_without_home() {
+        let roots = default_roots(
+            None,
+            None,
+            Some(Path::new("/data")),
+            Some(Path::new("/state")),
+        );
+        assert_eq!(
+            roots.iter().map(|r| r.path.as_path()).collect::<Vec<_>>(),
+            vec![Path::new("/data"), Path::new("/state")]
+        );
+        assert!(
+            roots
+                .iter()
+                .all(|r| r.extensionless && r.depth == 3 && !r.explicit)
+        );
+        let home = Path::new("/home/test");
+        let fallback = default_roots(
+            Some(home),
+            None,
+            Some(Path::new("relative")),
+            Some(Path::new("/")),
+        );
+        assert_eq!(fallback[0].path, home.join(".local/share"));
+        assert_eq!(fallback[1].path, home.join(".local/state"));
     }
     #[test]
     fn real_turso_database_and_sidecars_are_unchanged_by_discovery() {
@@ -1155,6 +1213,11 @@ mod tests {
         let (events, summary) = run(request(temp.path()));
         assert_eq!(summary.found, 1);
         assert_eq!(paths(&events), vec![path]);
+        assert!(
+            events.iter().any(
+                |event| matches!(event, Event::Found(c) if c.kind == DatabaseKind::LikelyTurso)
+            )
+        );
         assert_eq!(snapshot(), before);
     }
     #[test]

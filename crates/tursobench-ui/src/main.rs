@@ -6,6 +6,9 @@ mod export;
 #[path = "../../tursobench-db/tests/common/local_fixtures.rs"]
 mod local_project_fixtures;
 mod storage;
+#[cfg(test)]
+#[path = "../../tursobench-db/tests/common/fixture.rs"]
+mod test_support;
 fn main() -> eframe::Result {
     eframe::run_native(
         "TursoBench — Turso 0.8.3 preview",

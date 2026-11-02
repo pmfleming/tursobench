@@ -149,6 +149,15 @@ impl App {
             self.status = "Drafts retained after disconnect; inspect the database and discard drafts before reopening".into();
             return;
         }
+        self.poll_database_inspection(ctx);
+        if !self.databases.inspection.ready(&self.path) {
+            self.status = "Checking the selected database header…".into();
+            return;
+        }
+        if !self.databases.inspection.allows_open(&self.path) {
+            self.status = "Likely SQLite. Select Open with Turso anyway to override this classification.".into();
+            return;
+        }
         let wake = ctx.clone();
         match Session::open_with_settings(
             self.path.clone().into(),
@@ -281,6 +290,9 @@ impl App {
             }
         }
         self.poll_picker();
+        if self.session.is_none() {
+            self.poll_database_inspection(ctx);
+        }
         self.poll_discovery(ctx);
         let mut events = Vec::new();
         let mut disconnected = false;

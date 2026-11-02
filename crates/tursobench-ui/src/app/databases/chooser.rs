@@ -233,8 +233,13 @@ impl App {
             ui.add_space(16.0);
         } else {
             // Leave the access review and primary action visible on laptop screens.
-            let reserve = if self.path.is_empty() { 110.0 } else { 340.0 };
-            let height = (ui.available_height() - reserve).clamp(96.0, 360.0);
+            let reserve = if self.path.is_empty() { 110.0 } else { 410.0 };
+            let minimum = if self.path.is_empty() {
+                96.0
+            } else {
+                ROW_HEIGHT
+            };
+            let height = (ui.available_height() - reserve).clamp(minimum, 360.0);
             let stride = ROW_HEIGHT + ui.spacing().item_spacing.y;
             let mut scroll = egui::ScrollArea::vertical()
                 .id_salt("database-candidates")
@@ -271,7 +276,7 @@ impl App {
                             egui::WidgetType::SelectableLabel,
                             available,
                             selected_path,
-                            entry.path.to_string_lossy(),
+                            format!("{} · {}", entry.path.display(), entry.kind.label()),
                         )
                     });
                     let fill = if selected_path {
@@ -306,7 +311,12 @@ impl App {
                     );
                     ui.painter()
                         .rect_filled(icon, 9.0, ui.visuals().widgets.inactive.weak_bg_fill);
-                    database_icon(ui.painter(), icon.shrink(8.0), color);
+                    let kind_color = match entry.kind {
+                        crate::discovery::DatabaseKind::LikelyTurso => ui.visuals().hyperlink_color,
+                        crate::discovery::DatabaseKind::LikelySqlite => ui.visuals().warn_fg_color,
+                        crate::discovery::DatabaseKind::Unknown => color,
+                    };
+                    database_icon(ui.painter(), icon.shrink(6.0), kind_color, entry.kind);
                     let name = entry
                         .path
                         .file_name()
@@ -368,6 +378,8 @@ impl App {
                     }
                     response.context_menu(|ui| {
                         ui.label(entry.label());
+                        ui.label(entry.kind.label());
+                        ui.small(entry.kind.explanation());
                         if let Some(bytes) = entry.size {
                             ui.small(format!("{} KiB", bytes.div_ceil(1024)));
                         }
@@ -377,9 +389,11 @@ impl App {
                         }
                     });
                     response.on_hover_text(format!(
-                        "{}\n{}{}",
+                        "{}\n{}\n{}: {}{}",
                         entry.path.display(),
                         entry.label(),
+                        entry.kind.label(),
+                        entry.kind.explanation(),
                         if entry.path.to_str().is_none() {
                             " · path unsupported by engine"
                         } else {
@@ -457,18 +471,23 @@ fn search_icon(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) 
         egui::Stroke::new(1.6, color),
     );
 }
-fn database_icon(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
+fn database_icon(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    color: egui::Color32,
+    kind: crate::discovery::DatabaseKind,
+) {
     painter.rect_stroke(
         rect,
         3.0,
         egui::Stroke::new(1.3, color),
         egui::StrokeKind::Inside,
     );
-    for fraction in [0.33, 0.66] {
-        let y = rect.top() + rect.height() * fraction;
-        painter.line_segment(
-            [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
-            egui::Stroke::new(1.0, color),
-        );
-    }
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        kind.symbol(),
+        egui::FontId::proportional(13.0),
+        color,
+    );
 }

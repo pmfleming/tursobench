@@ -23,16 +23,18 @@ previously selected path, and incoming discoveries preserve the highlight.
 Selecting a candidate does not connect to it. A compact access panel directly
 below the results shows the selected file, read-only/write choice, exclusive-use
 acknowledgement and **Open database**. Long paths are truncated with the full path
-on hover. Changing the selected path resets write access and acknowledgement.
+on hover. Changing the selected path resets write access, acknowledgement, and
+the SQLite classification override.
 Command-line paths keep priority.
 
 ## Scope and controls
 
-Search prioritizes added folders and recent-file parents, then the launch
-directory, files directly in the home directory, common development folders
-(`Projects`, `projects`, `Code`, `code`, `Developer`, `Development`, `src`), and
-`$XDG_DATA_HOME` (normally `~/.local/share`). The launch and development folders
-have a five-level recursion limit, recent parents one, application data three,
+Search prioritizes added folders and recent-file parents, then `$XDG_DATA_HOME`
+(normally `~/.local/share`) and `$XDG_STATE_HOME` (normally `~/.local/state`),
+before the launch directory, files directly in the home directory, and common
+development folders (`Projects`, `projects`, `Code`, `code`, `Developer`,
+`Development`, `src`). The launch and development folders have a five-level
+recursion limit, recent parents one, application data/state three,
 and home zero. Launching from home never makes all of home recursive.
 
 **Search settings…** opens a separate scrollable dialog with a startup toggle,
@@ -86,9 +88,29 @@ writes database/sidecar files. It first considers `.db`, `.sqlite`, `.sqlite3`,
 data, recent-file parents and added folders. Remembered paths are checked
 regardless of extension. WAL, SHM, journal and Turso `.db-log` sidecars are excluded.
 
-The SQLite-format header is shared by Turso and SQLite. A matching header is only
-a **candidate**, not proof of the creating engine, integrity or compatibility with
-the pinned Turso version. Engine validation happens on Open. Encrypted files,
+The SQLite-format header is shared by Turso and SQLite. Each checked file has a
+type icon: **T — Likely Turso**, **S — Likely SQLite**, or **? — Unknown engine**.
+Hover a row for the classification's evidence and limitations. Recent/cached
+files start with an unknown icon until checked; classifications are not cached.
+
+Classification uses the existing 100-byte header read. Turso 0.8.3 initializes
+the writer version and version-valid-for fields to 3047000, with a change counter
+of 1, WAL read/write versions and schema format 4. This combination suggests
+Turso. A SQLite 3.x writer version with a version-valid-for field matching the
+change counter suggests SQLite. Other combinations remain unknown. The writer
+version alone is never treated as a Turso signature. These are heuristics, not
+proof of the creating engine, integrity, or compatibility. The main-file header
+can lag WAL state, and another engine may have modified it. Reference:
+[SQLite database header specification](https://www.sqlite.org/fileformat.html).
+
+Selecting any file, including Browse/manual/command-line selections, starts a
+separate background header check. Open waits for that check. A **Likely SQLite**
+file remains selectable, but requires **Open with Turso anyway** in its access
+panel. The override applies only to the current selection and is not persisted.
+Unknown files and failed inspections remain eligible for normal engine
+validation on Open. This override uses the existing Turso engine; it neither
+switches engines nor converts files. Access mode and exclusive-use acknowledgement
+still apply. Engine validation happens on Open. Encrypted files,
 empty databases, damaged headers, unusual extensions and files outside the
 configured scope can be missed. This is a search of likely locations, never a
 claim to have found every database on disk.
@@ -115,7 +137,10 @@ Headless egui tests exercise filtering, native search-cursor retention, arrow-ke
 and page navigation, scrolling, the Browse button beside the search field,
 pointer selection, stable asynchronous result order, access resets and
 native-folder-result routing. Engine lifecycle tests
-verify successful-open-only history.
+verify successful-open-only history. Classification tests cover shared writer
+versions, unknown headers, a real Turso fixture, and a SQLite-like classification
+that the user overrides before a successful Turso open. Header inspection and
+override are verified to leave fixture files unchanged.
 
 `bash scripts/discovery-smoke.sh` runs normal native startup under Xvfb with an
 isolated home, working directory, data and preferences. It verifies project and

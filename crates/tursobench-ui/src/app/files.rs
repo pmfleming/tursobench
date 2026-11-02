@@ -29,6 +29,7 @@ impl App {
             self.path = path;
             self.exclusive = false;
             self.writable = false;
+            self.databases.inspection.override_sqlite = false;
         }
     }
 

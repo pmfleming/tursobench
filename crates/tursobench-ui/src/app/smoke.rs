@@ -1,4 +1,5 @@
 use super::*;
+
 use std::time::{Duration, Instant};
 pub(super) struct Smoke {
     stage: u8,
@@ -33,8 +34,17 @@ impl App {
             0 => {
                 self.exclusive = true;
                 self.writable = false;
+                // The desktop smoke runner intentionally uses a closed SQLite
+                // compatibility fixture and opts into opening it with Turso.
+                if self.databases.inspection.kind(&self.path)
+                    == crate::discovery::DatabaseKind::LikelySqlite
+                {
+                    self.databases.inspection.override_sqlite = true;
+                }
                 self.open(ctx);
-                smoke.stage = 1;
+                if self.session.is_some() {
+                    smoke.stage = 1;
+                }
             }
             1 if self.ready && self.active.is_none() => {
                 self.browse_table(smoke.table.clone());
