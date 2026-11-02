@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Muirdris — The Bellows</title>
+  <desc id="desc">A broad, ribbed sea creature with an upturned head and curled tail sits in front of a storage cylinder.</desc>
+  <rect width="256" height="256" rx="52" fill="#102d25"/>
+  <path d="M66 63v93c0 24 124 24 124 0V63" fill="#25634f"/>
+  <ellipse cx="128" cy="63" rx="62" ry="22" fill="#3d8a70"/>
+  <path d="M66 95c0 24 124 24 124 0M66 126c0 24 124 24 124 0" fill="none" stroke="#102d25" stroke-width="7"/>
+  <path d="M87 169c-26 5-41-7-39-26-17 13-16 37 1 48 15 10 33 7 47-1" fill="#10b981" stroke="#102d25" stroke-width="7" stroke-linejoin="round"/>
+  <path d="m167 113 4-26 17 12 18-8-1 27" fill="#10b981" stroke="#102d25" stroke-width="7" stroke-linejoin="round"/>
+  <path d="M77 170c0-23 23-39 55-40 18 0 27-9 30-24 3-13 16-19 28-11l11 12 16 4c11 3 12 15 4 21l-19 8c-5 4-5 15-7 29-3 28-25 44-60 43-33-1-58-17-58-42Z" fill="#6ee7b7" stroke="#102d25" stroke-width="7" stroke-linejoin="round"/>
+  <path d="M111 145c-12 14-12 34 0 48m23-53c-10 17-10 37 0 57m24-61c-7 19-7 40 0 58" fill="none" stroke="#059669" stroke-width="7" stroke-linecap="round"/>
+  <path d="m168 192 21 12-27 4" fill="#10b981"/>
+  <circle cx="189" cy="114" r="5" fill="#102d25"/>
+</svg>
