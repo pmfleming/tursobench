@@ -276,7 +276,11 @@ mod tests {
         );
         app.open(&ctx);
         let started = std::time::Instant::now();
-        while !app.ready || app.active.is_some() {
+        while !app.ready
+            || app.active.is_some()
+            || app.catalog_ticket.is_some()
+            || app.ui.diagram.ticket.is_some()
+        {
             app.poll(&ctx);
             assert!(
                 started.elapsed() < std::time::Duration::from_secs(5),

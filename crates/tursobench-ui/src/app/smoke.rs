@@ -48,7 +48,11 @@ impl App {
                     smoke.stage = 1;
                 }
             }
-            1 if self.ready && self.active.is_none() => {
+            1 if self.ready
+                && self.active.is_none()
+                && self.catalog_ticket.is_none()
+                && self.ui.diagram.ticket.is_none() =>
+            {
                 self.browse_table(smoke.table.clone());
                 smoke.stage = 2;
             }

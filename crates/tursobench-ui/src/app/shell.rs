@@ -49,6 +49,7 @@ pub(super) struct UiState {
     pub outcomes: bool,
     pub diagram: diagram::DiagramState,
     pub drawer: Drawer,
+    pub map_list: bool,
     pub font_rx: Option<std::sync::mpsc::Receiver<(egui::FontDefinitions, String)>>,
     pub font_label: String,
     #[cfg(test)]
@@ -68,6 +69,7 @@ impl UiState {
             outcomes: false,
             diagram: Default::default(),
             drawer: Default::default(),
+            map_list: false,
             font_rx: Some(crate::appearance::system_fonts(ctx.clone())),
             font_label: "Loading system fonts; built-in fallback available".into(),
             #[cfg(test)]
@@ -353,6 +355,10 @@ impl App {
             }
         }
         if self.ui.workspace == Workspace::Diagram {
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.ui.map_list, false, "Map");
+                ui.selectable_value(&mut self.ui.map_list, true, "List");
+            });
             if self.ui.drawer.open {
                 if self.ui.drawer.expanded {
                     self.table_drawer(ui);
@@ -365,7 +371,13 @@ impl App {
                     .size_range(120.0..=(height * 0.75).max(120.0))
                     .show(ui, |ui| self.table_drawer(ui));
             }
-            self.diagram_ui(ui);
+            if self.ui.map_list {
+                egui::ScrollArea::vertical()
+                    .id_salt("map-object-list")
+                    .show(ui, |ui| self.schema_panel(ui));
+            } else {
+                self.diagram_ui(ui);
+            }
             return;
         }
         self.result_workspace(ui);
@@ -416,7 +428,6 @@ impl App {
                             .table
                             .as_ref()
                             .map_or("Table data", |t| t.name.as_str()),
-                        View::Schema => "Schema catalog",
                         View::Explain => "EXPLAIN result",
                         View::Diagnostics => "Diagnostic result",
                         View::Query => "Query result",

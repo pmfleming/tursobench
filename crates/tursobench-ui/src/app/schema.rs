@@ -39,7 +39,7 @@ impl App {
                 )
                 .clicked()
             {
-                self.submit(Operation::Schema, View::Schema);
+                self.refresh_catalog();
             }
             if ui.button("Diagram").clicked() {
                 self.ui.workspace = shell::Workspace::Diagram;
@@ -51,14 +51,26 @@ impl App {
             }
         });
         let filter = self.tools.schema_filter.to_lowercase();
-        for kind in ["table", "view", "index", "trigger"] {
+        if self
+            .catalog
+            .completion
+            .as_ref()
+            .is_some_and(|c| c.delivery != tursobench_core::Delivery::Complete || c.error.is_some())
+        {
+            ui.colored_label(ui.visuals().warn_fg_color, "Catalog incomplete — use SQL to inspect objects outside the retained metadata budget.");
+        }
+        for kind in ["table", "view", "system", "index", "trigger"] {
             let objects: Vec<_> = self
                 .schema
                 .iter()
                 .filter(|o| {
-                    o.kind == kind
-                        && (o.name.to_lowercase().contains(&filter)
-                            || o.table.to_lowercase().contains(&filter))
+                    (if kind == "system" {
+                        o.kind == "table" && o.name.starts_with("__turso_internal_")
+                    } else {
+                        o.kind == kind
+                            && !(kind == "table" && o.name.starts_with("__turso_internal_"))
+                    }) && (o.name.to_lowercase().contains(&filter)
+                        || o.table.to_lowercase().contains(&filter))
                 })
                 .cloned()
                 .collect();
@@ -88,7 +100,7 @@ impl App {
                                         )
                                         .on_hover_text(&object.name);
                                     if button.clicked() {
-                                        if kind == "table" || kind == "view" {
+                                        if kind == "table" || kind == "view" || kind == "system" {
                                             self.tools.back.clear();
                                             self.browse_table(object.name.clone());
                                         } else {

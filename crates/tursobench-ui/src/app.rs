@@ -23,7 +23,6 @@ use tursobench_db::{Operation, Request, Session};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum View {
-    Schema,
     Query,
     Browse,
     Explain,
@@ -53,6 +52,8 @@ pub struct App {
     view: View,
     result: ResultSet,
     schema: Vec<SchemaObject>,
+    catalog: ResultSet,
+    catalog_ticket: Option<Ticket>,
     table: Option<Table>,
     browse: Option<Browse>,
     sql: String,
@@ -111,6 +112,8 @@ impl App {
             view: View::Query,
             result: ResultSet::default(),
             schema: vec![],
+            catalog: ResultSet::default(),
+            catalog_ticket: None,
             table: None,
             browse: None,
             sql: "SELECT name, type FROM sqlite_schema ORDER BY name".into(),
@@ -179,6 +182,9 @@ impl App {
             Ok(s) => {
                 self.result = ResultSet::default();
                 self.schema.clear();
+                self.catalog = ResultSet::default();
+                self.catalog_ticket = None;
+                self.ui.map_list = false;
                 self.ui.diagram = Default::default();
                 self.ui.drawer = Default::default();
                 self.tools.ddl = None;
@@ -291,6 +297,26 @@ impl App {
             self.submit(Operation::Browse(b), View::Browse);
         }
     }
+    fn refresh_catalog(&mut self) {
+        if !self.ready || self.closing || self.catalog_ticket.is_some() {
+            return;
+        }
+        let Some(session) = &self.session else {
+            return;
+        };
+        self.sequence += 1;
+        let ticket = session.ticket(self.sequence, self.generation);
+        match session.submit(Request {
+            ticket,
+            operation: Operation::Schema,
+        }) {
+            Ok(()) => {
+                self.catalog.start(ticket);
+                self.catalog_ticket = Some(ticket);
+            }
+            Err(e) => self.status = e.to_string(),
+        }
+    }
     fn poll(&mut self, ctx: &egui::Context) {
         self.poll_storage(ctx);
         if let Some(rx) = &self.ui.font_rx {
@@ -331,6 +357,46 @@ impl App {
                 .as_ref()
                 .is_none_or(|s| s.id != event.ticket.session)
             {
+                continue;
+            }
+            if self.catalog_ticket == Some(event.ticket) {
+                let done = matches!(event.kind, EventKind::Finished(_) | EventKind::Failed(_));
+                if let EventKind::Finished(c) = &event.kind {
+                    self.transaction = c.transaction;
+                    if let Some(e) = &c.error {
+                        self.status = e.to_string();
+                    }
+                }
+                if let EventKind::Failed(e) = &event.kind {
+                    self.status = e.to_string();
+                }
+                self.catalog.apply(event);
+                if done {
+                    self.catalog_ticket = None;
+                    self.schema = self
+                        .catalog
+                        .rows
+                        .iter()
+                        .filter_map(|r| match r.as_slice() {
+                            [
+                                Value::Text(kind),
+                                Value::Text(name),
+                                Value::Text(table),
+                                ddl,
+                            ] => Some(SchemaObject {
+                                kind: kind.clone(),
+                                name: name.clone(),
+                                table: table.clone(),
+                                ddl: if let Value::Text(s) = ddl {
+                                    Some(s.clone())
+                                } else {
+                                    None
+                                },
+                            }),
+                            _ => None,
+                        })
+                        .collect();
+                }
                 continue;
             }
             if self.discard_ticket == Some(event.ticket)
@@ -376,11 +442,12 @@ impl App {
                 EventKind::Opened => {
                     self.ready = true;
                     self.record_database_open();
-                    self.submit(Operation::Schema, View::Schema);
+                    self.refresh_catalog();
                     self.ui.workspace = shell::Workspace::Diagram;
                     self.load_diagram();
                 }
                 EventKind::Closed { rollback } => {
+                    self.catalog_ticket = None;
                     self.tools.pending_history.clear();
                     self.tools.inspection_ticket = None;
                     self.ui.diagram.ticket = None;
@@ -468,30 +535,6 @@ impl App {
                         );
                         self.active = None;
                         self.result.apply(event);
-                        if self.view == View::Schema {
-                            self.schema = self
-                                .result
-                                .rows
-                                .iter()
-                                .filter_map(|r| match r.as_slice() {
-                                    [
-                                        Value::Text(kind),
-                                        Value::Text(name),
-                                        Value::Text(table),
-                                        ddl,
-                                    ] => Some(SchemaObject {
-                                        kind: kind.clone(),
-                                        name: name.clone(),
-                                        table: table.clone(),
-                                        ddl: match ddl {
-                                            Value::Text(s) => Some(s.clone()),
-                                            _ => None,
-                                        },
-                                    }),
-                                    _ => None,
-                                })
-                                .collect();
-                        }
                     }
                 }
                 _ => {

@@ -18,6 +18,7 @@ fn wait(app: &mut App, ctx: &egui::Context) {
         app.poll(ctx);
         if app.ready
             && app.active.is_none()
+            && app.catalog_ticket.is_none()
             && app.commit_ticket.is_none()
             && app.tools.inspection_ticket.is_none()
             && app.ui.diagram.ticket.is_none()
@@ -626,6 +627,11 @@ fn map_home_drawer_preserves_camera_and_rejects_navigation_with_drafts() {
     app.browse_table("a".into());
     wait(&mut app, &ctx);
     assert!(app.ui.drawer.open);
+    assert_eq!(app.result.rows[0][1], Value::Text("original".into()));
+    let retained_ticket = app.result.current;
+    app.refresh_catalog();
+    wait(&mut app, &ctx);
+    assert_eq!(app.result.current, retained_ticket);
     assert_eq!(app.result.rows[0][1], Value::Text("original".into()));
     for expanded in [false, true, false] {
         app.ui.drawer.expanded = expanded;

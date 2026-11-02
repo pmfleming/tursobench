@@ -1,4 +1,4 @@
-use super::{App, shell};
+use super::App;
 use eframe::egui;
 use tursobench_core::{Inspection, SchemaDiagram, Ticket};
 use tursobench_db::{Operation, Request};
@@ -36,10 +36,15 @@ impl DiagramState {
         self.ticket = None;
         self.error.clear();
         self.stale = false;
-        self.positions.clear();
-        self.fit = true;
-        self.focus_selected = false;
-        self.auto_fit = true;
+        self.positions.retain(|name, _| {
+            self.data
+                .as_ref()
+                .is_some_and(|g| g.tables.iter().any(|t| &t.name == name))
+        });
+        if self.zoom <= 0.0 {
+            self.fit = true;
+            self.auto_fit = true;
+        }
     }
 }
 fn key_rows(info: &Inspection, all: bool) -> Vec<usize> {
@@ -62,31 +67,91 @@ fn key_rows(info: &Inspection, all: bool) -> Vec<usize> {
         .map(|(i, _)| i)
         .collect()
 }
+// Stable breadth-first layers within each connected component. Parent hubs
+// start each component; cycles and self references cannot recurse indefinitely.
 fn cards(graph: &SchemaDiagram, all: bool) -> Vec<(egui::Rect, Vec<usize>)> {
-    let columns = ((graph.tables.len() as f32).sqrt().ceil() as usize).max(1);
-    let mut result = Vec::new();
-    let mut y = 0.0;
-    for group in graph.tables.chunks(columns) {
-        let mut height = 0.0f32;
-        for (i, node) in group.iter().enumerate() {
+    use std::collections::{BTreeSet, VecDeque};
+    let count = graph.tables.len();
+    let names: BTreeMap<_, _> = graph
+        .tables
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.name.to_ascii_lowercase(), i))
+        .collect();
+    let mut edges = vec![BTreeSet::new(); count];
+    let mut incoming = vec![0usize; count];
+    let mut outgoing = vec![0usize; count];
+    for (i, node) in graph.tables.iter().enumerate() {
+        if let Some(info) = &node.inspection {
+            for fk in &info.foreign_keys {
+                if let Some(&j) = names.get(&fk.target.to_ascii_lowercase()) {
+                    if i == j {
+                        continue;
+                    }
+                    edges[i].insert(j);
+                    edges[j].insert(i);
+                    incoming[j] += 1;
+                    outgoing[i] += 1;
+                }
+            }
+        }
+    }
+    let mut result: Vec<_> = graph
+        .tables
+        .iter()
+        .map(|node| {
             let rows = node
                 .inspection
                 .as_ref()
-                .map_or_else(Vec::new, |info| key_rows(info, all));
-            let h = 70.0 + rows.len().max(1) as f32 * LINE;
-            height = height.max(h);
-            result.push((
-                egui::Rect::from_min_size(
-                    egui::pos2(i as f32 * (WIDTH + 70.0), y),
-                    egui::vec2(WIDTH, h),
-                ),
-                rows,
-            ));
+                .map_or_else(Vec::new, |i| key_rows(i, all));
+            let size = egui::vec2(WIDTH, 70.0 + rows.len().max(1) as f32 * LINE);
+            (egui::Rect::from_min_size(egui::Pos2::ZERO, size), rows)
+        })
+        .collect();
+    let mut unseen: BTreeSet<_> = (0..count).collect();
+    let mut shelf = egui::Pos2::ZERO;
+    let mut shelf_height = 0.0f32;
+    while !unseen.is_empty() {
+        let root = *unseen
+            .iter()
+            .max_by_key(|&&i| (outgoing[i] == 0, incoming[i], std::cmp::Reverse(i)))
+            .unwrap();
+        unseen.remove(&root);
+        let mut queue = VecDeque::from([(root, 0usize)]);
+        let mut levels: Vec<Vec<usize>> = Vec::new();
+        while let Some((i, depth)) = queue.pop_front() {
+            if levels.len() <= depth {
+                levels.push(Vec::new());
+            }
+            levels[depth].push(i);
+            for &j in &edges[i] {
+                if unseen.remove(&j) {
+                    queue.push_back((j, depth + 1));
+                }
+            }
         }
-        y += height + 110.0;
+        let component_width = levels.len() as f32 * (WIDTH + 90.0);
+        if shelf.x > 0.0 && shelf.x + component_width > 1800.0 {
+            shelf.x = 0.0;
+            shelf.y += shelf_height + 110.0;
+            shelf_height = 0.0;
+        }
+        for (depth, level) in levels.iter().enumerate() {
+            let mut y = shelf.y;
+            for &i in level {
+                result[i].0 = egui::Rect::from_min_size(
+                    egui::pos2(shelf.x + depth as f32 * (WIDTH + 90.0), y),
+                    result[i].0.size(),
+                );
+                y += result[i].0.height() + 45.0;
+            }
+            shelf_height = shelf_height.max(y - shelf.y);
+        }
+        shelf.x += component_width + 60.0;
     }
     result
 }
+
 fn short(text: &str, limit: usize) -> String {
     let mut s: String = text.chars().take(limit).collect();
     if text.chars().count() > limit {
@@ -174,8 +239,14 @@ impl App {
     pub(super) fn diagram_ui(&mut self, ui: &mut egui::Ui) {
         #[cfg(test)]
         self.ui.diagram.table_rects.clear();
+        let mut found = None;
         ui.horizontal_wrapped(|ui| {
-            ui.heading("Schema diagram");
+            ui.heading("Schema map");
+            if ui.button("Arrange").clicked() {
+                self.ui.diagram.positions.clear();
+                self.ui.diagram.fit = true;
+                self.ui.diagram.focus_selected = false;
+            }
             if ui
                 .add_enabled(
                     self.ready && !self.closing && self.ui.diagram.ticket.is_none(),
@@ -215,15 +286,18 @@ impl App {
                         .contains(&self.ui.diagram.search.to_lowercase())
                 })
             {
-                self.ui.diagram.selected = Some(table.name.clone());
+                found = Some(table.name.clone());
                 self.tools.ddl = None;
                 self.ui.diagram.focus_selected = true;
                 self.ui.diagram.auto_fit = true;
                 self.ui.diagram.fit = true;
-                self.ui.inspector = shell::Inspector::Structure;
-                self.ui.inspector_open = true;
             }
         });
+        if let Some(name) = found {
+            self.browse_table(name);
+            self.ui.diagram.focus_selected = true;
+            self.ui.diagram.fit = true;
+        }
         ui.small("Declared relationships only · PK = primary-key position · UQ = unique-index member · FK = foreign-key member. Drag background to pan; wheel to zoom; drag table headers; click a table to open its Data / Structure drawer.");
         if self.ui.diagram.ticket.is_some() {
             ui.label(
@@ -602,6 +676,52 @@ mod tests {
     use super::*;
     use tursobench_core::DiagramTable;
     #[test]
+    fn relationship_layers_group_parents_children_and_cycles_deterministically() {
+        use tursobench_core::{ForeignKey, Table};
+        let graph = SchemaDiagram {
+            tables: [
+                ("child", vec!["parent"]),
+                ("cycle_a", vec!["cycle_b"]),
+                ("cycle_b", vec!["cycle_a"]),
+                ("parent", vec![]),
+            ]
+            .into_iter()
+            .map(|(name, targets)| DiagramTable {
+                name: name.into(),
+                error: None,
+                inspection: Some(Inspection {
+                    table: Table {
+                        name: name.into(),
+                        columns: vec![],
+                        is_table: true,
+                    },
+                    indexes: vec![],
+                    foreign_keys: targets
+                        .into_iter()
+                        .map(|target| ForeignKey {
+                            id: 0,
+                            target: target.into(),
+                            columns: vec![],
+                            on_update: "NO ACTION".into(),
+                            on_delete: "NO ACTION".into(),
+                        })
+                        .collect(),
+                }),
+            })
+            .collect(),
+            limited: false,
+        };
+        let layout = cards(&graph, false);
+        assert_eq!(layout, cards(&graph, false));
+        assert!(layout[3].0.left() < layout[0].0.left());
+        assert_eq!(layout[3].0.top(), layout[0].0.top());
+        for (i, (a, _)) in layout.iter().enumerate() {
+            for (b, _) in &layout[i + 1..] {
+                assert!(!a.intersects(*b));
+            }
+        }
+    }
+    #[test]
     fn links_use_facing_ports_in_both_directions_and_keep_self_loops_outside() {
         let left = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(WIDTH, 120.0));
         let right = left.translate(egui::vec2(WIDTH + 70.0, 0.0));
@@ -619,7 +739,7 @@ mod tests {
     #[test]
     fn isolated_and_failed_tables_still_have_non_overlapping_cards() {
         let graph = SchemaDiagram {
-            tables: (0..12)
+            tables: (0..512)
                 .map(|i| DiagramTable {
                     name: format!("table{i}"),
                     inspection: None,
@@ -629,7 +749,7 @@ mod tests {
             limited: false,
         };
         let layout = cards(&graph, false);
-        assert_eq!(layout.len(), 12);
+        assert_eq!(layout.len(), 512);
         for (i, (a, _)) in layout.iter().enumerate() {
             for (b, _) in &layout[i + 1..] {
                 assert!(!a.intersects(*b));
