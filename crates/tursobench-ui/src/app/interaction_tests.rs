@@ -1307,6 +1307,16 @@ fn column_presentation_preserves_schema_indices_and_manual_widths() {
         let browse = app.document.browse.as_ref().unwrap();
         assert_eq!((browse.sort, browse.descending), (sorted, descending));
     }
+    app.document
+        .tools
+        .columns
+        .visuals
+        .insert(1, super::columns::CellStyle::Status);
+    frame(&mut app, &ctx, vec![]);
+    assert_eq!(
+        app.document.result.rows[0][1],
+        Value::Text("a long string".into())
+    );
     app.document.tools.columns.move_before(2, 0);
     for (from, target, expected) in [
         (2, 2, vec![2, 0, 1]),

@@ -27,6 +27,15 @@ simplifying stateful code and repeated work on UI paths.
    Record orchestration cognitive/cyclomatic complexity fell from 72/30 to
    8/8.
 
+3. **Grid-cell appearance and deferred text layout.** A borrowed presenter owns
+   accessibility text, clipping, alignment, status styling and staged/deleted/FK
+   markings. The grid method retains editing and action routing. Plain-text
+   formatting/font layout is skipped when a status pill already paints the cell,
+   and inline editing no longer prepares an unused painted text value. The existing
+   column scenario renders a styled cell and checks retained engine data. All 111
+   UI tests, all-target Clippy, formatting and hotspots pass. `grid_cell`
+   cognitive/cyclomatic complexity fell from 57/51 to 37/34; paint is 17/13.
+
 ---
 
 # Quality review — 2026-11-03

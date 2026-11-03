@@ -17,6 +17,149 @@ enum GridAction {
     Inspect(usize, usize),
     Stage(usize, usize, Value),
 }
+struct CellAppearance<'a> {
+    value: &'a Value,
+    column: &'a str,
+    null_display: &'a str,
+    style: super::columns::CellStyle,
+    selected: bool,
+    focused: bool,
+    deleted: bool,
+    staged: bool,
+    related: bool,
+    row: usize,
+}
+impl CellAppearance<'_> {
+    fn text(&self) -> String {
+        match self.value {
+            Value::Null => self.null_display.to_owned(),
+            Value::Text(s) if s.is_empty() => "(empty text)".into(),
+            Value::Real(n) => format!("{n:?}"),
+            _ => self.value.preview(),
+        }
+    }
+    fn describe(&self, ui: &egui::Ui, response: &egui::Response, number: usize) {
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(
+                egui::Role::Cell,
+                ui.is_enabled(),
+                self.selected,
+                format!(
+                    "Row {} · {}: {}{}",
+                    number,
+                    self.column,
+                    if self.deleted {
+                        "Deletion staged · "
+                    } else if self.staged {
+                        "Staged · "
+                    } else {
+                        ""
+                    },
+                    self.text()
+                ),
+            )
+        });
+    }
+    fn paint_text(
+        &self,
+        ui: &egui::Ui,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        color: egui::Color32,
+    ) {
+        let mut job = egui::text::LayoutJob::simple_singleline(
+            self.text(),
+            crate::appearance::monospace(ui.ctx(), 12.0),
+            color,
+        );
+        job.wrap.max_width = (rect.width() - 14.0).max(1.0);
+        job.wrap.max_rows = 1;
+        job.wrap.break_anywhere = true;
+        job.wrap.overflow_character = Some('…');
+        let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+        let position = if matches!(self.value, Value::Integer(_) | Value::Real(_)) {
+            rect.right_center() - egui::vec2(7.0 + galley.size().x, galley.size().y * 0.5)
+        } else {
+            rect.left_center() + egui::vec2(7.0, -galley.size().y * 0.5)
+        };
+        painter.galley(position, galley, color);
+    }
+    fn paint(&self, ui: &egui::Ui, rect: egui::Rect) {
+        let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+        painter.rect_filled(
+            rect,
+            0.0,
+            if self.selected {
+                ui.visuals().selection.bg_fill
+            } else {
+                cell_fill(ui, self.deleted, self.staged, self.row)
+            },
+        );
+        if self.focused {
+            painter.rect_stroke(
+                rect,
+                0.0,
+                ui.visuals().selection.stroke,
+                egui::StrokeKind::Inside,
+            );
+        }
+        let styled = self.style.paint(ui, rect, self.column, self.value);
+        let tokens = crate::appearance::Tokens::of(ui.ctx());
+        let color = if self.deleted {
+            ui.visuals().error_fg_color
+        } else if self.related {
+            tokens.relationship
+        } else if matches!(self.value, Value::Null) {
+            ui.visuals().weak_text_color()
+        } else {
+            ui.visuals().text_color()
+        };
+        if !styled {
+            self.paint_text(ui, &painter, rect, color);
+        }
+        painter.hline(
+            rect.x_range(),
+            rect.bottom() - 0.5,
+            egui::Stroke::new(1.0, tokens.line_soft),
+        );
+        painter.vline(
+            rect.right() - 0.5,
+            rect.y_range(),
+            egui::Stroke::new(1.0, tokens.line_soft),
+        );
+        if self.related {
+            let end = rect.right() - 7.0;
+            let mut x = rect.left() + 7.0;
+            while x < end {
+                painter.circle_filled(egui::pos2(x, rect.bottom() - 4.0), 0.65, color);
+                x += 3.0;
+            }
+        }
+        if self.deleted {
+            painter.line_segment(
+                [
+                    rect.left_center() + egui::vec2(5.0, 0.0),
+                    rect.right_center() - egui::vec2(5.0, 0.0),
+                ],
+                egui::Stroke::new(1.0, ui.visuals().error_fg_color),
+            );
+        }
+        if self.staged || self.deleted {
+            painter.vline(
+                rect.left() + 1.5,
+                rect.y_range(),
+                egui::Stroke::new(
+                    3.0,
+                    if self.deleted {
+                        ui.visuals().error_fg_color
+                    } else {
+                        tokens.pending
+                    },
+                ),
+            );
+        }
+    }
+}
 impl App {
     pub(super) fn grid_contents(&mut self, ui: &mut egui::Ui) {
         #[cfg(test)]
@@ -414,36 +557,30 @@ impl App {
             .as_ref()
             .and_then(|d| d.displayed(values, col));
         let displayed = staged.unwrap_or(value);
-        let text = match displayed {
-            Value::Null => self.preferences.null_display.clone(),
-            Value::Text(s) if s.is_empty() => "(empty text)".into(),
-            Value::Real(n) => format!("{n:?}"),
-            _ => displayed.preview(),
-        };
-        let fill = cell_fill(ui, deleted, staged.is_some(), row);
         let (rect, response) = ui.allocate_exact_size(
             egui::vec2(self.document.tools.columns.widths[col], 29.0),
             egui::Sense::click_and_drag(),
         );
-        response.widget_info(|| {
-            egui::WidgetInfo::selected(
-                egui::Role::Cell,
-                ui.is_enabled(),
-                self.cell_selected(row, col),
-                format!(
-                    "Row {} · {}: {}{text}",
-                    offset + row + 1,
-                    self.document.result.columns[col].name,
-                    if deleted {
-                        "Deletion staged · "
-                    } else if staged.is_some() {
-                        "Staged · "
-                    } else {
-                        ""
-                    }
-                ),
-            )
-        });
+        let appearance = CellAppearance {
+            value: displayed,
+            column: &self.document.result.columns[col].name,
+            null_display: &self.preferences.null_display,
+            style: self
+                .document
+                .tools
+                .columns
+                .visuals
+                .get(&col)
+                .copied()
+                .unwrap_or_default(),
+            selected: self.cell_selected(row, col),
+            focused: self.document.inspect == Some((row, col)) || response.has_focus(),
+            deleted,
+            staged: staged.is_some(),
+            related: !references.is_empty(),
+            row,
+        };
+        appearance.describe(ui, &response, offset + row + 1);
         if let Some(edit) = self.document.tools.inline.as_mut().filter(|e| {
             e.row == row
                 && e.column == col
@@ -462,107 +599,10 @@ impl App {
             ui.scroll_to_rect(rect, Some(egui::Align::Center));
             self.document.tools.scroll_to_cell = false;
         }
-        let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
-        let selected = self.cell_selected(row, col);
-        painter.rect_filled(
-            rect,
-            0.0,
-            if selected {
-                ui.visuals().selection.bg_fill
-            } else {
-                fill
-            },
-        );
-        if self.document.inspect == Some((row, col)) || response.has_focus() {
-            painter.rect_stroke(
-                rect,
-                0.0,
-                ui.visuals().selection.stroke,
-                egui::StrokeKind::Inside,
-            );
-        }
-        let styled = self
-            .document
-            .tools
-            .columns
-            .visuals
-            .get(&col)
-            .copied()
-            .unwrap_or_default()
-            .paint(ui, rect, &self.document.result.columns[col].name, displayed);
-        let numeric = matches!(displayed, Value::Integer(_) | Value::Real(_));
-        let tokens = crate::appearance::Tokens::of(ui.ctx());
-        let color = if deleted {
-            ui.visuals().error_fg_color
-        } else if !references.is_empty() {
-            tokens.relationship
-        } else if matches!(displayed, Value::Null) {
-            ui.visuals().weak_text_color()
-        } else {
-            ui.visuals().text_color()
-        };
-        let mut job = egui::text::LayoutJob::simple_singleline(
-            text,
-            crate::appearance::monospace(ui.ctx(), 12.0),
-            color,
-        );
-        job.wrap.max_width = (rect.width() - 14.0).max(1.0);
-        job.wrap.max_rows = 1;
-        job.wrap.break_anywhere = true;
-        job.wrap.overflow_character = Some('…');
-        let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
-        let position = if numeric {
-            rect.right_center() - egui::vec2(7.0 + galley.size().x, galley.size().y * 0.5)
-        } else {
-            rect.left_center() + egui::vec2(7.0, -galley.size().y * 0.5)
-        };
-        if !styled {
-            painter.galley(position, galley, color);
-        }
-        painter.hline(
-            rect.x_range(),
-            rect.bottom() - 0.5,
-            egui::Stroke::new(1.0, tokens.line_soft),
-        );
-        painter.vline(
-            rect.right() - 0.5,
-            rect.y_range(),
-            egui::Stroke::new(1.0, tokens.line_soft),
-        );
+        appearance.paint(ui, rect);
+        #[cfg(test)]
         if !references.is_empty() {
-            let end = rect.right() - 7.0;
-            let mut x = rect.left() + 7.0;
-            while x < end {
-                painter.circle_filled(egui::pos2(x, rect.bottom() - 4.0), 0.65, color);
-                x += 3.0;
-            }
-            #[cfg(test)]
-            {
-                self.fk_cell_rect = Some(rect);
-            }
-        }
-        if deleted {
-            painter.line_segment(
-                [
-                    rect.left_center() + egui::vec2(5.0, 0.0),
-                    rect.right_center() - egui::vec2(5.0, 0.0),
-                ],
-                egui::Stroke::new(1.0, ui.visuals().error_fg_color),
-            );
-        }
-        if staged.is_some() || deleted {
-            painter.vline(
-                rect.left() + 1.5,
-                rect.y_range(),
-                egui::Stroke::new(
-                    3.0,
-                    if deleted {
-                        ui.visuals().error_fg_color
-                    } else {
-                        tokens.pending
-                    },
-                ),
-            );
+            self.fk_cell_rect = Some(rect);
         }
         #[cfg(test)]
         if row == 0 && col == 0 {
