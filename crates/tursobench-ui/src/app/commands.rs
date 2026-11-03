@@ -59,7 +59,7 @@ impl App {
         self.ui.access_dialog &= open;
     }
     pub(super) fn open_palette(&mut self) {
-        if self.session.is_none() && self.ui.nav == Nav::Databases {
+        if self.session.is_none() && self.document.ui.nav == Nav::Databases {
             self.databases.focus_filter = true;
             return;
         }
@@ -69,7 +69,7 @@ impl App {
         self.ui.palette_index = 0;
     }
     pub(super) fn toggle_sql(&mut self) {
-        self.ui.sql_open = !self.ui.sql_open;
+        self.document.ui.sql_open = !self.document.ui.sql_open;
     }
     pub(super) fn command_palette(&mut self, ctx: &egui::Context) {
         if !self.ui.palette_open {
@@ -191,16 +191,17 @@ impl App {
             self.ui.palette_open = false;
             match action {
                 Command::Table(name, column) => {
-                    let before = self.result.current;
+                    let before = self.document.result.current;
                     self.activate_table(name.clone());
-                    if self.result.current != before
-                        || self.view == super::View::Browse
-                            && self.table.as_ref().is_some_and(|t| t.name == name)
+                    if self.document.result.current != before
+                        || self.document.view == super::View::Browse
+                            && self.document.table.as_ref().is_some_and(|t| t.name == name)
                     {
-                        self.ui.nav = Nav::Table;
-                        self.ui.table_view = TableView::Data;
-                        self.tools.highlight_column = column.map(|column| (name, column));
-                        self.tools.scroll_to_column = self.tools.highlight_column.is_some();
+                        self.document.ui.nav = Nav::Table;
+                        self.document.ui.table_view = TableView::Data;
+                        self.document.tools.highlight_column = column.map(|column| (name, column));
+                        self.document.tools.scroll_to_column =
+                            self.document.tools.highlight_column.is_some();
                     }
                 }
                 Command::List => {
@@ -228,16 +229,16 @@ impl App {
                     }
                 }
                 Command::Filter => {
-                    self.ui.filter_open = true;
-                    self.tools.filter_focus = true;
+                    self.document.ui.filter_open = true;
+                    self.document.tools.filter_focus = true;
                 }
                 Command::Inspector => self.toggle_inspector(),
                 Command::Insert => self.begin_insert(),
                 Command::FitColumns => {
-                    self.tools.columns.manual.clear();
-                    self.tools.columns.refit = true;
+                    self.document.tools.columns.manual.clear();
+                    self.document.tools.columns.refit = true;
                 }
-                Command::ShowColumns => self.tools.columns.hidden.clear(),
+                Command::ShowColumns => self.document.tools.columns.hidden.clear(),
                 Command::CopySelection => match self.selection_tsv() {
                     Ok(text) => ctx.copy_text(text),
                     Err(e) => self.status = e,
@@ -252,7 +253,7 @@ impl App {
                     self.select_tool(panel);
                 }
                 Command::Export => self.ui.export_open = true,
-                Command::Review => self.show_preview = true,
+                Command::Review => self.document.show_preview = true,
                 Command::Help => self.tools.help = true,
                 Command::Theme => {
                     self.toggle_theme(ctx);

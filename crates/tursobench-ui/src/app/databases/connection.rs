@@ -40,10 +40,10 @@ impl App {
                         if self.has_drafts() {
                             ui.colored_label(ui.visuals().error_fg_color, "Drafts retained after disconnect. Inspect the uncertain outcome before discarding or retrying.");
                             if ui.button("Review retained drafts…").clicked() {
-                                self.show_preview = true;
+                                self.document.show_preview = true;
                             }
                             if ui.button("Discard retained local drafts").clicked() {
-                                self.drafts = None;
+                                self.document.drafts = None;
                             }
                         }
                 });
@@ -277,7 +277,7 @@ mod tests {
         app.open(&ctx);
         let started = std::time::Instant::now();
         while !app.ready
-            || app.active.is_some()
+            || app.document.active.is_some()
             || app.catalog_ticket.is_some()
             || app.ui.diagram.ticket.is_some()
         {

@@ -43,20 +43,9 @@ pub(super) struct UiState {
     pub sidebar: ToolPanel,
     pub unfolded: Option<String>,
     pub hover_table: Option<String>,
-    pub nav: Nav,
-    pub table_view: TableView,
-    pub inspector: DetailMode,
-    pub inspector_open: bool,
-    pub inspector_initialized: bool,
-    pub inspector_compact: Option<bool>,
     pub settings_return: Option<Nav>,
-    pub inspector_detached: bool,
     pub outcomes: bool,
     pub diagram: diagram::DiagramState,
-    pub sql_open: bool,
-    pub sql_expanded: bool,
-    pub params_open: bool,
-    pub filter_open: bool,
     pub palette_open: bool,
     pub palette_focus: bool,
     pub palette_query: String,
@@ -85,20 +74,9 @@ impl UiState {
             sidebar: ToolPanel::Schema,
             unfolded: None,
             hover_table: None,
-            nav: Nav::Databases,
-            table_view: TableView::Data,
-            inspector: DetailMode::Cell,
-            inspector_open: false,
-            inspector_initialized: false,
-            inspector_compact: None,
             settings_return: None,
-            inspector_detached: false,
             outcomes: false,
             diagram: Default::default(),
-            sql_open: false,
-            sql_expanded: false,
-            params_open: false,
-            filter_open: false,
             palette_open: false,
             palette_focus: false,
             palette_query: String::new(),
@@ -140,8 +118,8 @@ impl Layout {
 }
 impl App {
     pub(super) fn show_structure(&mut self) {
-        self.ui.inspector = DetailMode::Structure;
-        self.ui.inspector_open = true;
+        self.document.ui.inspector = DetailMode::Structure;
+        self.document.ui.inspector_open = true;
     }
     pub(super) fn shell(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
@@ -184,26 +162,26 @@ impl App {
             #[cfg(not(test))]
             let _ = panel;
         }
-        if self.ui.nav == Nav::Table
-            && (!self.ui.inspector_initialized
-                || self.ui.inspector_compact != Some(layout.bottom_inspector)
+        if self.document.ui.nav == Nav::Table
+            && (!self.document.ui.inspector_initialized
+                || self.document.ui.inspector_compact != Some(layout.bottom_inspector)
                     && !self
                         .preferences
                         .inspector_visibility
                         .contains_key(&self.tools.database_scope))
         {
-            self.ui.inspector_open = self
+            self.document.ui.inspector_open = self
                 .preferences
                 .inspector_visibility
                 .get(&self.tools.database_scope)
                 .copied()
                 .unwrap_or(!layout.bottom_inspector);
-            self.ui.inspector_initialized = true;
-            self.ui.inspector_compact = Some(layout.bottom_inspector);
+            self.document.ui.inspector_initialized = true;
+            self.document.ui.inspector_compact = Some(layout.bottom_inspector);
         }
-        if self.ui.inspector_open
-            && !self.ui.inspector_detached
-            && matches!(self.ui.nav, Nav::Table | Nav::Result)
+        if self.document.ui.inspector_open
+            && !self.document.ui.inspector_detached
+            && matches!(self.document.ui.nav, Nav::Table | Nav::Result)
         {
             if layout.bottom_inspector {
                 egui::Area::new(egui::Id::new("inspector-overlay"))
@@ -224,13 +202,13 @@ impl App {
                     .show(ui, |ui| self.docked_inspector(ui));
             }
         }
-        if self.ui.sql_open {
-            let height = if self.ui.sql_expanded {
+        if self.document.ui.sql_open {
+            let height = if self.document.ui.sql_expanded {
                 ui.available_height() * 0.65
             } else {
                 ui.available_height() * 0.30
             };
-            egui::Panel::bottom(if self.ui.sql_expanded {
+            egui::Panel::bottom(if self.document.ui.sql_expanded {
                 "sql-editor-expanded"
             } else {
                 "sql-editor-dock"
@@ -304,10 +282,10 @@ impl App {
                     ("UNKNOWN", error)
                 } else if self.closing { ("Closing", warn)
                 } else if self.commit_ticket.is_some() { ("Committing", warn)
-                } else if self.active.is_some() || self.tools.count_request.is_some() { ("Executing", warn)
+                } else if self.document.active.is_some() || self.tools.count_request.is_some() { ("Executing", warn)
                 } else if self.ui.diagram.ticket.is_some() { ("Loading schema", muted)
                 } else if !self.ready { ("Disconnected", muted)
-                } else if let Some(c) = &self.result.completion {
+                } else if let Some(c) = &self.document.result.completion {
                     if c.error.is_some() { ("Failed", error) } else {
                         match c.delivery {
                             tursobench_core::Delivery::Limited => ("Limited", warn),
@@ -320,25 +298,25 @@ impl App {
                 if self.transaction != TransactionState::Autocommit {
                     ui.colored_label(if self.transaction != TransactionState::Autocommit { warn } else { muted }, format!("{:?}", self.transaction));
                     for (label, sql) in [("Commit", "COMMIT"), ("Roll back", "ROLLBACK")] {
-                        let enabled = self.ready && !self.closing && self.active.is_none() && self.commit_ticket.is_none() && !self.has_drafts() && (sql!="COMMIT" || self.transaction==TransactionState::Active);
+                        let enabled = self.ready && !self.closing && self.document.active.is_none() && self.commit_ticket.is_none() && !self.has_drafts() && (sql!="COMMIT" || self.transaction==TransactionState::Active);
                         let response = ui.add_enabled(enabled, egui::Button::new(label)).on_hover_text("Persistent editor connection. Transactions also apply to read-only sessions.");
                         #[cfg(test)] self.ui.transaction_rects.push(response.rect);
                         if response.clicked() { self.submit(Operation::Execute { sql: sql.into(), parameters: vec![], budget: Budget::default() }, View::Query); }
                     }
                 }
                 if self.has_drafts() {
-                    let count = self.drafts.as_ref().map_or(0, |d| d.edits.len());
-                    if ui.button(format!("Review {count}")).clicked() { self.show_preview = true; }
+                    let count = self.document.drafts.as_ref().map_or(0, |d| d.edits.len());
+                    if ui.button(format!("Review {count}")).clicked() { self.document.show_preview = true; }
                 }
-                if self.active.is_some() && ui.button("Discard results").on_hover_text("Suppresses delivery only; execution and writes continue. Does not roll back.").clicked() {
-                    if let (Some(session), Some(ticket)) = (&self.session, self.active) { session.discard_results(ticket.request); }
-                    self.discard_ticket = self.active;
-                    self.result.rows.clear();
+                if self.document.active.is_some() && ui.button("Discard results").on_hover_text("Suppresses delivery only; execution and writes continue. Does not roll back.").clicked() {
+                    if let (Some(session), Some(ticket)) = (&self.session, self.document.active) { session.discard_results(ticket.request); }
+                    self.document.discard_ticket = self.document.active;
+                    self.document.result.rows.clear();
                     self.status = "Delivery suppressed; awaiting execution outcome".into();
                 }
                 let summary=self.selection_summary();
                 if !summary.is_empty() && ui.available_width()>160.0 {ui.add(egui::Label::new(summary).truncate());}
-                if let Some(c) = &self.result.completion && ui.available_width() > 200.0 {
+                if let Some(c) = &self.document.result.completion && ui.available_width() > 200.0 {
                     ui.small(format!("{:?} · {} ms", c.delivery, c.elapsed_ms)).on_hover_text(self.export_scope());
                 }
                 if icons::control(ui, Icon::History, "Outcomes", "", self.ui.outcomes, false).clicked() { self.ui.outcomes = !self.ui.outcomes; }
@@ -351,7 +329,7 @@ impl App {
         {
             self.ui.workspace_rect = ui.available_rect_before_wrap();
         }
-        if self.session.is_none() && self.ui.nav == Nav::Databases {
+        if self.session.is_none() && self.document.ui.nav == Nav::Databases {
             self.connect_ui(ui);
             return;
         }
@@ -364,21 +342,21 @@ impl App {
             ui.horizontal(|ui| {
                 if icons::control(ui, Icon::Database, "Databases", "Ctrl O", false, true).clicked()
                 {
-                    self.ui.nav = Nav::Databases;
+                    self.document.ui.nav = Nav::Databases;
                 }
                 ui.label("Retained data · disconnected")
                     .on_hover_text(&self.tools.database_scope);
             });
         }
-        if self.ui.nav == Nav::Settings {
+        if self.document.ui.nav == Nav::Settings {
             egui::ScrollArea::vertical().show(ui, |ui| self.settings_ui(ui));
             return;
         }
         self.workspace_header(ui);
-        if self.ui.nav == Nav::Table
-            && self.ui.table_view == TableView::Data
+        if self.document.ui.nav == Nav::Table
+            && self.document.ui.table_view == TableView::Data
             && ui.ctx().content_rect().width() >= 2400.0
-            && self.inspect.is_some()
+            && self.document.inspect.is_some()
         {
             egui::Panel::bottom("related-records")
                 .resizable(true)
@@ -389,11 +367,12 @@ impl App {
                     self.wide_related(ui)
                 });
         }
-        if self.ui.nav == Nav::Overview {
+        if self.document.ui.nav == Nav::Overview {
             self.diagram_ui(ui);
             return;
         }
-        if self.ui.nav == Nav::Table && self.ui.table_view == TableView::Structure {
+        if self.document.ui.nav == Nav::Table && self.document.ui.table_view == TableView::Structure
+        {
             egui::ScrollArea::vertical()
                 .id_salt("table-structure")
                 .show(ui, |ui| self.structure_inspector(ui));
@@ -404,7 +383,7 @@ impl App {
     fn workspace_header(&mut self, ui: &mut egui::Ui) {
         let header = ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            if self.ui.nav == Nav::Overview {
+            if self.document.ui.nav == Nav::Overview {
                 ui.strong("Map");
                 return;
             }
@@ -416,7 +395,7 @@ impl App {
                 .inner
                 .clicked()
             {
-                if self.view == View::Browse {
+                if self.document.view == View::Browse {
                     self.navigate_back();
                 } else {
                     self.return_to_table();
@@ -435,12 +414,12 @@ impl App {
                 egui::Label::new(egui::RichText::new(&title).strong()).truncate(),
             )
             .on_hover_text(title);
-            if self.ui.nav == Nav::Table {
+            if self.document.ui.nav == Nav::Table {
                 for (view, label) in [
                     (TableView::Data, "Data"),
                     (TableView::Structure, "Structure"),
                 ] {
-                    ui.selectable_value(&mut self.ui.table_view, view, label);
+                    ui.selectable_value(&mut self.document.ui.table_view, view, label);
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -464,17 +443,17 @@ impl App {
                         ui.close();
                     }
                     if ui.button("Show hidden columns").clicked() {
-                        self.tools.columns.hidden.clear();
+                        self.document.tools.columns.hidden.clear();
                         ui.close();
                     }
                     if ui.button("Fit all column widths").clicked() {
-                        self.tools.columns.manual.clear();
-                        self.tools.columns.refit = true;
+                        self.document.tools.columns.manual.clear();
+                        self.document.tools.columns.refit = true;
                         ui.close();
                     }
                     if self.has_drafts() && ui.button("Show staged data").clicked() {
-                        self.ui.nav = Nav::Table;
-                        self.ui.table_view = TableView::Data;
+                        self.document.ui.nav = Nav::Table;
+                        self.document.ui.table_view = TableView::Data;
                         ui.close();
                     }
                 });
@@ -483,7 +462,7 @@ impl App {
                     Icon::Columns,
                     "Inspector",
                     "Space",
-                    self.ui.inspector_open,
+                    self.document.ui.inspector_open,
                     false,
                 )
                 .clicked()
@@ -492,7 +471,7 @@ impl App {
                 }
                 if ui
                     .add_enabled_ui(
-                        self.view == View::Browse
+                        self.document.view == View::Browse
                             && self.ready
                             && !self.closing
                             && !self.has_drafts()
@@ -504,7 +483,9 @@ impl App {
                 {
                     self.refresh_table();
                 }
-                if self.ui.nav == Nav::Table && self.ui.table_view == TableView::Data {
+                if self.document.ui.nav == Nav::Table
+                    && self.document.ui.table_view == TableView::Data
+                {
                     self.page_controls(ui);
                     if ui.available_width() >= 120.0 {
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -516,15 +497,18 @@ impl App {
                             Icon::Filter,
                             "Filter rows",
                             "Ctrl F",
-                            self.browse.as_ref().is_some_and(|b| !b.filters.is_empty()),
+                            self.document
+                                .browse
+                                .as_ref()
+                                .is_some_and(|b| !b.filters.is_empty()),
                             false,
                         );
-                        if self.ui.filter_open {
+                        if self.document.ui.filter_open {
                             egui::Popup::open_id(
                                 ui.ctx(),
                                 egui::Popup::default_response_id(&filter),
                             );
-                            self.ui.filter_open = false;
+                            self.document.ui.filter_open = false;
                         }
                         egui::Popup::menu(&filter).show(|ui| {
                             ui.set_min_width(300.0);
@@ -543,16 +527,17 @@ impl App {
         ui.separator();
     }
     pub(super) fn toggle_inspector(&mut self) {
-        self.ui.inspector_open = !self.ui.inspector_open;
-        self.ui.inspector_initialized = true;
-        self.preferences
-            .inspector_visibility
-            .insert(self.tools.database_scope.clone(), self.ui.inspector_open);
+        self.document.ui.inspector_open = !self.document.ui.inspector_open;
+        self.document.ui.inspector_initialized = true;
+        self.preferences.inspector_visibility.insert(
+            self.tools.database_scope.clone(),
+            self.document.ui.inspector_open,
+        );
         self.preferences.normalize();
         self.store.save(&self.preferences);
     }
     fn page_controls(&mut self, ui: &mut egui::Ui) {
-        let Some(b) = self.browse.clone() else {
+        let Some(b) = self.document.browse.clone() else {
             ui.small("Lookup ≤100")
                 .on_hover_text("Bound related-row lookup. Not a complete table.");
             return;
@@ -565,13 +550,13 @@ impl App {
         {
             self.count_table(b.table.clone());
         }
-        ui.small(format!("{}–{}",b.offset+usize::from(!self.result.rows.is_empty()),b.offset+self.result.rows.len())).on_hover_text("100 rows per fetch · retained window · OFFSET is not a snapshot · scroll back to reload evicted pages");
+        ui.small(format!("{}–{}",b.offset+usize::from(!self.document.result.rows.is_empty()),b.offset+self.document.result.rows.len())).on_hover_text("100 rows per fetch · retained window · OFFSET is not a snapshot · scroll back to reload evicted pages");
     }
     pub(super) fn refresh_table(&mut self) {
-        if self.view != View::Browse || self.ui.nav != Nav::Table {
+        if self.document.view != View::Browse || self.document.ui.nav != Nav::Table {
             return;
         }
-        if self.ui.table_view == TableView::Structure {
+        if self.document.ui.table_view == TableView::Structure {
             if let Some(name) = self.ui.diagram.selected.clone() {
                 self.request_inspection(name);
             }
@@ -581,13 +566,13 @@ impl App {
         }
     }
     fn result_title(&self) -> &str {
-        if self.ui.table_view == TableView::Structure
-            && let Some(object) = &self.tools.ddl
+        if self.document.ui.table_view == TableView::Structure
+            && let Some(object) = &self.document.tools.ddl
         {
             return &object.name;
         }
-        match self.view {
-            View::Browse => self.table.as_ref().map_or_else(
+        match self.document.view {
+            View::Browse => self.document.table.as_ref().map_or_else(
                 || self.ui.diagram.selected.as_deref().unwrap_or("Table data"),
                 |t| t.name.as_str(),
             ),
@@ -598,39 +583,39 @@ impl App {
     }
     fn docked_inspector(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.strong(if self.ui.inspector == DetailMode::Structure {
+            ui.strong(if self.document.ui.inspector == DetailMode::Structure {
                 "Structure"
             } else {
                 "Row detail"
             });
-            if self.ui.inspector != DetailMode::Structure {
+            if self.document.ui.inspector != DetailMode::Structure {
                 if icons::control(
                     ui,
                     Icon::Edit,
                     "Typed cell",
                     "",
-                    self.ui.inspector == DetailMode::Cell,
+                    self.document.ui.inspector == DetailMode::Cell,
                     false,
                 )
                 .clicked()
                 {
-                    self.ui.inspector = DetailMode::Cell;
+                    self.document.ui.inspector = DetailMode::Cell;
                 }
                 if icons::control(
                     ui,
                     Icon::Structure,
                     "Record",
                     "",
-                    self.ui.inspector == DetailMode::Record,
+                    self.document.ui.inspector == DetailMode::Record,
                     false,
                 )
                 .clicked()
                 {
-                    self.ui.inspector = DetailMode::Record;
+                    self.document.ui.inspector = DetailMode::Record;
                 }
             }
             if icons::button(ui, Icon::Popout, "Open inspector in window", "").clicked() {
-                self.ui.inspector_detached = true;
+                self.document.ui.inspector_detached = true;
             }
             if icons::button(ui, Icon::Close, "Close inspector", "Esc").clicked() {
                 self.toggle_inspector();
@@ -642,16 +627,21 @@ impl App {
             .show(ui, |ui| self.inspector_content(ui));
     }
     pub(super) fn inspector_content(&mut self, ui: &mut egui::Ui) {
-        match self.ui.inspector {
+        match self.document.ui.inspector {
             DetailMode::Cell => {
-                if let Some((r, c)) = self.inspect {
+                if let Some((r, c)) = self.document.inspect {
                     self.cell_inspector(ui, r, c);
                 } else {
                     ui.label("Select a cell to inspect or edit its typed value.");
                 }
             }
             DetailMode::Record => {
-                if let Some(r) = self.tools.detail.or(self.inspect.map(|(r, _)| r)) {
+                if let Some(r) = self
+                    .document
+                    .tools
+                    .detail
+                    .or(self.document.inspect.map(|(r, _)| r))
+                {
                     self.record_inspector(ui, r);
                 } else {
                     ui.label("Select a row for record detail.");
@@ -677,4 +667,19 @@ mod tests {
             assert!(width - used >= 500.0, "{width}: {l:?}");
         }
     }
+}
+
+#[derive(Default)]
+pub(super) struct ViewUi {
+    pub nav: Nav,
+    pub table_view: TableView,
+    pub inspector: DetailMode,
+    pub inspector_open: bool,
+    pub inspector_initialized: bool,
+    pub inspector_compact: Option<bool>,
+    pub inspector_detached: bool,
+    pub sql_open: bool,
+    pub sql_expanded: bool,
+    pub params_open: bool,
+    pub filter_open: bool,
 }

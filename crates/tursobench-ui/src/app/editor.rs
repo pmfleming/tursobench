@@ -111,7 +111,7 @@ impl App {
             self.status = "Commit or discard drafts first".into();
             return;
         }
-        match serde_json::from_str::<Bindings>(&self.params) {
+        match serde_json::from_str::<Bindings>(&self.document.params) {
             Ok(parameters) => {
                 let operation = match explain {
                     Some(bytecode) => Operation::Explain {
@@ -145,18 +145,18 @@ impl App {
                         ticket.request,
                         (self.tools.database_scope.clone(), history_sql),
                     );
-                    self.table = None;
-                    self.browse = None;
-                    self.tools.related = None;
+                    self.document.table = None;
+                    self.document.browse = None;
+                    self.document.tools.related = None;
                 }
             }
             Err(e) => self.status = format!("Typed bindings: {e}"),
         }
     }
     pub(super) fn run_selection(&mut self) {
-        let start = byte_index(&self.sql, self.tools.selection.start);
-        let end = byte_index(&self.sql, self.tools.selection.end);
-        match sql::selection_or_statement(&self.sql, start..end) {
+        let start = byte_index(&self.document.sql, self.document.tools.selection.start);
+        let end = byte_index(&self.document.sql, self.document.tools.selection.end);
+        match sql::selection_or_statement(&self.document.sql, start..end) {
             Ok(text) => self.run_text(text, None),
             Err(e) => self.status = e.to_string(),
         }
@@ -188,51 +188,51 @@ impl App {
                 self.run_selection();
             }
             if icons::button(ui, Icon::Explain, "Explain query plan", "").clicked() {
-                self.run_text(self.sql.clone(), Some(false));
+                self.run_text(self.document.sql.clone(), Some(false));
             }
             if icons::control(
                 ui,
                 Icon::Parameters,
                 "Typed parameters",
                 "",
-                self.ui.params_open,
+                self.document.ui.params_open,
                 false,
             )
             .clicked()
             {
-                self.ui.params_open = !self.ui.params_open;
+                self.document.ui.params_open = !self.document.ui.params_open;
             }
             if icons::control(
                 ui,
                 Icon::Complete,
                 "Complete",
                 "Ctrl Space",
-                self.tools.complete,
+                self.document.tools.complete,
                 false,
             )
             .clicked()
             {
-                self.tools.complete = !self.tools.complete;
+                self.document.tools.complete = !self.document.tools.complete;
             }
             if icons::control(
                 ui,
                 Icon::Fit,
                 "Expand SQL editor",
                 "",
-                self.ui.sql_expanded,
+                self.document.ui.sql_expanded,
                 false,
             )
             .clicked()
             {
-                self.ui.sql_expanded = !self.ui.sql_expanded;
+                self.document.ui.sql_expanded = !self.document.ui.sql_expanded;
             }
             if icons::button(ui, Icon::Close, "Close SQL editor", "Ctrl J").clicked() {
-                self.ui.sql_open = false;
+                self.document.ui.sql_open = false;
             }
             let more = icons::button(ui, Icon::More, "SQL actions", "");
             egui::Popup::menu(&more).show(|ui| {
                 if ui.button("Explain bytecode").clicked() {
-                    self.run_text(self.sql.clone(), Some(true));
+                    self.run_text(self.document.sql.clone(), Some(true));
                     ui.close();
                 }
                 if ui.button("Bookmark editor SQL").clicked() {
@@ -248,7 +248,7 @@ impl App {
             .id_salt("sql-editor-scroll")
             .max_height((ui.ctx().content_rect().height() * 0.35).clamp(100.0, 400.0))
             .show(ui, |ui| {
-                egui::TextEdit::multiline(&mut self.sql)
+                egui::TextEdit::multiline(&mut self.document.sql)
                     .id_salt("sql-editor")
                     .code_editor()
                     .desired_rows(5)
@@ -257,34 +257,34 @@ impl App {
                     .show(ui)
             })
             .inner;
-        self.tools.sql_focus = Some(output.response.id);
+        self.document.tools.sql_focus = Some(output.response.id);
         if let Some(cursor) = output.cursor_range {
             let range = cursor.as_sorted_char_range();
-            self.tools.selection = range.start.0..range.end.0;
+            self.document.tools.selection = range.start.0..range.end.0;
         }
-        if self.ui.params_open {
+        if self.document.ui.params_open {
             ui.horizontal_wrapped(|ui| {
-            ui.label("Typed bindings (JSON):");ui.add(egui::TextEdit::singleline(&mut self.params).desired_width(ui.available_width().min(420.0)));
+            ui.label("Typed bindings (JSON):");ui.add(egui::TextEdit::singleline(&mut self.document.params).desired_width(ui.available_width().min(420.0)));
             if ui.button("Generate NULL bindings").clicked(){
-                let names=sql::parameter_names(&self.sql);
+                let names=sql::parameter_names(&self.document.sql);
                 if names.iter().any(|n|n.starts_with('?')) {self.status="Positional parameters use an array ordered by slot: [{\"type\":\"Null\"}, ...]".into();}
-                else {self.params=serde_json::to_string(&sql::named_template(&self.sql)).unwrap_or_default();}
+                else {self.document.params=serde_json::to_string(&sql::named_template(&self.document.sql)).unwrap_or_default();}
             }
         });
             ui.small("?1: [{\"type\":\"Integer\",\"value\":42}]    :id: {\":id\":{\"type\":\"Integer\",\"value\":42}}. Values are never interpolated or persisted.");
         }
-        if self.tools.complete {
+        if self.document.tools.complete {
             self.completion_ui(ui, output.response.id);
         }
     }
     fn completion_ui(&mut self, ui: &mut egui::Ui, editor_id: egui::Id) {
-        let cursor = byte_index(&self.sql, self.tools.selection.end);
-        let Some(span) = completion_span(&self.sql, cursor) else {
+        let cursor = byte_index(&self.document.sql, self.document.tools.selection.end);
+        let Some(span) = completion_span(&self.document.sql, cursor) else {
             ui.small("Completion unavailable here: quoted/comment/parameter text, a lexical error, or a buffer above 64 KiB.");
             return;
         };
         let start = span.start;
-        let prefix = self.sql[start..cursor].to_lowercase();
+        let prefix = self.document.sql[start..cursor].to_lowercase();
         let mut candidates = vec![
             "SELECT",
             "FROM",
@@ -313,7 +313,7 @@ impl App {
                 .filter(|o| o.kind == "table" || o.kind == "view")
                 .map(|o| quote_identifier(&o.name)),
         );
-        if let Some(info) = &self.tools.inspection {
+        if let Some(info) = &self.document.tools.inspection {
             candidates.extend(info.table.columns.iter().map(|c| quote_identifier(&c.name)));
         }
         candidates.retain(|c| c.trim_matches('"').to_lowercase().starts_with(&prefix));
@@ -323,9 +323,10 @@ impl App {
         ui.horizontal_wrapped(|ui| {
             for candidate in candidates.into_iter().take(30) {
                 if ui.button(&candidate).clicked() {
-                    self.sql.replace_range(span.clone(), &candidate);
-                    let position = self.sql[..start].chars().count() + candidate.chars().count();
-                    self.tools.selection = position..position;
+                    self.document.sql.replace_range(span.clone(), &candidate);
+                    let position =
+                        self.document.sql[..start].chars().count() + candidate.chars().count();
+                    self.document.tools.selection = position..position;
                     if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), editor_id) {
                         state
                             .cursor
@@ -335,7 +336,7 @@ impl App {
                         state.store(ui.ctx(), editor_id);
                         ui.memory_mut(|m| m.request_focus(editor_id));
                     }
-                    self.tools.complete = false;
+                    self.document.tools.complete = false;
                 }
             }
         });
@@ -344,7 +345,7 @@ impl App {
         self.grid_keys(ctx);
         let consumed = |mods, key| ctx.input_mut(|i| i.consume_key(mods, key));
         if consumed(egui::Modifiers::NONE, egui::Key::Escape) {
-            if self.tools.inline.take().is_some() {
+            if self.document.tools.inline.take().is_some() {
                 return;
             }
             if egui::Popup::is_any_open(ctx) {
@@ -356,14 +357,14 @@ impl App {
                     &mut self.ui.palette_open,
                     &mut self.ui.access_dialog,
                     &mut self.confirm_close,
-                    &mut self.show_insert,
-                    &mut self.show_preview,
+                    &mut self.document.show_insert,
+                    &mut self.document.show_preview,
                     &mut self.ui.export_open,
                     &mut self.ui.outcomes,
                     &mut self.tools.help,
-                    &mut self.ui.filter_open,
-                    &mut self.ui.inspector_open,
-                    &mut self.ui.sql_open,
+                    &mut self.document.ui.filter_open,
+                    &mut self.document.ui.inspector_open,
+                    &mut self.document.ui.sql_open,
                 ];
                 if let Some(surface) = surfaces.into_iter().find(|open| **open) {
                     *surface = false;
@@ -383,7 +384,7 @@ impl App {
         if self.ui.palette_open {
             return;
         }
-        if self.ui.sql_open {
+        if self.document.ui.sql_open {
             if consumed(
                 egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
                 egui::Key::Enter,
@@ -393,25 +394,25 @@ impl App {
                 self.run_sql();
             }
             if consumed(egui::Modifiers::CTRL, egui::Key::Space) {
-                self.tools.complete = true;
+                self.document.tools.complete = true;
             }
             if consumed(egui::Modifiers::CTRL, egui::Key::S) {
                 self.ui.sidebar = shell::ToolPanel::Saved;
             }
         }
         if consumed(egui::Modifiers::NONE, egui::Key::F5) {
-            if self.ui.sql_open
-                && self.tools.sql_focus.is_some()
-                && ctx.memory(|m| m.focused()) == self.tools.sql_focus
+            if self.document.ui.sql_open
+                && self.document.tools.sql_focus.is_some()
+                && ctx.memory(|m| m.focused()) == self.document.tools.sql_focus
             {
                 self.run_sql();
             } else if self.tools.tree_focus.is_some()
                 && ctx.memory(|m| m.focused()) == self.tools.tree_focus
-                || self.ui.nav == shell::Nav::Overview
+                || self.document.ui.nav == shell::Nav::Overview
             {
                 self.refresh_catalog();
                 self.load_diagram();
-            } else if self.view == View::Browse {
+            } else if self.document.view == View::Browse {
                 self.refresh_table();
             }
         }
@@ -421,18 +422,20 @@ impl App {
         if consumed(egui::Modifiers::CTRL, egui::Key::E) {
             self.ui.export_open = true;
         }
-        if consumed(egui::Modifiers::CTRL, egui::Key::F) && self.ui.nav == shell::Nav::Table {
-            self.ui.filter_open = true;
-            self.tools.filter_focus = true;
+        if consumed(egui::Modifiers::CTRL, egui::Key::F)
+            && self.document.ui.nav == shell::Nav::Table
+        {
+            self.document.ui.filter_open = true;
+            self.document.tools.filter_focus = true;
         }
         if consumed(egui::Modifiers::CTRL, egui::Key::Num1) {
-            self.ui.table_view = shell::TableView::Data;
+            self.document.ui.table_view = shell::TableView::Data;
         }
         if consumed(egui::Modifiers::CTRL, egui::Key::Num2) {
-            self.ui.table_view = shell::TableView::Structure;
+            self.document.ui.table_view = shell::TableView::Structure;
         }
         if consumed(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::C)
-            && matches!(self.ui.nav, shell::Nav::Table | shell::Nav::Result)
+            && matches!(self.document.ui.nav, shell::Nav::Table | shell::Nav::Result)
         {
             self.copy_results(ctx, crate::export::Format::Tsv);
         }
@@ -454,7 +457,7 @@ impl App {
             self.select_tool(shell::ToolPanel::Settings);
         }
         if consumed(egui::Modifiers::ALT, egui::Key::ArrowLeft) {
-            if self.view == View::Browse {
+            if self.document.view == View::Browse {
                 self.navigate_back();
             } else {
                 self.return_to_table();
@@ -465,7 +468,7 @@ impl App {
             && self.commit_ticket.is_none()
             && self.ready
             && !self.closing
-            && self.ui.nav == shell::Nav::Table
+            && self.document.ui.nav == shell::Nav::Table
         {
             let delta = if consumed(egui::Modifiers::NONE, egui::Key::PageDown) {
                 100
@@ -475,7 +478,7 @@ impl App {
                 0
             };
             if delta != 0
-                && let Some(b) = self.browse.as_mut()
+                && let Some(b) = self.document.browse.as_mut()
             {
                 b.offset = b.offset.saturating_add_signed(delta).min(1_000_000);
                 self.reload();

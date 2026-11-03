@@ -31,45 +31,58 @@ impl Columns {
 }
 impl App {
     pub(super) fn visible_columns(&self) -> Vec<usize> {
-        self.tools
+        self.document
+            .tools
             .columns
             .order
             .iter()
             .copied()
-            .filter(|c| *c < self.result.columns.len() && !self.tools.columns.hidden.contains(c))
+            .filter(|c| {
+                *c < self.document.result.columns.len()
+                    && !self.document.tools.columns.hidden.contains(c)
+            })
             .collect()
     }
     pub(super) fn prepare_columns(&mut self, ui: &egui::Ui) {
-        if self.result.columns.is_empty() {
+        if self.document.result.columns.is_empty() {
             return;
         }
         let scope = format!(
             "{}:{}",
             self.tools.database_scope,
-            if self.view == View::Browse {
-                self.table.as_ref().map_or("browse", |t| t.name.as_str())
+            if self.document.view == View::Browse {
+                self.document
+                    .table
+                    .as_ref()
+                    .map_or("browse", |t| t.name.as_str())
             } else {
                 "query"
             }
         );
-        if self.tools.column_scope != scope {
-            let old = std::mem::take(&mut self.tools.columns);
-            self.tools.column_layouts.insert(
-                std::mem::replace(&mut self.tools.column_scope, scope.clone()),
+        if self.document.tools.column_scope != scope {
+            let old = std::mem::take(&mut self.document.tools.columns);
+            self.document.tools.column_layouts.insert(
+                std::mem::replace(&mut self.document.tools.column_scope, scope.clone()),
                 old,
             );
-            self.tools.columns = self.tools.column_layouts.remove(&scope).unwrap_or_default();
-            while self.tools.column_layouts.len() > 32 {
-                self.tools.column_layouts.pop_first();
+            self.document.tools.columns = self
+                .document
+                .tools
+                .column_layouts
+                .remove(&scope)
+                .unwrap_or_default();
+            while self.document.tools.column_layouts.len() > 32 {
+                self.document.tools.column_layouts.pop_first();
             }
         }
         let signature: Vec<_> = self
+            .document
             .result
             .columns
             .iter()
             .map(|c| (c.name.clone(), c.declared_type.clone()))
             .collect();
-        let c = &mut self.tools.columns;
+        let c = &mut self.document.tools.columns;
         if c.signature != signature {
             *c = Columns {
                 order: (0..signature.len()).collect(),
@@ -78,15 +91,21 @@ impl App {
                 ..Default::default()
             };
         }
-        if let Some((_, name)) = &self.tools.highlight_column
-            && self.tools.scroll_to_column
-            && let Some(i) = self.result.columns.iter().position(|c| &c.name == name)
+        if let Some((_, name)) = &self.document.tools.highlight_column
+            && self.document.tools.scroll_to_column
+            && let Some(i) = self
+                .document
+                .result
+                .columns
+                .iter()
+                .position(|c| &c.name == name)
         {
             c.hidden.remove(&i);
         }
-        let sample = self.result.rows.len().min(200);
+        let sample = self.document.result.rows.len().min(200);
         if c.refit || sample > c.measured_rows {
             c.natural = self
+                .document
                 .result
                 .columns
                 .iter()
@@ -102,8 +121,8 @@ impl App {
                         .size()
                         .x
                         + 36.0
-                        + if self.view == View::Browse
-                            && self.tools.inspection.as_ref().is_some_and(|info| {
+                        + if self.document.view == View::Browse
+                            && self.document.tools.inspection.as_ref().is_some_and(|info| {
                                 info.table.columns.get(i).is_some_and(|c| c.primary_key > 0)
                                     || info.foreign_keys.iter().any(|k| {
                                         k.columns.iter().any(|(name, _)| name == &col.name)
@@ -114,7 +133,8 @@ impl App {
                         } else {
                             0.0
                         };
-                    self.result
+                    self.document
+                        .result
                         .rows
                         .iter()
                         .take(200)
@@ -144,6 +164,7 @@ impl App {
             c.refit = false;
         }
         let flex = self
+            .document
             .result
             .columns
             .iter()

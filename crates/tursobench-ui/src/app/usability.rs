@@ -49,12 +49,12 @@ impl App {
             );
             if ui.button("Bookmark editor SQL").clicked() {
                 let name = if self.tools.bookmark_name.is_empty() {
-                    self.sql.chars().take(60).collect()
+                    self.document.sql.chars().take(60).collect()
                 } else {
                     self.tools.bookmark_name.clone()
                 };
                 self.preferences
-                    .bookmark(&self.tools.database_scope, &name, &self.sql);
+                    .bookmark(&self.tools.database_scope, &name, &self.document.sql);
                 self.store.save(&self.preferences);
             }
             ui.add(
@@ -79,10 +79,10 @@ impl App {
                         .on_hover_text(&bookmark.sql)
                         .clicked()
                     {
-                        self.sql = bookmark.sql.clone();
-                        self.params = "[]".into();
-                        self.ui.sql_open = true;
-                        self.ui.table_view = shell::TableView::Data;
+                        self.document.sql = bookmark.sql.clone();
+                        self.document.params = "[]".into();
+                        self.document.ui.sql_open = true;
+                        self.document.ui.table_view = shell::TableView::Data;
                     }
                     if ui
                         .add(
@@ -134,7 +134,7 @@ impl App {
             for(index,h)in entries{
                 ui.horizontal(|ui| {
                     if ui.small_button("×").clicked() { remove=Some(index); }
-                    if ui.add_sized([ui.available_width().max(40.0),28.0],egui::Button::new(Value::Text(h.sql.clone()).preview()).truncate()).on_hover_text(&h.sql).clicked() { self.sql=h.sql.clone(); self.params="[]".into(); self.ui.sql_open=true; }
+                    if ui.add_sized([ui.available_width().max(40.0),28.0],egui::Button::new(Value::Text(h.sql.clone()).preview()).truncate()).on_hover_text(&h.sql).clicked() { self.document.sql=h.sql.clone(); self.document.params="[]".into(); self.document.ui.sql_open=true; }
                 });
                 let time=h.elapsed_ms.map_or("untimed".into(),|ms|format!("{ms} ms"));let label=format!("{time}{}{}{}",if h.failed{" · failed"}else{""},if h.elapsed_ms.is_some_and(|ms|ms>=threshold){" · slow"}else{""},if h.database.is_empty(){" · unscoped"}else{""});
                 if h.failed||h.elapsed_ms.is_some_and(|ms|ms>=threshold){ui.colored_label(egui::Color32::from_rgb(190,120,50),label);}else{ui.small(label);}
@@ -184,32 +184,38 @@ impl App {
         });
     }
     pub(super) fn export_scope(&self) -> &'static str {
-        match self.result.completion.as_ref() {
+        match self.document.result.completion.as_ref() {
             Some(c) if c.error.is_some() => "failed-query-partial-result",
             Some(c) if c.delivery == Delivery::Discarded => "discarded-query-partial-result",
             Some(c) if c.delivery == Delivery::Limited => "limited-query-result",
-            Some(_) if self.view == View::Browse && self.tools.related.is_some() => {
+            Some(_)
+                if self.document.view == View::Browse && self.document.tools.related.is_some() =>
+            {
                 "related-row-lookup"
             }
-            Some(_) if self.view == View::Browse => "table-window",
+            Some(_) if self.document.view == View::Browse => "table-window",
             Some(_) => "complete-query-result",
             None => "unfinished",
         }
     }
     pub(super) fn usability_controls(&mut self, ui: &mut egui::Ui) {
         let scope = self.export_scope();
-        let enabled = self.result.completion.is_some() && self.active.is_none();
+        let enabled = self.document.result.completion.is_some() && self.document.active.is_none();
         ui.horizontal_wrapped(|ui| {
             egui::ComboBox::from_id_salt("export-format")
-                .selected_text(self.tools.format.label())
+                .selected_text(self.document.tools.format.label())
                 .show_ui(ui, |ui| {
                     for format in crate::export::Format::ALL {
-                        ui.selectable_value(&mut self.tools.format, format, format.label());
+                        ui.selectable_value(
+                            &mut self.document.tools.format,
+                            format,
+                            format.label(),
+                        );
                     }
                 });
-            if self.tools.format == crate::export::Format::Sql {
+            if self.document.tools.format == crate::export::Format::Sql {
                 ui.label("Target table:");
-                ui.text_edit_singleline(&mut self.tools.export_table);
+                ui.text_edit_singleline(&mut self.document.tools.export_table);
             }
             if ui
                 .add_enabled(
@@ -218,10 +224,10 @@ impl App {
                 )
                 .clicked()
             {
-                let columns = self.result.columns.clone();
-                let rows = self.result.rows.clone();
-                let format = self.tools.format;
-                let table = self.tools.export_table.clone();
+                let columns = self.document.result.columns.clone();
+                let rows = self.document.result.rows.clone();
+                let format = self.document.tools.format;
+                let table = self.document.tools.export_table.clone();
                 let wake = ui.ctx().clone();
                 let (tx, rx) = std::sync::mpsc::sync_channel(1);
                 self.export_job = Some(rx);

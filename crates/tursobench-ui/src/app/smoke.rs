@@ -49,18 +49,19 @@ impl App {
                 }
             }
             1 if self.ready
-                && self.active.is_none()
+                && self.document.active.is_none()
                 && self.catalog_ticket.is_none()
                 && self.ui.diagram.ticket.is_none() =>
             {
-                assert_eq!(self.ui.nav, shell::Nav::Overview);
+                assert_eq!(self.document.ui.nav, shell::Nav::Overview);
                 assert!(self.ui.diagram.data.is_some());
                 self.browse_table(smoke.table.clone());
                 smoke.stage = 2;
             }
-            2 if self.ready && self.active.is_none() => {
+            2 if self.ready && self.document.active.is_none() => {
                 assert!(
-                    self.result
+                    self.document
+                        .result
                         .completion
                         .as_ref()
                         .is_some_and(|c| c.error.is_none()),
@@ -69,32 +70,33 @@ impl App {
                 );
                 if smoke.project_fixture {
                     assert!(
-                        !self.result.rows.is_empty(),
+                        !self.document.result.rows.is_empty(),
                         "project fixture table must contain rows"
                     );
                     assert!(
-                        self.table
+                        self.document
+                            .table
                             .as_ref()
-                            .is_some_and(|t| t.columns.len() == self.result.columns.len())
+                            .is_some_and(|t| t.columns.len() == self.document.result.columns.len())
                     );
                 } else {
                     assert_eq!(
-                        self.result.rows.len(),
+                        self.document.result.rows.len(),
                         100,
                         "smoke fixture needs at least 100 rows"
                     );
-                    assert_eq!(self.result.rows[0][0], Value::Integer(0));
+                    assert_eq!(self.document.result.rows[0][0], Value::Integer(0));
                 }
                 smoke.stage = 9;
             }
             9 => {
-                assert_eq!(self.ui.nav, shell::Nav::Table);
-                self.ui.table_view = shell::TableView::Structure;
+                assert_eq!(self.document.ui.nav, shell::Nav::Table);
+                self.document.ui.table_view = shell::TableView::Structure;
                 smoke.stage = 10;
             }
             10 => {
-                self.ui.table_view = shell::TableView::Data;
-                self.ui.nav = shell::Nav::Overview;
+                self.document.ui.table_view = shell::TableView::Data;
+                self.document.ui.nav = shell::Nav::Overview;
                 self.show_structure();
                 self.load_diagram();
                 smoke.stage = 7;
@@ -108,18 +110,21 @@ impl App {
                 smoke.stage = 8;
             }
             8 => {
-                self.sql = "SELECT ?1 AS typed_blob".into();
-                self.params = "[{\"type\":\"Blob\",\"value\":[0,255]}]".into();
+                self.document.sql = "SELECT ?1 AS typed_blob".into();
+                self.document.params = "[{\"type\":\"Blob\",\"value\":[0,255]}]".into();
                 self.run_sql();
                 smoke.stage = 3;
             }
-            3 if self.active.is_none() => {
-                assert_eq!(self.result.rows, vec![vec![Value::Blob(vec![0, 255])]]);
+            3 if self.document.active.is_none() => {
+                assert_eq!(
+                    self.document.result.rows,
+                    vec![vec![Value::Blob(vec![0, 255])]]
+                );
                 if smoke.table == "search_content" {
-                    self.sql =
+                    self.document.sql =
                         "SELECT entry_id FROM search_content WHERE fts_match(indexed_content,?1)"
                             .into();
-                    self.params = "[{\"type\":\"Text\",\"value\":\"needle\"}]".into();
+                    self.document.params = "[{\"type\":\"Text\",\"value\":\"needle\"}]".into();
                     self.run_sql();
                     smoke.stage = 6;
                 } else {
@@ -127,17 +132,18 @@ impl App {
                     smoke.stage = 4;
                 }
             }
-            6 if self.active.is_none() => {
+            6 if self.document.active.is_none() => {
                 assert_eq!(
-                    self.result.rows,
+                    self.document.result.rows,
                     vec![vec![Value::Text("entry-0000".into())]]
                 );
                 self.smoke_readonly_write(&smoke.table);
                 smoke.stage = 4;
             }
-            4 if self.active.is_none() => {
+            4 if self.document.active.is_none() => {
                 assert_eq!(
-                    self.result
+                    self.document
+                        .result
                         .completion
                         .as_ref()
                         .unwrap()
@@ -166,8 +172,8 @@ impl App {
         ctx.request_repaint_after(Duration::from_millis(25));
     }
     fn smoke_readonly_write(&mut self, table: &str) {
-        self.sql = format!("DELETE FROM {}", quote_identifier(table));
-        self.params = "[]".into();
+        self.document.sql = format!("DELETE FROM {}", quote_identifier(table));
+        self.document.params = "[]".into();
         self.run_sql();
     }
 }

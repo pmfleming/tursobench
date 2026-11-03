@@ -888,9 +888,9 @@ mod tests {
         let mut app = App::new(&ctx);
         app.discovery_event(found("/work/agenda.db"));
         app.discovery_event(found("/other/clipboard.db"));
-        app.ui.nav = shell::Nav::Result;
+        app.document.ui.nav = shell::Nav::Result;
         app.choose_file(&ctx);
-        assert_eq!(app.ui.nav, shell::Nav::Databases);
+        assert_eq!(app.document.ui.nav, shell::Nav::Databases);
         assert!(app.picker.is_none());
         frame(&mut app, &ctx, vec![], 900.0);
         assert!(ctx.memory(|m| m.focused().is_some()));

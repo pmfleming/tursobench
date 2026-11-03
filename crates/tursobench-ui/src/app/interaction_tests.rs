@@ -18,13 +18,13 @@ fn wait(app: &mut App, ctx: &egui::Context) {
         app.poll(ctx);
         if app.ready
             && !app.closing
-            && app.active.is_none()
-            && app.tools.pages.pending.is_none()
-            && app.tools.context.pending.is_none()
+            && app.document.active.is_none()
+            && app.document.tools.pages.pending.is_none()
+            && app.document.tools.context.pending.is_none()
             && app.catalog_ticket.is_none()
             && app.commit_ticket.is_none()
             && app.tools.count_request.is_none()
-            && app.tools.inspection_ticket.is_none()
+            && app.document.tools.inspection_ticket.is_none()
             && app.ui.diagram.ticket.is_none()
         {
             break;
@@ -66,6 +66,65 @@ fn frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) {
 }
 
 #[test]
+fn independent_documents_route_results_and_keep_filters_drafts_and_sql() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("documents.db");
+    crate::test_support::create(
+        &path,
+        &[
+            "CREATE TABLE a(id INTEGER PRIMARY KEY, body TEXT)",
+            "CREATE TABLE b(id INTEGER PRIMARY KEY, body TEXT)",
+            "INSERT INTO a VALUES(1, 'alpha')",
+            "INSERT INTO b VALUES(2, 'beta')",
+        ],
+    );
+    let (ctx, mut app) = connected(&path, true);
+    app.browse_table("a".into());
+    let a_ticket = app.document.result.current.unwrap();
+    app.document.sql = "SELECT 'draft a'".into();
+    app.document.filter = "body = alpha".into();
+    app.documents.insert(
+        1,
+        document::Document {
+            id: 1,
+            ..Default::default()
+        },
+    );
+    assert!(app.switch_document(1));
+    app.browse_table("b".into());
+    app.document.sql = "SELECT 'draft b'".into();
+    wait(&mut app, &ctx);
+    assert_eq!(
+        app.document.id, 1,
+        "background completions must not change focus"
+    );
+    assert_eq!(app.document.result.rows[0][1], Value::Text("beta".into()));
+    app.switch_document(0);
+    assert_eq!(app.document.result.current, Some(a_ticket));
+    assert_eq!(app.document.result.rows[0][1], Value::Text("alpha".into()));
+    assert_eq!(app.document.sql, "SELECT 'draft a'");
+    assert_eq!(app.document.filter, "body = alpha");
+    app.stage_cell(0, 1, Value::Text("staged alpha".into()));
+    assert!(app.document.has_drafts());
+    app.switch_document(1);
+    assert!(app.has_drafts(), "draft protection is session wide");
+    assert!(!app.can_edit(), "another view owns the pending edit batch");
+    assert!(app.document.drafts.is_none());
+    assert_eq!(app.document.sql, "SELECT 'draft b'");
+    // A closed view's late delivery cannot append to another view's rows.
+    app.documents.remove(&0);
+    app.handle_event(
+        &ctx,
+        Event {
+            ticket: a_ticket,
+            kind: EventKind::Rows(vec![vec![Value::Integer(99)]]),
+        },
+    );
+    assert_eq!(app.document.result.rows.len(), 1);
+    app.close();
+}
+
+#[test]
 fn failed_open_after_close_can_retry_a_valid_database() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("valid.db");
@@ -86,7 +145,7 @@ fn failed_open_after_close_can_retry_a_valid_database() {
         std::thread::sleep(Duration::from_millis(2));
     }
     assert!(!app.ready && !app.closing && !app.confirm_close);
-    assert!(app.active.is_none());
+    assert!(app.document.active.is_none());
     assert!(
         app.preferences.discovery.recent.is_empty(),
         "failed opens must not enter history"
@@ -161,16 +220,16 @@ fn diagram_preserves_drafts_and_result_ownership_and_chrome_fits_both_themes() {
     let (ctx, mut app) = connected(&path, true);
     app.browse_table("buffer_ids".into());
     wait(&mut app, &ctx);
-    let retained = app.result.rows.clone();
-    let ticket = app.result.current;
+    let retained = app.document.result.rows.clone();
+    let ticket = app.document.result.current;
     app.stage_cell(0, 0, Value::Text("pending diagram edit".into()));
     assert!(app.has_drafts());
-    app.ui.nav = shell::Nav::Overview;
+    app.document.ui.nav = shell::Nav::Overview;
     app.show_structure();
     app.load_diagram();
     wait(&mut app, &ctx);
-    assert_eq!(app.result.current, ticket);
-    assert_eq!(app.result.rows, retained);
+    assert_eq!(app.document.result.current, ticket);
+    assert_eq!(app.document.result.rows, retained);
     assert!(app.has_drafts());
     assert!(
         app.ui
@@ -182,7 +241,7 @@ fn diagram_preserves_drafts_and_result_ownership_and_chrome_fits_both_themes() {
             .iter()
             .any(|t| t.name == "buffer_ids")
     );
-    let draft = format!("{:?}", app.drafts);
+    let draft = format!("{:?}", app.document.drafts);
     for dark in [true, false] {
         app.preferences.appearance = Some(crate::appearance::Mode::from_dark(dark));
         app.apply_theme(&ctx);
@@ -196,7 +255,7 @@ fn diagram_preserves_drafts_and_result_ownership_and_chrome_fits_both_themes() {
         ] {
             ctx.set_pixels_per_point(scale);
             for mode in [shell::Nav::Result, shell::Nav::Table, shell::Nav::Overview] {
-                app.ui.nav = mode;
+                app.document.ui.nav = mode;
                 app.ui.diagram.fit = true;
                 for _ in 0..2 {
                     let output = frame_at(&mut app, &ctx, egui::vec2(width, height), vec![]);
@@ -217,10 +276,10 @@ fn diagram_preserves_drafts_and_result_ownership_and_chrome_fits_both_themes() {
             }
         }
     }
-    assert_eq!(format!("{:?}", app.drafts), draft);
-    assert_eq!(app.result.rows, retained);
+    assert_eq!(format!("{:?}", app.document.drafts), draft);
+    assert_eq!(app.document.result.rows, retained);
     ctx.set_pixels_per_point(1.0);
-    app.ui.nav = shell::Nav::Overview;
+    app.document.ui.nav = shell::Nav::Overview;
     app.ui.diagram.fit = true;
     frame(&mut app, &ctx, vec![]);
     let before_selection = app.ui.diagram.selected.clone();
@@ -242,17 +301,17 @@ fn diagram_preserves_drafts_and_result_ownership_and_chrome_fits_both_themes() {
         );
     }
     assert_eq!(app.ui.diagram.selected, before_selection);
-    assert_eq!(app.ui.inspector, shell::DetailMode::Structure);
+    assert_eq!(app.document.ui.inspector, shell::DetailMode::Structure);
     // Diagram navigation must not bypass the draft guard.
     app.browse_table(name.clone());
-    assert_eq!(app.ui.nav, shell::Nav::Overview);
+    assert_eq!(app.document.ui.nav, shell::Nav::Overview);
     assert!(app.has_drafts());
-    app.drafts = None;
+    app.document.drafts = None;
     app.browse_table(name.clone());
     wait(&mut app, &ctx);
-    assert_eq!(app.table.as_ref().unwrap().name, name);
-    assert_eq!(app.ui.nav, shell::Nav::Table);
-    assert_eq!(app.ui.nav, shell::Nav::Table);
+    assert_eq!(app.document.table.as_ref().unwrap().name, name);
+    assert_eq!(app.document.ui.nav, shell::Nav::Table);
+    assert_eq!(app.document.ui.nav, shell::Nav::Table);
     app.close();
     while app.session.is_some() {
         app.poll(&ctx);
@@ -276,19 +335,23 @@ fn reverted_empty_batch_cannot_carry_identity_to_another_table() {
     app.browse_table("a".into());
     wait(&mut app, &ctx);
     app.stage_cell(0, 1, Value::Text("temporary".into()));
-    app.drafts.as_mut().unwrap().revert_row(&app.result.rows[0]);
+    app.document
+        .drafts
+        .as_mut()
+        .unwrap()
+        .revert_row(&app.document.result.rows[0]);
     assert!(!app.has_drafts());
     app.browse_table("b".into());
     wait(&mut app, &ctx);
     app.stage_cell(0, 1, Value::Text("only b".into()));
-    assert_eq!(app.drafts.as_ref().unwrap().table.name, "b");
+    assert_eq!(app.document.drafts.as_ref().unwrap().table.name, "b");
     app.commit_drafts();
     wait(&mut app, &ctx);
-    assert_eq!(app.result.rows[0][1], Value::Text("only b".into()));
+    assert_eq!(app.document.result.rows[0][1], Value::Text("only b".into()));
     app.browse_table("a".into());
     wait(&mut app, &ctx);
-    assert_eq!(app.result.rows[0][1], Value::Text("same".into()));
-    app.sql = "BEGIN".into();
+    assert_eq!(app.document.result.rows[0][1], Value::Text("same".into()));
+    app.document.sql = "BEGIN".into();
     app.run_sql();
     wait(&mut app, &ctx);
     app.browse_table("a".into());
@@ -297,12 +360,12 @@ fn reverted_empty_batch_cannot_carry_identity_to_another_table() {
     assert!(!app.can_edit());
     app.stage_cell(0, 1, Value::Text("only b".into()));
     assert!(!app.has_drafts());
-    app.sql = "ROLLBACK".into();
+    app.document.sql = "ROLLBACK".into();
     app.run_sql();
     wait(&mut app, &ctx);
     app.browse_table("b".into());
     wait(&mut app, &ctx);
-    let retained = app.result.rows.clone();
+    let retained = app.document.result.rows.clone();
     app.close();
     let deadline = Instant::now() + Duration::from_secs(5);
     while app.session.is_some() {
@@ -311,17 +374,17 @@ fn reverted_empty_batch_cannot_carry_identity_to_another_table() {
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(app.status.contains("cleanup confirmed"));
-    app.ui.nav = shell::Nav::Table;
+    app.document.ui.nav = shell::Nav::Table;
     app.first_cell_rect = None;
     frame(&mut app, &ctx, vec![]);
     assert!(app.first_cell_rect.is_some());
-    assert_eq!(app.result.rows, retained);
+    assert_eq!(app.document.result.rows, retained);
     app.copy_results(&ctx, crate::export::Format::Json);
     assert!(app.status.contains("Copied retained"));
     app.browse_table("a".into());
-    assert_eq!(app.table.as_ref().unwrap().name, "b");
-    assert_eq!(app.result.rows, retained);
-    app.ui.nav = shell::Nav::Result;
+    assert_eq!(app.document.table.as_ref().unwrap().name, "b");
+    assert_eq!(app.document.result.rows, retained);
+    app.document.ui.nav = shell::Nav::Result;
     frame(&mut app, &ctx, vec![]);
     assert!(app.session.is_none());
 }
@@ -340,7 +403,7 @@ fn local_project_pages_and_fts_results_render_and_export() {
         };
         app.browse_table(table.into());
         wait(&mut app, &ctx);
-        assert_eq!(app.result.rows.len(), 100);
+        assert_eq!(app.document.result.rows.len(), 100);
         assert!(!app.can_edit());
         frame(&mut app, &ctx, vec![]);
         let export = dir.path().join("page.jsonl");
@@ -348,8 +411,8 @@ fn local_project_pages_and_fts_results_render_and_export() {
             &export,
             crate::export::Format::JsonLines,
             "table-page",
-            &app.result.columns,
-            &app.result.rows,
+            &app.document.result.columns,
+            &app.document.result.rows,
             "t",
         )
         .unwrap();
@@ -368,13 +431,13 @@ fn local_project_pages_and_fts_results_render_and_export() {
             assert_eq!(records[1]["values"][8]["type"], "null");
         }
         if name == "clipboard" {
-            app.sql =
+            app.document.sql =
                 "SELECT entry_id FROM search_content WHERE fts_match(indexed_content,?1)".into();
-            app.params = "[{\"type\":\"Text\",\"value\":\"needle\"}]".into();
+            app.document.params = "[{\"type\":\"Text\",\"value\":\"needle\"}]".into();
             app.run_sql();
             wait(&mut app, &ctx);
             assert_eq!(
-                app.result.rows,
+                app.document.result.rows,
                 vec![vec![Value::Text("entry-0000".into())]]
             );
             frame(&mut app, &ctx, vec![]);
@@ -382,8 +445,8 @@ fn local_project_pages_and_fts_results_render_and_export() {
                 &dir.path().join("fts.jsonl"),
                 crate::export::Format::JsonLines,
                 "complete-query-result",
-                &app.result.columns,
-                &app.result.rows,
+                &app.document.result.columns,
+                &app.document.result.rows,
                 "t",
             )
             .unwrap();
@@ -439,29 +502,37 @@ fn click_inspect_stage_no_write_failed_commit_retains_drafts() {
             modifiers: egui::Modifiers::default(),
         }],
     );
-    assert_eq!(app.inspect, Some((0, 0)));
+    assert_eq!(app.document.inspect, Some((0, 0)));
     app.clone_row(0);
-    let clone: Vec<Option<Value>> = serde_json::from_str(&app.insert_json).unwrap();
+    let clone: Vec<Option<Value>> = serde_json::from_str(&app.document.insert_json).unwrap();
     assert_eq!(clone, vec![None, Some(Value::Text("original".into()))]);
     assert!(!app.has_drafts());
-    app.show_insert = false;
+    app.document.show_insert = false;
     app.stage_cell(0, 1, Value::Text("draft".into()));
-    let original = app.result.rows[0].clone();
+    let original = app.document.result.rows[0].clone();
     assert_eq!(
-        app.drafts.as_ref().unwrap().displayed(&original, 1),
+        app.document
+            .drafts
+            .as_ref()
+            .unwrap()
+            .displayed(&original, 1),
         Some(&Value::Text("draft".into()))
     );
-    app.drafts.as_mut().unwrap().revert_cell(&original, 1);
+    app.document
+        .drafts
+        .as_mut()
+        .unwrap()
+        .revert_cell(&original, 1);
     assert!(!app.has_drafts());
     app.stage_delete(0);
-    assert!(app.drafts.as_ref().unwrap().deleted(&original));
-    app.drafts.as_mut().unwrap().revert_row(&original);
+    assert!(app.document.drafts.as_ref().unwrap().deleted(&original));
+    app.document.drafts.as_mut().unwrap().revert_row(&original);
     assert!(!app.has_drafts());
     app.stage_cell(0, 0, Value::Integer(2));
     assert!(app.has_drafts());
     assert!(app.commit_ticket.is_none());
     // Inspecting, rendering and staging produced no SQL request or row mutation.
-    assert_eq!(app.result.rows[0][0], Value::Integer(1));
+    assert_eq!(app.document.result.rows[0][0], Value::Integer(1));
     frame(&mut app, &ctx, vec![]);
     let s = app.session.as_ref().unwrap();
     app.sequence += 1;
@@ -495,7 +566,7 @@ fn click_inspect_stage_no_write_failed_commit_retains_drafts() {
     app.commit_drafts();
     wait(&mut app, &ctx);
     assert!(!app.has_drafts());
-    assert_eq!(app.result.rows[1][0], Value::Integer(3));
+    assert_eq!(app.document.result.rows[1][0], Value::Integer(3));
     app.close();
 }
 
@@ -526,10 +597,10 @@ fn selection_named_history_metadata_reference_back_and_tools_render() {
     );
     app.browse_table("child".into());
     wait(&mut app, &ctx);
-    assert!(app.tools.inspection_error.is_empty());
-    let key = app.tools.inspection.as_ref().unwrap().foreign_keys[0].clone();
+    assert!(app.document.tools.inspection_error.is_empty());
+    let key = app.document.tools.inspection.as_ref().unwrap().foreign_keys[0].clone();
     assert!(app.cell_references(1, 1).is_empty());
-    app.ui.nav = shell::Nav::Table;
+    app.document.ui.nav = shell::Nav::Table;
     frame(&mut app, &ctx, vec![]);
     let pos = app
         .fk_cell_rect
@@ -551,43 +622,43 @@ fn selection_named_history_metadata_reference_back_and_tools_render() {
         );
     }
     wait(&mut app, &ctx);
-    assert_eq!(app.ui.nav, shell::Nav::Table);
+    assert_eq!(app.document.ui.nav, shell::Nav::Table);
     assert_eq!(app.ui.diagram.selected.as_deref(), Some("parent"));
-    assert_eq!(app.table.as_ref().unwrap().name, "parent");
-    assert_eq!(app.result.rows.len(), 1);
+    assert_eq!(app.document.table.as_ref().unwrap().name, "parent");
+    assert_eq!(app.document.result.rows.len(), 1);
     assert_eq!(app.export_scope(), "related-row-lookup");
     app.follow_incoming(0, "child".into(), key.clone());
     wait(&mut app, &ctx);
-    assert_eq!(app.table.as_ref().unwrap().name, "child");
-    assert_eq!(app.result.rows.len(), 1);
+    assert_eq!(app.document.table.as_ref().unwrap().name, "child");
+    assert_eq!(app.document.result.rows.len(), 1);
     app.navigate_back();
     wait(&mut app, &ctx);
     assert_eq!(app.ui.diagram.selected.as_deref(), Some("parent"));
-    app.tools.detail = Some(0);
+    app.document.tools.detail = Some(0);
     app.show_structure();
     app.tools.help = true;
-    app.tools.ddl = app.schema.iter().find(|o| o.name == "parent").cloned();
+    app.document.tools.ddl = app.schema.iter().find(|o| o.name == "parent").cloned();
     frame(&mut app, &ctx, vec![]);
     app.navigate_back();
     wait(&mut app, &ctx);
-    assert_eq!(app.table.as_ref().unwrap().name, "child");
+    assert_eq!(app.document.table.as_ref().unwrap().name, "child");
     assert_eq!(app.ui.diagram.selected.as_deref(), Some("child"));
-    assert_eq!(app.result.rows.len(), 2);
+    assert_eq!(app.document.result.rows.len(), 2);
     app.follow_key(1, key);
     assert!(app.status.contains("NULL foreign key"));
-    assert!(app.tools.related.is_none());
-    app.sql = "SELECT 'λ;'; SELECT :name AS value;".into();
-    let byte = app.sql.find("SELECT :name").unwrap();
-    let cursor = app.sql[..byte].chars().count();
-    app.tools.selection = cursor..cursor;
-    app.params = r#"{":name":{"type":"Text","value":"bound-only-secret"}}"#.into();
+    assert!(app.document.tools.related.is_none());
+    app.document.sql = "SELECT 'λ;'; SELECT :name AS value;".into();
+    let byte = app.document.sql.find("SELECT :name").unwrap();
+    let cursor = app.document.sql[..byte].chars().count();
+    app.document.tools.selection = cursor..cursor;
+    app.document.params = r#"{":name":{"type":"Text","value":"bound-only-secret"}}"#.into();
     app.run_selection();
     wait(&mut app, &ctx);
     assert_eq!(
-        app.result.rows,
+        app.document.result.rows,
         vec![vec![Value::Text("bound-only-secret".into())]]
     );
-    assert!(app.sql.contains("λ;"));
+    assert!(app.document.sql.contains("λ;"));
     let history = &app.preferences.query_history[0];
     assert_eq!(history.database, app.path);
     assert!(history.elapsed_ms.is_some());
@@ -606,13 +677,13 @@ fn selection_named_history_metadata_reference_back_and_tools_render() {
             .sql
             .starts_with("EXPLAIN QUERY PLAN")
     );
-    app.sql = "SELECT * FROM parent".into();
-    app.params = "[]".into();
-    app.run_text(app.sql.clone(), Some(false));
+    app.document.sql = "SELECT * FROM parent".into();
+    app.document.params = "[]".into();
+    app.run_text(app.document.sql.clone(), Some(false));
     wait(&mut app, &ctx);
-    assert_eq!(app.view, View::Explain);
-    assert!(!app.result.rows.is_empty());
-    app.tools.complete = true;
+    assert_eq!(app.document.view, View::Explain);
+    assert!(!app.document.result.rows.is_empty());
+    app.document.tools.complete = true;
     frame(&mut app, &ctx, vec![]);
     app.close();
 }
@@ -630,41 +701,47 @@ fn overview_and_table_views_preserve_camera_and_rejects_navigation_with_drafts()
         ],
     );
     let (ctx, mut app) = connected(&path, true);
-    assert_eq!(app.ui.nav, shell::Nav::Overview);
-    assert_eq!(app.ui.nav, shell::Nav::Overview);
+    assert_eq!(app.document.ui.nav, shell::Nav::Overview);
+    assert_eq!(app.document.ui.nav, shell::Nav::Overview);
     assert_eq!(app.ui.diagram.data.as_ref().unwrap().tables.len(), 2);
     frame(&mut app, &ctx, vec![]);
     let camera = (app.ui.diagram.zoom, app.ui.diagram.pan);
     app.browse_table("a".into());
     wait(&mut app, &ctx);
-    assert_eq!(app.ui.nav, shell::Nav::Table);
-    assert_eq!(app.result.rows[0][1], Value::Text("original".into()));
-    let retained_ticket = app.result.current;
+    assert_eq!(app.document.ui.nav, shell::Nav::Table);
+    assert_eq!(
+        app.document.result.rows[0][1],
+        Value::Text("original".into())
+    );
+    let retained_ticket = app.document.result.current;
     app.refresh_catalog();
     wait(&mut app, &ctx);
-    assert_eq!(app.result.current, retained_ticket);
-    assert_eq!(app.result.rows[0][1], Value::Text("original".into()));
+    assert_eq!(app.document.result.current, retained_ticket);
+    assert_eq!(
+        app.document.result.rows[0][1],
+        Value::Text("original".into())
+    );
     for view in [
         shell::TableView::Data,
         shell::TableView::Structure,
         shell::TableView::Data,
     ] {
-        app.ui.table_view = view;
+        app.document.ui.table_view = view;
         frame(&mut app, &ctx, vec![]);
         assert_eq!((app.ui.diagram.zoom, app.ui.diagram.pan), camera);
     }
     app.stage_cell(0, 1, Value::Text("draft".into()));
-    let ticket = app.result.current;
+    let ticket = app.document.result.current;
     app.browse_table("b".into());
-    assert_eq!(app.result.current, ticket);
+    assert_eq!(app.document.result.current, ticket);
     assert_eq!(app.ui.diagram.selected.as_deref(), Some("a"));
-    assert_eq!(app.table.as_ref().unwrap().name, "a");
+    assert_eq!(app.document.table.as_ref().unwrap().name, "a");
     app.overview();
     app.activate_table("a".into());
-    assert_eq!(app.ui.nav, shell::Nav::Table);
-    assert_eq!(app.result.current, ticket);
+    assert_eq!(app.document.ui.nav, shell::Nav::Table);
+    assert_eq!(app.document.result.current, ticket);
     assert!(app.has_drafts());
-    app.drafts = None;
+    app.document.drafts = None;
     app.close();
 }
 
@@ -687,8 +764,8 @@ fn rapid_map_selection_keeps_latest_rows_and_structure_including_views() {
     app.browse_table("a".into());
     app.browse_table("b".into());
     wait(&mut app, &ctx);
-    assert_eq!(app.result.rows, vec![vec![Value::Integer(2)]]);
-    assert_eq!(app.table.as_ref().unwrap().name, "b");
+    assert_eq!(app.document.result.rows, vec![vec![Value::Integer(2)]]);
+    assert_eq!(app.document.table.as_ref().unwrap().name, "b");
     assert_eq!(app.ui.diagram.selected.as_deref(), Some("b"));
     assert!(
         app.schema
@@ -698,9 +775,12 @@ fn rapid_map_selection_keeps_latest_rows_and_structure_including_views() {
     app.ui.sidebar = shell::ToolPanel::Schema;
     app.browse_table("v".into());
     wait(&mut app, &ctx);
-    assert_eq!(app.tools.inspection.as_ref().unwrap().table.name, "v");
+    assert_eq!(
+        app.document.tools.inspection.as_ref().unwrap().table.name,
+        "v"
+    );
     assert!(!app.can_edit());
-    app.ui.table_view = shell::TableView::Structure;
+    app.document.ui.table_view = shell::TableView::Structure;
     frame(&mut app, &ctx, vec![]);
     assert_eq!(app.ui.diagram.selected.as_deref(), Some("v"));
     app.close();
@@ -723,15 +803,15 @@ fn sql_dock_keeps_result_identity_and_read_transactions_visible() {
     app.toggle_sql();
     app.run_text("SELECT 42 AS answer".into(), None);
     wait(&mut app, &ctx);
-    assert_eq!(app.ui.nav, shell::Nav::Result);
-    assert_eq!(app.view, View::Query);
-    assert!(app.table.is_none());
-    assert_eq!(app.result.rows, vec![vec![Value::Integer(42)]]);
-    let ticket = app.result.current;
+    assert_eq!(app.document.ui.nav, shell::Nav::Result);
+    assert_eq!(app.document.view, View::Query);
+    assert!(app.document.table.is_none());
+    assert_eq!(app.document.result.rows, vec![vec![Value::Integer(42)]]);
+    let ticket = app.document.result.current;
     app.toggle_sql();
-    assert!(!app.ui.sql_open);
+    assert!(!app.document.ui.sql_open);
     frame(&mut app, &ctx, vec![]);
-    assert_eq!(app.result.current, ticket);
+    assert_eq!(app.document.result.current, ticket);
     app.toggle_sql();
     app.run_text("BEGIN".into(), None);
     wait(&mut app, &ctx);
@@ -758,8 +838,11 @@ fn sql_dock_keeps_result_identity_and_read_transactions_visible() {
         }],
     );
     wait(&mut app, &ctx);
-    assert_eq!(app.table.as_ref().unwrap().name, "a");
-    assert_eq!(app.tools.highlight_column, Some(("a".into(), "id".into())));
+    assert_eq!(app.document.table.as_ref().unwrap().name, "a");
+    assert_eq!(
+        app.document.tools.highlight_column,
+        Some(("a".into(), "id".into()))
+    );
     assert!(!app.ui.palette_open);
     app.close();
 }
@@ -780,7 +863,7 @@ fn access_switch_waits_for_closed_then_opens_a_new_session() {
     wait(&mut app, &ctx);
     assert!(app.writable);
     assert_ne!(app.session.as_ref().unwrap().id, old_session);
-    assert_eq!(app.ui.nav, shell::Nav::Overview);
+    assert_eq!(app.document.ui.nav, shell::Nav::Overview);
     assert!(app.pending_access.is_none());
     assert_eq!(app.ui.diagram.zoom, 0.7);
     assert_eq!(app.ui.diagram.pan, egui::vec2(30.0, 42.0));
@@ -802,7 +885,7 @@ fn navigation_restores_typed_browse_context_and_query_return_without_dropping_dr
     let (ctx, mut app) = connected(&path, true);
     app.browse_table("a".into());
     wait(&mut app, &ctx);
-    let browse = app.browse.as_mut().unwrap();
+    let browse = app.document.browse.as_mut().unwrap();
     browse.sort = Some(1);
     browse.descending = true;
     browse.filters.push(tursobench_core::Filter {
@@ -812,35 +895,38 @@ fn navigation_restores_typed_browse_context_and_query_return_without_dropping_dr
     });
     app.reload();
     wait(&mut app, &ctx);
-    app.inspect = Some((0, 1));
-    app.tools.detail = Some(0);
-    app.tools.grid_scroll = egui::vec2(40.0, 20.0);
+    app.document.inspect = Some((0, 1));
+    app.document.tools.detail = Some(0);
+    app.document.tools.grid_scroll = egui::vec2(40.0, 20.0);
     app.browse_table("b".into());
     wait(&mut app, &ctx);
     app.navigate_back();
     wait(&mut app, &ctx);
-    assert_eq!(app.browse.as_ref().unwrap().sort, Some(1));
-    assert!(app.browse.as_ref().unwrap().descending);
+    assert_eq!(app.document.browse.as_ref().unwrap().sort, Some(1));
+    assert!(app.document.browse.as_ref().unwrap().descending);
     assert_eq!(
-        app.result.rows,
+        app.document.result.rows,
         vec![vec![Value::Integer(2), Value::Text("second".into())]]
     );
-    assert_eq!(app.inspect, Some((0, 1)));
-    assert_eq!(app.tools.detail, Some(0));
-    assert_eq!(app.tools.restore_scroll, Some(egui::vec2(40.0, 20.0)));
+    assert_eq!(app.document.inspect, Some((0, 1)));
+    assert_eq!(app.document.tools.detail, Some(0));
+    assert_eq!(
+        app.document.tools.restore_scroll,
+        Some(egui::vec2(40.0, 20.0))
+    );
     app.run_text("SELECT 42".into(), None);
     wait(&mut app, &ctx);
     assert!(!app.can_edit());
     assert!(app.tools.result_return.is_some());
     app.return_to_table();
     wait(&mut app, &ctx);
-    assert_eq!(app.inspect, Some((0, 1)));
+    assert_eq!(app.document.inspect, Some((0, 1)));
     app.stage_cell(0, 1, Value::Text("draft".into()));
-    let ticket = app.result.current;
+    let ticket = app.document.result.current;
     app.browse_table("b".into());
     app.run_text("SELECT 99".into(), None);
     app.navigate_back();
-    assert_eq!(app.result.current, ticket);
+    assert_eq!(app.document.result.current, ticket);
     assert!(app.has_drafts());
     app.close();
 }
@@ -864,8 +950,8 @@ fn sidebar_catalog_includes_views_when_map_is_incomplete_and_tools_preserve_rows
         tables: vec![],
         limited: true,
     });
-    let rows = app.result.rows.clone();
-    let ticket = app.result.current;
+    let rows = app.document.result.rows.clone();
+    let ticket = app.document.result.current;
     for panel in [
         shell::ToolPanel::History,
         shell::ToolPanel::Saved,
@@ -886,12 +972,12 @@ fn sidebar_catalog_includes_views_when_map_is_incomplete_and_tools_preserve_rows
         assert!(output.shapes.len() > 10);
         app.select_tool(shell::ToolPanel::Schema);
         output.textures_delta.clear();
-        assert_eq!(app.result.current, ticket);
-        assert_eq!(app.result.rows, rows);
+        assert_eq!(app.document.result.current, ticket);
+        assert_eq!(app.document.result.rows, rows);
     }
     app.browse_table("example_view".into());
     wait(&mut app, &ctx);
-    assert_eq!(app.result.rows, rows);
+    assert_eq!(app.document.result.rows, rows);
     assert!(!app.can_edit());
     app.close();
 }
@@ -911,20 +997,20 @@ fn explicit_counts_keep_table_rows_and_drafts_owned_by_their_original_ticket() {
     app.browse_table("a".into());
     wait(&mut app, &ctx);
     app.stage_cell(0, 1, Value::Text("draft".into()));
-    let ticket = app.result.current;
-    let rows = app.result.rows.clone();
+    let ticket = app.document.result.current;
+    let rows = app.document.result.rows.clone();
     app.count_table("a".into());
     wait(&mut app, &ctx);
     assert_eq!(app.tools.counts.get("a"), Some(&2));
-    assert_eq!(app.result.current, ticket);
-    assert_eq!(app.result.rows, rows);
+    assert_eq!(app.document.result.current, ticket);
+    assert_eq!(app.document.result.rows, rows);
     assert!(app.has_drafts());
     app.count_table("missing table".into());
     wait(&mut app, &ctx);
     assert!(app.status.contains("Count failed"));
     assert!(!app.tools.counts.contains_key("missing table"));
-    assert_eq!(app.result.current, ticket);
-    assert_eq!(app.result.rows, rows);
+    assert_eq!(app.document.result.current, ticket);
+    assert_eq!(app.document.result.rows, rows);
     assert!(app.has_drafts());
     app.commit_drafts();
     wait(&mut app, &ctx);
@@ -970,14 +1056,14 @@ fn table_views_sidebar_and_transactions_fit_themes_and_scaled_viewports() {
                 (true, false, false),
                 (true, true, false),
             ] {
-                app.ui.sql_open = sql;
-                app.ui.table_view = if structure {
+                app.document.ui.sql_open = sql;
+                app.document.ui.table_view = if structure {
                     shell::TableView::Structure
                 } else {
                     shell::TableView::Data
                 };
-                app.ui.inspector_open = details;
-                app.inspect = Some((0, 0));
+                app.document.ui.inspector_open = details;
+                app.document.inspect = Some((0, 0));
                 for _ in 0..2 {
                     let output = frame_at(&mut app, &ctx, egui::vec2(width, height), vec![]);
                     let tree = output.platform_output.accesskit_update.as_ref().unwrap();
@@ -1011,7 +1097,7 @@ fn table_views_sidebar_and_transactions_fit_themes_and_scaled_viewports() {
     ctx.set_pixels_per_point(1.0);
     app.run_text("BEGIN".into(), None);
     wait(&mut app, &ctx);
-    app.ui.sql_open = false;
+    app.document.ui.sql_open = false;
     app.overview();
     for _ in 0..2 {
         frame_at(&mut app, &ctx, egui::vec2(720.0, 480.0), vec![]);
@@ -1037,7 +1123,7 @@ fn escape_and_search_close_popups_without_replacing_the_retained_result() {
     let (ctx, mut app) = connected(&path, false);
     app.browse_table("a".into());
     wait(&mut app, &ctx);
-    let ticket = app.result.current;
+    let ticket = app.document.result.current;
     let popup = egui::Id::new("test-menu");
     egui::Popup::open_id(&ctx, popup);
     let key = |key, modifiers| egui::Event::Key {
@@ -1067,16 +1153,16 @@ fn escape_and_search_close_popups_without_replacing_the_retained_result() {
         vec![key(egui::Key::Escape, egui::Modifiers::NONE)],
     );
     assert!(!app.ui.palette_open);
-    app.ui.sql_open = true;
-    app.ui.filter_open = true;
+    app.document.ui.sql_open = true;
+    app.document.ui.filter_open = true;
     frame(
         &mut app,
         &ctx,
         vec![key(egui::Key::Escape, egui::Modifiers::NONE)],
     );
-    assert!(!app.ui.filter_open);
-    assert!(app.ui.sql_open);
-    assert_eq!(app.result.current, ticket);
+    assert!(!app.document.ui.filter_open);
+    assert!(app.document.ui.sql_open);
+    assert_eq!(app.document.result.current, ticket);
     app.close();
 }
 
@@ -1095,22 +1181,22 @@ fn column_presentation_preserves_schema_indices_and_manual_widths() {
     app.browse_table("sample".into());
     wait(&mut app, &ctx);
     frame(&mut app, &ctx, vec![]);
-    app.tools.columns.move_before(2, 0);
-    app.tools.columns.hidden.insert(1);
-    app.tools.columns.manual.insert(2);
-    app.tools.columns.widths[2] = 217.0;
+    app.document.tools.columns.move_before(2, 0);
+    app.document.tools.columns.hidden.insert(1);
+    app.document.tools.columns.manual.insert(2);
+    app.document.tools.columns.widths[2] = 217.0;
     frame(&mut app, &ctx, vec![]);
     assert_eq!(app.visible_columns(), vec![2, 0]);
-    assert_eq!(app.tools.columns.widths[2], 217.0);
+    assert_eq!(app.document.tools.columns.widths[2], 217.0);
     app.open_cell(0, 2);
-    assert_eq!(app.tools.cell_input, "42");
+    assert_eq!(app.document.tools.cell_input, "42");
     app.stage_cell(0, 2, Value::Integer(55));
-    let draft = app.drafts.as_ref().unwrap();
+    let draft = app.document.drafts.as_ref().unwrap();
     assert_eq!(
-        draft.displayed(&app.result.rows[0], 2),
+        draft.displayed(&app.document.result.rows[0], 2),
         Some(&Value::Integer(55))
     );
-    assert_eq!(app.result.rows[0][0], Value::Integer(1));
+    assert_eq!(app.document.result.rows[0][0], Value::Integer(1));
     app.close();
 }
 
@@ -1134,23 +1220,27 @@ fn range_selection_uses_visible_order_and_exact_numeric_values_and_inline_stages
     assert_eq!(app.selected_cells(), vec![(0, 1), (1, 1)]);
     let summary = app.selection_summary();
     assert!(summary.contains("18014398509481988"), "{summary}");
-    app.tools.columns.move_before(2, 1);
+    app.document.tools.columns.move_before(2, 1);
     app.select_cell(0, 2, false);
     app.select_cell(1, 1, true);
     assert_eq!(app.selected_cells(), vec![(0, 2), (0, 1), (1, 2), (1, 1)]);
     app.start_inline(0, 1);
-    assert!(app.tools.inline.is_some());
-    let edit = app.tools.inline.as_mut().unwrap();
+    assert!(app.document.tools.inline.is_some());
+    let edit = app.document.tools.inline.as_mut().unwrap();
     edit.input = "123".into();
     let value = edit.kind.parse(&edit.input).unwrap();
     app.stage_cell(0, 1, value);
-    app.tools.inline = None;
-    assert_eq!(app.result.rows[0][1], Value::Integer(9007199254740993));
+    app.document.tools.inline = None;
     assert_eq!(
-        app.drafts
+        app.document.result.rows[0][1],
+        Value::Integer(9007199254740993)
+    );
+    assert_eq!(
+        app.document
+            .drafts
             .as_ref()
             .unwrap()
-            .displayed(&app.result.rows[0], 1),
+            .displayed(&app.document.result.rows[0], 1),
         Some(&Value::Integer(123))
     );
     app.close();
@@ -1171,47 +1261,50 @@ fn scroll_pages_append_evict_reload_and_reject_stale_or_draft_owned_fetches() {
     app.preferences.row_limit = 400;
     app.browse_table("sample".into());
     wait(&mut app, &ctx);
-    let owner = app.result.current;
-    let first = app.result.rows.clone();
+    let owner = app.document.result.current;
+    let first = app.document.result.rows.clone();
     app.request_page(false);
-    assert_eq!(app.result.rows, first);
-    assert!(app.tools.pages.pending.is_some());
+    assert_eq!(app.document.result.rows, first);
+    assert!(app.document.tools.pages.pending.is_some());
     wait(&mut app, &ctx);
-    assert_eq!(app.result.rows.len(), 200);
-    assert_eq!(app.result.current, owner);
+    assert_eq!(app.document.result.rows.len(), 200);
+    assert_eq!(app.document.result.current, owner);
     app.request_page(false);
     wait(&mut app, &ctx);
     app.select_cell(200, 1, false);
     app.request_page(false);
     wait(&mut app, &ctx);
-    assert_eq!(app.browse.as_ref().unwrap().offset, 100);
-    assert_eq!(app.result.rows.len(), 300);
-    assert_eq!(app.inspect, Some((100, 1)));
+    assert_eq!(app.document.browse.as_ref().unwrap().offset, 100);
+    assert_eq!(app.document.result.rows.len(), 300);
+    assert_eq!(app.document.inspect, Some((100, 1)));
     app.request_page(true);
     wait(&mut app, &ctx);
-    assert_eq!(app.browse.as_ref().unwrap().offset, 0);
-    assert_eq!(app.result.rows[0][0], Value::Integer(1));
+    assert_eq!(app.document.browse.as_ref().unwrap().offset, 0);
+    assert_eq!(app.document.result.rows[0][0], Value::Integer(1));
     app.stage_cell(0, 1, Value::Integer(999));
     app.request_page(false);
-    assert!(app.tools.pages.pending.is_none());
+    assert!(app.document.tools.pages.pending.is_none());
     assert!(app.has_drafts());
-    app.drafts = None;
+    app.document.drafts = None;
     app.request_page(false);
     app.run_text("SELECT 987 AS answer".into(), None);
     wait(&mut app, &ctx);
-    assert_eq!(app.result.rows, vec![vec![Value::Integer(987)]]);
+    assert_eq!(app.document.result.rows, vec![vec![Value::Integer(987)]]);
     app.browse_table("sample".into());
     wait(&mut app, &ctx);
     for _ in 0..5 {
         app.request_page(false);
         wait(&mut app, &ctx);
     }
-    assert_eq!(app.tools.pages.end, Some(450));
-    assert_eq!(app.result.rows.last().unwrap()[0], Value::Integer(450));
-    let rows = app.result.rows.clone();
+    assert_eq!(app.document.tools.pages.end, Some(450));
+    assert_eq!(
+        app.document.result.rows.last().unwrap()[0],
+        Value::Integer(450)
+    );
+    let rows = app.document.result.rows.clone();
     app.request_page(false);
-    assert!(app.tools.pages.pending.is_none());
-    assert_eq!(app.result.rows, rows);
+    assert!(app.document.tools.pages.pending.is_none());
+    assert_eq!(app.document.result.rows, rows);
     app.close();
 }
 
@@ -1231,19 +1324,19 @@ fn contextual_reads_and_wide_related_grid_preserve_parent_result_and_selection()
     let (ctx, mut app) = connected(&path, false);
     app.browse_table("child".into());
     wait(&mut app, &ctx);
-    let child = app.tools.inspection.as_ref().unwrap().foreign_keys[0].clone();
-    let owner = app.result.current;
-    let original = app.result.rows.clone();
+    let child = app.document.tools.inspection.as_ref().unwrap().foreign_keys[0].clone();
+    let owner = app.document.result.current;
+    let original = app.document.result.rows.clone();
     app.request_context(0, "child", &child, context::ReadKind::Parent);
     wait(&mut app, &ctx);
-    assert_eq!(app.result.current, owner);
-    assert_eq!(app.result.rows, original);
+    assert_eq!(app.document.result.current, owner);
+    assert_eq!(app.document.result.rows, original);
     app.browse_table("parent".into());
     wait(&mut app, &ctx);
     frame(&mut app, &ctx, vec![]);
     app.select_cell(0, 0, false);
-    let owner = app.result.current;
-    let original = app.result.rows.clone();
+    let owner = app.document.result.current;
+    let original = app.document.result.rows.clone();
     app.request_context(0, "child", &child, context::ReadKind::Count);
     wait(&mut app, &ctx);
     frame_at(&mut app, &ctx, egui::vec2(3440.0, 1440.0), vec![]);
@@ -1264,13 +1357,13 @@ fn contextual_reads_and_wide_related_grid_preserve_parent_result_and_selection()
         })
         .collect();
     assert!(texts.iter().any(|t| t.contains("child-only")), "{texts:?}");
-    assert_eq!(app.result.current, owner);
-    assert_eq!(app.result.rows, original);
-    assert_eq!(app.inspect, Some((0, 0)));
+    assert_eq!(app.document.result.current, owner);
+    assert_eq!(app.document.result.rows, original);
+    assert_eq!(app.document.inspect, Some((0, 0)));
     app.request_context(0, "child", &child, context::ReadKind::Count);
     app.run_text("SELECT 654".into(), None);
     wait(&mut app, &ctx);
-    assert_eq!(app.result.rows, vec![vec![Value::Integer(654)]]);
+    assert_eq!(app.document.result.rows, vec![vec![Value::Integer(654)]]);
     app.close();
 }
 
@@ -1345,7 +1438,7 @@ fn actual_grid_keys_extend_copy_and_stage_inline_without_writing() {
         egui::Modifiers::NONE,
         vec![key(egui::Key::Enter, egui::Modifiers::NONE)],
     );
-    assert!(app.tools.inline.is_some());
+    assert!(app.document.tools.inline.is_some());
     send(
         &mut app,
         egui::Modifiers::NONE,
@@ -1354,9 +1447,9 @@ fn actual_grid_keys_extend_copy_and_stage_inline_without_writing() {
             key(egui::Key::Enter, egui::Modifiers::NONE),
         ],
     );
-    assert!(app.tools.inline.is_none());
+    assert!(app.document.tools.inline.is_none());
     assert!(app.has_drafts());
-    assert_eq!(app.result.rows[0][2], Value::Text(String::new()));
+    assert_eq!(app.document.result.rows[0][2], Value::Text(String::new()));
     app.close();
 }
 
@@ -1374,7 +1467,7 @@ fn token_entry_enter_retains_typed_filter_and_empty_clipboard_fields() {
     let (ctx, mut app) = connected(&path, false);
     app.browse_table("sample".into());
     wait(&mut app, &ctx);
-    app.tools.filter_focus = true;
+    app.document.tools.filter_focus = true;
     frame(&mut app, &ctx, vec![]);
     frame(
         &mut app,
@@ -1391,16 +1484,16 @@ fn token_entry_enter_retains_typed_filter_and_empty_clipboard_fields() {
         ],
     );
     wait(&mut app, &ctx);
-    assert_eq!(app.result.rows.len(), 1);
-    assert_eq!(app.result.rows[0][0], Value::Integer(2));
+    assert_eq!(app.document.result.rows.len(), 1);
+    assert_eq!(app.document.result.rows[0][0], Value::Integer(2));
     assert_eq!(
-        app.browse.as_ref().unwrap().filters[0].op,
+        app.document.browse.as_ref().unwrap().filters[0].op,
         tursobench_core::FilterOp::GreaterOrEqual
     );
     app.browse_table("sample".into());
     wait(&mut app, &ctx);
     frame(&mut app, &ctx, vec![]);
-    app.tools.columns.move_before(2, 0);
+    app.document.tools.columns.move_before(2, 0);
     app.select_cell(0, 2, false);
     app.select_cell(0, 0, true);
     assert_eq!(app.selection_tsv().unwrap(), "\t1");
@@ -1418,15 +1511,16 @@ fn clipboard_columns_fit_large_docked_workspace_and_defaults_follow_breakpoints(
     for _ in 0..2 {
         frame_at(&mut app, &ctx, egui::vec2(1280.0, 720.0), vec![]);
     }
-    assert!(!app.ui.inspector_open);
+    assert!(!app.document.ui.inspector_open);
     for _ in 0..2 {
         frame_at(&mut app, &ctx, egui::vec2(1920.0, 1080.0), vec![]);
     }
-    assert!(app.ui.inspector_open);
-    assert_eq!(app.result.columns.len(), 11);
-    let width: f32 = app.tools.columns.widths.iter().sum::<f32>()
+    assert!(app.document.ui.inspector_open);
+    assert_eq!(app.document.result.columns.len(), 11);
+    let width: f32 = app.document.tools.columns.widths.iter().sum::<f32>()
         + 44.0
-        + app.result.columns.len() as f32 * ctx.style_of(egui::Theme::Dark).spacing.item_spacing.x;
+        + app.document.result.columns.len() as f32
+            * ctx.style_of(egui::Theme::Dark).spacing.item_spacing.x;
     assert!(
         width <= app.ui.grid_rect.width() + 1.0,
         "columns {width} > grid {}",
@@ -1434,11 +1528,11 @@ fn clipboard_columns_fit_large_docked_workspace_and_defaults_follow_breakpoints(
     );
     assert!(app.ui.visible_rows >= 37, "{} rows", app.ui.visible_rows);
     app.toggle_inspector();
-    assert!(!app.ui.inspector_open);
+    assert!(!app.document.ui.inspector_open);
     for _ in 0..2 {
         frame_at(&mut app, &ctx, egui::vec2(2560.0, 1440.0), vec![]);
     }
-    assert!(!app.ui.inspector_open);
+    assert!(!app.document.ui.inspector_open);
     app.close();
 }
 
@@ -1456,10 +1550,11 @@ fn incomplete_page_keeps_primary_rows_and_does_not_invent_end_of_table() {
     let (ctx, mut app) = connected(&path, false);
     app.browse_table("sample".into());
     wait(&mut app, &ctx);
-    let original = app.result.rows.clone();
-    let owner = app.result.current;
+    let original = app.document.result.rows.clone();
+    let owner = app.document.result.current;
     app.request_page(false);
     let ticket = app
+        .document
         .tools
         .pages
         .pending
@@ -1482,11 +1577,11 @@ fn incomplete_page_keeps_primary_rows_and_does_not_invent_end_of_table() {
             }),
         },
     );
-    assert!(app.tools.pages.pending.is_none());
-    assert!(!app.tools.pages.error.is_empty());
-    assert!(app.tools.pages.end.is_none());
-    assert_eq!(app.result.rows, original);
-    assert_eq!(app.result.current, owner);
+    assert!(app.document.tools.pages.pending.is_none());
+    assert!(!app.document.tools.pages.error.is_empty());
+    assert!(app.document.tools.pages.end.is_none());
+    assert_eq!(app.document.result.rows, original);
+    assert_eq!(app.document.result.current, owner);
     app.close();
 }
 
@@ -1511,7 +1606,7 @@ fn query_back_restores_a_multi_page_window_before_matching_the_cursor() {
     }
     frame(&mut app, &ctx, vec![]);
     app.select_cell(150, 0, false);
-    app.tools.grid_scroll.y = 3000.0;
+    app.document.tools.grid_scroll.y = 3000.0;
     app.run_text("SELECT 765".into(), None);
     wait(&mut app, &ctx);
     app.return_to_table();
@@ -1520,10 +1615,10 @@ fn query_back_restores_a_multi_page_window_before_matching_the_cursor() {
         frame(&mut app, &ctx, vec![]);
         wait(&mut app, &ctx);
     }
-    assert_eq!(app.result.rows.len(), 300);
-    assert_eq!(app.inspect, Some((150, 0)));
-    assert_eq!(app.tools.grid_selection.unwrap().cursor, (150, 0));
-    assert!(app.tools.restore_navigation.is_none());
+    assert_eq!(app.document.result.rows.len(), 300);
+    assert_eq!(app.document.inspect, Some((150, 0)));
+    assert_eq!(app.document.tools.grid_selection.unwrap().cursor, (150, 0));
+    assert!(app.document.tools.restore_navigation.is_none());
     app.close();
 }
 
@@ -1557,8 +1652,8 @@ fn filtered_index_tree_opens_original_ddl_without_replacing_primary_rows() {
             }
         })
         .expect("filtered index row");
-    let owner = app.result.current;
-    let rows = app.result.rows.clone();
+    let owner = app.document.result.current;
+    let rows = app.document.result.rows.clone();
     for pressed in [true, false] {
         frame(
             &mut app,
@@ -1574,13 +1669,16 @@ fn filtered_index_tree_opens_original_ddl_without_replacing_primary_rows() {
             ],
         );
     }
-    assert_eq!(app.tools.ddl.as_ref().unwrap().name, "sample_value");
-    assert_eq!(app.ui.table_view, shell::TableView::Structure);
+    assert_eq!(
+        app.document.tools.ddl.as_ref().unwrap().name,
+        "sample_value"
+    );
+    assert_eq!(app.document.ui.table_view, shell::TableView::Structure);
     app.refresh_table();
     wait(&mut app, &ctx);
-    assert_eq!(app.ui.table_view, shell::TableView::Structure);
-    assert_eq!(app.result.current, owner);
-    assert_eq!(app.result.rows, rows);
+    assert_eq!(app.document.ui.table_view, shell::TableView::Structure);
+    assert_eq!(app.document.result.current, owner);
+    assert_eq!(app.document.result.rows, rows);
     app.close();
 }
 

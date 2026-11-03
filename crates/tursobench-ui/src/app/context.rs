@@ -38,11 +38,11 @@ impl App {
         key: &ForeignKey,
         kind: ReadKind,
     ) -> Option<(String, Operation)> {
-        if self.view != View::Browse {
+        if self.document.view != View::Browse {
             return None;
         }
-        let table = self.table.as_ref()?;
-        let row = self.result.rows.get(row)?;
+        let table = self.document.table.as_ref()?;
+        let row = self.document.result.rows.get(row)?;
         let outgoing = matches!(kind, ReadKind::Parent);
         if outgoing && table.name != child
             || !outgoing && !table.name.eq_ignore_ascii_case(&key.target)
@@ -90,9 +90,9 @@ impl App {
     ) {
         if !self.ready
             || self.closing
-            || self.active.is_some()
-            || self.tools.context.pending.is_some()
-            || self.tools.pages.pending.is_some()
+            || self.document.active.is_some()
+            || self.document.tools.context.pending.is_some()
+            || self.document.tools.pages.pending.is_some()
             || self.commit_ticket.is_some()
             || self.has_drafts()
         {
@@ -101,7 +101,14 @@ impl App {
         let Some((id, operation)) = self.relationship_read(row, child, key, kind) else {
             return;
         };
-        if self.tools.context.cache.iter().any(|c| c.key == id) {
+        if self
+            .document
+            .tools
+            .context
+            .cache
+            .iter()
+            .any(|c| c.key == id)
+        {
             return;
         }
         let Some(session) = &self.session else {
@@ -112,9 +119,9 @@ impl App {
         if session.submit(Request { ticket, operation }).is_ok() {
             let mut result = ResultSet::default();
             result.start(ticket);
-            self.tools.context.pending = Some(Read {
+            self.document.tools.context.pending = Some(Read {
                 result,
-                owner: self.result.current,
+                owner: self.document.result.current,
                 key: id,
                 error: String::new(),
             });
@@ -122,7 +129,7 @@ impl App {
     }
     pub(super) fn context_event(&mut self, event: Event) {
         let done = matches!(event.kind, EventKind::Failed(_) | EventKind::Finished(_));
-        let Some(read) = &mut self.tools.context.pending else {
+        let Some(read) = &mut self.document.tools.context.pending else {
             return;
         };
         match &event.kind {
@@ -139,17 +146,18 @@ impl App {
         if !done {
             return;
         }
-        let read = self.tools.context.pending.take().unwrap();
-        if read.owner != self.result.current || self.closing {
+        let read = self.document.tools.context.pending.take().unwrap();
+        if read.owner != self.document.result.current || self.closing {
             return;
         }
-        self.tools.context.cache.push_back(Cached {
+        self.document.tools.context.cache.push_back(Cached {
             key: read.key,
             result: read.result,
             error: read.error,
         });
-        while self.tools.context.cache.len() > 32
+        while self.document.tools.context.cache.len() > 32
             || self
+                .document
                 .tools
                 .context
                 .cache
@@ -172,25 +180,25 @@ impl App {
                 .sum::<usize>()
                 > 8 * 1024 * 1024
         {
-            self.tools.context.cache.pop_front();
+            self.document.tools.context.cache.pop_front();
         }
     }
     pub(super) fn hover_context(&mut self, ctx: &egui::Context) {
-        let Some((row, key)) = self.tools.context.hovered.clone() else {
-            self.tools.context.hover = None;
+        let Some((row, key)) = self.document.tools.context.hovered.clone() else {
+            self.document.tools.context.hover = None;
             return;
         };
-        let Some(table) = self.table.as_ref().map(|t| t.name.clone()) else {
+        let Some(table) = self.document.table.as_ref().map(|t| t.name.clone()) else {
             return;
         };
         let Some((id, _)) = self.relationship_read(row, &table, &key, ReadKind::Parent) else {
             return;
         };
         let now = ctx.input(|i| i.time);
-        let since = match &self.tools.context.hover {
+        let since = match &self.document.tools.context.hover {
             Some((old, since)) if old == &id => *since,
             _ => {
-                self.tools.context.hover = Some((id, now));
+                self.document.tools.context.hover = Some((id, now));
                 now
             }
         };
@@ -202,14 +210,21 @@ impl App {
     }
     pub(super) fn peek_view(&self, ui: &mut egui::Ui, row: usize, key: &ForeignKey) {
         ui.strong(format!("Parent · {}", key.target));
-        let Some(table) = &self.table else {
+        let Some(table) = &self.document.table else {
             return;
         };
         let Some((id, _)) = self.relationship_read(row, &table.name, key, ReadKind::Parent) else {
             ui.label("Unresolved or NULL key");
             return;
         };
-        if let Some(c) = self.tools.context.cache.iter().find(|c| c.key == id) {
+        if let Some(c) = self
+            .document
+            .tools
+            .context
+            .cache
+            .iter()
+            .find(|c| c.key == id)
+        {
             if !c.error.is_empty() {
                 ui.label(&c.error);
                 return;
@@ -233,7 +248,7 @@ impl App {
         }
     }
     fn incoming_keys(&self) -> Vec<(String, ForeignKey)> {
-        let Some(table) = &self.table else {
+        let Some(table) = &self.document.table else {
             return vec![];
         };
         self.ui
@@ -251,7 +266,7 @@ impl App {
             .collect()
     }
     pub(super) fn related_list(&mut self, ui: &mut egui::Ui, row: usize) {
-        if self.view != View::Browse {
+        if self.document.view != View::Browse {
             return;
         }
         ui.separator();
@@ -274,7 +289,14 @@ impl App {
             let spec = self.relationship_read(row, &child, &key, ReadKind::Count);
             let count = spec
                 .as_ref()
-                .and_then(|(id, _)| self.tools.context.cache.iter().find(|c| &c.key == id))
+                .and_then(|(id, _)| {
+                    self.document
+                        .tools
+                        .context
+                        .cache
+                        .iter()
+                        .find(|c| &c.key == id)
+                })
                 .and_then(|c| {
                     c.result
                         .completion
@@ -291,7 +313,14 @@ impl App {
                 });
             let error = spec
                 .as_ref()
-                .and_then(|(id, _)| self.tools.context.cache.iter().find(|c| &c.key == id))
+                .and_then(|(id, _)| {
+                    self.document
+                        .tools
+                        .context
+                        .cache
+                        .iter()
+                        .find(|c| &c.key == id)
+                })
                 .map(|c| c.error.clone())
                 .unwrap_or_default();
             ui.horizontal(|ui| {
@@ -319,7 +348,7 @@ impl App {
                         .clicked()
                 {
                     if let Some((id, _)) = &spec {
-                        self.tools.context.cache.retain(|c| &c.key != id);
+                        self.document.tools.context.cache.retain(|c| &c.key != id);
                     }
                     self.request_context(row, &child, &key, ReadKind::Count);
                 }
@@ -327,14 +356,19 @@ impl App {
         }
     }
     pub(super) fn wide_related(&mut self, ui: &mut egui::Ui) {
-        let Some(row) = self.inspect.map(|(r, _)| r).or(self.tools.detail) else {
+        let Some(row) = self
+            .document
+            .inspect
+            .map(|(r, _)| r)
+            .or(self.document.tools.detail)
+        else {
             return;
         };
         let keys = self.incoming_keys();
         if keys.is_empty() {
             return;
         }
-        let chosen = self.tools.context.relation.clone();
+        let chosen = self.document.tools.context.relation.clone();
         ui.horizontal_wrapped(|ui| {
             ui.strong("Related rows");
             for (child, key) in &keys {
@@ -345,18 +379,18 @@ impl App {
                     )
                     .clicked()
                 {
-                    self.tools.context.relation = Some((child.clone(), key.id));
+                    self.document.tools.context.relation = Some((child.clone(), key.id));
                 }
             }
         });
         let (child, key) = keys
             .iter()
             .find(|(child, key)| {
-                self.tools.context.relation.as_ref() == Some(&(child.clone(), key.id))
+                self.document.tools.context.relation.as_ref() == Some(&(child.clone(), key.id))
             })
             .unwrap_or(&keys[0])
             .clone();
-        self.tools.context.relation = Some((child.clone(), key.id));
+        self.document.tools.context.relation = Some((child.clone(), key.id));
         if ui.link("Open related rows in full view").clicked() {
             self.follow_incoming(row, child.clone(), key.clone());
             return;
@@ -366,7 +400,14 @@ impl App {
             ui.weak("Select a resolved non-NULL parent key");
             return;
         };
-        let Some(c) = self.tools.context.cache.iter().find(|c| c.key == id) else {
+        let Some(c) = self
+            .document
+            .tools
+            .context
+            .cache
+            .iter()
+            .find(|c| c.key == id)
+        else {
             ui.spinner();
             ui.weak("Loading related rows…");
             return;
@@ -374,7 +415,7 @@ impl App {
         if !c.error.is_empty() {
             ui.colored_label(ui.visuals().error_fg_color, &c.error);
             if ui.button("Retry related rows").clicked() {
-                self.tools.context.cache.retain(|c| c.key != id);
+                self.document.tools.context.cache.retain(|c| c.key != id);
                 self.request_context(row, &child, &key, ReadKind::Rows);
             }
             return;

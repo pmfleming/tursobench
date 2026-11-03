@@ -8,18 +8,23 @@ use tursobench_core::Inspection;
 
 impl App {
     pub(super) fn overview(&mut self) {
-        self.ui.nav = Nav::Overview;
-        self.ui.inspector_open = false;
+        self.document.ui.nav = Nav::Overview;
+        self.document.ui.inspector_open = false;
         if self.ui.diagram.data.is_none() {
             self.load_diagram();
         }
     }
 
     pub(super) fn activate_table(&mut self, name: String) {
-        if self.view == View::Browse && self.table.as_ref().is_some_and(|table| table.name == name)
+        if self.document.view == View::Browse
+            && self
+                .document
+                .table
+                .as_ref()
+                .is_some_and(|table| table.name == name)
         {
-            self.ui.nav = Nav::Table;
-            self.tools.ddl = None;
+            self.document.ui.nav = Nav::Table;
+            self.document.tools.ddl = None;
             self.ui.unfolded = Some(name);
         } else {
             self.browse_table(name);
@@ -27,7 +32,8 @@ impl App {
     }
 
     pub(super) fn loaded_inspection(&self, name: &str) -> Option<&Inspection> {
-        self.tools
+        self.document
+            .tools
             .inspection
             .as_ref()
             .filter(|i| i.table.name == name)
@@ -158,7 +164,12 @@ impl App {
         related: bool,
     ) -> bool {
         if kind == "index" || kind == "trigger" {
-            let selected = self.tools.ddl.as_ref().is_some_and(|o| o.name == name);
+            let selected = self
+                .document
+                .tools
+                .ddl
+                .as_ref()
+                .is_some_and(|o| o.name == name);
             let response = tree_row(ui, name, "DDL", icon, selected, false, (22.0, 0.0));
             if response.has_focus() {
                 self.tools.tree_focus = Some(response.id);
@@ -169,15 +180,15 @@ impl App {
                 && let Some(object) = self.schema.iter().find(|o| o.name == name).cloned()
             {
                 self.ui.diagram.selected = Some(object.table.clone());
-                self.tools.ddl = Some(object);
-                self.ui.nav = Nav::Table;
-                self.ui.table_view = TableView::Structure;
+                self.document.tools.ddl = Some(object);
+                self.document.ui.nav = Nav::Table;
+                self.document.ui.table_view = TableView::Structure;
             }
             return response.hovered();
         }
         let mut hovered = false;
-        let selected = self.view == View::Browse
-            && self.ui.nav == Nav::Table
+        let selected = self.document.view == View::Browse
+            && self.document.ui.nav == Nav::Table
             && self.ui.diagram.selected.as_deref() == Some(name);
         let unfolded = self.ui.unfolded.as_deref() == Some(name);
         let count = self
@@ -241,10 +252,13 @@ impl App {
 
     fn sidebar_table(&mut self, ui: &mut egui::Ui, name: &str) {
         let Some(info) = self.loaded_inspection(name) else {
-            if self.tools.inspection_ticket.is_some() {
+            if self.document.tools.inspection_ticket.is_some() {
                 ui.small("Loading columns…");
-            } else if !self.tools.inspection_error.is_empty() {
-                ui.colored_label(ui.visuals().warn_fg_color, &self.tools.inspection_error);
+            } else if !self.document.tools.inspection_error.is_empty() {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    &self.document.tools.inspection_error,
+                );
             } else if ui.small_button("Load columns").clicked() {
                 self.request_inspection(name.into());
             }
@@ -277,37 +291,37 @@ impl App {
     }
 
     fn highlight_sidebar_column(&mut self, name: &str, column: &str) {
-        if self.table.as_ref().is_none_or(|t| t.name != name) || self.view != View::Browse {
-            let ticket = self.result.current;
+        if self.document.table.as_ref().is_none_or(|t| t.name != name)
+            || self.document.view != View::Browse
+        {
+            let ticket = self.document.result.current;
             self.browse_table(name.into());
-            if ticket == self.result.current {
+            if ticket == self.document.result.current {
                 return;
             }
         }
-        self.ui.nav = Nav::Table;
-        self.ui.table_view = TableView::Data;
-        self.tools.highlight_column = Some((name.into(), column.into()));
-        self.tools.scroll_to_column = true;
+        self.document.ui.nav = Nav::Table;
+        self.document.ui.table_view = TableView::Data;
+        self.document.tools.highlight_column = Some((name.into(), column.into()));
+        self.document.tools.scroll_to_column = true;
     }
 
     pub(super) fn select_tool(&mut self, panel: ToolPanel) {
         if panel == ToolPanel::Settings {
-            if self.ui.nav != Nav::Settings {
-                self.ui.settings_return = Some(self.ui.nav);
+            if self.document.ui.nav != Nav::Settings {
+                self.ui.settings_return = Some(self.document.ui.nav);
             }
-            self.ui.nav = Nav::Settings;
+            self.document.ui.nav = Nav::Settings;
         } else {
             self.ui.sidebar = panel;
-            if self.ui.nav == Nav::Settings {
-                self.ui.nav =
-                    self.ui
-                        .settings_return
-                        .take()
-                        .unwrap_or(if self.view == View::Browse {
-                            Nav::Table
-                        } else {
-                            Nav::Result
-                        });
+            if self.document.ui.nav == Nav::Settings {
+                self.document.ui.nav = self.ui.settings_return.take().unwrap_or(
+                    if self.document.view == View::Browse {
+                        Nav::Table
+                    } else {
+                        Nav::Result
+                    },
+                );
             }
         }
     }
@@ -319,7 +333,7 @@ impl App {
             (Icon::Saved, "Saved queries", ToolPanel::Saved),
             (Icon::Checks, "Database checks", ToolPanel::Diagnostics),
         ] {
-            let selected = self.ui.sidebar == panel && self.ui.nav != Nav::Settings;
+            let selected = self.ui.sidebar == panel && self.document.ui.nav != Nav::Settings;
             if icons::control(ui, icon, name, "", selected, false).clicked() {
                 self.select_tool(panel);
             }
@@ -329,7 +343,7 @@ impl App {
                     Icon::Map,
                     "Map",
                     "",
-                    self.ui.nav == Nav::Overview,
+                    self.document.ui.nav == Nav::Overview,
                     false,
                 )
                 .clicked()
@@ -342,7 +356,7 @@ impl App {
                     Icon::Sql,
                     "SQL editor",
                     "Ctrl J",
-                    self.ui.sql_open,
+                    self.document.ui.sql_open,
                     false,
                 )
                 .clicked()
@@ -357,7 +371,7 @@ impl App {
             Icon::Settings,
             "Settings",
             "Ctrl ,",
-            self.ui.nav == Nav::Settings,
+            self.document.ui.nav == Nav::Settings,
             false,
         )
         .clicked()

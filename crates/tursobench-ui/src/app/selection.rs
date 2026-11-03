@@ -24,6 +24,7 @@ pub(super) struct InlineEdit {
 impl App {
     pub(super) fn select_cell(&mut self, row: usize, column: usize, extend: bool) {
         if self
+            .document
             .result
             .rows
             .get(row)
@@ -33,26 +34,28 @@ impl App {
             return;
         }
         let anchor = self
+            .document
             .tools
             .grid_selection
-            .filter(|s| extend && s.ticket == self.result.current)
+            .filter(|s| extend && s.ticket == self.document.result.current)
             .map_or((row, column), |s| s.anchor);
-        self.tools.grid_selection = Some(Selection {
-            ticket: self.result.current,
+        self.document.tools.grid_selection = Some(Selection {
+            ticket: self.document.result.current,
             anchor,
             cursor: (row, column),
         });
-        let open = self.ui.inspector_open;
+        let open = self.document.ui.inspector_open;
         self.open_cell(row, column);
-        self.ui.inspector_open = open;
-        self.tools.detail = Some(row);
-        self.ui.inspector = shell::DetailMode::Record;
+        self.document.ui.inspector_open = open;
+        self.document.tools.detail = Some(row);
+        self.document.ui.inspector = shell::DetailMode::Record;
     }
     pub(super) fn cell_selected(&self, row: usize, column: usize) -> bool {
         let Some(s) = self
+            .document
             .tools
             .grid_selection
-            .filter(|s| s.ticket == self.result.current)
+            .filter(|s| s.ticket == self.document.result.current)
         else {
             return false;
         };
@@ -71,9 +74,10 @@ impl App {
     }
     pub(super) fn selected_cells(&self) -> Vec<(usize, usize)> {
         let Some(s) = self
+            .document
             .tools
             .grid_selection
-            .filter(|s| s.ticket == self.result.current)
+            .filter(|s| s.ticket == self.document.result.current)
         else {
             return vec![];
         };
@@ -88,7 +92,7 @@ impl App {
             ..=s.anchor
                 .0
                 .max(s.cursor.0)
-                .min(self.result.rows.len().saturating_sub(1)))
+                .min(self.document.result.rows.len().saturating_sub(1)))
             .flat_map(|row| {
                 cols[a.min(b)..=a.max(b)]
                     .iter()
@@ -105,7 +109,7 @@ impl App {
                 text.push(if previous == r { '\t' } else { '\n' });
             }
             last = Some(r);
-            let cell = crate::export::cell_text(&self.result.rows[r][c]);
+            let cell = crate::export::cell_text(&self.document.result.rows[r][c]);
             if cell.contains(['\t', '\n', '\r', '"']) {
                 text.push('"');
                 text.push_str(&cell.replace('"', "\"\""));
@@ -121,15 +125,16 @@ impl App {
     }
     pub(super) fn selection_summary(&mut self) -> String {
         let selection = self
+            .document
             .tools
             .grid_selection
-            .filter(|s| s.ticket == self.result.current);
+            .filter(|s| s.ticket == self.document.result.current);
         if selection.is_none() {
             return String::new();
         }
         let visible = self.visible_columns();
-        let rows = self.result.rows.len();
-        if let Some(c) = &self.tools.summary_cache
+        let rows = self.document.result.rows.len();
+        if let Some(c) = &self.document.tools.summary_cache
             && c.selection == selection
             && c.visible == visible
             && c.rows == rows
@@ -137,7 +142,7 @@ impl App {
             return c.text.clone();
         }
         let text = self.compute_selection_summary();
-        self.tools.summary_cache = Some(SummaryCache {
+        self.document.tools.summary_cache = Some(SummaryCache {
             selection,
             visible,
             rows,
@@ -152,7 +157,7 @@ impl App {
         }
         let values: Vec<_> = cells
             .iter()
-            .filter_map(|&(r, c)| self.result.rows.get(r)?.get(c))
+            .filter_map(|&(r, c)| self.document.result.rows.get(r)?.get(c))
             .collect();
         let integers: Vec<_> = values
             .iter()
@@ -213,10 +218,11 @@ impl App {
             self.open_cell(row, column);
             return;
         }
-        let Some(original) = self.result.rows.get(row) else {
+        let Some(original) = self.document.result.rows.get(row) else {
             return;
         };
         let Some(value) = self
+            .document
             .drafts
             .as_ref()
             .and_then(|d| d.displayed(original, column))
@@ -234,7 +240,7 @@ impl App {
             Value::Real(_) => CellKind::Real,
             _ => CellKind::Text,
         };
-        self.tools.inline = Some(InlineEdit {
+        self.document.tools.inline = Some(InlineEdit {
             row,
             column,
             kind,
@@ -247,21 +253,24 @@ impl App {
         });
     }
     pub(super) fn grid_keys(&mut self, ctx: &egui::Context) {
-        if self.tools.inline.is_some()
-            || !matches!(self.ui.nav, shell::Nav::Table | shell::Nav::Result)
-            || self.ui.table_view != shell::TableView::Data
+        if self.document.tools.inline.is_some()
+            || !matches!(self.document.ui.nav, shell::Nav::Table | shell::Nav::Result)
+            || self.document.ui.table_view != shell::TableView::Data
             || egui::Popup::is_any_open(ctx)
             || self.ui.palette_open
         {
             return;
         }
-        if self.tools.grid_focus.is_none() || ctx.memory(|m| m.focused()) != self.tools.grid_focus {
+        if self.document.tools.grid_focus.is_none()
+            || ctx.memory(|m| m.focused()) != self.document.tools.grid_focus
+        {
             return;
         }
         let Some(s) = self
+            .document
             .tools
             .grid_selection
-            .filter(|s| s.ticket == self.result.current)
+            .filter(|s| s.ticket == self.document.result.current)
         else {
             return;
         };
@@ -308,7 +317,7 @@ impl App {
                     .cursor
                     .0
                     .saturating_add_signed(dr)
-                    .min(self.result.rows.len().saturating_sub(1));
+                    .min(self.document.result.rows.len().saturating_sub(1));
                 let col = c.saturating_add_signed(dc).min(cols.len() - 1);
                 if key == egui::Key::PageDown && row == s.cursor.0 {
                     self.request_page(false);
@@ -317,18 +326,19 @@ impl App {
                     self.request_page(true);
                 }
                 self.select_cell(row, cols[col], shift);
-                self.tools.scroll_to_cell = true;
+                self.document.tools.scroll_to_cell = true;
                 let y = row as f32 * 25.0;
-                let current = self.tools.grid_scroll.y;
+                let current = self.document.tools.grid_scroll.y;
                 let next = if y < current {
                     y
-                } else if y + 25.0 > current + self.tools.grid_height {
-                    (y + 25.0 - self.tools.grid_height).max(0.0)
+                } else if y + 25.0 > current + self.document.tools.grid_height {
+                    (y + 25.0 - self.document.tools.grid_height).max(0.0)
                 } else {
                     current
                 };
                 if next != current {
-                    self.tools.restore_scroll = Some(egui::vec2(self.tools.grid_scroll.x, next));
+                    self.document.tools.restore_scroll =
+                        Some(egui::vec2(self.document.tools.grid_scroll.x, next));
                 }
                 break;
             }

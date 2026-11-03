@@ -1,12 +1,13 @@
 use tursobench_core::{
-    Access, Browse, CommitOutcome, ConnectionSettings, DraftBatch, Event, EventKind, ResultSet,
-    SchemaObject, Table, Ticket, TransactionState,
+    Access, Browse, CommitOutcome, ConnectionSettings, Event, EventKind, ResultSet, SchemaObject,
+    Ticket, TransactionState,
 };
 mod columns;
 mod commands;
 mod context;
 mod databases;
 mod diagram;
+mod document;
 mod editing;
 mod editor;
 mod files;
@@ -40,6 +41,9 @@ pub struct App {
     pending_database: Option<std::path::PathBuf>,
     path: String,
     tools: tools::Tools,
+    document: document::Document,
+    documents: std::collections::BTreeMap<u64, document::Document>,
+    commit_owner: Option<u64>,
     ui: shell::UiState,
     smoke: Option<smoke::Smoke>,
     preferences: crate::storage::Preferences,
@@ -48,7 +52,6 @@ pub struct App {
     export_job: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     picker: Option<std::sync::mpsc::Receiver<files::PickResult>>,
     databases: databases::Chooser,
-    discard_ticket: Option<Ticket>,
     exclusive: bool,
     writable: bool,
     confirm_close: bool,
@@ -59,29 +62,13 @@ pub struct App {
     quit: bool,
     sequence: u64,
     generation: u64,
-    active: Option<Ticket>,
-    view: View,
-    result: ResultSet,
     schema: Vec<SchemaObject>,
     catalog: ResultSet,
     catalog_ticket: Option<Ticket>,
     catalog_error: String,
-    table: Option<Table>,
-    browse: Option<Browse>,
-    sql: String,
-    params: String,
     status: String,
     activity: std::collections::VecDeque<String>,
-    filter: String,
-    filter_column: usize,
-    filter_op: tursobench_core::FilterOp,
-    filter_kind: results::CellKind,
-    inspect: Option<(usize, usize)>,
     transaction: TransactionState,
-    drafts: Option<DraftBatch>,
-    insert_json: String,
-    show_insert: bool,
-    show_preview: bool,
     commit_ticket: Option<Ticket>,
     uncertain_edit: bool,
     #[cfg(test)]
@@ -104,6 +91,9 @@ impl App {
         let mut app = Self {
             pending_database: None,
             tools: tools::Tools::new(),
+            document: document::Document::default(),
+            documents: Default::default(),
+            commit_owner: None,
             ui: shell::UiState::new(ctx),
             smoke: smoke.then(smoke::Smoke::new),
             databases: databases::Chooser::new(&preferences.discovery),
@@ -116,7 +106,6 @@ impl App {
                 .cloned()
                 .unwrap_or_default(),
             picker: None,
-            discard_ticket: None,
             exclusive: false,
             writable: false,
             confirm_close: false,
@@ -127,31 +116,15 @@ impl App {
             quit: false,
             sequence: 0,
             generation: 0,
-            active: None,
-            view: View::Query,
-            result: ResultSet::default(),
             schema: vec![],
             catalog: ResultSet::default(),
             catalog_ticket: None,
             catalog_error: String::new(),
-            table: None,
-            browse: None,
-            sql: "SELECT name, type FROM sqlite_schema ORDER BY name".into(),
-            params: "[]".into(),
             activity: std::collections::VecDeque::new(),
             status: load_error.unwrap_or_else(|| {
                 "Open a trusted local Turso database. Linux preview; exclusive use only.".into()
             }),
-            filter: String::new(),
-            filter_column: 0,
-            filter_op: Default::default(),
-            filter_kind: results::CellKind::Text,
-            inspect: None,
             transaction: TransactionState::Autocommit,
-            drafts: None,
-            insert_json: String::new(),
-            show_insert: false,
-            show_preview: false,
             commit_ticket: None,
             uncertain_edit: false,
             #[cfg(test)]
@@ -205,28 +178,31 @@ impl App {
             move || wake.request_repaint(),
         ) {
             Ok(s) => {
-                self.result = ResultSet::default();
+                self.documents.clear();
+                self.document.id = 0;
+                self.commit_owner = None;
+                self.document.result = ResultSet::default();
                 self.schema.clear();
                 self.catalog = ResultSet::default();
                 self.catalog_ticket = None;
                 self.catalog_error.clear();
                 self.ui.diagram = Default::default();
-                self.ui.table_view = shell::TableView::Data;
+                self.document.ui.table_view = shell::TableView::Data;
                 self.ui.unfolded = None;
-                self.ui.inspector_initialized = false;
+                self.document.ui.inspector_initialized = false;
                 self.tools.counts.clear();
                 self.tools.count_request = None;
-                self.ui.sql_open = false;
-                self.tools.ddl = None;
-                self.inspect = None;
-                self.tools.detail = None;
-                self.drafts = None;
-                self.tools.inspection = None;
-                self.tools.inspection_ticket = None;
-                self.tools.related = None;
+                self.document.ui.sql_open = false;
+                self.document.tools.ddl = None;
+                self.document.inspect = None;
+                self.document.tools.detail = None;
+                self.document.drafts = None;
+                self.document.tools.inspection = None;
+                self.document.tools.inspection_ticket = None;
+                self.document.tools.related = None;
                 self.tools.back.clear();
                 self.tools.result_return = None;
-                self.tools.restore_navigation = None;
+                self.document.tools.restore_navigation = None;
                 let path = std::path::PathBuf::from(&self.path);
                 self.tools.database_scope = if path.is_absolute() {
                     self.path.clone()
@@ -235,8 +211,8 @@ impl App {
                         .map(|cwd| cwd.join(path).to_string_lossy().into_owned())
                         .unwrap_or_default()
                 };
-                self.table = None;
-                self.browse = None;
+                self.document.table = None;
+                self.document.browse = None;
                 self.transaction = TransactionState::Autocommit;
                 self.uncertain_edit = false;
                 self.session = Some(s);
@@ -262,7 +238,7 @@ impl App {
         let ticket = s.ticket(self.sequence, self.generation);
         match s.submit(Request { ticket, operation }) {
             Ok(()) => {
-                if let Some(old) = self.active {
+                if let Some(old) = self.document.active {
                     s.discard_results(old.request);
                 }
                 if view != View::Browse
@@ -270,31 +246,31 @@ impl App {
                 {
                     self.tools.result_return = Some(previous);
                 }
-                self.tools.restore_navigation = None;
-                self.tools.grid_scroll = egui::Vec2::ZERO;
-                self.tools.restore_scroll = None;
-                self.tools.context = Default::default();
-                self.tools.pages = Default::default();
-                self.tools.grid_selection = None;
-                self.tools.inline = None;
-                self.result.start(ticket);
-                self.active = Some(ticket);
-                self.view = view;
-                self.ui.nav = if view == View::Browse {
+                self.document.tools.restore_navigation = None;
+                self.document.tools.grid_scroll = egui::Vec2::ZERO;
+                self.document.tools.restore_scroll = None;
+                self.document.tools.context = Default::default();
+                self.document.tools.pages = Default::default();
+                self.document.tools.grid_selection = None;
+                self.document.tools.inline = None;
+                self.document.result.start(ticket);
+                self.document.active = Some(ticket);
+                self.document.view = view;
+                self.document.ui.nav = if view == View::Browse {
                     shell::Nav::Table
                 } else {
                     shell::Nav::Result
                 };
-                self.ui.table_view = shell::TableView::Data;
-                self.ui.filter_open = false;
+                self.document.ui.table_view = shell::TableView::Data;
+                self.document.ui.filter_open = false;
                 if matches!(view, View::Query | View::Explain) {
-                    self.ui.sql_open = true;
+                    self.document.ui.sql_open = true;
                 }
                 if view != View::Browse {
-                    self.tools.export_table = "exported_rows".into();
+                    self.document.tools.export_table = "exported_rows".into();
                 }
-                self.inspect = None;
-                self.tools.detail = None;
+                self.document.inspect = None;
+                self.document.tools.detail = None;
                 self.status = "Executing… (discard does not interrupt execution)".into();
                 Some(ticket)
             }
@@ -305,7 +281,7 @@ impl App {
         }
     }
     fn run_sql(&mut self) {
-        self.run_text(self.sql.clone(), None);
+        self.run_text(self.document.sql.clone(), None);
     }
     fn browse_table(&mut self, name: String) {
         if self.has_drafts() || self.commit_ticket.is_some() {
@@ -334,28 +310,28 @@ impl App {
                     self.tools.back.remove(0);
                 }
             }
-            self.table = None;
-            self.tools.ddl = None;
-            self.tools.related = None;
-            self.browse = Some(browse);
-            self.tools.highlight_column = None;
-            self.tools.scroll_to_column = false;
-            self.ui.sql_open = false;
+            self.document.table = None;
+            self.document.tools.ddl = None;
+            self.document.tools.related = None;
+            self.document.browse = Some(browse);
+            self.document.tools.highlight_column = None;
+            self.document.tools.scroll_to_column = false;
+            self.document.ui.sql_open = false;
             self.ui.unfolded = Some(name.clone());
             self.ui.diagram.selected = Some(name);
             self.ui.diagram.freeze_camera();
         }
     }
     fn reload(&mut self) {
-        if let Some(destination) = self.tools.related.clone() {
+        if let Some(destination) = self.document.tools.related.clone() {
             self.submit(destination.operation(), View::Browse);
-        } else if let Some(b) = self.browse.clone() {
+        } else if let Some(b) = self.document.browse.clone() {
             self.submit(Operation::Browse(b), View::Browse);
         }
     }
     fn refresh_catalog(&mut self) {
         self.tools.counts.clear();
-        self.tools.context = Default::default();
+        self.document.tools.context = Default::default();
         if !self.ready || self.closing || self.catalog_ticket.is_some() {
             return;
         }
@@ -432,10 +408,10 @@ impl App {
             self.ready = false;
             self.closing = false;
             self.quit = false;
-            self.active = None;
+            self.document.active = None;
             self.transaction = TransactionState::Unknown;
             self.tools.pending_history.clear();
-            self.tools.inspection_ticket = None;
+            self.document.tools.inspection_ticket = None;
             self.ui.diagram.ticket = None;
             self.ui.diagram.stale = true;
             self.status =
@@ -443,6 +419,14 @@ impl App {
         }
     }
     fn handle_event(&mut self, ctx: &egui::Context, event: Event) {
+        let previous = self.document.id;
+        if let Some(owner) = self.document_owner(event.ticket) {
+            self.switch_document(owner);
+        }
+        self.handle_document_event(ctx, event);
+        self.switch_document(previous);
+    }
+    fn handle_document_event(&mut self, ctx: &egui::Context, event: Event) {
         if self
             .session
             .as_ref()
@@ -451,6 +435,7 @@ impl App {
             return;
         }
         if self
+            .document
             .tools
             .context
             .pending
@@ -461,6 +446,7 @@ impl App {
             return;
         }
         if self
+            .document
             .tools
             .pages
             .pending
@@ -491,7 +477,7 @@ impl App {
             self.catalog_event(event);
             return;
         }
-        if self.discard_ticket == Some(event.ticket)
+        if self.document.discard_ticket == Some(event.ticket)
             && matches!(event.kind, EventKind::Rows(_) | EventKind::Columns(_))
         {
             return;
@@ -521,14 +507,15 @@ impl App {
                     event.ticket.request
                 ));
                 self.commit_ticket = None;
+                self.commit_owner = None;
                 match outcome {
                     CommitOutcome::Committed { operations } => {
                         self.tools.counts.clear();
-                        self.tools.context = Default::default();
+                        self.document.tools.context = Default::default();
                         self.ui.diagram.stale = true;
-                        self.drafts = None;
-                        self.show_preview = false;
-                        self.inspect = None;
+                        self.document.drafts = None;
+                        self.document.show_preview = false;
+                        self.document.inspect = None;
                         self.reload();
                         self.status =
                             format!("Committed {operations} staged operations; refreshing page");
@@ -547,7 +534,7 @@ impl App {
                 self.ready = true;
                 self.record_database_open();
                 self.refresh_catalog();
-                self.ui.nav = shell::Nav::Overview;
+                self.document.ui.nav = shell::Nav::Overview;
                 self.load_diagram();
             }
             EventKind::Closed { rollback } => {
@@ -560,7 +547,7 @@ impl App {
                 self.catalog_ticket = None;
                 self.tools.count_request = None;
                 self.tools.pending_history.clear();
-                self.tools.inspection_ticket = None;
+                self.document.tools.inspection_ticket = None;
                 self.ui.diagram.ticket = None;
                 self.ui.diagram.stale = true;
                 if rollback.is_err() {
@@ -573,15 +560,15 @@ impl App {
                     Err(e) => format!("Close outcome uncertain: {e}"),
                 };
                 self.session = None;
-                self.ui.nav = shell::Nav::Databases;
+                self.document.ui.nav = shell::Nav::Databases;
                 self.ready = false;
-                self.active = None;
+                self.document.active = None;
                 self.closing = false;
                 if let Some(path) = self.pending_database.take().filter(|_| {
                     self.transaction != TransactionState::Unknown && !self.uncertain_edit
                 }) {
                     self.set_database_path(path.to_string_lossy().into_owned());
-                    self.ui.nav = shell::Nav::Databases;
+                    self.document.ui.nav = shell::Nav::Databases;
                 }
                 if let Some(writable) = reopen {
                     self.writable = writable;
@@ -591,14 +578,16 @@ impl App {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             }
-            EventKind::Inspection(info) if self.tools.inspection_ticket == Some(event.ticket) => {
-                self.tools.inspection = Some(info);
-                self.tools.inspection_ticket = None;
-                self.tools.inspection_error.clear();
+            EventKind::Inspection(info)
+                if self.document.tools.inspection_ticket == Some(event.ticket) =>
+            {
+                self.document.tools.inspection = Some(info);
+                self.document.tools.inspection_ticket = None;
+                self.document.tools.inspection_error.clear();
             }
-            EventKind::Failed(e) if self.tools.inspection_ticket == Some(event.ticket) => {
-                self.tools.inspection_ticket = None;
-                self.tools.inspection_error = e.to_string();
+            EventKind::Failed(e) if self.document.tools.inspection_ticket == Some(event.ticket) => {
+                self.document.tools.inspection_ticket = None;
+                self.document.tools.inspection_error = e.to_string();
             }
             EventKind::Failed(e) => {
                 self.record_history(event.ticket, None, true);
@@ -607,7 +596,7 @@ impl App {
                     self.status = e.to_string();
                     self.session = None;
                     self.ready = false;
-                    self.active = None;
+                    self.document.active = None;
                     self.closing = false;
                     self.confirm_close = false;
                     // Failed opens never send Closed: there is no live session left
@@ -615,19 +604,19 @@ impl App {
                     if self.quit && self.export_job.is_none() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
-                } else if self.active == Some(event.ticket) {
+                } else if self.document.active == Some(event.ticket) {
                     self.status = e.to_string();
-                    self.active = None;
+                    self.document.active = None;
                 }
             }
-            EventKind::Table(t) if self.result.current == Some(event.ticket) => {
-                self.tools.export_table = t.name.clone();
+            EventKind::Table(t) if self.document.result.current == Some(event.ticket) => {
+                self.document.tools.export_table = t.name.clone();
                 self.request_inspection(t.name.clone());
-                self.table = Some(t);
+                self.document.table = Some(t);
             }
             EventKind::Finished(ref c) => {
                 if c.changed > 0 {
-                    self.tools.context = Default::default();
+                    self.document.tools.context = Default::default();
                     self.tools.counts.clear();
                 }
                 if c.changed > 0
@@ -637,7 +626,7 @@ impl App {
                         .contains_key(&event.ticket.request)
                 {
                     self.ui.diagram.stale = self.ui.diagram.data.is_some();
-                    self.tools.context = Default::default();
+                    self.document.tools.context = Default::default();
                     self.tools.counts.clear();
                 }
                 self.record_history(event.ticket, Some(c.elapsed_ms), c.error.is_some());
@@ -653,8 +642,8 @@ impl App {
                         .map_or(String::new(), |e| format!("; ERROR {e}"))
                 ));
                 self.transaction = c.transaction;
-                if self.result.current == Some(event.ticket) {
-                    self.tools.last_elapsed = c.elapsed_ms;
+                if self.document.result.current == Some(event.ticket) {
+                    self.document.tools.last_elapsed = c.elapsed_ms;
                     self.status = format!(
                         "{} ms · {:?}: {} rows seen, {} changes; transaction {:?}{}",
                         c.elapsed_ms,
@@ -666,22 +655,23 @@ impl App {
                             .as_ref()
                             .map_or(String::new(), |e| format!("; ERROR {e}"))
                     );
-                    self.active = None;
-                    self.result.apply(event);
-                    if self.view == View::Browse
-                        && let Some(browse) = &self.browse
-                        && self.result.rows.len() < 100
-                        && self.result.completion.as_ref().is_some_and(|c| {
+                    self.document.active = None;
+                    self.document.result.apply(event);
+                    if self.document.view == View::Browse
+                        && let Some(browse) = &self.document.browse
+                        && self.document.result.rows.len() < 100
+                        && self.document.result.completion.as_ref().is_some_and(|c| {
                             c.delivery == tursobench_core::Delivery::Complete && c.error.is_none()
                         })
                     {
-                        self.tools.pages.end = Some(browse.offset + self.result.rows.len());
+                        self.document.tools.pages.end =
+                            Some(browse.offset + self.document.result.rows.len());
                     }
                     self.restore_browse_selection();
                 }
             }
             _ => {
-                self.result.apply(event);
+                self.document.result.apply(event);
             }
         }
     }
@@ -713,9 +703,14 @@ impl App {
             self.store.save(&self.preferences);
         }
         self.confirm_close = false;
-        self.drafts = None;
-        self.show_preview = false;
-        self.show_insert = false;
+        for document in self.documents.values_mut() {
+            document.drafts = None;
+            document.show_preview = false;
+            document.show_insert = false;
+        }
+        self.document.drafts = None;
+        self.document.show_preview = false;
+        self.document.show_insert = false;
         if let Some(s) = &self.session {
             s.close();
             self.closing = true;
@@ -755,19 +750,19 @@ mod tests {
     fn renders_empty_and_large_cells_without_engine() {
         let ctx = egui::Context::default();
         let mut app = App::new(&ctx);
-        app.ui.nav = shell::Nav::Table;
-        app.result.columns = vec![Column {
+        app.document.ui.nav = shell::Nav::Table;
+        app.document.result.columns = vec![Column {
             name: "data".into(),
             declared_type: None,
         }];
-        app.result.rows = vec![
+        app.document.result.rows = vec![
             vec![Value::Text("λ".repeat(30000))],
             vec![Value::Blob(vec![0; 64000])],
         ];
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.render(ui));
         output.textures_delta.clear();
         assert!(app.session.is_none());
-        assert!(app.active.is_none());
+        assert!(app.document.active.is_none());
         assert!(app.first_cell_rect.is_some());
     }
 }

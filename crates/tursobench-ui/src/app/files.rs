@@ -39,7 +39,7 @@ impl App {
         if self.picker.is_some() || self.session.is_some() {
             return;
         }
-        self.ui.nav = shell::Nav::Databases;
+        self.document.ui.nav = shell::Nav::Databases;
         self.databases.focus_filter = true;
         ctx.request_repaint();
     }
@@ -119,7 +119,7 @@ impl App {
             Ok(Some(path)) if self.session.is_none() => {
                 if let Some(path) = path.to_str() {
                     self.set_database_path(path.to_owned());
-                    self.ui.nav = shell::Nav::Databases;
+                    self.document.ui.nav = shell::Nav::Databases;
                     self.status =
                         "File selected. Review access and exclusive use before opening.".into();
                 } else {
@@ -187,14 +187,14 @@ mod tests {
             assert!(app.status.contains(message), "{}", app.status);
             assert_eq!(app.path, "previous.db");
             assert!(app.exclusive && app.writable);
-            app.ui.nav = shell::Nav::Result;
+            app.document.ui.nav = shell::Nav::Result;
             let (tx, rx) = mpsc::sync_channel(1);
             app.picker = Some(rx);
             tx.send(Ok(Some("retry.db".into()))).unwrap();
             app.poll_picker();
             assert_eq!(app.path, "retry.db");
             assert!(!app.exclusive && !app.writable);
-            assert_eq!(app.ui.nav, shell::Nav::Databases);
+            assert_eq!(app.document.ui.nav, shell::Nav::Databases);
         }
     }
 

@@ -100,8 +100,8 @@ impl App {
         }
     }
     pub(super) fn request_inspection(&mut self, name: String) {
-        self.tools.inspection = None;
-        self.tools.inspection_error.clear();
+        self.document.tools.inspection = None;
+        self.document.tools.inspection_error.clear();
         let Some(session) = &self.session else {
             return;
         };
@@ -111,10 +111,10 @@ impl App {
             ticket,
             operation: Operation::Inspect(name),
         }) {
-            Ok(()) => self.tools.inspection_ticket = Some(ticket),
+            Ok(()) => self.document.tools.inspection_ticket = Some(ticket),
             Err(e) => {
-                self.tools.inspection_ticket = None;
-                self.tools.inspection_error = e.to_string();
+                self.document.tools.inspection_ticket = None;
+                self.document.tools.inspection_error = e.to_string();
             }
         }
     }
@@ -139,6 +139,7 @@ impl App {
     }
     pub(super) fn structure_inspector(&mut self, ui: &mut egui::Ui) {
         let name = self
+            .document
             .tools
             .ddl
             .as_ref()
@@ -150,6 +151,7 @@ impl App {
         };
         let info = self.loaded_inspection(&name);
         let object = self
+            .document
             .tools
             .ddl
             .as_ref()
@@ -166,11 +168,14 @@ impl App {
         {
             ui.colored_label(ui.visuals().error_fg_color, error);
         }
-        if self.tools.inspection_ticket.is_some() {
+        if self.document.tools.inspection_ticket.is_some() {
             ui.small("Loading structure…");
         }
-        if !self.tools.inspection_error.is_empty() {
-            ui.colored_label(ui.visuals().error_fg_color, &self.tools.inspection_error);
+        if !self.document.tools.inspection_error.is_empty() {
+            ui.colored_label(
+                ui.visuals().error_fg_color,
+                &self.document.tools.inspection_error,
+            );
         }
         let count = if ui.ctx().content_rect().width() >= 1920.0 && ui.available_width() >= 800.0 {
             2
@@ -278,7 +283,7 @@ impl App {
                     });
                 }
             } else if object.is_none_or(|o| o.kind == "table" || o.kind == "view")
-                && self.tools.inspection_ticket.is_none()
+                && self.document.tools.inspection_ticket.is_none()
                 && ui.button("Load structure").clicked()
             {
                 load = true;
@@ -341,17 +346,17 @@ impl App {
         }
         if self.has_drafts()
             || self.commit_ticket.is_some()
-            || self.view != View::Browse
-            || self.active.is_some()
+            || self.document.view != View::Browse
+            || self.document.active.is_some()
         {
             self.status =
                 "Finish execution and commit or discard drafts before following a reference".into();
             return;
         }
-        let Some(table) = self.table.as_ref() else {
+        let Some(table) = self.document.table.as_ref() else {
             return;
         };
-        let Some(values) = self.result.rows.get(row) else {
+        let Some(values) = self.document.result.rows.get(row) else {
             return;
         };
         let mut keys = Vec::new();
@@ -393,18 +398,20 @@ impl App {
                     self.tools.back.remove(0);
                 }
             }
-            self.browse = None;
-            self.table = None;
+            self.document.browse = None;
+            self.document.table = None;
             self.ui.diagram.selected = Some(key.target.clone());
-            self.tools.ddl = None;
-            self.tools.related = Some(Destination::Related(key.target, keys));
+            self.document.tools.ddl = None;
+            self.document.tools.related = Some(Destination::Related(key.target, keys));
         }
     }
     pub(super) fn follow_incoming(&mut self, row: usize, child: String, key: ForeignKey) {
-        if self.active.is_some() || self.view != View::Browse {
+        if self.document.active.is_some() || self.document.view != View::Browse {
             return;
         }
-        let (Some(table), Some(values)) = (&self.table, self.result.rows.get(row)) else {
+        let (Some(table), Some(values)) =
+            (&self.document.table, self.document.result.rows.get(row))
+        else {
             return;
         };
         if !table.name.eq_ignore_ascii_case(&key.target) {
@@ -436,34 +443,41 @@ impl App {
                     self.tools.back.remove(0);
                 }
             }
-            self.browse = None;
-            self.table = None;
-            self.tools.ddl = None;
+            self.document.browse = None;
+            self.document.table = None;
+            self.document.tools.ddl = None;
             self.ui.diagram.selected = Some(child);
-            self.tools.related = Some(destination);
+            self.document.tools.related = Some(destination);
         }
     }
     pub(super) fn navigation_entry(&self) -> Option<NavigationEntry> {
-        if self.view != View::Browse {
+        if self.document.view != View::Browse {
             return None;
         }
         let destination = self
+            .document
             .tools
             .related
             .clone()
-            .or_else(|| self.browse.clone().map(Destination::Page))?;
+            .or_else(|| self.document.browse.clone().map(Destination::Page))?;
         Some(NavigationEntry {
             destination,
-            cell: self
-                .inspect
-                .and_then(|(r, c)| self.result.rows.get(r).cloned().map(|row| (row, c))),
+            cell: self.document.inspect.and_then(|(r, c)| {
+                self.document
+                    .result
+                    .rows
+                    .get(r)
+                    .cloned()
+                    .map(|row| (row, c))
+            }),
             record: self
+                .document
                 .tools
                 .detail
-                .and_then(|r| self.result.rows.get(r).cloned()),
-            structure: self.ui.table_view == shell::TableView::Structure,
-            scroll: self.tools.grid_scroll,
-            window_rows: self.result.rows.len(),
+                .and_then(|r| self.document.result.rows.get(r).cloned()),
+            structure: self.document.ui.table_view == shell::TableView::Structure,
+            scroll: self.document.tools.grid_scroll,
+            window_rows: self.document.result.rows.len(),
         })
     }
     pub(super) fn restore_destination(&mut self, entry: NavigationEntry) -> bool {
@@ -473,33 +487,33 @@ impl App {
         {
             return false;
         }
-        self.tools.ddl = None;
-        self.table = None;
+        self.document.tools.ddl = None;
+        self.document.table = None;
         self.ui.diagram.selected = Some(entry.destination.table().into());
         self.ui.unfolded = Some(entry.destination.table().into());
         match &entry.destination {
             Destination::Page(b) => {
-                self.browse = Some(b.clone());
-                self.tools.related = None;
+                self.document.browse = Some(b.clone());
+                self.document.tools.related = None;
             }
             related => {
-                self.browse = None;
-                self.tools.related = Some(related.clone());
+                self.document.browse = None;
+                self.document.tools.related = Some(related.clone());
             }
         }
-        self.ui.table_view = if entry.structure {
+        self.document.ui.table_view = if entry.structure {
             shell::TableView::Structure
         } else {
             shell::TableView::Data
         };
-        self.tools.pages.restore_rows = if self.browse.is_some() {
+        self.document.tools.pages.restore_rows = if self.document.browse.is_some() {
             entry
                 .window_rows
                 .min(self.preferences.row_limit.clamp(200, 10_000) - 100)
         } else {
             0
         };
-        self.tools.restore_navigation = Some(entry);
+        self.document.tools.restore_navigation = Some(entry);
         true
     }
     pub(super) fn navigate_back(&mut self) {
@@ -519,18 +533,20 @@ impl App {
         }
     }
     pub(super) fn restore_browse_selection(&mut self) {
-        if self.tools.pages.restore_rows > self.result.rows.len() && self.tools.pages.end.is_none()
+        if self.document.tools.pages.restore_rows > self.document.result.rows.len()
+            && self.document.tools.pages.end.is_none()
         {
             return;
         }
-        self.tools.pages.restore_rows = 0;
-        let Some(entry) = self.tools.restore_navigation.take() else {
+        self.document.tools.pages.restore_rows = 0;
+        let Some(entry) = self.document.tools.restore_navigation.take() else {
             return;
         };
-        self.inspect = entry.cell.and_then(|(values, column)| {
-            (column < self.result.columns.len())
+        self.document.inspect = entry.cell.and_then(|(values, column)| {
+            (column < self.document.result.columns.len())
                 .then(|| {
-                    self.result
+                    self.document
+                        .result
                         .rows
                         .iter()
                         .position(|r| *r == values)
@@ -538,14 +554,17 @@ impl App {
                 })
                 .flatten()
         });
-        self.tools.detail = entry
+        self.document.tools.detail = entry
             .record
-            .and_then(|values| self.result.rows.iter().position(|r| *r == values));
-        self.tools.grid_selection = self.inspect.map(|cell| super::selection::Selection {
-            ticket: self.result.current,
-            anchor: cell,
-            cursor: cell,
-        });
-        self.tools.restore_scroll = Some(entry.scroll);
+            .and_then(|values| self.document.result.rows.iter().position(|r| *r == values));
+        self.document.tools.grid_selection =
+            self.document
+                .inspect
+                .map(|cell| super::selection::Selection {
+                    ticket: self.document.result.current,
+                    anchor: cell,
+                    cursor: cell,
+                });
+        self.document.tools.restore_scroll = Some(entry.scroll);
     }
 }

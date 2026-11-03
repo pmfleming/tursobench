@@ -44,8 +44,29 @@ pub(super) struct NavigationEntry {
 #[derive(Default)]
 pub(super) struct Tools {
     pub schema_filter: String,
-    pub sql_focus: Option<eframe::egui::Id>,
     pub tree_focus: Option<eframe::egui::Id>,
+    pub back: Vec<NavigationEntry>,
+    pub result_return: Option<NavigationEntry>,
+    pub counts: BTreeMap<String, i64>,
+    pub count_request: Option<(String, tursobench_core::ResultSet)>,
+    pub help: bool,
+    pub history_search: String,
+    pub bookmark_search: String,
+    pub bookmark_name: String,
+    pub slow_only: bool,
+    pub sort_slow: bool,
+    pub pending_history: BTreeMap<u64, (String, String)>,
+    pub database_scope: String,
+}
+impl Tools {
+    pub fn new() -> Self {
+        Self { ..Self::default() }
+    }
+}
+
+#[derive(Default)]
+pub(super) struct ViewTools {
+    pub sql_focus: Option<eframe::egui::Id>,
     pub filter_focus: bool,
     pub filter_error: String,
     pub filter_value: String,
@@ -55,11 +76,7 @@ pub(super) struct Tools {
     pub inspection_ticket: Option<Ticket>,
     pub inspection_error: String,
     pub related: Option<Destination>,
-    pub back: Vec<NavigationEntry>,
-    pub result_return: Option<NavigationEntry>,
     pub restore_navigation: Option<NavigationEntry>,
-    pub counts: BTreeMap<String, i64>,
-    pub count_request: Option<(String, tursobench_core::ResultSet)>,
     pub context: super::context::ContextReads,
     pub pages: super::paging::Pages,
     pub grid_scroll: eframe::egui::Vec2,
@@ -68,7 +85,6 @@ pub(super) struct Tools {
     pub cell_input: String,
     pub selection: Range<usize>,
     pub complete: bool,
-    pub help: bool,
     pub detail: Option<usize>,
     pub summary_cache: Option<super::selection::SummaryCache>,
     pub grid_selection: Option<super::selection::Selection>,
@@ -82,22 +98,7 @@ pub(super) struct Tools {
     pub column_layouts: BTreeMap<String, super::columns::Columns>,
     pub highlight_column: Option<(String, String)>,
     pub scroll_to_column: bool,
-    pub history_search: String,
-    pub bookmark_search: String,
-    pub bookmark_name: String,
-    pub slow_only: bool,
-    pub sort_slow: bool,
-    pub pending_history: BTreeMap<u64, (String, String)>,
-    pub database_scope: String,
     pub last_elapsed: u64,
     pub format: crate::export::Format,
     pub export_table: String,
-}
-impl Tools {
-    pub fn new() -> Self {
-        Self {
-            export_table: "exported_rows".into(),
-            ..Self::default()
-        }
-    }
 }

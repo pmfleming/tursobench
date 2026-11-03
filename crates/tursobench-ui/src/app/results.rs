@@ -140,16 +140,16 @@ impl App {
         }
     }
     pub(super) fn copy_results(&mut self, ctx: &egui::Context, format: Format) {
-        if self.active.is_some() || self.result.completion.is_none() {
+        if self.document.active.is_some() || self.document.result.completion.is_none() {
             self.status = "Wait for retained results before copying".into();
             return;
         }
         match export::clipboard(
             format,
             self.export_scope(),
-            &self.result.columns,
-            &self.result.rows,
-            &self.tools.export_table,
+            &self.document.result.columns,
+            &self.document.result.rows,
+            &self.document.tools.export_table,
         ) {
             Ok(text) => {
                 ctx.copy_text(text);
@@ -160,33 +160,39 @@ impl App {
         }
     }
     pub(super) fn copy_row(&mut self, ctx: &egui::Context, row: usize) {
-        let Some(values) = self.result.rows.get(row) else {
+        let Some(values) = self.document.result.rows.get(row) else {
             return;
         };
         match export::clipboard(
             Format::Tsv,
             "single-retained-row",
-            &self.result.columns,
+            &self.document.result.columns,
             std::slice::from_ref(values),
-            &self.tools.export_table,
+            &self.document.tools.export_table,
         ) {
             Ok(text) => ctx.copy_text(text),
             Err(e) => self.status = e,
         }
     }
     pub(super) fn open_cell(&mut self, row: usize, column: usize) {
-        if let Some(value) = self.result.rows.get(row).and_then(|r| r.get(column)) {
-            self.inspect = Some((row, column));
-            self.ui.inspector = shell::DetailMode::Cell;
-            self.ui.inspector_open = true;
-            self.tools.cell_kind = match value {
+        if let Some(value) = self
+            .document
+            .result
+            .rows
+            .get(row)
+            .and_then(|r| r.get(column))
+        {
+            self.document.inspect = Some((row, column));
+            self.document.ui.inspector = shell::DetailMode::Cell;
+            self.document.ui.inspector_open = true;
+            self.document.tools.cell_kind = match value {
                 Value::Null => CellKind::Null,
                 Value::Integer(_) => CellKind::Integer,
                 Value::Real(_) => CellKind::Real,
                 Value::Text(_) => CellKind::Text,
                 Value::Blob(_) => CellKind::Blob,
             };
-            self.tools.cell_input = match value {
+            self.document.tools.cell_input = match value {
                 Value::Null => String::new(),
                 Value::Blob(b) => export::hex(b),
                 _ => export::cell_text(value),

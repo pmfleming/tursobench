@@ -112,7 +112,7 @@ impl App {
         if next.filters.len() > 32
             || next.filters.iter().map(|f| f.value.bytes()).sum::<usize>() > 1024 * 1024
         {
-            self.tools.filter_error = "Filters exceed 32 predicates / 1 MiB".into();
+            self.document.tools.filter_error = "Filters exceed 32 predicates / 1 MiB".into();
             return false;
         }
         next.offset = 0;
@@ -120,22 +120,23 @@ impl App {
             .submit(Operation::Browse(next.clone()), View::Browse)
             .is_some()
         {
-            self.browse = Some(next);
-            self.tools.filter_error.clear();
+            self.document.browse = Some(next);
+            self.document.tools.filter_error.clear();
             true
         } else {
             false
         }
     }
     pub(super) fn add_filter(&mut self, filter: Filter) -> bool {
-        let Some(mut next) = self.browse.clone() else {
+        let Some(mut next) = self.document.browse.clone() else {
             return false;
         };
         next.filters.push(filter);
         self.apply_filters(next)
     }
     pub(super) fn filter_controls(&mut self, ui: &mut egui::Ui) {
-        let (Some(table), Some(next)) = (self.table.clone(), self.browse.clone()) else {
+        let (Some(table), Some(next)) = (self.document.table.clone(), self.document.browse.clone())
+        else {
             return;
         };
         let enabled =
@@ -162,33 +163,33 @@ impl App {
                                 );
                                 let chip = ui.button(label);
                                 if chip.clicked() {
-                                    self.tools.filter_edit = Some(i);
-                                    self.filter_column = f.column;
-                                    self.filter_op = f.op;
-                                    self.filter_kind = kind(&f.value);
-                                    self.tools.filter_value = match &f.value {
+                                    self.document.tools.filter_edit = Some(i);
+                                    self.document.filter_column = f.column;
+                                    self.document.filter_op = f.op;
+                                    self.document.filter_kind = kind(&f.value);
+                                    self.document.tools.filter_value = match &f.value {
                                         Value::Blob(b) => crate::export::hex(b),
                                         v => crate::export::cell_text(v),
                                     };
                                 }
                                 egui::Popup::menu(&chip).show(|ui| {
-                                    if self.tools.filter_edit != Some(i) {
+                                    if self.document.tools.filter_edit != Some(i) {
                                         return;
                                     }
                                     ui.label(format!("{name} · stored comparison type"));
                                     egui::ComboBox::from_id_salt(("chip-op", i))
-                                        .selected_text(self.filter_op.label())
+                                        .selected_text(self.document.filter_op.label())
                                         .show_ui(ui, |ui| {
                                             for op in FilterOp::ALL {
                                                 ui.selectable_value(
-                                                    &mut self.filter_op,
+                                                    &mut self.document.filter_op,
                                                     op,
                                                     op.label(),
                                                 );
                                             }
                                         });
                                     egui::ComboBox::from_id_salt(("chip-type", i))
-                                        .selected_text(self.filter_kind.label())
+                                        .selected_text(self.document.filter_kind.label())
                                         .show_ui(ui, |ui| {
                                             for k in [
                                                 CellKind::Text,
@@ -198,31 +199,33 @@ impl App {
                                                 CellKind::Blob,
                                             ] {
                                                 ui.selectable_value(
-                                                    &mut self.filter_kind,
+                                                    &mut self.document.filter_kind,
                                                     k,
                                                     k.label(),
                                                 );
                                             }
                                         });
-                                    ui.text_edit_singleline(&mut self.tools.filter_value);
+                                    ui.text_edit_singleline(&mut self.document.tools.filter_value);
                                     if ui.button("Apply").clicked() {
-                                        match if self.filter_op.unary() {
+                                        match if self.document.filter_op.unary() {
                                             Ok(Value::Null)
                                         } else {
-                                            self.filter_kind.parse(&self.tools.filter_value)
+                                            self.document
+                                                .filter_kind
+                                                .parse(&self.document.tools.filter_value)
                                         } {
                                             Ok(value) => {
                                                 let mut b = next.clone();
                                                 b.filters[i] = Filter {
                                                     column: f.column,
-                                                    op: self.filter_op,
+                                                    op: self.document.filter_op,
                                                     value,
                                                 };
                                                 if self.apply_filters(b) {
                                                     ui.close();
                                                 }
                                             }
-                                            Err(e) => self.tools.filter_error = e,
+                                            Err(e) => self.document.tools.filter_error = e,
                                         }
                                     }
                                 });
@@ -239,56 +242,57 @@ impl App {
                         });
                     });
                 let response = ui.add(
-                    egui::TextEdit::singleline(&mut self.filter)
+                    egui::TextEdit::singleline(&mut self.document.filter)
                         .id_salt("token-input")
                         .hint_text("column = value")
                         .desired_width(ui.available_width().max(90.0))
                         .char_limit(65536),
                 );
-                if self.tools.filter_focus {
+                if self.document.tools.filter_focus {
                     response.request_focus();
-                    self.tools.filter_focus = false;
-                    self.ui.filter_open = false;
+                    self.document.tools.filter_focus = false;
+                    self.document.ui.filter_open = false;
                 }
                 if (response.has_focus() || response.lost_focus())
                     && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
                 {
-                    match parse_filter(&self.filter, &table) {
+                    match parse_filter(&self.document.filter, &table) {
                         Ok(f) => {
                             if self.add_filter(f) {
-                                self.filter.clear();
-                                self.tools.filter_focus = true;
+                                self.document.filter.clear();
+                                self.document.tools.filter_focus = true;
                             }
                         }
-                        Err(e) => self.tools.filter_error = e,
+                        Err(e) => self.document.tools.filter_error = e,
                     }
                 }
                 if (response.has_focus() || response.lost_focus())
-                    && self.filter.is_empty()
+                    && self.document.filter.is_empty()
                     && !next.filters.is_empty()
                     && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace))
                 {
                     let mut b = next.clone();
                     b.filters.pop();
                     self.apply_filters(b);
-                    self.tools.filter_focus = true;
+                    self.document.tools.filter_focus = true;
                 }
-                if !self.tools.filter_error.is_empty() {
+                if !self.document.tools.filter_error.is_empty() {
                     ui.colored_label(ui.visuals().error_fg_color, "!")
-                        .on_hover_text(&self.tools.filter_error);
+                        .on_hover_text(&self.document.tools.filter_error);
                 }
             });
         });
     }
     pub(super) fn column_facets(&mut self, ui: &mut egui::Ui, column: usize) {
-        if self.view != View::Browse || self.browse.is_none() {
+        if self.document.view != View::Browse || self.document.browse.is_none() {
             ui.label("Facets require a table browse");
             return;
         }
-        let sample = self.result.rows.len().min(1000);
+        let sample = self.document.result.rows.len().min(1000);
         ui.label(format!("Top values · {sample} retained rows"));
         let mut counts = std::collections::BTreeMap::<String, (Value, usize)>::new();
         for value in self
+            .document
             .result
             .rows
             .iter()
@@ -313,15 +317,15 @@ impl App {
             }
         }
         if ui.button("Custom filter…").clicked() {
-            if let Some(c) = self.result.columns.get(column) {
-                self.filter = format!("{} = ", tursobench_core::quote_identifier(&c.name));
+            if let Some(c) = self.document.result.columns.get(column) {
+                self.document.filter = format!("{} = ", tursobench_core::quote_identifier(&c.name));
             }
-            self.ui.filter_open = true;
-            self.tools.filter_focus = true;
+            self.document.ui.filter_open = true;
+            self.document.tools.filter_focus = true;
             ui.close();
         }
         if ui.button("Hide column").clicked() {
-            self.tools.columns.hidden.insert(column);
+            self.document.tools.columns.hidden.insert(column);
             ui.close();
         }
     }

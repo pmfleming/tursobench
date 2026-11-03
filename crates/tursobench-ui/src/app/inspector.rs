@@ -9,18 +9,19 @@ use tursobench_core::Value;
 use results::{CellKind, code_view, detail_text};
 impl App {
     pub(super) fn cell_inspector(&mut self, ui: &mut egui::Ui, row: usize, col: usize) {
-        let Some(value) = self.result.rows.get(row).and_then(|r| r.get(col)) else {
+        let Some(value) = self.document.result.rows.get(row).and_then(|r| r.get(col)) else {
             ui.label("Selection no longer belongs to the retained result");
             return;
         };
         ui.strong(
-            self.result
+            self.document
+                .result
                 .columns
                 .get(col)
                 .map_or("Cell", |c| c.name.as_str()),
         );
-        if self.view == View::Browse
-            && let Some(table) = &self.table
+        if self.document.view == View::Browse
+            && let Some(table) = &self.document.table
         {
             ui.label(format!("Table: {}", table.name));
         }
@@ -28,12 +29,15 @@ impl App {
             "Retained row {} · {} budgeted bytes · {:?} result",
             row + 1,
             value.bytes(),
-            self.view
+            self.document.view
         ));
-        let staged = self
-            .drafts
-            .as_ref()
-            .and_then(|d| self.result.rows.get(row).and_then(|r| d.displayed(r, col)));
+        let staged = self.document.drafts.as_ref().and_then(|d| {
+            self.document
+                .result
+                .rows
+                .get(row)
+                .and_then(|r| d.displayed(r, col))
+        });
         let typed = |value: &Value| match value {
             Value::Real(n) if !n.is_finite() => {
                 format!("Real({n}) — inspectable/exportable, not editable as a non-finite real")
@@ -58,15 +62,15 @@ impl App {
                 ui.ctx().copy_text(crate::export::cell_text(value));
             }
             if ui.button("Record").clicked() {
-                self.tools.detail = Some(row);
-                self.ui.inspector = shell::DetailMode::Record;
+                self.document.tools.detail = Some(row);
+                self.document.ui.inspector = shell::DetailMode::Record;
             }
         });
         if self.can_edit() {
             ui.separator();
             ui.strong("Change value · staged locally");
             egui::ComboBox::from_id_salt("cell-kind")
-                .selected_text(self.tools.cell_kind.label())
+                .selected_text(self.document.tools.cell_kind.label())
                 .show_ui(ui, |ui| {
                     for kind in [
                         CellKind::Null,
@@ -75,30 +79,41 @@ impl App {
                         CellKind::Text,
                         CellKind::Blob,
                     ] {
-                        ui.selectable_value(&mut self.tools.cell_kind, kind, kind.label());
+                        ui.selectable_value(&mut self.document.tools.cell_kind, kind, kind.label());
                     }
                 });
-            if self.tools.cell_kind != CellKind::Null {
+            if self.document.tools.cell_kind != CellKind::Null {
                 ui.add(
-                    egui::TextEdit::multiline(&mut self.tools.cell_input)
+                    egui::TextEdit::multiline(&mut self.document.tools.cell_input)
                         .desired_width(ui.available_width())
                         .desired_rows(3),
                 );
             }
             if ui.button("Stage cell change").clicked() {
-                match self.tools.cell_kind.parse(&self.tools.cell_input) {
+                match self
+                    .document
+                    .tools
+                    .cell_kind
+                    .parse(&self.document.tools.cell_input)
+                {
                     Ok(value) => self.stage_cell(row, col, value),
                     Err(e) => self.status = e,
                 }
             }
             ui.horizontal_wrapped(|ui| {
                 if icons::button(ui, Icon::Undo, "Revert cell draft", "").clicked()
-                    && let (Some(d), Some(original)) = (&mut self.drafts, self.result.rows.get(row))
+                    && let (Some(d), Some(original)) = (
+                        &mut self.document.drafts,
+                        self.document.result.rows.get(row),
+                    )
                 {
                     d.revert_cell(original, col);
                 }
                 if ui.button("Revert row draft").clicked()
-                    && let (Some(d), Some(original)) = (&mut self.drafts, self.result.rows.get(row))
+                    && let (Some(d), Some(original)) = (
+                        &mut self.document.drafts,
+                        self.document.result.rows.get(row),
+                    )
                 {
                     d.revert_row(original);
                 }
@@ -113,8 +128,8 @@ impl App {
         } else {
             ui.small("Editing requires writable access, editor autocommit, a complete controlled non-engine-managed table result with a proven key, and no pending/uncertain commit. Arbitrary SQL results remain read-only.");
         }
-        if self.view == View::Browse
-            && let Some(info) = &self.tools.inspection
+        if self.document.view == View::Browse
+            && let Some(info) = &self.document.tools.inspection
         {
             ui.separator();
             ui.strong("References");
@@ -143,8 +158,8 @@ impl App {
     }
     pub(super) fn record_inspector(&mut self, ui: &mut egui::Ui, row: usize) {
         ui.strong(format!("Record {} · retained engine values", row + 1));
-        if self.view == View::Browse
-            && let Some(table) = &self.table
+        if self.document.view == View::Browse
+            && let Some(table) = &self.document.table
         {
             ui.label(format!("Table: {}", table.name));
         }
@@ -152,19 +167,24 @@ impl App {
             self.copy_row(ui.ctx(), row);
         }
         if let Some(info) = self
+            .document
             .tools
             .inspection
             .as_ref()
             .filter(|i| {
-                self.view == View::Browse
-                    && self.table.as_ref().is_some_and(|t| t.name == i.table.name)
+                self.document.view == View::Browse
+                    && self
+                        .document
+                        .table
+                        .as_ref()
+                        .is_some_and(|t| t.name == i.table.name)
             })
             .cloned()
         {
             for key in info.foreign_keys {
                 if ui
                     .add_enabled(
-                        !self.has_drafts() && self.active.is_none(),
+                        !self.has_drafts() && self.document.active.is_none(),
                         egui::Button::new(format!("Parent: {}", key.target)),
                     )
                     .clicked()
@@ -176,23 +196,25 @@ impl App {
         }
         let mut inspect = None;
         let mut edit = None;
-        if let Some(values) = self.result.rows.get(row).cloned() {
+        if let Some(values) = self.document.result.rows.get(row).cloned() {
             egui::Grid::new("compact-record")
                 .num_columns(2)
                 .spacing([8.0, 1.0])
                 .show(ui, |ui| {
                     for (col, value) in values.iter().enumerate() {
-                        let name = &self.result.columns[col].name;
+                        let name = &self.document.result.columns[col].name;
                         ui.add_sized(
                             [100.0, 25.0],
                             egui::Label::new(egui::RichText::new(name).monospace()).truncate(),
                         );
                         let shown = self
+                            .document
                             .drafts
                             .as_ref()
                             .and_then(|d| d.displayed(&values, col))
                             .unwrap_or(value);
                         if let Some(inline) = self
+                            .document
                             .tools
                             .inline
                             .as_mut()
@@ -247,9 +269,9 @@ impl App {
             self.open_cell(row, col);
         }
         if let Some((col, value)) = edit {
-            if self.tools.inline.is_some() {
+            if self.document.tools.inline.is_some() {
                 self.stage_cell(row, col, value);
-                self.tools.inline = None;
+                self.document.tools.inline = None;
             } else {
                 self.start_inline(row, col);
             }
@@ -260,7 +282,7 @@ impl App {
         self.related_list(ui, row);
     }
     pub(super) fn inspection_surfaces(&mut self, ctx: &egui::Context) {
-        if self.ui.inspector_detached && self.ui.inspector_open {
+        if self.document.ui.inspector_detached && self.document.ui.inspector_open {
             let mut open = true;
             egui::Window::new("DetailMode")
                 .open(&mut open)
@@ -272,30 +294,30 @@ impl App {
                 .max_height((ctx.content_rect().height() - 200.0).max(180.0))
                 .show(ctx, |ui| {
                     if ui.button("Dock inspector").clicked() {
-                        self.ui.inspector_detached = false;
+                        self.document.ui.inspector_detached = false;
                     }
                     ui.horizontal_wrapped(|ui| {
-                        ui.add_enabled_ui(self.ui.nav != shell::Nav::Overview, |ui| {
+                        ui.add_enabled_ui(self.document.ui.nav != shell::Nav::Overview, |ui| {
                             ui.selectable_value(
-                                &mut self.ui.inspector,
+                                &mut self.document.ui.inspector,
                                 shell::DetailMode::Cell,
                                 "Cell",
                             );
                             ui.selectable_value(
-                                &mut self.ui.inspector,
+                                &mut self.document.ui.inspector,
                                 shell::DetailMode::Record,
                                 "Record",
                             );
                         });
                         ui.selectable_value(
-                            &mut self.ui.inspector,
+                            &mut self.document.ui.inspector,
                             shell::DetailMode::Structure,
                             "Structure",
                         );
                     });
                     egui::ScrollArea::vertical().show(ui, |ui| self.inspector_content(ui));
                 });
-            self.ui.inspector_open = open;
+            self.document.ui.inspector_open = open;
         }
         if self.tools.help {
             let mut open = true;
