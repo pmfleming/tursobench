@@ -5,6 +5,7 @@
 /result
 /.direnv/
 /docs/*
+!/docs/redesign-v5-tiling.html
 !/docs/guide.md
 !/docs/database-discovery.md
 !/docs/fts.md
