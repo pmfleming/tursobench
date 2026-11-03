@@ -332,10 +332,13 @@ impl App {
                 if ui
                     .add_enabled(
                         spec.is_some(),
-                        egui::Button::new(format!(
-                            "↙ {child} · {}",
-                            count.map_or("—".into(), |n| n.to_string())
-                        ))
+                        egui::Button::new(
+                            egui::RichText::new(format!(
+                                "↙ {child} · {}",
+                                count.map_or("—".into(), |n| n.to_string())
+                            ))
+                            .color(crate::appearance::Tokens::of(ui.ctx()).relationship),
+                        )
                         .frame_when_inactive(false),
                     )
                     .clicked()

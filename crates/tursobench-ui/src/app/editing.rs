@@ -1,3 +1,4 @@
+use super::presentation::{self, Intent};
 use super::{App, View};
 use eframe::egui;
 use tursobench_core::{Delivery, DraftBatch, Edit, Table, TransactionState, Value};
@@ -109,15 +110,15 @@ impl App {
     pub(super) fn edit_windows(&mut self, ctx: &egui::Context) {
         if self.document.show_insert {
             let mut open = true;
-            egui::Window::new("Stage insert — typed column values")
+            egui::Window::new("Stage insert — typed column values").frame(crate::app::presentation::window_frame(&ctx))
                 .open(&mut open).default_width(580.0).max_width((ctx.content_rect().width()-40.0).max(280.0))
                 .show(ctx, |ui| {
-                    ui.label("One entry per column. JSON null = omit/use DEFAULT; {\"type\":\"Null\"} = SQL NULL.");
+                    presentation::notice(ui,super::icons::Icon::Plus,Intent::Pending,"One entry per column. JSON null = omit/use DEFAULT; {\"type\":\"Null\"} = SQL NULL.");
                     egui::ScrollArea::vertical().max_height((ctx.content_rect().height()-230.0).clamp(120.0,400.0)).show(ui,|ui| {
                         if let Some(t) = &self.document.table { ui.label(t.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", ")); }
                         ui.add(egui::TextEdit::multiline(&mut self.document.insert_json).code_editor().desired_width(ui.available_width()).desired_rows(8));
                     });
-                    if ui.add_enabled(self.can_edit(),egui::Button::new("Stage insert (no database write)")).clicked() {
+                    if presentation::footer(ui, |ui| ui.add_enabled(self.can_edit(),presentation::action(ui,"Stage insert (no database write)",Intent::Pending))).inner.clicked() {
                         match serde_json::from_str::<Vec<Option<Value>>>(&self.document.insert_json) {
                             Ok(values) => self.stage(|d| d.edits.push(Edit::Insert { values })),
                             Err(e) => self.status = e.to_string(),
@@ -129,10 +130,10 @@ impl App {
         }
         if self.document.show_preview {
             let mut open = true;
-            egui::Window::new("Review staged atomic transaction")
+            egui::Window::new("Review staged atomic transaction").frame(crate::app::presentation::window_frame(&ctx))
                 .open(&mut open).default_width(760.0).max_width((ctx.content_rect().width()-40.0).max(280.0))
                 .show(ctx, |ui| {
-                    ui.label("Dedicated connection · foreign keys enabled · original values checked · atomic batch. Only a confirmed commit clears these drafts.");
+                    presentation::notice(ui,super::icons::Icon::ReviewEdits,Intent::Pending,"Dedicated connection · foreign keys enabled · original values checked · atomic batch. Only a confirmed commit clears these drafts.");
                     let mut remove = None;
                     if let Some(draft) = &self.document.drafts {
                         ui.strong(format!("{} · {} staged operations",draft.table.name,draft.edits.len()));
@@ -160,7 +161,7 @@ impl App {
                     if let Some(index) = remove && let Some(draft) = &mut self.document.drafts { draft.edits.remove(index); }
                     if self.uncertain_edit { ui.colored_label(ui.visuals().error_fg_color,"UNKNOWN outcome — close/reopen and inspect; never automatically retry."); }
                     if self.commit_ticket.is_some() { ui.label("Committing — awaiting the actual outcome…"); }
-                    if ui.add_enabled(self.can_edit() && self.has_drafts(),egui::Button::new("COMMIT staged edits to database")).clicked() { self.commit_drafts(); }
+                    if presentation::footer(ui, |ui| ui.add_enabled(self.can_edit() && self.has_drafts(),presentation::action(ui,"COMMIT staged edits to database",Intent::Pending))).inner.clicked() { self.commit_drafts(); }
                     ui.label(&self.status);
                 });
             self.document.show_preview = open;

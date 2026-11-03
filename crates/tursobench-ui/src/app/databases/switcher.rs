@@ -10,7 +10,9 @@ impl App {
     pub(in crate::app) fn database_switcher_ui(&mut self, ui: &mut egui::Ui) {
         let response = ui.add_enabled(
             self.ready && !self.closing,
-            egui::Button::new("").min_size(egui::vec2(ui.available_width(), 52.0)),
+            egui::Button::new("")
+                .corner_radius(10)
+                .min_size(egui::vec2(ui.available_width(), 52.0)),
         );
         response.widget_info(|| {
             egui::WidgetInfo::labeled(

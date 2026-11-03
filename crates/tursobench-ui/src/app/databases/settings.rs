@@ -182,7 +182,7 @@ fn folder_input(
 fn folder_row(ui: &mut egui::Ui, path: &Path, action: &str) -> bool {
     egui::Frame::new()
         .fill(ui.visuals().faint_bg_color)
-        .corner_radius(3.0)
+        .corner_radius(7.0)
         .inner_margin(4.0)
         .show(ui, |ui| {
             ui.horizontal(|ui| {

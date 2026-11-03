@@ -4,10 +4,11 @@ use std::path::Path;
 
 impl App {
     pub(in crate::app) fn connect_ui(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
         egui::ScrollArea::vertical()
             .id_salt("database-connection")
             .show(ui, |ui| {
-                let width = ui.available_width().min(800.0);
+                let width = ui.available_width().min(560.0);
                 let inset = ((ui.available_width() - width) / 2.0).max(0.0);
                 let rect = egui::Rect::from_min_size(
                     ui.cursor().min + egui::vec2(inset, 0.0),
@@ -17,7 +18,7 @@ impl App {
                         ui.set_width(width);
                         ui.add_space(16.0);
                         ui.heading("Open database");
-                        ui.label("Choose a recent database or browse for a local file.");
+                        ui.weak("Choose a recent database or browse for a local file.");
                         ui.add_space(12.0);
 
                         if self.path.is_empty() {
@@ -50,6 +51,7 @@ impl App {
             });
         let mut open = self.databases.settings_open;
         egui::Window::new("Search settings")
+            .frame(crate::app::presentation::window_frame(&ctx))
             .id(egui::Id::unique("database-search-settings"))
             .open(&mut open)
             .collapsible(false)
@@ -119,8 +121,17 @@ impl App {
                 ui.add_space(8.0);
                 ui.horizontal_wrapped(|ui| {
                     ui.label("Access");
-                    ui.selectable_value(&mut self.writable, false, "Read only");
-                    ui.selectable_value(&mut self.writable, true, "Read and write");
+                    ui.scope(|ui| {
+                        if self.writable {
+                            let color = crate::appearance::Tokens::of(ui.ctx()).pending;
+                            ui.visuals_mut().selection.bg_fill = color.gamma_multiply(0.13);
+                            ui.visuals_mut().selection.stroke.color = color;
+                        }
+                        ui.horizontal(|ui| {
+                            ui.selectable_value(&mut self.writable, false, "Read only");
+                            ui.selectable_value(&mut self.writable, true, "Read and write");
+                        });
+                    });
                 });
                 if self.writable {
                     ui.colored_label(ui.visuals().warn_fg_color, "Back up closed files with all required WAL state before trying writes.");
@@ -140,12 +151,9 @@ impl App {
                     && self.exclusive
                     && self.databases.inspection.allows_open(&self.path)
                     && !self.has_drafts();
-                let response = ui.add_enabled(
-                    enabled,
-                    egui::Button::new(egui::RichText::new("Open database").color(egui::Color32::WHITE))
-                        .fill(egui::Color32::from_rgb(4, 120, 87))
-                        .min_size(egui::vec2(150.0, 36.0)),
-                );
+                let response = crate::app::presentation::footer(ui, |ui| {
+                    ui.add_enabled(enabled, crate::app::presentation::action(ui,"Open database",crate::app::presentation::Intent::Primary).min_size(egui::vec2(150.0,38.0)))
+                }).inner;
                 #[cfg(test)]
                 {
                     self.databases.open_rect = Some(response.rect);

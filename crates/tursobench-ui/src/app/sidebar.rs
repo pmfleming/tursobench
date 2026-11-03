@@ -122,7 +122,7 @@ impl App {
                     let system=o.name.starts_with("__turso_internal_");
                     (if kind=="system"{o.kind=="table"&&system}else{o.kind==kind&&!system}) && (o.name.to_lowercase().contains(&filter) || self.loaded_inspection(&o.name).is_some_and(|i| i.table.columns.iter().any(|c| c.name.to_lowercase().contains(&filter))))
                 }).map(|o| o.name.clone()).collect();
-                egui::CollapsingHeader::new(format!("{title} · {}",objects.len())).id_salt(("nav-group",kind)).default_open(kind=="table" || kind=="view" || !filter.is_empty()).show(ui,|ui| {
+                egui::CollapsingHeader::new(egui::RichText::new(format!("{} · {}",title.to_uppercase(),objects.len())).size(crate::appearance::text_size(ui.ctx(),10.5)).strong().color(crate::appearance::Tokens::of(ui.ctx()).muted)).id_salt(("nav-group",kind)).default_open(kind=="table" || kind=="view" || !filter.is_empty()).show(ui,|ui| {
                     for name in objects {
                         if self.sidebar_object(ui, &name, if kind == "system" { "table" } else { kind }, icon, related.contains(&name)) {
                             hovered = Some(name);
@@ -270,7 +270,7 @@ impl App {
                 }
             }
             for (target,label) in links {
-                if ui.link(label).on_hover_text("Open table without a row filter. Select a record to follow a specific key.").clicked(){table = Some(target.to_owned());}
+                if ui.link(egui::RichText::new(label).color(crate::appearance::Tokens::of(ui.ctx()).relationship)).on_hover_text("Open table without a row filter. Select a record to follow a specific key.").clicked(){table = Some(target.to_owned());}
             }
         });
         if let Some(column) = column {
@@ -302,19 +302,44 @@ impl App {
     }
 
     pub(super) fn navigator_utilities(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            for (icon, name, panel) in [
-                (Icon::Data, "Tables", ToolPanel::Schema),
-                (Icon::History, "History", ToolPanel::History),
-                (Icon::Saved, "Saved queries", ToolPanel::Saved),
-                (Icon::Checks, "Database checks", ToolPanel::Diagnostics),
-                (Icon::Settings, "Settings", ToolPanel::Settings),
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            let width = ((ui.available_width() - 10.0) / 6.0).max(18.0);
+            for (icon, label, name, panel) in [
+                (Icon::Data, "Tables", "Tables", Some(ToolPanel::Schema)),
+                (
+                    Icon::History,
+                    "History",
+                    "History",
+                    Some(ToolPanel::History),
+                ),
+                (
+                    Icon::Saved,
+                    "Saved",
+                    "Saved queries",
+                    Some(ToolPanel::Saved),
+                ),
+                (
+                    Icon::Checks,
+                    "Checks",
+                    "Database checks",
+                    Some(ToolPanel::Diagnostics),
+                ),
+                (Icon::Sql, "SQL", "New SQL editor", None),
+                (
+                    Icon::Settings,
+                    "Settings",
+                    "Settings",
+                    Some(ToolPanel::Settings),
+                ),
             ] {
-                if icons::ribbon_button(ui, icon, name, "", Some(self.ui.sidebar == panel))
-                    .clicked()
-                {
-                    self.select_tool(panel);
+                let selected = panel == Some(self.ui.sidebar);
+                if icons::rail_button(ui, icon, label, name, selected, width).clicked() {
+                    if let Some(panel) = panel {
+                        self.select_tool(panel);
+                    } else {
+                        self.open_sql_window(true);
+                    }
                 }
             }
         });
@@ -339,6 +364,7 @@ fn tree_row(
         egui::WidgetInfo::selected(egui::Role::TreeItem, ui.is_enabled(), selected, name)
     });
     let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+    let tokens = crate::appearance::Tokens::of(ui.ctx());
     if selected || response.hovered() || response.has_focus() {
         painter.rect_filled(
             rect,
@@ -350,8 +376,15 @@ fn tree_row(
             },
         );
     }
+    if selected {
+        painter.vline(
+            rect.left() + 1.0,
+            rect.y_range().shrink(3.0),
+            egui::Stroke::new(2.0, tokens.primary),
+        );
+    }
     let color = if related {
-        ui.visuals().hyperlink_color
+        tokens.relationship
     } else {
         ui.visuals().text_color()
     };
@@ -362,7 +395,13 @@ fn tree_row(
             egui::vec2(12.0, 12.0),
         ),
         icon,
-        color,
+        if matches!(icon, Icon::Key | Icon::Link) {
+            tokens.relationship
+        } else if selected {
+            tokens.primary
+        } else {
+            tokens.muted
+        },
     );
     let right = painter.layout_no_wrap(
         detail.to_owned(),

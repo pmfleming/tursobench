@@ -191,6 +191,67 @@ fn widget(
     })
 }
 
+/// Compact, labelled navigation rail with full accessible names at narrow widths.
+pub(super) fn rail_button(
+    ui: &mut egui::Ui,
+    icon: Icon,
+    label: &str,
+    name: &str,
+    selected: bool,
+    width: f32,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 48.0), egui::Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), selected, name)
+    });
+    let tokens = crate::appearance::Tokens::of(ui.ctx());
+    let color = if selected {
+        tokens.primary
+    } else {
+        tokens.muted
+    };
+    let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+    if selected || response.hovered() || response.has_focus() {
+        painter.rect_filled(
+            rect,
+            8.0,
+            if selected {
+                ui.visuals().selection.bg_fill
+            } else {
+                tokens.raised
+            },
+        );
+    }
+    if response.has_focus() {
+        painter.rect_stroke(
+            rect,
+            8.0,
+            ui.visuals().selection.stroke,
+            egui::StrokeKind::Inside,
+        );
+    }
+    paint(
+        &painter,
+        egui::Rect::from_center_size(
+            egui::pos2(rect.center().x, rect.top() + 14.0),
+            egui::vec2(18.0, 18.0),
+        ),
+        icon,
+        color,
+    );
+    let text = painter.layout_no_wrap(
+        label.into(),
+        crate::appearance::proportional(ui.ctx(), 9.0),
+        color,
+    );
+    painter.galley(
+        egui::pos2(rect.center().x - text.size().x / 2.0, rect.top() + 29.0),
+        text,
+        color,
+    );
+    response.on_hover_text(name)
+}
+
 pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color: egui::Color32) {
     let p =
         |x: f32, y: f32| rect.min + egui::vec2(x * rect.width() / 24.0, y * rect.height() / 24.0);

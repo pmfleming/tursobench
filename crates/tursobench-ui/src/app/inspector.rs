@@ -1,3 +1,4 @@
+use super::presentation::{self, Intent};
 use super::{
     App, View,
     icons::{self, Icon},
@@ -49,7 +50,7 @@ impl App {
             let text = typed(value);
             code_view(ui, &text, 3);
         }
-        ui.label("Stored value");
+        presentation::notice(ui, Icon::Selection, Intent::Neutral, "Stored value");
         let text = typed(value);
         egui::ScrollArea::vertical()
             .id_salt("stored-cell")
@@ -58,7 +59,14 @@ impl App {
                 code_view(ui, &text, 3);
             });
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Copy stored value").clicked() {
+            if ui
+                .add(presentation::action(
+                    ui,
+                    "Copy stored value",
+                    Intent::Primary,
+                ))
+                .clicked()
+            {
                 ui.ctx().copy_text(crate::export::cell_text(value));
             }
             if ui.button("Record").clicked() {
@@ -80,7 +88,16 @@ impl App {
                         .desired_rows(3),
                 );
             }
-            if ui.button("Stage cell change").clicked() {
+            if presentation::footer(ui, |ui| {
+                ui.add(presentation::action(
+                    ui,
+                    "Stage cell change",
+                    Intent::Pending,
+                ))
+            })
+            .inner
+            .clicked()
+            {
                 match self.document.tools.cell_editor.parse() {
                     Ok(value) => self.stage_cell(row, col, value),
                     Err(e) => self.status = e,
@@ -122,15 +139,18 @@ impl App {
             let mut selected = None;
             for key in &info.foreign_keys {
                 if ui
-                    .button(format!(
-                        "Parent: {} ({})",
-                        key.target,
-                        key.columns
-                            .iter()
-                            .map(|(c, _)| c.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ))
+                    .button(
+                        egui::RichText::new(format!(
+                            "Parent: {} ({})",
+                            key.target,
+                            key.columns
+                                .iter()
+                                .map(|(c, _)| c.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ))
+                        .color(crate::appearance::Tokens::of(ui.ctx()).relationship),
+                    )
                     .clicked()
                 {
                     selected = Some(key.clone());
@@ -332,7 +352,8 @@ impl App {
     pub(super) fn inspection_surfaces(&mut self, ctx: &egui::Context) {
         if self.document.ui.inspector_detached && self.document.ui.inspector_open {
             let mut open = true;
-            egui::Window::new("DetailMode")
+            egui::Window::new("Cell detail")
+                .frame(crate::app::presentation::window_frame(&ctx))
                 .open(&mut open)
                 .default_size([420.0, 500.0])
                 .default_pos(egui::pos2(
@@ -369,7 +390,7 @@ impl App {
         }
         if self.tools.help {
             let mut open = true;
-            egui::Window::new("Keyboard and safety reference").open(&mut open).default_width(560.0).show(ctx,|ui|{
+            egui::Window::new("Keyboard and safety reference").frame(crate::app::presentation::window_frame(&ctx)).open(&mut open).default_width(560.0).show(ctx,|ui|{
                 egui::ScrollArea::vertical().max_height(500.0).show(ui,|ui|{
                     for line in ["Navigator footer: Tables / History / Saved / Checks / Settings · F1: Help","Ctrl+K: tables / columns / commands · Ctrl+J: SQL view · Ctrl+1 / Ctrl+2: Data / Structure","Ctrl+O: database chooser · Folder icon / Alt+Enter: file dialog · F1: help · Ctrl+T: theme","Database chooser: Down enters results; Up/Down browses; Enter selects; typing resumes search","In SQL editor: Ctrl+Enter / F5 runs one statement; Ctrl+Shift+Enter runs selection/current statement; Ctrl+Space completes","Ctrl+Shift+C: retained TSV · Ctrl+E: export · Alt+Left: Back / return to table","Grid: arrows move, Shift+arrows extend, Space opens record detail, Ctrl+C copies selection","Double-click / Enter: inline stage · Escape: cancel · right-click: typed detail / filter / copy","Headers: drag to move, edge drag to resize, double-click edge to fit; funnel shows sampled values","Tiles have fixed positions. Minimize to a header or expand to fill the workspace.","Ctrl+Alt+Enter: expand/restore view · Ctrl+Tab: next view · left navigation remains visible","Scroll / PgDn: load bounded pages; Ctrl+F: typed tokens. Map camera is saved on close.","Exports/copies never rerun SQL and exclude staged overlays","Discard suppresses delivery; execution and writes continue until the worker reports completion","Closing waits for actual execution and rollback acknowledgement","Writable SQL autocommits unless you BEGIN; staged edits require explicit commit; Diff / SQL review is optional"]{ui.label(line);}
                 });

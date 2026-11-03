@@ -1,3 +1,4 @@
+use super::presentation::{self, Intent};
 use super::{
     App, View,
     shell::{Nav, TableView, ToolPanel},
@@ -202,13 +203,13 @@ impl App {
             return;
         }
         let mut open = true;
-        egui::Window::new(if self.writable { "Reopen read-only?" } else { "Enable editing?" })
+        egui::Window::new(if self.writable { "Reopen read-only?" } else { "Enable editing?" }).frame(crate::app::presentation::window_frame(&ctx))
             .open(&mut open).anchor(egui::Align2::LEFT_BOTTOM, [12.0,-48.0]).max_width((ctx.content_rect().width()-40.0).min(520.0)).collapsible(false).show(ctx, |ui| {
-                ui.label("The current session will close and roll back any open transaction before reopening. Local drafts will be discarded. Committed writes are not undone.");
+                presentation::notice(ui, super::icons::Icon::Lock, Intent::Pending,"The current session will close and roll back any open transaction before reopening. Local drafts will be discarded. Committed writes are not undone.");
                 if !self.writable { ui.label("Back up the closed database with its WAL state before editing. SQL writes autocommit unless you BEGIN; grid edits are staged for review."); }
                 ui.checkbox(&mut self.ui.access_ack, "No other application has this database open");
-                if ui.add_enabled(self.ui.access_ack && self.ready && !self.closing && self.commit_ticket.is_none() && !self.uncertain_edit,
-                    egui::Button::new("Close cleanly and reopen")).clicked() {
+                if presentation::footer(ui, |ui| ui.add_enabled(self.ui.access_ack && self.ready && !self.closing && self.commit_ticket.is_none() && !self.uncertain_edit,
+                    presentation::action(ui,"Close cleanly and reopen",Intent::Pending))).inner.clicked() {
                     self.pending_access = Some(!self.writable);
                     self.ui.access_dialog = false;
                     self.close();
@@ -239,7 +240,7 @@ impl App {
         }
         let mut open = true;
         let mut chosen = None;
-        egui::Window::new("Search tables, columns and commands")
+        egui::Window::new("Search tables, columns and commands").frame(crate::app::presentation::window_frame(&ctx))
             .id(egui::Id::unique("command-palette"))
             .open(&mut open)
             .collapsible(false)
@@ -278,7 +279,7 @@ impl App {
                     .show(ui, |ui| {
                         for (index, (label, _)) in items.iter().enumerate() {
                             let selected = index == self.ui.palette_index;
-                            let response = ui.selectable_label(selected, label);
+                            let response = ui.add_sized([ui.available_width(),32.0],egui::Button::new(label).selected(selected).frame_when_inactive(false));
                             if selected {
                                 response.scroll_to_me(Some(egui::Align::Center));
                             }
@@ -291,9 +292,9 @@ impl App {
                         }
                     });
                 chosen = chosen_index.filter(|&i| i < items.len()).map(|i| items.swap_remove(i).1);
-                ui.small(
-                    "Up/Down choose · Enter open · Esc close. Column search uses loaded map metadata.",
-                );
+                presentation::footer(ui, |ui| {
+                    ui.small("Up/Down choose · Enter open · Esc close. Column search uses loaded map metadata.");
+                });
             });
         self.ui.palette_open = open;
         if let Some(action) = chosen {

@@ -1,3 +1,4 @@
+use super::presentation::{self, Intent};
 use super::{
     App, View, diagram,
     icons::{self, Icon},
@@ -255,10 +256,12 @@ impl App {
         }
         egui::CentralPanel::default().show(ui, |ui| self.workspace_ui(ui));
         if self.confirm_close {
-            egui::Window::new("Close writable database?").anchor(egui::Align2::CENTER_CENTER,egui::Vec2::ZERO).collapsible(false).max_width((ctx.content_rect().width()-48.0).min(520.0)).show(&ctx,|ui|{
-                ui.label("Local drafts will be discarded. Active execution will finish. Any remaining editor transaction will be explicitly rolled back. This does not undo committed writes.");
-                if ui.button("Wait, roll back transaction, and close").clicked(){self.close();}
-                if ui.button("Keep open").clicked(){self.confirm_close=false;self.quit=false;self.pending_database=None;}
+            egui::Window::new("Close writable database?").frame(crate::app::presentation::window_frame(&ctx)).anchor(egui::Align2::CENTER_CENTER,egui::Vec2::ZERO).collapsible(false).max_width((ctx.content_rect().width()-48.0).min(520.0)).show(&ctx,|ui|{
+                presentation::notice(ui,Icon::Disconnect,Intent::Pending,"Local drafts will be discarded. Active execution will finish. Any remaining editor transaction will be explicitly rolled back. This does not undo committed writes.");
+                presentation::footer(ui, |ui| {
+                    if ui.add(presentation::action(ui,"Wait, roll back transaction, and close",Intent::Pending)).clicked(){self.close();}
+                    if ui.button("Keep open").clicked(){self.confirm_close=false;self.quit=false;self.pending_database=None;}
+                });
             });
         }
         self.edit_windows(&ctx);
@@ -269,13 +272,23 @@ impl App {
         if self.ui.outcomes {
             let mut open = true;
             egui::Window::new("Execution outcomes")
+                .frame(crate::app::presentation::window_frame(&ctx))
                 .open(&mut open)
                 .default_width(580.0)
                 .max_width((ctx.content_rect().width() - 40.0).max(240.0))
                 .max_height(ctx.content_rect().height() * 0.65)
                 .vscroll(true)
                 .show(&ctx, |ui| {
-                    ui.label(&self.status);
+                    presentation::notice(
+                        ui,
+                        Icon::History,
+                        if self.uncertain_edit || self.transaction == TransactionState::Unknown {
+                            Intent::Danger
+                        } else {
+                            Intent::Neutral
+                        },
+                        &self.status,
+                    );
                     for message in self.activity.iter().rev() {
                         ui.separator();
                         ui.label(message);
@@ -286,6 +299,7 @@ impl App {
         if self.ui.export_open {
             let mut open = true;
             egui::Window::new("Export retained result")
+                .frame(crate::app::presentation::window_frame(&ctx))
                 .open(&mut open)
                 .default_width(600.0)
                 .max_width((ctx.content_rect().width() - 40.0).max(240.0))

@@ -1,3 +1,4 @@
+use super::presentation::{self, Intent};
 use super::{App, View, shell};
 use eframe::egui;
 use tursobench_core::Delivery;
@@ -88,10 +89,20 @@ impl App {
                 ui.label("Target table:");
                 ui.text_edit_singleline(&mut self.document.tools.export_table);
             }
+        });
+        presentation::notice(
+            ui,
+            super::icons::Icon::Export,
+            Intent::Neutral,
+            &format!(
+                "Scope: {scope} · retained engine values only, not staged overlays · never re-executes SQL"
+            ),
+        );
+        presentation::footer(ui, |ui| {
             if ui
                 .add_enabled(
                     enabled && self.export_job.is_none(),
-                    egui::Button::new("Export retained result…"),
+                    presentation::action(ui, "Export retained result…", Intent::Primary),
                 )
                 .clicked()
             {
@@ -138,6 +149,5 @@ impl App {
                 self.copy_results(ui.ctx(), crate::export::Format::Json);
             }
         });
-        ui.small(format!("Scope: {scope} · retained engine values only, not staged overlays · never re-executes SQL"));
     }
 }

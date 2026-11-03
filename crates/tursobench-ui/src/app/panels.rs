@@ -424,7 +424,12 @@ fn heading_action(ui: &mut egui::Ui, title: &str, icon: Icon, name: &str, enable
 
 fn section(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut egui::Ui)) {
     ui.add_space(4.0);
-    ui.weak(title);
+    ui.label(
+        egui::RichText::new(title.to_uppercase())
+            .small()
+            .strong()
+            .color(crate::appearance::Tokens::of(ui.ctx()).muted),
+    );
     card(ui, contents);
 }
 
@@ -432,8 +437,8 @@ fn card(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
         .fill(ui.visuals().faint_bg_color)
         .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-        .corner_radius(3.0)
-        .inner_margin(6.0)
+        .corner_radius(9.0)
+        .inner_margin(9.0)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             contents(ui);
