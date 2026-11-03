@@ -12,7 +12,8 @@ Dark remain available; legacy saved dark/light choices are preserved until chang
 in Settings. Unsupported GTK color expressions use the neutral semantic fallback.
 
 Every Data, Structure, Map, SQL, Result and pinned Record view is a window. The
-right navigator remains visible when a window expands. Click a window or its
+left navigator spans the full application height, including alongside the ribbon
+and status bar, and remains visible when a window expands. Click a window or its
 navigator entry to focus it; Ctrl Tab cycles, Ctrl Alt Enter expands/restores and
 Escape restores after dismissing any active edit/dialog. Ctrl J opens SQL;
 Ctrl 1/2 opens Data/Structure. Ctrl Enter runs SQL; Ctrl Shift Enter runs selection.

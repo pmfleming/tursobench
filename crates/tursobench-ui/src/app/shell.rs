@@ -67,6 +67,10 @@ pub(super) struct UiState {
     pub grid_rect: egui::Rect,
     #[cfg(test)]
     pub visible_rows: usize,
+    #[cfg(test)]
+    pub ribbon_actions: Vec<egui::Rect>,
+    #[cfg(test)]
+    pub rail_rect: egui::Rect,
 }
 impl UiState {
     pub fn new(ctx: &egui::Context) -> Self {
@@ -98,6 +102,10 @@ impl UiState {
             grid_rect: egui::Rect::NOTHING,
             #[cfg(test)]
             visible_rows: 0,
+            #[cfg(test)]
+            ribbon_actions: vec![],
+            #[cfg(test)]
+            rail_rect: egui::Rect::NOTHING,
         }
     }
 }
@@ -148,22 +156,14 @@ impl App {
         #[cfg(test)]
         {
             self.ui.transaction_rects.clear();
+            self.ui.ribbon_actions.clear();
             self.ui.sidebar_rect = egui::Rect::NOTHING;
             self.ui.visible_rows = 0;
         }
         let layout = Layout::new(ui.available_width());
-        self.status_bar(ui);
-        if self.workspace.enabled {
-            self.command_ribbon(ui);
-        }
-        if self.session.is_some() {
-            egui::Panel::right("activity-rail")
-                .exact_size(44.0)
-                .resizable(false)
-                .show(ui, |ui| self.activity_rail(ui));
-        }
+        // Reserve full-height navigation before the workspace ribbon and status bar.
         {
-            let panel = egui::Panel::right("workspace-sidebar")
+            let panel = egui::Panel::left("workspace-sidebar")
                 .resizable(true)
                 .default_size(if self.session.is_none() && ui.available_width() >= 900.0 {
                     300.0
@@ -192,6 +192,22 @@ impl App {
             }
             #[cfg(not(test))]
             let _ = panel;
+        }
+        if self.session.is_some() {
+            let rail = egui::Panel::left("activity-rail")
+                .exact_size(44.0)
+                .resizable(false)
+                .show(ui, |ui| self.activity_rail(ui));
+            #[cfg(test)]
+            {
+                self.ui.rail_rect = rail.response.rect;
+            }
+            #[cfg(not(test))]
+            let _ = rail;
+        }
+        self.status_bar(ui);
+        if self.workspace.enabled {
+            self.command_ribbon(ui);
         }
         if !self.workspace.enabled {
             if self.document.ui.nav == Nav::Table

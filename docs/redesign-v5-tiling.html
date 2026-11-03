@@ -45,6 +45,11 @@ a{color:var(--primary)} .icon{width:18px;height:18px;fill:none;stroke:currentCol
 @media(min-width:1100px){.source-grid{grid-template-columns:1fr 1fr}.source-grid figure:last-child{grid-column:1/-1}}
 @media(max-width:800px){.app-workspace{grid-template-columns:minmax(0,1fr) 135px}.navigation{padding-left:8px}.prototype{padding:12px}.group{gap:4px;padding-right:8px}.ribbon{gap:8px}.ribbon button{padding:6px 8px}.ribbon .icon{width:18px;height:18px}.principles{grid-template-columns:1fr}.note{display:grid;grid-template-columns:24px 1fr;gap:0 8px}.note .number{grid-row:1/3}.note h3{margin:0 0 4px}.demo-options .hint{width:100%;margin:0}.app-title .db{font-size:10px}}
 @media(max-width:480px){.app-workspace{grid-template-columns:minmax(0,1fr) 51px;gap:6px}.navigation{padding-left:4px}.navigation .nav-text,.navigation .count,.navigation input,.navigation .nav-foot,.window-list .nav-text{display:none}.navigation button{justify-content:center;padding:6px}.navigation .nav-label{font-size:8px;letter-spacing:0;overflow:hidden}.navigation .window-list button{font-size:9px}.app-title .db{display:none}.context .right{display:none}.canvas,.navigation{height:480px}.prototype{padding:10px}.status span:last-child{display:none}.tile-title{font-size:10px}.intro h1{font-size:20px}.tile-header{gap:3px}.tile-header .icon{width:13px}.tile-header button{min-width:25px;width:25px}}
+/* Updated implementation: navigation owns the full left edge, outside all workspace chrome. */
+.prototype{display:grid;grid-template-columns:175px minmax(0,1fr);column-gap:10px}
+.app-workspace{display:contents}.app-title{grid-column:2;grid-row:1}.ribbon{grid-column:2;grid-row:2}.context{grid-column:2;grid-row:3}.canvas{grid-column:2;grid-row:4}.status{grid-column:2;grid-row:5}
+.navigation{grid-column:1;grid-row:1 / 6;height:auto;border-left:0;border-right:1px solid var(--line);padding-left:0;padding-right:10px}
+@media(max-width:760px){.prototype{grid-template-columns:125px minmax(0,1fr)}}
 </style>
 </head>
 <body>
@@ -69,7 +74,7 @@ a{color:var(--primary)} .icon{width:18px;height:18px;fill:none;stroke:currentCol
 <main>
 <div class="intro"><div class="eyebrow">TursoBench / Redesign proposal 05</div>
 <h1>A workspace shaped by your data.</h1>
-<p>System colors. Independent views. A persistent right navigator. Open a view and the workspace makes room for it; expand it when you need to concentrate.</p></div>
+<p>System colors. Independent views. A persistent left navigator. Open a view and the workspace makes room for it; expand it when you need to concentrate.</p></div>
 <div class="demo-options">
 <label>Appearance <select id="palette"><option value="machine">This machine · black / blue</option><option value="system">Follow system · browser</option><option value="light">Light · fallback example</option></select></label>
 <button id="reset">Reset example</button>
@@ -100,7 +105,7 @@ a{color:var(--primary)} .icon{width:18px;height:18px;fill:none;stroke:currentCol
 </div>
 <div class="status"><span>●</span><span>Local · read only</span><span id="status">20 sample rows loaded</span><span>System fonts · 100%</span></div>
 </section>
-<div class="notice" id="notice" role="status" aria-live="polite">Try SQL to add a window. Click a row to open its record. Expand any window; the right navigator stays in place.</div>
+<div class="notice" id="notice" role="status" aria-live="polite">Try SQL to add a window. Click a row to open its record. Expand any window; the left navigator stays in place.</div>
 <div class="legend"><span><i class="dot"></i>Blue outline = focused window</span><span>Drag dividers to resize</span><span><kbd>Esc</kbd> restores tiles</span><span>Ribbon follows focus</span></div>
 <div class="principles">
 <article class="note"><span class="number">01</span><h3>Your theme is the default</h3><p>Black surfaces, blue focus outlines, small corners and system fonts match this machine. Emerald stays in the existing app icon.</p></article>
@@ -119,7 +124,7 @@ a{color:var(--primary)} .icon{width:18px;height:18px;fill:none;stroke:currentCol
 <ul>
 <li><strong>Minimums, then tabs:</strong> provisional native minimums: grid 420 × 200, structure 260 × 180, map 320 × 220, SQL 460 × 200, record 280 × 180 logical pixels. Measure them against system font size and scale. The embedded demo uses smaller minimums to remain usable inside this conversation.</li>
 <li><strong>Preserve intent:</strong> drag splitters, with minimums enforced; manually sized splits stay fixed until Retile. Closing a window collapses its branch. Expanding stores the tree and selected tabs; Restore returns to that exact arrangement. No floating overlays over the grid.</li>
-<li><strong>Small display / many views:</strong> group new windows into tabs when no viable split exists. All views remain reachable from the right navigator. On resize, temporarily collapse unsuitable branches into groups and restore the saved tree when space returns.</li>
+<li><strong>Small display / many views:</strong> group new windows into tabs when no viable split exists. All views remain reachable from the left navigator. On resize, temporarily collapse unsuitable branches into groups and restore the saved tree when space returns.</li>
 <li><strong>Focus is explicit:</strong> a title, border and ribbon label identify the command target. Opening a view while expanded restores the tiled workspace and focuses the new view. Keyboard proposals: <kbd>Ctrl Shift Enter</kbd> expand/restore, <kbd>Esc</kbd> restore, <kbd>Ctrl Tab</kbd> next view; the native implementation must check existing bindings.</li>
 </ul>
 </details>
@@ -215,7 +220,7 @@ a{color:var(--primary)} .icon{width:18px;height:18px;fill:none;stroke:currentCol
       candidates.push({node,axis,ratio,score});
     }
     if(candidates.length){candidates.sort((a,b)=>b.score-a.score);const c=candidates[0],old={...c.node};delete c.node.ids;delete c.node.selected;Object.assign(c.node,{axis:c.axis,ratio:c.ratio,a:old,b:leaf(id)});}
-    else {const target=leaves().find(x=>x.node.ids.includes(active))||leaves().at(-1);target.node.ids.push(id);target.node.selected=id;notify('No readable split remains. The new view joins a tab group and stays accessible in the right navigator.');}
+    else {const target=leaves().find(x=>x.node.ids.includes(active))||leaves().at(-1);target.node.ids.push(id);target.node.selected=id;notify('No readable split remains. The new view joins a tab group and stays accessible in the left navigator.');}
   }
   function rebuild(){root=null;const saved=active;for(const v of views){insert(v.id);active=v.id;}active=saved;selectInTree(active);}
   function open(type,table='chunks',opts={}){
@@ -266,7 +271,7 @@ a{color:var(--primary)} .icon{width:18px;height:18px;fill:none;stroke:currentCol
   }
   function render(){drawn=[];handles=[];canvas.replaceChildren();if(root&&(!expanded)&&(min(root).w>canvas.clientWidth||min(root).h>canvas.clientHeight))rebuild();if(expanded)drawTile(leaf(expanded),bounds());else if(root)walk(root,bounds(),drawTile,drawHandle);else canvas.innerHTML='<div class="empty">Open Data, Structure, Map or SQL from the ribbon.</div>';renderChrome();}
   function renderTables(){const search=$('table-search').value.toLowerCase();$('table-list').innerHTML=tables.filter(t=>t.includes(search)).map(t=>`<button data-table="${t}" title="Open ${t}">${icon('data')}<span class="nav-text">${t}</span><span class="count">${t==='chunks'?'20':'—'}</span></button>`).join('');}
-  function reset(){views=[];root=null;active=null;expanded=null;sequence=0;open('data');open('structure');open('map');active=views[0].id;selectInTree(active);render();notify('Try SQL to add a window. Click a row to open its record. Expand any window; the right navigator stays in place.');}
+  function reset(){views=[];root=null;active=null;expanded=null;sequence=0;open('data');open('structure');open('map');active=views[0].id;selectInTree(active);render();notify('Try SQL to add a window. Click a row to open its record. Expand any window; the left navigator stays in place.');}
   document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;
     if(b.dataset.open){notify('View opened or focused. The existing window state is retained.');open(b.dataset.open);}
     else if(b.dataset.table){if(b.dataset.table==='chunks')open('data','chunks');else{open('data',b.dataset.table);notify(b.dataset.table+' opened as an independent window. Rows in this prototype reuse the chunks sample to demonstrate layout.');}}

@@ -31,8 +31,8 @@ an isolated preferences directory and the existing painter icons. System capture
 use this workstation's GTK black/blue named palette and system fonts; the light
 capture uses the app's explicit Light override. No personal database was opened.
 
-- `v5/tiled-system.png`: Data, Structure and Map with contextual ribbon and right navigator.
-- `v5/expanded-map.png`: expanded map; right navigation remains visible.
+- `v5/tiled-system.png`: Data, Structure and Map with contextual ribbon and left navigator.
+- `v5/expanded-map.png`: expanded map; left navigation remains visible.
 - `v5/tiled-light.png`: the same tiled workspace in Light.
 
 Capture support is opt-in for the existing native smoke runner: set

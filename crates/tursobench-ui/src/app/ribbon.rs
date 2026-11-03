@@ -244,6 +244,8 @@ impl App {
                 icons::action(ui, icon, label)
             })
             .inner;
+        #[cfg(test)]
+        self.ui.ribbon_actions.push(response.rect);
         if response.clicked() {
             self.dispatch_action(action, ui.ctx());
         }
@@ -268,6 +270,7 @@ impl App {
             .show(ui, |ui| {
                 let wide = ui.available_width() >= 1120.0;
                 let narrow = ui.available_width() < 850.0;
+                let compact = ui.available_width() < 650.0;
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
                     ui.vertical(|ui| {
@@ -420,6 +423,10 @@ impl App {
                                     }
                                     _ => {}
                                 }
+                                if compact {
+                                    ui.separator();
+                                    self.ribbon_menu_action(ui, Retile, "Retile windows");
+                                }
                                 if self.executing() {
                                     ui.separator();
                                     self.ribbon_menu_action(
@@ -445,7 +452,9 @@ impl App {
                                     "Expand"
                                 },
                             );
-                            self.ribbon_action(ui, Retile, Icon::Arrange, "Retile");
+                            if !compact {
+                                self.ribbon_action(ui, Retile, Icon::Arrange, "Retile");
+                            }
                         });
                     });
                 });

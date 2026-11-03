@@ -346,7 +346,7 @@ impl App {
             self.workspace.tiles.clear();
         }
         let Some(tree) = &self.workspace.tree else {
-            ui.label("Open a table, Map or SQL from the right navigator.");
+            ui.label("Open a table, Map or SQL from the left navigator.");
             return;
         };
         let profiles = self.profiles();

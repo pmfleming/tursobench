@@ -98,7 +98,7 @@ fn sql_selection_shortcut_and_window_expansion_have_distinct_targets() {
         vec![key(egui::Modifiers::CTRL | egui::Modifiers::ALT)],
     );
     assert_eq!(app.workspace.expanded, Some(app.document.id));
-    assert!(app.ui.sidebar_rect.left() >= app.workspace.area.right());
+    assert!(app.ui.sidebar_rect.right() <= app.workspace.area.left());
     app.focus_window(editor);
     app.request_close_window(editor);
     assert_eq!(
@@ -298,7 +298,21 @@ fn diagram_preserves_drafts_and_result_ownership_and_chrome_fits_both_themes() {
             for _ in 0..2 {
                 frame_at(&mut app, &ctx, egui::vec2(width, height), vec![]);
             }
-            assert!(app.ui.sidebar_rect.left() >= app.workspace.area.right());
+            assert!(app.ui.sidebar_rect.right() <= app.workspace.area.left());
+            let viewport = ctx.content_rect();
+            assert_eq!(app.ui.sidebar_rect.left(), viewport.left());
+            for rect in [app.ui.sidebar_rect, app.ui.rail_rect] {
+                assert_eq!(rect.top(), viewport.top());
+                assert_eq!(rect.bottom(), viewport.bottom());
+            }
+            for rect in &app.ui.ribbon_actions {
+                assert!(
+                    viewport.contains_rect(*rect),
+                    "ribbon action outside viewport: {rect:?}"
+                );
+                assert!(rect.left() >= app.ui.rail_rect.right());
+                assert!(rect.height() >= 40.0);
+            }
             for (_, rect) in &app.workspace.tiles {
                 assert!(app.workspace.area.contains_rect(*rect));
             }
@@ -307,7 +321,7 @@ fn diagram_preserves_drafts_and_result_ownership_and_chrome_fits_both_themes() {
             frame_at(&mut app, &ctx, egui::vec2(width, height), vec![]);
             assert_eq!(app.workspace.tiles.len(), 1);
             assert_eq!(app.workspace.tiles[0].0, map);
-            assert!(app.ui.sidebar_rect.left() >= app.workspace.tiles[0].1.right());
+            assert!(app.ui.sidebar_rect.right() <= app.workspace.tiles[0].1.left());
             app.expand_window(map);
             assert_eq!(app.workspace.tree, saved);
         }
