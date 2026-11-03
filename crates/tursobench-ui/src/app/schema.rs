@@ -1,9 +1,5 @@
-use super::results::code_view;
-use super::{
-    App, View,
-    icons::{self, Icon},
-    shell, tools,
-};
+mod presentation;
+use super::{App, View, shell, tools};
 use eframe::egui;
 use tursobench_core::{Event, EventKind, SchemaObject};
 use tursobench_core::{ForeignKey, Value};
@@ -143,22 +139,20 @@ impl App {
             .tools
             .ddl
             .as_ref()
-            .map(|o| o.name.clone())
-            .or_else(|| self.document.object.clone())
-            .or_else(|| self.ui.diagram.selected.clone());
+            .map(|o| o.name.as_str())
+            .or(self.document.object.as_deref())
+            .or(self.ui.diagram.selected.as_deref());
         let Some(name) = name else {
             ui.label("Choose a table to inspect its structure.");
             return;
         };
-        let info = self.loaded_inspection(&name);
+        let info = self.loaded_inspection(name);
         let object = self
             .document
             .tools
             .ddl
             .as_ref()
             .or_else(|| self.schema.iter().find(|o| o.name == name));
-        let mut browse = None;
-        let mut load = false;
         if let Some(node) = self
             .ui
             .diagram
@@ -178,161 +172,17 @@ impl App {
                 &self.document.tools.inspection_error,
             );
         }
-        let count = if ui.available_width() >= 720.0 { 2 } else { 1 };
-        ui.columns(count, |panes| {
-            let ui = &mut panes[0];
-            if let Some(info) = &info {
-                if info.table.engine_managed() {
-                    ui.colored_label(
-                        ui.visuals().warn_fg_color,
-                        "Engine-managed storage · generated edits disabled",
-                    );
-                }
-                ui.strong("Columns").on_hover_text(
-                    "Committed browse metadata. Uncommitted editor changes are not visible.",
-                );
-                ui.group(|ui| {
-                    for c in &info.table.columns {
-                        ui.horizontal_wrapped(|ui| {
-                            if c.primary_key > 0 {
-                                let (r, _) = ui.allocate_exact_size(
-                                    egui::vec2(14.0, 14.0),
-                                    egui::Sense::hover(),
-                                );
-                                icons::paint(
-                                    ui.painter(),
-                                    r,
-                                    Icon::Key,
-                                    ui.visuals().warn_fg_color,
-                                );
-                            }
-                            ui.monospace(&c.name);
-                            ui.weak(&c.declared_type);
-                            if c.primary_key > 0 {
-                                ui.small(format!("PK {}", c.primary_key));
-                            }
-                            if c.not_null {
-                                ui.small("NOT NULL");
-                            }
-                            if c.hidden > 0 {
-                                ui.small(format!("hidden {}", c.hidden));
-                            }
-                            if let Some(default) = &c.default_sql {
-                                ui.small(format!("DEFAULT {default}"));
-                            }
-                        });
-                        ui.separator();
-                    }
-                });
-            }
-            let ui = &mut panes[count - 1];
-            if let Some(info) = &info {
-                ui.strong("Indexes");
-                if info.indexes.is_empty() {
-                    ui.weak("No declared indexes returned");
-                }
-                for index in &info.indexes {
-                    ui.group(|ui| {
-                        ui.monospace(&index.name);
-                        ui.horizontal_wrapped(|ui| {
-                            if index.unique {
-                                ui.small("UNIQUE");
-                            }
-                            if index.partial {
-                                ui.small("partial");
-                            }
-                            ui.label(
-                                index
-                                    .columns
-                                    .iter()
-                                    .map(|c| c.as_deref().unwrap_or("expression / method: see DDL"))
-                                    .collect::<Vec<_>>()
-                                    .join(", "),
-                            );
-                        });
-                    });
-                }
-                ui.strong("Foreign keys");
-                if info.foreign_keys.is_empty() {
-                    ui.weak("No declared foreign keys");
-                }
-                for key in &info.foreign_keys {
-                    ui.group(|ui| {
-                        if ui.link(&key.target).clicked() {
-                            browse = Some(key.target.clone());
-                        }
-                        ui.monospace(
-                            key.columns
-                                .iter()
-                                .map(|(from, to)| {
-                                    format!(
-                                        "{from} references {}",
-                                        to.as_deref().unwrap_or("unresolved PK")
-                                    )
-                                })
-                                .collect::<Vec<_>>()
-                                .join(", "),
-                        );
-                        ui.small(format!(
-                            "ON UPDATE {} · ON DELETE {}",
-                            key.on_update, key.on_delete
-                        ));
-                    });
-                }
-            } else if object.is_none_or(|o| o.kind == "table" || o.kind == "view")
-                && self.document.tools.inspection_ticket.is_none()
-                && ui.button("Load structure").clicked()
-            {
-                load = true;
-            }
-            let owner = info
-                .as_ref()
-                .map(|i| i.table.name.as_str())
-                .or_else(|| object.as_ref().map(|o| o.table.as_str()));
-            if let Some(owner) = owner {
-                let definitions: Vec<_> = self
-                    .schema
-                    .iter()
-                    .filter(|o| o.table == owner && (o.kind == "index" || o.kind == "trigger"))
-                    .collect();
-                if !definitions.is_empty() {
-                    ui.strong("Index and trigger definitions");
-                }
-                for object in definitions {
-                    ui.collapsing(format!("{} {}", object.kind, object.name), |ui| {
-                        if let Some(ddl) = &object.ddl {
-                            if icons::button(ui, Icon::Copy, "Copy definition", "").clicked() {
-                                ui.ctx().copy_text(ddl.clone());
-                            }
-                            ui.monospace(ddl);
-                        } else {
-                            ui.weak("Engine-generated definition");
-                        }
-                    });
-                }
-            }
-            ui.strong("Definition");
-            ui.weak(
-            "CHECK clauses, index expressions and FTS methods are preserved in the original DDL.",
-        );
-            if let Some(object) = object
-                && let Some(ddl) = &object.ddl
-            {
-                ui.collapsing("CREATE statement", |ui| {
-                    if icons::button(ui, Icon::Copy, "Copy original DDL", "").clicked() {
-                        ui.ctx().copy_text(ddl.clone());
-                    }
-                    code_view(ui, ddl, 8);
-                });
-            } else {
-                ui.weak("DDL not retained; refresh the catalog.");
-            }
-        });
-        if load {
-            self.request_inspection(name);
+        let action = presentation::Structure {
+            info,
+            object,
+            schema: &self.schema,
+            loading: self.document.tools.inspection_ticket.is_some(),
         }
-        if let Some(table) = browse {
-            self.browse_table(table);
+        .show(ui);
+        match action {
+            Some(presentation::Action::Load) => self.request_inspection(name.into()),
+            Some(presentation::Action::Browse(table)) => self.browse_table(table),
+            None => {}
         }
     }
     pub(super) fn follow_key(&mut self, row: usize, key: ForeignKey) {
