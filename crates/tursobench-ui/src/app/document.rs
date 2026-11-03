@@ -77,22 +77,6 @@ impl Document {
             ),
         }
     }
-    pub fn owns(&self, ticket: Ticket) -> bool {
-        self.result.current == Some(ticket)
-            || self.tools.inspection_ticket == Some(ticket)
-            || self
-                .tools
-                .context
-                .pending
-                .as_ref()
-                .is_some_and(|r| r.result.current == Some(ticket))
-            || self
-                .tools
-                .pages
-                .pending
-                .as_ref()
-                .is_some_and(|r| r.result.current == Some(ticket))
-    }
     pub fn has_drafts(&self) -> bool {
         self.drafts.as_ref().is_some_and(|d| !d.edits.is_empty())
     }
@@ -108,16 +92,5 @@ impl App {
         let previous = std::mem::replace(&mut self.document, next);
         self.documents.insert(previous.id, previous);
         true
-    }
-    pub(super) fn document_owner(&self, ticket: Ticket) -> Option<u64> {
-        if self.commit_ticket == Some(ticket) {
-            return self.commit_owner;
-        }
-        if self.document.owns(ticket) {
-            return Some(self.document.id);
-        }
-        self.documents
-            .iter()
-            .find_map(|(id, document)| document.owns(ticket).then_some(*id))
     }
 }

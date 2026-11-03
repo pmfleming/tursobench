@@ -178,16 +178,77 @@ fn independent_documents_route_results_and_keep_filters_drafts_and_sql() {
     assert!(!app.can_edit(), "another view owns the pending edit batch");
     assert!(app.document.drafts.is_none());
     assert_eq!(app.document.sql, "SELECT 'draft b'");
-    // A closed view's late delivery cannot append to another view's rows.
+    // Discarded and stale deliveries cannot change either view or steal focus.
+    let b_ticket = app.document.result.current.unwrap();
+    let original = app.document.result.rows.clone();
+    app.documents.get_mut(&a_id).unwrap().discard_ticket = Some(a_ticket);
+    for ticket in [
+        a_ticket,
+        tursobench_core::Ticket {
+            generation: b_ticket.generation + 1,
+            ..b_ticket
+        },
+        tursobench_core::Ticket {
+            database: b_ticket.database + 1,
+            ..b_ticket
+        },
+        tursobench_core::Ticket {
+            session: b_ticket.session + 1,
+            ..b_ticket
+        },
+    ] {
+        for kind in [
+            EventKind::Rows(vec![vec![Value::Integer(99)]]),
+            EventKind::Columns(vec![]),
+        ] {
+            app.handle_event(&ctx, Event { ticket, kind });
+            assert_eq!(app.document.id, b_id);
+            assert_eq!(app.document.result.rows, original);
+            assert_eq!(app.document.result.columns.len(), 2);
+            assert_eq!(app.documents[&a_id].result.rows.len(), 1);
+            assert_eq!(app.documents[&a_id].result.columns.len(), 2);
+        }
+    }
+    // A closed view loses its rows, but its completed write still updates the session.
     app.documents.remove(&a_id);
+    let completion = tursobench_core::Completion {
+        elapsed_ms: 1,
+        delivery: tursobench_core::Delivery::Complete,
+        rows_seen: 1,
+        changed: 1,
+        transaction: TransactionState::Active,
+        error: None,
+    };
+    let activity = app.activity.len();
     app.handle_event(
         &ctx,
         Event {
-            ticket: a_ticket,
-            kind: EventKind::Rows(vec![vec![Value::Integer(99)]]),
+            ticket: tursobench_core::Ticket {
+                session: a_ticket.session + 1,
+                ..a_ticket
+            },
+            kind: EventKind::Finished(completion.clone()),
         },
     );
-    assert_eq!(app.document.result.rows.len(), 1);
+    assert_eq!(app.activity.len(), activity);
+    assert_eq!(app.transaction, TransactionState::Autocommit);
+    for kind in [
+        EventKind::Rows(vec![vec![Value::Integer(99)]]),
+        EventKind::Columns(vec![]),
+        EventKind::Finished(completion),
+    ] {
+        app.handle_event(
+            &ctx,
+            Event {
+                ticket: a_ticket,
+                kind,
+            },
+        );
+    }
+    assert_eq!(app.transaction, TransactionState::Active);
+    assert_eq!(app.activity.len(), activity + 1);
+    assert_eq!(app.document.result.rows, original);
+    assert_eq!(app.document.result.columns.len(), 2);
     app.close();
 }
 
