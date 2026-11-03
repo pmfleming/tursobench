@@ -19,8 +19,15 @@ separate open-tile title bar, window dragging or divider resizing.
 - Tile ribbons expose actions directly with 32-point icons and 56-point buttons,
   twice their previous size. Narrow ribbons scroll horizontally; actions never
   collapse into a More menu. Column visibility and open SQL editors have dedicated
-  selectors. Show all tiles restores the complete workspace. Tooltips, shortcuts
-  and accessible names remain available for every icon button.
+  selectors. Tile navigation is not repeated in each ribbon. Restore all tiles
+  appears only when a tile is minimized or expanded; review appears in Data and
+  Record when their rows have staged edits. The labelled Discard results control
+  appears only for an active request; it suppresses delivery without stopping SQL
+  execution. Fixed tiles have no close buttons. Tooltips, shortcuts and accessible
+  names remain available.
+- The SQL ribbon includes a Results group for copying, exporting, fitting and
+  selecting result columns, and inspecting the selected result record. These
+  controls act on that editor's result buffer, not on the table-data tile.
 - The navigator footer opens Tables, History, Saved queries, Checks and Settings
   in the left panel. Query cards use icon actions; checks and preferences use
   compact groups. F1 opens Help. The database name opens recent databases and

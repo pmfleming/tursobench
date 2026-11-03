@@ -2114,13 +2114,7 @@ fn every_tile_exposes_its_actions_without_an_overflow_menu() {
             .filter_map(|(_, node)| node.label())
             .collect::<Vec<_>>();
         for label in expected.iter().copied().chain([
-            "Table data",
-            "Structure",
-            "Relationships",
-            "SQL",
-            "Review staged edits",
-            "Show all tiles",
-            "Discard result delivery (execution continues)",
+            "Restore all tiles",
             "Minimize to header",
             "Restore workspace",
         ]) {
@@ -2131,11 +2125,120 @@ fn every_tile_exposes_its_actions_without_an_overflow_menu() {
         }
         assert!(!controls.contains(&"More actions"));
         assert!(!controls.contains(&"SQL actions"));
+        assert!(!controls.contains(&"Review staged edits"));
+        assert!(!controls.contains(&"Discard results"));
+        assert!(
+            !tree.nodes.iter().any(|(_, node)| {
+                node.role() == egui::accesskit::Role::Button
+                    && matches!(
+                        node.label(),
+                        Some("Table data" | "Structure" | "Relationships" | "SQL")
+                    )
+            }),
+            "{kind:?} must not repeat tile navigation buttons"
+        );
         for &(pane, minimize, expand) in &app.workspace.controls {
             assert_eq!(pane, kind);
             assert_eq!(minimize.size(), egui::vec2(56.0, 56.0));
             assert_eq!(expand.size(), egui::vec2(56.0, 56.0));
         }
     }
+    app.close();
+}
+
+#[test]
+fn sql_result_ribbon_actions_use_the_linked_result_not_the_editor_or_table() {
+    let (_dir, ctx, mut app) = fixture(
+        &[
+            "CREATE TABLE sample(id INTEGER PRIMARY KEY)",
+            "INSERT INTO sample VALUES(1)",
+        ],
+        false,
+    );
+    app.browse_table("sample".into());
+    wait(&mut app, &ctx);
+    let table = app.document.id;
+    app.document.tools.columns.hidden.insert(0);
+    app.open_sql_window(false);
+    let editor = app.document.id;
+    app.document.sql = "SELECT 42 AS answer, 'retained' AS text".into();
+    app.run_sql();
+    wait(&mut app, &ctx);
+    let result = app.document.id;
+    let ticket = app.document.result.current;
+    assert_eq!(app.document.kind, tiling::Kind::Result);
+    app.document.inspect = Some((0, 0));
+    app.document.tools.columns.hidden.insert(0);
+    app.document.tools.columns.manual.insert(0);
+    app.focus_pane(tiling::Kind::Sql);
+    app.workspace.expanded = Some(tiling::Kind::Sql);
+    ctx.enable_accesskit();
+    let size = egui::vec2(3440.0, 1440.0);
+    let press = |app: &mut App, label: &str| {
+        frame_at(app, &ctx, size, vec![]);
+        let output = frame_at(app, &ctx, size, vec![]);
+        let tree = output.platform_output.accesskit_update.unwrap();
+        let bounds = tree
+            .nodes
+            .iter()
+            .find_map(|(_, node)| {
+                (node.label() == Some(label))
+                    .then(|| node.bounds())
+                    .flatten()
+            })
+            .unwrap_or_else(|| panic!("missing result action: {label}"));
+        let pos = egui::pos2(
+            (bounds.x0 + bounds.x1) as f32 / 2.0,
+            (bounds.y0 + bounds.y1) as f32 / 2.0,
+        );
+        assert!(app.workspace.pane_rects[0].1.contains(pos));
+        for pressed in [true, false] {
+            frame_at(
+                app,
+                &ctx,
+                size,
+                vec![egui::Event::PointerMoved(pos), pointer_button(pos, pressed)],
+            );
+        }
+    };
+    press(&mut app, "Show all result columns");
+    assert!(
+        app.document_ref(result)
+            .unwrap()
+            .tools
+            .columns
+            .hidden
+            .is_empty()
+    );
+    assert!(
+        app.document_ref(table)
+            .unwrap()
+            .tools
+            .columns
+            .hidden
+            .contains(&0)
+    );
+    press(&mut app, "Fit result columns");
+    assert!(
+        app.document_ref(result)
+            .unwrap()
+            .tools
+            .columns
+            .manual
+            .is_empty()
+    );
+    press(&mut app, "Export query results");
+    assert!(app.ui.export_open);
+    assert_eq!(app.workspace.focused, result);
+    assert_eq!(app.document.id, result);
+    assert_eq!(app.document_ref(result).unwrap().result.current, ticket);
+    assert_eq!(
+        app.document_ref(result).unwrap().result.rows[0][0],
+        Value::Integer(42)
+    );
+    assert_eq!(
+        app.document_ref(editor).unwrap().sql,
+        "SELECT 42 AS answer, 'retained' AS text"
+    );
     app.close();
 }

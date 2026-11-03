@@ -412,10 +412,8 @@ impl App {
             }
         }
     }
-    fn sql_pane(&mut self, ui: &mut egui::Ui) {
-        let editor = self.document.id;
-        let result = self
-            .find_window(Kind::Result, None, Some(editor))
+    pub(super) fn sql_result_window(&self, editor: u64) -> Option<u64> {
+        self.find_window(Kind::Result, None, Some(editor))
             .or_else(|| {
                 self.workspace
                     .visible
@@ -427,8 +425,11 @@ impl App {
                             .and_then(|id| self.document_ref(id))
                             .is_some_and(|d| d.kind != Kind::Sql)
                     })
-            });
-        if let Some(result) = result {
+            })
+    }
+    fn sql_pane(&mut self, ui: &mut egui::Ui) {
+        let editor = self.document.id;
+        if let Some(result) = self.sql_result_window(editor) {
             let height = (ui.available_height() * 0.44).max(45.0);
             egui::Panel::top("sql-editor")
                 .resizable(false)
@@ -440,16 +441,7 @@ impl App {
             {
                 self.focus_window(result);
             }
-            ui.horizontal(|ui| {
-                ui.small(format!("{} retained rows", self.document.result.rows.len()));
-                if icons::button(ui, Icon::Copy, "Copy query results", "").clicked() {
-                    self.copy_results(ui.ctx(), crate::export::Format::Tsv);
-                }
-                if icons::button(ui, Icon::Export, "Export query results", "").clicked() {
-                    self.focus_window(result);
-                    self.ui.export_open = true;
-                }
-            });
+            ui.small(format!("{} retained rows", self.document.result.rows.len()));
             self.grid_contents(ui);
             self.switch_document(editor);
         } else {

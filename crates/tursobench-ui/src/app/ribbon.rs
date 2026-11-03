@@ -10,10 +10,6 @@ use tursobench_db::Operation;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Action {
-    Data,
-    Structure,
-    Map,
-    Sql,
     NewSql,
     Refresh,
     Filter,
@@ -87,9 +83,6 @@ impl App {
                         .values()
                         .any(|d| d.source == Some(self.document.id) && d.active.is_some())
             }
-            Structure | Data => {
-                self.document.object.is_some() || self.ui.diagram.selected.is_some()
-            }
             _ => true,
         }
     }
@@ -99,19 +92,6 @@ impl App {
         }
         use Action::*;
         match action {
-            Data => {
-                if let Some(name) = self
-                    .document
-                    .object
-                    .clone()
-                    .or_else(|| self.ui.diagram.selected.clone())
-                {
-                    self.browse_table(name);
-                }
-            }
-            Structure => self.open_structure_window(),
-            Map => self.overview(),
-            Sql => self.open_sql_window(false),
             NewSql => self.open_sql_window(true),
             Refresh => match if self.workspace.active == Kind::Structure {
                 Kind::Structure
@@ -273,12 +253,16 @@ impl App {
             self.ui.ribbon_actions.push(response.rect);
         }
         if response.clicked() {
+            // Export and the detached record inspector read the focused document later.
+            if self.document.kind == Kind::Result {
+                self.focus_window(self.document.id);
+            }
             self.dispatch_action(action, ui.ctx());
         }
     }
 
-    fn ribbon_columns(&mut self, ui: &mut egui::Ui) {
-        let response = icons::ribbon_button(ui, Icon::Columns, "Visible columns", "", None);
+    fn ribbon_columns(&mut self, ui: &mut egui::Ui, label: &str) {
+        let response = icons::ribbon_button(ui, Icon::Columns, label, "", None);
         // A dedicated selector, not a general-purpose action/overflow menu.
         egui::Popup::menu(&response).show(|ui| {
             ui.strong("Visible columns");
@@ -322,6 +306,23 @@ impl App {
         }
     }
 
+    fn ribbon_sql_results(&mut self, ui: &mut egui::Ui) {
+        let editor = self.document.id;
+        let Some(result) = self.sql_result_window(editor) else {
+            return;
+        };
+        self.switch_document(result);
+        ui.separator();
+        ui.label("Results");
+        ui.push_id(("result-actions", result), |ui| {
+            for &(action, icon, label) in Kind::Result.ribbon_actions() {
+                self.ribbon_action(ui, action, icon, label);
+            }
+            self.ribbon_columns(ui, "Visible result columns");
+        });
+        self.switch_document(editor);
+    }
+
     pub(super) fn pane_ribbon(&mut self, ui: &mut egui::Ui, kind: Kind, available: bool) {
         if kind == Kind::Record
             && self.document.inspect.is_none()
@@ -362,35 +363,49 @@ impl App {
                                         self.ribbon_action(ui, action, icon, label);
                                     }
                                     match kind {
-                                        Kind::Data | Kind::Result => self.ribbon_columns(ui),
-                                        Kind::Sql => self.ribbon_editors(ui),
+                                        Kind::Data | Kind::Result => {
+                                            self.ribbon_columns(ui, "Visible columns")
+                                        }
+                                        Kind::Sql if self.document.kind == Kind::Sql => {
+                                            self.ribbon_editors(ui);
+                                            self.ribbon_sql_results(ui);
+                                        }
                                         _ => {}
                                     }
                                 });
-                                ui.separator();
-                                // Workspace navigation remains usable even in an empty tile.
-                                for &(action, icon, label) in WORKSPACE_ACTIONS {
-                                    let enabled = available
-                                        || matches!(
-                                            action,
-                                            Action::Map
-                                                | Action::Sql
-                                                | Action::Review
-                                                | Action::Retile
-                                        );
-                                    ui.add_enabled_ui(enabled, |ui| {
-                                        self.ribbon_action(ui, action, icon, label);
-                                    });
-                                }
-                                // Keep the control discoverable; disable it when there is no delivery to discard.
-                                ui.add_enabled_ui(available, |ui| {
+                                if available
+                                    && matches!(kind, Kind::Data | Kind::Record)
+                                    && self.document.has_drafts()
+                                {
                                     self.ribbon_action(
                                         ui,
-                                        Action::Discard,
-                                        Icon::Close,
-                                        "Discard result delivery (execution continues)",
+                                        Action::Review,
+                                        Icon::Edit,
+                                        "Review staged edits",
                                     );
-                                });
+                                }
+                                if !self.workspace.minimized.is_empty()
+                                    || self.workspace.expanded.is_some()
+                                {
+                                    self.ribbon_action(
+                                        ui,
+                                        Action::Retile,
+                                        Icon::Arrange,
+                                        "Restore all tiles",
+                                    );
+                                }
+                                if available && self.action_enabled(Action::Discard) {
+                                    if ui
+                                        .add(
+                                            egui::Button::new("Discard results")
+                                                .min_size(egui::vec2(0.0, icons::RIBBON_BUTTON_SIZE)),
+                                        )
+                                        .on_hover_text("Suppress incoming results only. SQL execution and writes continue; this does not roll back changes.")
+                                        .clicked()
+                                    {
+                                        self.dispatch_action(Action::Discard, ui.ctx());
+                                    }
+                                }
                             });
                         });
                 },
@@ -430,15 +445,6 @@ impl App {
     }
 }
 
-const WORKSPACE_ACTIONS: &[(Action, Icon, &str)] = &[
-    (Action::Data, Icon::Data, "Table data"),
-    (Action::Structure, Icon::Structure, "Structure"),
-    (Action::Map, Icon::Map, "Relationships"),
-    (Action::Sql, Icon::Sql, "SQL"),
-    (Action::Review, Icon::Edit, "Review staged edits"),
-    (Action::Retile, Icon::Arrange, "Show all tiles"),
-];
-
 impl Action {
     fn shortcut(self) -> &'static str {
         use Action::*;
@@ -474,11 +480,11 @@ impl Kind {
                 (Insert, Icon::Plus, "New row (staged)"),
             ],
             Kind::Result => &[
-                (Export, Icon::Export, "Export"),
-                (CopyRows, Icon::Copy, "Copy retained rows"),
-                (FitColumns, Icon::Fit, "Fit columns"),
-                (Inspect, Icon::Selection, "Inspect selected record"),
-                (ShowColumns, Icon::Complete, "Show all columns"),
+                (Export, Icon::Export, "Export query results"),
+                (CopyRows, Icon::Copy, "Copy query results"),
+                (FitColumns, Icon::Fit, "Fit result columns"),
+                (Inspect, Icon::Selection, "Inspect selected result record"),
+                (ShowColumns, Icon::Complete, "Show all result columns"),
             ],
             Kind::Structure => &[
                 (CopyDdl, Icon::Copy, "Copy DDL"),
