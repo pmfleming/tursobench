@@ -4,17 +4,19 @@ Canonical runtime asset: tursobench.png (512 × 512).
 tursobench.svg embeds the same PNG for icon-theme compatibility; it is not a vector tracing.
 The README banner embeds this mark as well.
 
-Approved design: 04-wrapped.png, developed from the Curl concept.
+Approved design: icon-options/12-taller-database.png (1254 × 1254).
+An emerald Muirdris with a wider neck, a taller database body, a slightly overlapping head, and a curled tail.
 Generated with the built-in image generation tool, then resized with Inkscape.
 
-Generation brief and reference:
+Final edit prompt: icon-options/12-taller-database-prompt.txt
 
-Use case: precise-object-edit / logo-brand.
-Create one polished square app icon by editing reference image 1 (03-curl.png). Image 1 is the design base: a flat friendly emerald serpent with a storage/database cylinder, on a deep green rounded-square tile. Image 2 is a modern artistic interpretation of Muirdris; use ONLY a light influence from its face: a broad rounded brow, round alert eyes, a short wide ridged aquatic muzzle. Do not reproduce its full body, illustration, text, inset maps or signature.
-Main change: the snake's long continuous body must visibly WRAP AROUND the central storage cylinder, with an obvious rear section disappearing behind the cylinder and a broad foreground coil crossing over the lower front of the cylinder. Use clean intentional occlusion to show one coherent coiling snake, not an unrelated ring beside the database. Maintain the compact friendly identity and curled-tail character of image 1. Head sits at upper right, connected naturally to the coil, looking toward the viewer/right in three-quarter view. Change the dog-like smile and pointy dog ears into a more aquatic Muirdris-inspired head: broad brow, short blunt ridged muzzle, round eyes, and two or three very simple fin/bramble crest points. Friendly mysterious expression, not horror. Minimal facial marks.
-The database must remain unmistakable: upright storage cylinder with oval top and two horizontal tier separators, clearly visible inside the coil.
-Exactly THREE flat solid colors across the entire icon: deep evergreen #102D25 for rounded-square background, outlines and eyes; emerald #10B981 for storage cylinder; pale emerald #6EE7B7 for serpent body and face. Use negative space and outlines to separate forms, no additional tones, no gradients, no shadows, no textures, no lighting, no 3D. Bold simple smooth vector-style silhouette, careful evenly weighted outlines, minimal details, legible at app-icon size. Preserve clean generous padding within the tile and transparent pixels outside its rounded corners. Single icon only, no captions, no labels, no decorative background. Output a high-resolution PNG, ideally 1024x1024.
+Created with the built-in image generation tool.
+Reference: packaging/icon-options/11-flat-neck.png
 
-Reference: https://abookofcreatures.com/2016/09/23/muirdris/
-The reference is a modern artist's interpretation, not a canonical historical likeness.
-Created with the built-in image generation tool from 03-curl.png.
+Use case: precise-object-edit.
+Edit this approved flat green Muirdris/database icon with ONLY these three proportional adjustments:
+1. Widen the short neck beneath the jaw by approximately 25 percent. Keep the clear connection underneath the jaw, and keep the dark indentation separating the back of the skull from the neck. The body must NOT join the eyebrow or forehead.
+2. Increase the HEIGHT of the cylindrical database/body stack approximately 20 percent by raising its top ellipse upward while keeping its bottom and curled tail approximately in their current positions. Keep the database WIDTH unchanged. Stretch the existing three broad cylindrical tiers proportionately; retain the two dark horizontal separators. Do not add extra tiers or coils.
+3. Have the existing head overlap the raised database's upper-right edge slightly. The head is IN FRONT of the top-right rim, obscuring a small portion of it. Keep the head approximately the same size and position; move it a little inward only if needed. This should form a compact connected silhouette, not a head floating above the storage icon. Keep facial features unobstructed.
+
+Preserve the face, eyes, ridged muzzle, two crest fins, large curled tail below the cylinder, rounded-square dark-green tile, palette and clean relatively flat style. Smooth coherent contours with one unbranched body. Keep evergreen background, emerald tiers and pale mint face/neck/tail. No glow, gloss, gradients, textures, shadows, added decorations or text. ONE finished PNG icon.

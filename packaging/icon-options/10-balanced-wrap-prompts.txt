@@ -1,0 +1,29 @@
+Created with the built-in image generation tool.
+Reference: packaging/icon-options/06-double-wrap.png
+
+Initial prompt:
+Redesign this app icon with corrected proportions and anatomically coherent coils. Use the reference for the Muirdris FACE identity and three green colors only. Completely redraw the body and layout.
+
+COMPOSITION: a broad, squat database cylinder centered in the square, roughly 62% of canvas width and 62% of height. A moderately sized Muirdris head, about 29% of canvas width INCLUDING its cheek but not neck, sits upper right OVERLAPPING and partly covering the database's top ellipse. Head must feel proportionate to the thick serpent body, not a giant head on a tiny object. Move everything into a compact balanced cluster using the available square well. The head should overlap the storage cylinder instead of floating high above it. Similar padding on all sides. Familiar broad brow, two round eyes, short ridged muzzle, two small aquatic crest fins.
+
+BODY: one smooth ROUND TUBULAR serpent, physically winding exactly TWICE around the database like a real snake around a tree trunk. Two clearly separated descending diagonal mint body sections pass ACROSS THE FRONT of the cylinder. The body visibly curves around each side and continues BEHIND the cylinder between these two foreground passes. Maintain a continuous plausible hidden path. Draw with smooth parallel contour curves, like a thick round cord wrapping around a drum, NOT a flat ribbon. A single head, a single unbranched body, one tail. Critically: REMOVE the upward-pointing extra mint spur at the middle RIGHT of the reference. It looks like a second branch. At every right-side turn, the snake simply bends around and is occluded by the cylinder with a clean rounded edge; NO hooked point, NO triangular spike, NO fork, NO Y junction, NO loose crescent. Body width gradually decreases from neck to tail. Neck connects visibly from head to first coil. Keep adequate green cylinder visible between both coils so the wrapping is immediately readable.
+
+TAIL: after the second wrap it exits behind the base on the bottom LEFT, curls into a graceful small open loop and ends in a small sharp devil-spade arrowhead. This is the ONLY pointed ending on the body.
+
+STYLE: cohesive minimal flat vector-style logo, exactly three solid fills: dark evergreen #102D25 for background/eyes/separation, emerald #10B981 for database, mint #6EE7B7 for entire serpent. Clean smooth solid shapes, consistent narrow dark separation at overlaps. No gradients, noise, texture, lighting, shadows, dimensional shading, text or labels. Full opaque dark evergreen square background. One square finished PNG.
+
+Coil refinement:
+Keep this icon's head size, head overlap, wider database, tail, palette, and overall composition. Correct ONLY the body coils so they make one descending helix, not two separate bracelets.
+
+The two mint foreground bands must slope diagonally DOWN from LEFT to RIGHT. At their RIGHT ends they continue DOWNWARD and behind the cylinder; they MUST NOT turn upward into hooks. Remove the entire upward-pointing mint hooks currently sticking up at the right edges. Right side transitions should be short convex rounded bends descending behind the cylinder. The green foreground cylinder occludes the upper edge of each returning segment so no mint tip or triangular spur protrudes upward. At the LEFT edges, the body emerges from behind at the start of each successive lower turn.
+
+Geometry in normalized coordinates: the first front sweep starts near left x22%,y43%, traverses diagonally across the face, ends at right x78%,y62%. Its hidden continuation descends behind the cylinder to the left start of the second sweep near x22%,y65%. The second front sweep descends across the face to right x78%,y84%. Its hidden continuation reaches the bottom-left curled arrow tail. Body approximately 8% canvas width, smoothly tapering, with parallel contours. These positions are guides for the single continuous spiral, not lines or labels to draw.
+
+This should read like a real snake winding twice around a tree trunk: head -> behind top -> first front diagonal -> behind -> second front diagonal -> behind base -> devil tail. NOT two U-shaped rings or upward-curled ribbons. One body without branching. No isolated pieces. Keep the head and face exactly as supplied, do not enlarge. Keep its partial overlap on the top ellipse. Solid three-color flat graphic, consistent smooth curves, solid dark green background, no lettering.
+
+Cleanup:
+Precise cleanup of this icon. Preserve all composition, proportions, face, colors and the TWO diagonal snake coils exactly. Make ONLY these small cleanup edits:
+1. Erase the tiny detached mint triangular sliver floating just above the middle-RIGHT coil bend (around x79%, y57% of canvas). Replace that isolated sliver with the solid dark background. Do not erase the actual connected thick body underneath.
+2. Smooth the tiny notch/scratch in the inner edge of the LEFT start of the lower coil (around x22%, y60%). Make this clean and continuous with the adjacent body contour.
+3. At the right end of the upper diagonal foreground coil, round the sharp tapered lower corner a little so it reads as a full-width body disappearing behind the green cylinder, rather than a sharp free tip.
+Do NOT change the head, database width, positions, two-coil count, or bottom-left arrow tail. One continuous serpent with no detached pieces. Same flat three-green-color graphic.
