@@ -1807,6 +1807,25 @@ fn workspace_geometry_roundtrips_without_query_data_or_bindings() {
     app.preferences.normalize();
     assert_eq!(app.preferences.workspace_layouts.len(), 1);
     app.close();
+    let start = Instant::now();
+    while app.session.is_some() {
+        app.poll(&ctx);
+        assert!(start.elapsed() < Duration::from_secs(5));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    app.open(&ctx);
+    let start = Instant::now();
+    while !app.ready {
+        app.poll(&ctx);
+        assert!(start.elapsed() < Duration::from_secs(5));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        app.document.id, editor,
+        "Opened must keep the restored focus before the first UI frame"
+    );
+    assert_eq!(app.workspace.expanded, Some(editor));
+    app.close();
 }
 
 #[test]

@@ -472,11 +472,13 @@ impl App {
     }
     fn handle_event(&mut self, ctx: &egui::Context, event: Event) {
         let previous = self.document.id;
-        if let Some(owner) = self.document_owner(event.ticket) {
-            self.switch_document(owner);
-        }
+        let routed = self
+            .document_owner(event.ticket)
+            .is_some_and(|owner| owner != previous && self.switch_document(owner));
         self.handle_document_event(ctx, event);
-        self.switch_document(previous);
+        if routed {
+            self.switch_document(previous);
+        }
     }
     fn handle_document_event(&mut self, ctx: &egui::Context, event: Event) {
         if self
