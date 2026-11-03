@@ -48,6 +48,24 @@ pub(super) fn button(ui: &mut egui::Ui, icon: Icon, name: &str, shortcut: &str) 
     widget(ui, icon, name, shortcut, None, false)
 }
 
+/// Visible text and a 40-point hit target for the shared command ribbon.
+pub(super) fn action(ui: &mut egui::Ui, icon: Icon, name: &str) -> egui::Response {
+    let response =
+        ui.add(egui::Button::new(format!("      {name}")).min_size(egui::vec2(72.0, 40.0)));
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), name));
+    paint(
+        ui.painter(),
+        egui::Rect::from_center_size(
+            response.rect.left_center() + egui::vec2(16.0, 0.0),
+            egui::vec2(20.0, 20.0),
+        ),
+        icon,
+        ui.style().interact(&response).fg_stroke.color,
+    );
+    response
+}
+
 pub(super) fn control(
     ui: &mut egui::Ui,
     icon: Icon,

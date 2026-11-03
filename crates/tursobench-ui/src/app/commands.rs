@@ -257,7 +257,10 @@ impl App {
                     self.select_tool(panel);
                 }
                 Command::Export => self.ui.export_open = true,
-                Command::Review => self.document.show_preview = true,
+                Command::Review => {
+                    self.focus_drafts();
+                    self.document.show_preview = true;
+                }
                 Command::Help => self.tools.help = true,
                 Command::Theme => {
                     self.toggle_theme(ctx);

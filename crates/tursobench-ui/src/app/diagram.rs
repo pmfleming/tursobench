@@ -31,6 +31,24 @@ pub(super) struct DiagramState {
     positions: BTreeMap<String, egui::Pos2>,
 }
 impl DiagramState {
+    pub fn arrange_nodes(&mut self) {
+        self.positions.clear();
+        self.fit = true;
+    }
+    pub fn toggle_columns(&mut self) {
+        self.all_columns = !self.all_columns;
+        self.arrange_nodes();
+        self.auto_fit = true;
+    }
+    pub fn toggle_system(&mut self) {
+        self.show_system = !self.show_system;
+        self.rebuild_visible();
+        self.fit = true;
+    }
+    pub fn reset_camera_zoom(&mut self) {
+        self.reset_zoom = true;
+        self.auto_fit = false;
+    }
     pub fn snapshot(&self, database: &str) -> Option<crate::storage::MapLayout> {
         self.data.as_ref()?;
         if self.zoom <= 0.0 {
@@ -706,71 +724,74 @@ impl App {
         if unresolved > 0 {
             painter.text(canvas.left_bottom()+egui::vec2(10.0,-10.0),egui::Align2::LEFT_BOTTOM,format!("{unresolved} unresolved relationship endpoints — inspect Structure; no targets invented"),egui::FontId::proportional(12.0),ui.visuals().warn_fg_color);
         }
-        ui.scope_builder(
-            egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-                canvas.right_bottom() - egui::vec2(244.0, 42.0),
-                egui::vec2(236.0, 34.0),
-            )),
-            |ui| {
-                egui::Frame::new()
-                    .fill(ui.visuals().panel_fill)
-                    .corner_radius(6.0)
-                    .inner_margin(3.0)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 2.0;
-                            if icons::button(ui, Icon::Fit, "Fit all", "0").clicked() {
-                                self.ui.diagram.fit = true;
-                                self.ui.diagram.auto_fit = true;
-                            }
-                            if icons::button(ui, Icon::Arrange, "Auto-arrange", "").clicked() {
-                                self.ui.diagram.positions.clear();
-                                self.ui.diagram.fit = true;
-                            }
-                            if icons::control(
-                                ui,
-                                Icon::Columns,
-                                "All columns",
-                                "",
-                                self.ui.diagram.all_columns,
-                                false,
-                            )
-                            .clicked()
-                            {
-                                self.ui.diagram.all_columns = !self.ui.diagram.all_columns;
-                                self.ui.diagram.positions.clear();
-                                self.ui.diagram.fit = true;
-                                self.ui.diagram.auto_fit = true;
-                            }
-                            if icons::control(
-                                ui,
-                                Icon::System,
-                                "System tables",
-                                "",
-                                self.ui.diagram.show_system,
-                                false,
-                            )
-                            .clicked()
-                            {
-                                self.ui.diagram.show_system = !self.ui.diagram.show_system;
-                                self.ui.diagram.rebuild_visible();
-                                self.ui.diagram.fit = true;
-                            }
-                            if icons::button(ui, Icon::Search, "Find table", "Ctrl K").clicked() {
-                                self.open_palette();
-                            }
-                            if ui
-                                .small_button("100%")
-                                .on_hover_text("Reset zoom")
+        if !self.workspace.enabled {
+            ui.scope_builder(
+                egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                    canvas.right_bottom() - egui::vec2(244.0, 42.0),
+                    egui::vec2(236.0, 34.0),
+                )),
+                |ui| {
+                    egui::Frame::new()
+                        .fill(ui.visuals().panel_fill)
+                        .corner_radius(6.0)
+                        .inner_margin(3.0)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 2.0;
+                                if icons::button(ui, Icon::Fit, "Fit all", "0").clicked() {
+                                    self.ui.diagram.fit = true;
+                                    self.ui.diagram.auto_fit = true;
+                                }
+                                if icons::button(ui, Icon::Arrange, "Auto-arrange", "").clicked() {
+                                    self.ui.diagram.positions.clear();
+                                    self.ui.diagram.fit = true;
+                                }
+                                if icons::control(
+                                    ui,
+                                    Icon::Columns,
+                                    "All columns",
+                                    "",
+                                    self.ui.diagram.all_columns,
+                                    false,
+                                )
                                 .clicked()
-                            {
-                                self.ui.diagram.reset_zoom = true;
-                                self.ui.diagram.auto_fit = false;
-                            }
+                                {
+                                    self.ui.diagram.all_columns = !self.ui.diagram.all_columns;
+                                    self.ui.diagram.positions.clear();
+                                    self.ui.diagram.fit = true;
+                                    self.ui.diagram.auto_fit = true;
+                                }
+                                if icons::control(
+                                    ui,
+                                    Icon::System,
+                                    "System tables",
+                                    "",
+                                    self.ui.diagram.show_system,
+                                    false,
+                                )
+                                .clicked()
+                                {
+                                    self.ui.diagram.show_system = !self.ui.diagram.show_system;
+                                    self.ui.diagram.rebuild_visible();
+                                    self.ui.diagram.fit = true;
+                                }
+                                if icons::button(ui, Icon::Search, "Find table", "Ctrl K").clicked()
+                                {
+                                    self.open_palette();
+                                }
+                                if ui
+                                    .small_button("100%")
+                                    .on_hover_text("Reset zoom")
+                                    .clicked()
+                                {
+                                    self.ui.diagram.reset_zoom = true;
+                                    self.ui.diagram.auto_fit = false;
+                                }
+                            });
                         });
-                    });
-            },
-        );
+                },
+            );
+        }
         if let Some(name) = selected {
             self.browse_table(name);
         }

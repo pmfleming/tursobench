@@ -40,6 +40,7 @@ impl App {
         }
     }
     fn saved_queries_ui(&mut self, ui: &mut egui::Ui) {
+        let mut load = None;
         ui.heading("Saved queries");
         ui.vertical(|ui| {
             ui.add(
@@ -79,10 +80,7 @@ impl App {
                         .on_hover_text(&bookmark.sql)
                         .clicked()
                     {
-                        self.document.sql = bookmark.sql.clone();
-                        self.document.params = "[]".into();
-                        self.document.ui.sql_open = true;
-                        self.document.ui.table_view = shell::TableView::Data;
+                        load = Some(bookmark.sql.clone());
                     }
                     if ui
                         .add(
@@ -119,8 +117,12 @@ impl App {
                 self.store.save(&self.preferences);
             }
         });
+        if let Some(sql) = load {
+            self.load_sql_window(sql);
+        }
     }
     fn query_history_ui(&mut self, ui: &mut egui::Ui) {
+        let mut load = None;
         ui.heading("Query history");
         ui.vertical(|ui|{
         ui.small("This database + legacy unscoped entries. SQL may contain secrets; bindings are never saved. Loading clears bindings.");
@@ -134,7 +136,7 @@ impl App {
             for(index,h)in entries{
                 ui.horizontal(|ui| {
                     if ui.small_button("×").clicked() { remove=Some(index); }
-                    if ui.add_sized([ui.available_width().max(40.0),28.0],egui::Button::new(Value::Text(h.sql.clone()).preview()).truncate()).on_hover_text(&h.sql).clicked() { self.document.sql=h.sql.clone(); self.document.params="[]".into(); self.document.ui.sql_open=true; }
+                    if ui.add_sized([ui.available_width().max(40.0),28.0],egui::Button::new(Value::Text(h.sql.clone()).preview()).truncate()).on_hover_text(&h.sql).clicked() { load=Some(h.sql.clone()); }
                 });
                 let time=h.elapsed_ms.map_or("untimed".into(),|ms|format!("{ms} ms"));let label=format!("{time}{}{}{}",if h.failed{" · failed"}else{""},if h.elapsed_ms.is_some_and(|ms|ms>=threshold){" · slow"}else{""},if h.database.is_empty(){" · unscoped"}else{""});
                 if h.failed||h.elapsed_ms.is_some_and(|ms|ms>=threshold){ui.colored_label(egui::Color32::from_rgb(190,120,50),label);}else{ui.small(label);}
@@ -143,6 +145,21 @@ impl App {
         if let Some(index)=remove{self.preferences.query_history.remove(index);self.store.save(&self.preferences);}
         if ui.button("Clear ALL stored history").clicked(){self.preferences.query_history.clear();self.preferences.history.clear();self.store.save(&self.preferences);}
     });
+        if let Some(sql) = load {
+            self.load_sql_window(sql);
+        }
+    }
+    fn load_sql_window(&mut self, sql: String) {
+        if self.workspace.enabled
+            && self
+                .create_window(super::tiling::Kind::Sql, None, None, true)
+                .is_none()
+        {
+            return;
+        }
+        self.document.sql = sql;
+        self.document.params = "[]".into();
+        self.document.ui.sql_open = true;
     }
     pub(super) fn settings_ui(&mut self, ui: &mut egui::Ui) {
         ui.heading("Settings");

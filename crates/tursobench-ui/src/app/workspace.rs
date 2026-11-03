@@ -480,7 +480,7 @@ impl App {
                                 } else {
                                     "Expand view"
                                 },
-                                "Ctrl Shift Enter",
+                                "Ctrl Alt Enter",
                             )
                             .clicked()
                             {

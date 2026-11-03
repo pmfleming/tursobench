@@ -182,91 +182,103 @@ impl App {
         }
     }
     pub(super) fn editor_ui(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 3.0;
-            if ui
-                .add_enabled(
-                    self.ready
-                        && !self.closing
-                        && !self.has_drafts()
-                        && self.commit_ticket.is_none(),
-                    egui::Button::new("Run"),
+        if !self.workspace.enabled {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 3.0;
+                if ui
+                    .add_enabled(
+                        self.ready
+                            && !self.closing
+                            && !self.has_drafts()
+                            && self.commit_ticket.is_none(),
+                        egui::Button::new("Run"),
+                    )
+                    .on_hover_text("Run one statement · Ctrl Enter")
+                    .clicked()
+                {
+                    self.run_sql();
+                }
+                if icons::button(
+                    ui,
+                    Icon::Selection,
+                    "Run selection / statement at cursor",
+                    "Ctrl Shift Enter",
                 )
-                .on_hover_text("Run one statement · Ctrl Enter")
                 .clicked()
-            {
-                self.run_sql();
-            }
-            if icons::button(
-                ui,
-                Icon::Selection,
-                "Run selection / statement at cursor",
-                "Ctrl Shift Enter",
-            )
-            .clicked()
-            {
-                self.run_selection();
-            }
-            if icons::button(ui, Icon::Explain, "Explain query plan", "").clicked() {
-                self.run_text(self.document.sql.clone(), Some(false));
-            }
-            if icons::control(
-                ui,
-                Icon::Parameters,
-                "Typed parameters",
-                "",
-                self.document.ui.params_open,
-                false,
-            )
-            .clicked()
-            {
-                self.document.ui.params_open = !self.document.ui.params_open;
-            }
-            if icons::control(
-                ui,
-                Icon::Complete,
-                "Complete",
-                "Ctrl Space",
-                self.document.tools.complete,
-                false,
-            )
-            .clicked()
-            {
-                self.document.tools.complete = !self.document.tools.complete;
-            }
-            if icons::control(
-                ui,
-                Icon::Fit,
-                "Expand SQL editor",
-                "",
-                self.document.ui.sql_expanded,
-                false,
-            )
-            .clicked()
-            {
-                self.document.ui.sql_expanded = !self.document.ui.sql_expanded;
-            }
-            if icons::button(ui, Icon::Close, "Close SQL editor", "Ctrl J").clicked() {
-                self.document.ui.sql_open = false;
-            }
-            let more = icons::button(ui, Icon::More, "SQL actions", "");
-            egui::Popup::menu(&more).show(|ui| {
-                if ui.button("Explain bytecode").clicked() {
-                    self.run_text(self.document.sql.clone(), Some(true));
-                    ui.close();
+                {
+                    self.run_selection();
                 }
-                if ui.button("Bookmark editor SQL").clicked() {
-                    self.ui.sidebar = shell::ToolPanel::Saved;
-                    ui.close();
+                if icons::button(ui, Icon::Explain, "Explain query plan", "").clicked() {
+                    self.run_text(self.document.sql.clone(), Some(false));
                 }
+                if icons::control(
+                    ui,
+                    Icon::Parameters,
+                    "Typed parameters",
+                    "",
+                    self.document.ui.params_open,
+                    false,
+                )
+                .clicked()
+                {
+                    self.document.ui.params_open = !self.document.ui.params_open;
+                }
+                if icons::control(
+                    ui,
+                    Icon::Complete,
+                    "Complete",
+                    "Ctrl Space",
+                    self.document.tools.complete,
+                    false,
+                )
+                .clicked()
+                {
+                    self.document.tools.complete = !self.document.tools.complete;
+                }
+                if icons::control(
+                    ui,
+                    Icon::Fit,
+                    "Expand SQL editor",
+                    "",
+                    self.document.ui.sql_expanded,
+                    false,
+                )
+                .clicked()
+                {
+                    self.document.ui.sql_expanded = !self.document.ui.sql_expanded;
+                }
+                if icons::button(ui, Icon::Close, "Close SQL editor", "Ctrl J").clicked() {
+                    self.document.ui.sql_open = false;
+                }
+                let more = icons::button(ui, Icon::More, "SQL actions", "");
+                egui::Popup::menu(&more).show(|ui| {
+                    if ui.button("Explain bytecode").clicked() {
+                        self.run_text(self.document.sql.clone(), Some(true));
+                        ui.close();
+                    }
+                    if ui.button("Bookmark editor SQL").clicked() {
+                        self.ui.sidebar = shell::ToolPanel::Saved;
+                        ui.close();
+                    }
+                });
             });
-        });
+        }
         let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, width: f32| {
             highlighted(ui, text.as_str(), width)
         };
         let output = egui::ScrollArea::vertical()
             .id_salt("sql-editor-scroll")
-            .max_height((ui.ctx().content_rect().height() * 0.35).clamp(100.0, 400.0))
+            .max_height(if self.workspace.enabled {
+                (ui.available_height()
+                    - if self.document.ui.params_open {
+                        120.0
+                    } else {
+                        8.0
+                    })
+                .max(80.0)
+            } else {
+                (ui.ctx().content_rect().height() * 0.35).clamp(100.0, 400.0)
+            })
             .show(ui, |ui| {
                 egui::TextEdit::multiline(&mut self.document.sql)
                     .id_salt("sql-editor")
@@ -365,6 +377,9 @@ impl App {
         self.grid_keys(ctx);
         let consumed = |mods, key| ctx.input_mut(|i| i.consume_key(mods, key));
         if consumed(egui::Modifiers::NONE, egui::Key::Escape) {
+            if self.workspace.close_pending.take().is_some() {
+                return;
+            }
             if self.document.tools.inline.take().is_some() {
                 return;
             }
@@ -373,7 +388,7 @@ impl App {
             } else {
                 // Close only the topmost surface, preserving Escape's priority.
                 let was_confirming_close = self.confirm_close;
-                let surfaces = [
+                let mut surfaces = vec![
                     &mut self.ui.palette_open,
                     &mut self.ui.access_dialog,
                     &mut self.confirm_close,
@@ -383,11 +398,17 @@ impl App {
                     &mut self.ui.outcomes,
                     &mut self.tools.help,
                     &mut self.document.ui.filter_open,
-                    &mut self.document.ui.inspector_open,
-                    &mut self.document.ui.sql_open,
                 ];
+                if !self.workspace.enabled {
+                    surfaces.extend([
+                        &mut self.document.ui.inspector_open,
+                        &mut self.document.ui.sql_open,
+                    ]);
+                }
                 if let Some(surface) = surfaces.into_iter().find(|open| **open) {
                     *surface = false;
+                } else {
+                    self.workspace.expanded = None;
                 }
                 if was_confirming_close && !self.confirm_close {
                     self.pending_database = None;
@@ -404,7 +425,9 @@ impl App {
         if self.ui.palette_open {
             return;
         }
-        if self.document.ui.sql_open {
+        if self.document.ui.sql_open
+            && (!self.workspace.enabled || self.document.kind == super::tiling::Kind::Sql)
+        {
             if consumed(
                 egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
                 egui::Key::Enter,

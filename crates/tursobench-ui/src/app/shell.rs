@@ -131,16 +131,11 @@ impl App {
             self.switch_document(self.workspace.focused);
             if ctx.input_mut(|i| {
                 i.consume_key(
-                    egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
+                    egui::Modifiers::CTRL | egui::Modifiers::ALT,
                     egui::Key::Enter,
                 )
             }) {
                 self.expand_window(self.workspace.focused);
-            }
-            if self.workspace.expanded.is_some()
-                && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
-            {
-                self.workspace.expanded = None;
             }
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Tab)) {
                 let ids = self.window_ids();
@@ -158,6 +153,9 @@ impl App {
         }
         let layout = Layout::new(ui.available_width());
         self.status_bar(ui);
+        if self.workspace.enabled {
+            self.command_ribbon(ui);
+        }
         if self.session.is_some() {
             egui::Panel::right("activity-rail")
                 .exact_size(44.0)
@@ -318,7 +316,7 @@ impl App {
                     ("UNKNOWN", error)
                 } else if self.closing { ("Closing", warn)
                 } else if self.commit_ticket.is_some() { ("Committing", warn)
-                } else if self.document.active.is_some() || self.tools.count_request.is_some() { ("Executing", warn)
+                } else if self.executing() || self.tools.count_request.is_some() { ("Executing", warn)
                 } else if self.ui.diagram.ticket.is_some() { ("Loading schema", muted)
                 } else if !self.ready { ("Disconnected", muted)
                 } else if let Some(c) = &self.document.result.completion {
@@ -331,7 +329,7 @@ impl App {
                     }
                 } else { ("Connected", ui.visuals().selection.stroke.color) };
                 ui.colored_label(color, state).on_hover_text(&self.status);
-                if self.transaction != TransactionState::Autocommit {
+                if self.transaction != TransactionState::Autocommit && !self.workspace.enabled {
                     ui.colored_label(if self.transaction != TransactionState::Autocommit { warn } else { muted }, format!("{:?}", self.transaction));
                     for (label, sql) in [("Commit", "COMMIT"), ("Roll back", "ROLLBACK")] {
                         let enabled = self.ready && !self.closing && self.document.active.is_none() && self.commit_ticket.is_none() && !self.has_drafts() && (sql!="COMMIT" || self.transaction==TransactionState::Active);
@@ -340,11 +338,11 @@ impl App {
                         if response.clicked() { self.submit(Operation::Execute { sql: sql.into(), parameters: vec![], budget: Budget::default() }, View::Query); }
                     }
                 }
-                if self.has_drafts() {
+                if self.has_drafts() && !self.workspace.enabled {
                     let count = self.document.drafts.as_ref().map_or(0, |d| d.edits.len());
                     if ui.button(format!("Review {count}")).clicked() { self.document.show_preview = true; }
                 }
-                if self.document.active.is_some() && ui.button("Discard results").on_hover_text("Suppresses delivery only; execution and writes continue. Does not roll back.").clicked() {
+                if !self.workspace.enabled && self.document.active.is_some() && ui.button("Discard results").on_hover_text("Suppresses delivery only; execution and writes continue. Does not roll back.").clicked() {
                     if let (Some(session), Some(ticket)) = (&self.session, self.document.active) { session.discard_results(ticket.request); }
                     self.document.discard_ticket = self.document.active;
                     self.document.result.rows.clear();
@@ -389,21 +387,6 @@ impl App {
             return;
         }
         if self.workspace.enabled {
-            ui.horizontal_wrapped(|ui| {
-                if ui.button("Map").clicked() {
-                    self.overview();
-                }
-                if ui.button("Structure").clicked() {
-                    self.open_structure_window();
-                }
-                if ui.button("SQL").clicked() {
-                    self.open_sql_window(false);
-                }
-                if ui.button("Retile").clicked() {
-                    self.retile();
-                }
-            });
-            ui.separator();
             self.tiled_workspace(ui);
             return;
         }

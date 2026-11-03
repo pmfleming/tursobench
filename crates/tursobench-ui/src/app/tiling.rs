@@ -167,8 +167,8 @@ impl Node {
                 }
                 let axis = usize::from(!horizontal);
                 let available = area.size()[axis] - GAP;
-                let range = (a.minimum(profile)[axis] / available)
-                    ..=(1.0 - b.minimum(profile)[axis] / available);
+                let lower = a.minimum(profile)[axis] / available;
+                let range = lower..=(1.0 - b.minimum(profile)[axis] / available).max(lower);
                 let ratio = ratio.clamp(*range.start(), *range.end());
                 let mut ra = area;
                 ra.max[axis] = area.min[axis] + available * ratio;
@@ -286,7 +286,10 @@ impl Node {
                 } else {
                     0.55
                 };
-                let ratio = wanted.clamp(old[axis] / available, 1.0 - fresh[axis] / available);
+                let ratio = wanted.clamp(
+                    old[axis] / available,
+                    (1.0 - fresh[axis] / available).max(old[axis] / available),
+                );
                 let width = if horizontal {
                     available * ratio
                 } else {

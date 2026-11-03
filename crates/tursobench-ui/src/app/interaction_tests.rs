@@ -66,6 +66,63 @@ fn frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) {
 }
 
 #[test]
+fn sql_selection_shortcut_and_window_expansion_have_distinct_targets() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ribbon.db");
+    crate::test_support::create(&path, &["CREATE TABLE sample(id INTEGER PRIMARY KEY)"]);
+    let (ctx, mut app) = connected(&path, false);
+    app.open_sql_window(false);
+    let editor = app.document.id;
+    app.document.sql = "SELECT 73 AS answer".into();
+    frame(&mut app, &ctx, vec![]);
+    let key = |modifiers| egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    };
+    frame(
+        &mut app,
+        &ctx,
+        vec![key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT)],
+    );
+    wait(&mut app, &ctx);
+    assert_eq!(app.document.result.rows, vec![vec![Value::Integer(73)]]);
+    assert_eq!(app.document.kind, tiling::Kind::Result);
+    assert_eq!(app.workspace.expanded, None);
+    assert_eq!(app.document_ref(editor).unwrap().sql, "SELECT 73 AS answer");
+    frame(
+        &mut app,
+        &ctx,
+        vec![key(egui::Modifiers::CTRL | egui::Modifiers::ALT)],
+    );
+    assert_eq!(app.workspace.expanded, Some(app.document.id));
+    assert!(app.ui.sidebar_rect.left() >= app.workspace.area.right());
+    app.focus_window(editor);
+    app.request_close_window(editor);
+    assert_eq!(
+        app.workspace.close_pending,
+        Some(editor),
+        "closing an SQL draft requires an in-app choice"
+    );
+    frame(
+        &mut app,
+        &ctx,
+        vec![egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+    assert_eq!(app.workspace.close_pending, None);
+    assert!(app.document_ref(editor).is_some());
+    app.close();
+}
+
+#[test]
 fn independent_documents_route_results_and_keep_filters_drafts_and_sql() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("documents.db");
@@ -1610,6 +1667,7 @@ fn filtered_index_tree_opens_original_ddl_without_replacing_primary_rows() {
             }
         })
         .expect("filtered index row");
+    let data_id = app.document.id;
     let owner = app.document.result.current;
     let rows = app.document.result.rows.clone();
     for pressed in [true, false] {
@@ -1635,8 +1693,8 @@ fn filtered_index_tree_opens_original_ddl_without_replacing_primary_rows() {
     app.refresh_table();
     wait(&mut app, &ctx);
     assert_eq!(app.document.ui.table_view, shell::TableView::Structure);
-    assert_eq!(app.document.result.current, owner);
-    assert_eq!(app.document.result.rows, rows);
+    assert_eq!(app.document_ref(data_id).unwrap().result.current, owner);
+    assert_eq!(app.document_ref(data_id).unwrap().result.rows, rows);
     app.close();
 }
 

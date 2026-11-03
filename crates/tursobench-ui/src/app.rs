@@ -19,6 +19,7 @@ mod inspector;
 mod interaction_tests;
 mod paging;
 mod results;
+mod ribbon;
 mod schema;
 mod selection;
 mod shell;

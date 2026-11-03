@@ -186,6 +186,18 @@ impl App {
                     && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)))
                 && let Some(object) = self.schema.iter().find(|o| o.name == name).cloned()
             {
+                if self.workspace.enabled
+                    && self
+                        .create_window(
+                            super::tiling::Kind::Structure,
+                            Some(object.name.clone()),
+                            None,
+                            false,
+                        )
+                        .is_none()
+                {
+                    return response.hovered();
+                }
                 self.ui.diagram.selected = Some(object.table.clone());
                 self.document.tools.ddl = Some(object);
                 self.document.ui.nav = Nav::Table;
