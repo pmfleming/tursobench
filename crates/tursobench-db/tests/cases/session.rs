@@ -29,6 +29,46 @@ fn run(s: &Session, n: u64, sql: &str, budget: Budget) -> ResultSet {
 }
 
 #[test]
+fn discarding_a_later_view_does_not_suppress_an_earlier_request() {
+    let (_dir, path) = fixture();
+    let session = common::opened(&path, Access::ReadOnly);
+    let first = session.ticket(1, 1);
+    let second = session.ticket(2, 2);
+    session.submit(Request { ticket: first, operation: Operation::Execute {
+        sql: "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<5000) SELECT x FROM n".into(),
+        parameters: vec![], budget: Budget { rows: 5000, ..Budget::default() },
+    }}).unwrap();
+    let mut earlier = ResultSet::default();
+    earlier.start(first);
+    earlier.apply(common::event(&session));
+    session
+        .submit(Request {
+            ticket: second,
+            operation: Operation::Execute {
+                sql: "SELECT 42".into(),
+                parameters: vec![],
+                budget: Budget::default(),
+            },
+        })
+        .unwrap();
+    session.discard_results(second.request);
+    let mut later = ResultSet::default();
+    later.start(second);
+    while earlier.completion.is_none() || later.completion.is_none() {
+        let event = common::event(&session);
+        if event.ticket == first {
+            earlier.apply(event);
+        } else {
+            later.apply(event);
+        }
+    }
+    assert_eq!(earlier.rows.len(), 5000);
+    assert_eq!(earlier.completion.unwrap().delivery, Delivery::Complete);
+    assert!(later.rows.is_empty());
+    assert_eq!(later.completion.unwrap().delivery, Delivery::Discarded);
+}
+
+#[test]
 fn parser_not_semicolon_splitting() {
     assert!(validate_single("SELECT ';' /* ; */;").is_ok());
     assert!(

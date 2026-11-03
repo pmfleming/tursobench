@@ -9,7 +9,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, SyncSender, TrySendError},
     },
     time::Duration,
@@ -22,12 +22,12 @@ use tursobench_core::{
 pub(super) struct Output {
     pub(super) tx: SyncSender<Event>,
     pub(super) wake: Arc<dyn Fn() + Send + Sync>,
-    pub(super) discard: Arc<AtomicU64>,
+    pub(super) discard: Arc<crate::DeliveryControl>,
     pub(super) closing: Arc<AtomicBool>,
 }
 impl Output {
     fn discarded(&self, t: Ticket) -> bool {
-        self.discard.load(Ordering::Acquire) >= t.request || self.closing.load(Ordering::Acquire)
+        self.discard.discarded(t.request) || self.closing.load(Ordering::Acquire)
     }
     fn send(&self, ticket: Ticket, kind: EventKind) -> bool {
         let discardable = matches!(kind, EventKind::Rows(_) | EventKind::Columns(_));
@@ -143,6 +143,7 @@ pub(super) async fn worker(
             Err(error) => EventKind::Failed(error),
         };
         output.send(request.ticket, event);
+        output.discard.finished(request.ticket.request);
     }
     let result = rollback(&editor).await;
     let browse_result = rollback(&browse).await;

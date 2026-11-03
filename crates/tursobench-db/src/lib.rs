@@ -14,7 +14,7 @@ pub use sql::validate_single;
 use std::{
     path::PathBuf,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, SyncSender},
     },
@@ -24,6 +24,31 @@ use worker::{Output, worker};
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
 const COMMAND_CAPACITY: usize = 2;
 const EVENT_CAPACITY: usize = 8;
+
+/// Only submitted, unfinished requests occupy this map. Cancellation targets one
+/// request; a newer view must never suppress an older view's unrelated results.
+#[derive(Default)]
+struct DeliveryControl {
+    requests: Mutex<std::collections::BTreeMap<u64, bool>>,
+}
+impl DeliveryControl {
+    fn discarded(&self, request: u64) -> bool {
+        self.requests
+            .lock()
+            .unwrap()
+            .get(&request)
+            .copied()
+            .unwrap_or(false)
+    }
+    fn discard(&self, request: u64) {
+        if let Some(discarded) = self.requests.lock().unwrap().get_mut(&request) {
+            *discarded = true;
+        }
+    }
+    fn finished(&self, request: u64) {
+        self.requests.lock().unwrap().remove(&request);
+    }
+}
 
 pub enum Operation {
     Execute {
@@ -116,7 +141,7 @@ pub struct Session {
     pub id: u64,
     commands: SyncSender<Request>,
     pub events: Receiver<Event>,
-    discard: Arc<AtomicU64>,
+    discard: Arc<DeliveryControl>,
     closing: Arc<AtomicBool>,
 }
 impl Session {
@@ -152,7 +177,7 @@ impl Session {
         let id = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
         let (commands, rx) = mpsc::sync_channel(COMMAND_CAPACITY);
         let (tx, events) = mpsc::sync_channel(EVENT_CAPACITY);
-        let discard = Arc::new(AtomicU64::new(0));
+        let discard = Arc::new(DeliveryControl::default());
         let closing = Arc::new(AtomicBool::new(false));
         let output = Output {
             tx,
@@ -199,12 +224,20 @@ impl Session {
         if request.ticket.session != self.id || request.ticket.database != self.id {
             return Err(Failure::input("Wrong session identity"));
         }
-        self.commands
-            .try_send(request)
-            .map_err(|e| Failure::input(format!("Worker queue unavailable: {e}")))
+        let mut pending = self.discard.requests.lock().unwrap();
+        let id = request.ticket.request;
+        if pending.contains_key(&id) {
+            return Err(Failure::input("Request is already pending"));
+        }
+        pending.insert(id, false);
+        if let Err(error) = self.commands.try_send(request) {
+            pending.remove(&id);
+            return Err(Failure::input(format!("Worker queue unavailable: {error}")));
+        }
+        Ok(())
     }
     pub fn discard_results(&self, request: u64) {
-        self.discard.fetch_max(request, Ordering::Release);
+        self.discard.discard(request);
     }
     pub fn close(&self) {
         self.closing.store(true, Ordering::Release);
