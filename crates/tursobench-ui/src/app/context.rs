@@ -11,10 +11,12 @@ use tursobench_db::{Operation, Request};
 pub(super) struct ContextReads {
     pub pending: Option<Read>,
     cache: VecDeque<Cached>,
+    cache_bytes: usize,
     pub hovered: Option<(usize, ForeignKey)>,
     hover: Option<(String, f64)>,
     relation: Option<(String, i64)>,
 }
+
 pub(super) struct Read {
     pub result: ResultSet,
     owner: Option<Ticket>,
@@ -22,6 +24,7 @@ pub(super) struct Read {
     error: String,
 }
 struct Cached {
+    bytes: usize,
     key: String,
     result: ResultSet,
     error: String,
@@ -33,14 +36,80 @@ pub(super) enum ReadKind {
     Count,
 }
 
+struct Relationship<'a> {
+    id: String,
+    child: &'a str,
+    key: &'a ForeignKey,
+    values: Vec<&'a Value>,
+    kind: ReadKind,
+}
+impl Relationship<'_> {
+    fn into_operation(self) -> (String, Operation) {
+        let table = self.child.to_owned();
+        let key = self.key.clone();
+        let values = self.values.into_iter().cloned().collect();
+        let operation = match self.kind {
+            ReadKind::Parent => Operation::Peek { table, key, values },
+            ReadKind::Rows => Operation::References { table, key, values },
+            ReadKind::Count => Operation::ReferenceCount { table, key, values },
+        };
+        (self.id, operation)
+    }
+}
+impl Cached {
+    fn new(key: String, result: ResultSet, error: String) -> Self {
+        let bytes = key.len()
+            + error.len()
+            + result
+                .columns
+                .iter()
+                .map(|c| c.name.len() + c.declared_type.as_ref().map_or(0, String::len))
+                .sum::<usize>()
+            + result
+                .rows
+                .iter()
+                .flatten()
+                .map(Value::bytes)
+                .sum::<usize>();
+        Self {
+            key,
+            result,
+            error,
+            bytes,
+        }
+    }
+}
+impl ContextReads {
+    fn cached(&self, key: &str) -> Option<&Cached> {
+        self.cache.iter().find(|c| c.key == key)
+    }
+    fn remember(&mut self, cached: Cached) {
+        self.cache_bytes += cached.bytes;
+        self.cache.push_back(cached);
+        while self.cache.len() > 32 || self.cache_bytes > 8 * 1024 * 1024 {
+            if let Some(old) = self.cache.pop_front() {
+                self.cache_bytes -= old.bytes;
+            }
+        }
+    }
+    fn forget(&mut self, key: &str) {
+        self.cache.retain(|c| {
+            if c.key != key {
+                return true;
+            }
+            self.cache_bytes -= c.bytes;
+            false
+        });
+    }
+}
 impl App {
-    fn relationship_read(
-        &self,
+    fn relationship_read<'a>(
+        &'a self,
         row: usize,
-        child: &str,
-        key: &ForeignKey,
+        child: &'a str,
+        key: &'a ForeignKey,
         kind: ReadKind,
-    ) -> Option<(String, Operation)> {
+    ) -> Option<Relationship<'a>> {
         if self.document.view != View::Browse {
             return None;
         }
@@ -65,24 +134,23 @@ impl App {
                     .columns
                     .iter()
                     .position(|c| c.name.eq_ignore_ascii_case(name))?;
-                row.get(i).filter(|v| **v != Value::Null).cloned()
+                row.get(i).filter(|v| **v != Value::Null)
             })
             .collect::<Option<_>>()?;
-        if values.is_empty() || values.iter().map(Value::bytes).sum::<usize>() > 32 * 1024 {
+        if values.is_empty() || values.iter().map(|v| v.bytes()).sum::<usize>() > 32 * 1024 {
             return None;
         }
         let id = format!("{kind:?}:{child}:{key:?}:{values:?}");
         if id.len() > 128 * 1024 {
             return None;
         }
-        let key = key.clone();
-        let table = child.to_owned();
-        let operation = match kind {
-            ReadKind::Parent => Operation::Peek { table, key, values },
-            ReadKind::Rows => Operation::References { table, key, values },
-            ReadKind::Count => Operation::ReferenceCount { table, key, values },
-        };
-        Some((id, operation))
+        Some(Relationship {
+            id,
+            child,
+            key,
+            values,
+            kind,
+        })
     }
     pub(super) fn request_context(
         &mut self,
@@ -101,22 +169,16 @@ impl App {
         {
             return;
         }
-        let Some((id, operation)) = self.relationship_read(row, child, key, kind) else {
+        let Some(plan) = self.relationship_read(row, child, key, kind) else {
             return;
         };
-        if self
-            .document
-            .tools
-            .context
-            .cache
-            .iter()
-            .any(|c| c.key == id)
-        {
+        if self.document.tools.context.cached(&plan.id).is_some() {
             return;
         }
         let Some(session) = &self.session else {
             return;
         };
+        let (id, operation) = plan.into_operation();
         self.sequence += 1;
         let ticket = session.ticket(self.sequence, self.generation);
         if session.submit(Request { ticket, operation }).is_ok() {
@@ -153,50 +215,26 @@ impl App {
         if read.owner != self.document.result.current || self.closing {
             return;
         }
-        self.document.tools.context.cache.push_back(Cached {
-            key: read.key,
-            result: read.result,
-            error: read.error,
-        });
-        while self.document.tools.context.cache.len() > 32
-            || self
-                .document
-                .tools
-                .context
-                .cache
-                .iter()
-                .map(|c| {
-                    c.key.len()
-                        + c.error.len()
-                        + c.result
-                            .columns
-                            .iter()
-                            .map(|c| c.name.len() + c.declared_type.as_ref().map_or(0, String::len))
-                            .sum::<usize>()
-                        + c.result
-                            .rows
-                            .iter()
-                            .flatten()
-                            .map(Value::bytes)
-                            .sum::<usize>()
-                })
-                .sum::<usize>()
-                > 8 * 1024 * 1024
-        {
-            self.document.tools.context.cache.pop_front();
-        }
+        self.document
+            .tools
+            .context
+            .remember(Cached::new(read.key, read.result, read.error));
     }
     pub(super) fn hover_context(&mut self, ctx: &egui::Context) {
-        let Some((row, key)) = self.document.tools.context.hovered.clone() else {
+        let Some((row, key)) = &self.document.tools.context.hovered else {
             self.document.tools.context.hover = None;
             return;
         };
-        let Some(table) = self.document.table.as_ref().map(|t| t.name.clone()) else {
+        let Some(table) = self.document.table.as_ref() else {
             return;
         };
-        let Some((id, _)) = self.relationship_read(row, &table, &key, ReadKind::Parent) else {
+        let Some(id) = self
+            .relationship_read(*row, &table.name, key, ReadKind::Parent)
+            .map(|plan| plan.id)
+        else {
             return;
         };
+        let cached = self.document.tools.context.cached(&id).is_some();
         let now = ctx.input(|i| i.time);
         let since = match &self.document.tools.context.hover {
             Some((old, since)) if old == &id => *since,
@@ -205,8 +243,15 @@ impl App {
                 now
             }
         };
+        if cached {
+            return;
+        }
         if now - since >= 0.35 {
-            self.request_context(row, &table, &key, ReadKind::Parent);
+            let table = table.name.clone();
+            if let Some((row, key)) = self.document.tools.context.hovered.take() {
+                self.request_context(row, &table, &key, ReadKind::Parent);
+                self.document.tools.context.hovered = Some((row, key));
+            }
         } else {
             ctx.request_repaint_after(std::time::Duration::from_millis(350));
         }
@@ -216,18 +261,14 @@ impl App {
         let Some(table) = &self.document.table else {
             return;
         };
-        let Some((id, _)) = self.relationship_read(row, &table.name, key, ReadKind::Parent) else {
+        let Some(id) = self
+            .relationship_read(row, &table.name, key, ReadKind::Parent)
+            .map(|plan| plan.id)
+        else {
             ui.label("Unresolved or NULL key");
             return;
         };
-        if let Some(c) = self
-            .document
-            .tools
-            .context
-            .cache
-            .iter()
-            .find(|c| c.key == id)
-        {
+        if let Some(c) = self.document.tools.context.cached(&id) {
             if !c.error.is_empty() {
                 ui.label(&c.error);
                 return;
@@ -291,17 +332,13 @@ impl App {
             icons::empty_state_at(ui, rect, Icon::Link, "No declared incoming relationships");
         }
         for (child, key) in keys {
-            let spec = self.relationship_read(row, &child, &key, ReadKind::Count);
-            let count = spec
+            let spec = self
+                .relationship_read(row, &child, &key, ReadKind::Count)
+                .map(|plan| plan.id);
+            let cached = spec
                 .as_ref()
-                .and_then(|(id, _)| {
-                    self.document
-                        .tools
-                        .context
-                        .cache
-                        .iter()
-                        .find(|c| &c.key == id)
-                })
+                .and_then(|id| self.document.tools.context.cached(id));
+            let count = cached
                 .and_then(|c| {
                     c.result
                         .completion
@@ -316,18 +353,7 @@ impl App {
                         None
                     }
                 });
-            let error = spec
-                .as_ref()
-                .and_then(|(id, _)| {
-                    self.document
-                        .tools
-                        .context
-                        .cache
-                        .iter()
-                        .find(|c| &c.key == id)
-                })
-                .map(|c| c.error.clone())
-                .unwrap_or_default();
+            let error = cached.map(|c| c.error.clone()).unwrap_or_default();
             ui.horizontal(|ui| {
                 if ui
                     .add_enabled(
@@ -355,8 +381,8 @@ impl App {
                         })
                         .clicked()
                 {
-                    if let Some((id, _)) = &spec {
-                        self.document.tools.context.cache.retain(|c| &c.key != id);
+                    if let Some(id) = &spec {
+                        self.document.tools.context.forget(id);
                     }
                     self.request_context(row, &child, &key, ReadKind::Count);
                 }
@@ -414,18 +440,14 @@ impl App {
             return;
         }
         self.request_context(row, child, key, ReadKind::Rows);
-        let Some((id, _)) = self.relationship_read(row, child, key, ReadKind::Rows) else {
+        let Some(id) = self
+            .relationship_read(row, child, key, ReadKind::Rows)
+            .map(|plan| plan.id)
+        else {
             ui.weak("Select a resolved non-NULL parent key");
             return;
         };
-        let Some(c) = self
-            .document
-            .tools
-            .context
-            .cache
-            .iter()
-            .find(|c| c.key == id)
-        else {
+        let Some(c) = self.document.tools.context.cached(&id) else {
             ui.spinner();
             ui.weak("Loading related rows…");
             return;
@@ -433,7 +455,7 @@ impl App {
         if !c.error.is_empty() {
             ui.colored_label(ui.visuals().error_fg_color, &c.error);
             if ui.button("Retry related rows").clicked() {
-                self.document.tools.context.cache.retain(|c| c.key != id);
+                self.document.tools.context.forget(&id);
                 self.request_context(row, child, key, ReadKind::Rows);
             }
             return;
@@ -480,5 +502,51 @@ impl App {
         if c.result.columns.len() > 12 {
             ui.weak("Showing first 12 columns; open full view for all columns");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Cached, ContextReads};
+    use tursobench_core::{ResultSet, Value};
+
+    #[test]
+    fn cache_enforces_fifo_count_and_byte_limits_and_accounts_for_retries() {
+        let mut reads = ContextReads::default();
+        for i in 0..33 {
+            reads.remember(Cached::new(
+                i.to_string(),
+                ResultSet::default(),
+                String::new(),
+            ));
+        }
+        assert_eq!(reads.cache.len(), 32);
+        assert!(reads.cached("0").is_none());
+        assert!(reads.cached("32").is_some());
+        let bytes = reads.cache_bytes;
+        reads.forget("13");
+        reads.forget("absent");
+        assert_eq!(reads.cache_bytes, bytes - 2);
+        assert_eq!(reads.cache.len(), 31);
+
+        let mut reads = ContextReads::default();
+        for i in 0..3 {
+            let result = ResultSet {
+                rows: vec![vec![Value::Blob(vec![0; 3 * 1024 * 1024])]],
+                ..Default::default()
+            };
+            reads.remember(Cached::new(i.to_string(), result, String::new()));
+        }
+        assert_eq!(reads.cache.len(), 2);
+        assert!(reads.cached("0").is_none());
+        assert!(reads.cached("1").is_some());
+        assert!(reads.cache_bytes <= 8 * 1024 * 1024);
+        reads.remember(Cached::new(
+            "oversized".into(),
+            ResultSet::default(),
+            "x".repeat(8 * 1024 * 1024 + 1),
+        ));
+        assert!(reads.cache.is_empty());
+        assert_eq!(reads.cache_bytes, 0);
     }
 }

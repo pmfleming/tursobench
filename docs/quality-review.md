@@ -1,4 +1,4 @@
-# Incremental quality improvements — 2026-11-03
+# Incremental quality improvements — 2026-11-03–04
 
 The initial review/refactor was committed as `0051473`. The next priorities,
 ranked using RQLens hotspots and inspection of allocation/ownership costs, are:
@@ -46,6 +46,72 @@ simplifying stateful code and repeated work on UI paths.
    values, NaN, infinity and floating overflow. Integer sums/extrema remain exact;
    mixed-real sums remain explicitly approximate and now accumulate in selection
    order. All 112 UI tests, all-target Clippy, formatting and hotspots pass.
+
+5. **Lazy relationship requests and bounded cache work.** A request plan borrows
+   key values and metadata until session admission and cache checks pass. Rendering
+   and cache lookup no longer build unused worker operations or clone key values.
+   Hover processing moves its retained key when a request is due instead of cloning
+   it on every frame. Cached entries calculate the existing retained-size estimate
+   once; FIFO eviction and retry removal update a running byte total. Cache lookups
+   share one helper. A cache matrix covers count eviction, byte eviction, retry
+   removal, absent keys and an oversized error entry. The real worker scenario
+   verifies a cache hit does not submit another request.
+
+| Measurement | After initial refactor | After five improvements |
+| --- | ---: | ---: |
+| Maximum function cognitive complexity | 73 | 62 |
+| Sum of function cognitive complexity | 3,879 | 3,812 |
+| Maximum function cyclomatic complexity | 65 | 65 |
+| Sum of function cyclomatic complexity | 4,028 | 4,054 |
+| Sum of function Halstead effort | 28,365,131 | 27,892,242 |
+| Duplicated source lines | 1,480 | 1,462 |
+| Wildcard imports | 17 | 17 |
+| Observed panic paths, including tests | 258 | 258 |
+| Sum of module locality risk (lower is better) | 186.00 | 188.25 |
+| Mean observed module leverage (higher is better) | 24.70 | 25.00 |
+| Measured modules | 66 | 66 |
+| Physical first-party Rust lines, including tests | 25,612 | 25,868 |
+| UI test-module and interaction-suite lines, including helpers | 5,558 | 5,647 |
+| Executed tests | 139 | 141 |
+| Line coverage (%) | 83.93 | 84.11 |
+| Region coverage (%) | 83.63 | 83.86 |
+| Function coverage (%) | 85.81 | 86.08 |
+
+The before column measures the code committed as `0051473`; its preserved baseline
+artifacts were collected just before that initial commit. The after artifacts
+were collected before committing improvement 5. The source scope, RQLens binary,
+configuration and toolchains are unchanged; both inventories contain 66 modules.
+The largest remaining cognitive hotspots are `pane_ribbon` (62),
+`discovery_settings_ui` (59) and `editor_ui` (53). The maximum cyclomatic value
+still belongs to the vector-icon match, which was left intact.
+
+The clearest gains are focused rendering ownership, shared transaction policy,
+lazy formatting and reduced allocation/cloning on UI paths. Runtime speedups were
+not benchmarked. Aggregate cyclomatic complexity, total source size and locality
+risk increased; these are recorded tradeoffs, not claimed global improvements.
+Mean reuse/leverage improved slightly. Architecture identity remains partial
+(1,001/1,018 dependency references resolved). Reliability findings include tests
+and remain partial around unexpanded macros. Its observed panic-path inventory
+is unchanged: the removed extrema unwraps were not reported in the baseline,
+so the count does not reflect that source-level change. Branch and mutation
+coverage were not collected.
+
+The series adds two focused test matrices. UI test code is 5,647 lines,
+compared with 5,558 after the initial refactor and 5,757 before
+that refactor. The current series is not a further test-volume or LOC reduction.
+
+Final validation passed: formatting, workspace/all-target Clippy with warnings
+denied, 141 workspace tests, workspace build, the engine spike, the desktop,
+startup-discovery and four local-project smoke cases, and native capture of all
+workspace sizes/themes, navigator tools, staged edits, dialogs and chooser states.
+The engine spike retains its existing unvalidated fault-injection and old-engine
+compatibility gates.
+
+Evidence is retained under `target/quality-next/`: `baseline/`, `final/`,
+`comparison.json`, per-improvement hotspot/test/Clippy logs, final measurement
+and smoke logs, and `captures/`. `lens.sh` records the same local metadata launcher
+and coverage-tool setup used for the initial review. The evidence directory is
+ignored build output. All five improvements are committed separately.
 
 ---
 

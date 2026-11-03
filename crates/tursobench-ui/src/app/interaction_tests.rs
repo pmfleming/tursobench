@@ -1508,6 +1508,12 @@ fn contextual_reads_and_wide_related_grid_preserve_parent_result_and_selection()
     let original = app.document.result.rows.clone();
     app.request_context(0, "child", &child, context::ReadKind::Parent);
     wait(&mut app, &ctx);
+    let submitted = app.sequence;
+    app.request_context(0, "child", &child, context::ReadKind::Parent);
+    assert_eq!(
+        app.sequence, submitted,
+        "cache hits must not submit another request"
+    );
     assert_eq!(app.document.result.current, owner);
     assert_eq!(app.document.result.rows, original);
     app.browse_table("parent".into());
