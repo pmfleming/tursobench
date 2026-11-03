@@ -7,10 +7,12 @@ the desktop's warning and relationship roles.
 
 ## Workspace
 
-Five tiles have fixed positions. Relationships sits above Table data on the left;
+Five tiles keep a fixed arrangement with adjustable sizes. Relationships sits above Table data on the left;
 Record, Structure and SQL share the right column. Each tile combines its context
 and icon actions in one compact ribbon. There is no global ribbon, activity rail,
-separate open-tile title bar, window dragging or divider resizing.
+separate open-tile title bar or window dragging. Drag anywhere along a divider to
+resize the adjacent tiles; the vertical divider moves the complete left and right
+columns. Tile proportions are saved per database.
 
 - Minimize collapses a tile to its header and gives the other tiles in that column
   more room. Click the header to restore it.

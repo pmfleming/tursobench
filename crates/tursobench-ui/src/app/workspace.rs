@@ -14,6 +14,7 @@ pub(super) struct Workspace {
     pub focused: u64,
     pub active: Kind,
     pub expanded: Option<Kind>,
+    pub splits: tiling::Splits,
     pub minimized: BTreeSet<Kind>,
     pub visible: BTreeMap<Kind, u64>,
     pub next_id: u64,
@@ -32,6 +33,7 @@ impl Default for Workspace {
             focused: 0,
             active: Kind::Map,
             expanded: None,
+            splits: Default::default(),
             minimized: Default::default(),
             visible: Default::default(),
             next_id: 1,
@@ -266,11 +268,20 @@ impl App {
             self.workspace.pane_rects.clear();
             self.workspace.controls.clear();
         }
-        let panes = tiling::layout(
+        let mut panes = tiling::layout(
             self.workspace.area,
             self.workspace.expanded,
             &self.workspace.minimized,
+            &self.workspace.splits,
         );
+        if self.workspace_dividers(ui, &panes) {
+            panes = tiling::layout(
+                self.workspace.area,
+                self.workspace.expanded,
+                &self.workspace.minimized,
+                &self.workspace.splits,
+            );
+        }
         for (kind, rect) in panes {
             let owner = self.pane_document(kind);
             if let Some(id) = owner {
@@ -414,6 +425,59 @@ impl App {
         }
         self.switch_document(self.workspace.focused);
     }
+    fn workspace_dividers(&mut self, ui: &mut egui::Ui, panes: &[(Kind, egui::Rect)]) -> bool {
+        let mut changed = false;
+        for (divider, rect) in
+            tiling::dividers(panes, &self.workspace.minimized, self.workspace.area)
+        {
+            let response = ui
+                .interact(
+                    rect,
+                    ui.scope_id().with(("workspace-divider", divider)),
+                    egui::Sense::drag(),
+                )
+                .on_hover_cursor(if divider.vertical() {
+                    egui::CursorIcon::ResizeHorizontal
+                } else {
+                    egui::CursorIcon::ResizeVertical
+                });
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::Role::Splitter, ui.is_enabled(), divider.label())
+            });
+            if response.dragged() {
+                let delta = if response.drag_started() {
+                    response
+                        .interact_pointer_pos()
+                        .zip(ui.input(|i| i.pointer.press_origin()))
+                        .map_or(egui::Vec2::ZERO, |(p, origin)| p - origin)
+                } else {
+                    response.drag_delta()
+                };
+                let movement = if divider.vertical() { delta.x } else { delta.y };
+                if movement != 0.0 {
+                    self.workspace
+                        .splits
+                        .resize(divider, delta, panes, &self.workspace.minimized);
+                    changed = true;
+                    ui.ctx().request_repaint();
+                }
+            }
+            if response.hovered() || response.dragged() {
+                let color = crate::appearance::Tokens::of(ui.ctx()).primary;
+                let line = if divider.vertical() {
+                    [rect.center_top(), rect.center_bottom()]
+                } else {
+                    [rect.left_center(), rect.right_center()]
+                };
+                ui.painter()
+                    .line_segment(line, egui::Stroke::new(2.0, color));
+            }
+            if response.drag_stopped() {
+                self.save_workspace();
+            }
+        }
+        changed
+    }
     fn pane_content(&mut self, ui: &mut egui::Ui, kind: Kind) {
         match kind {
             Kind::Map => self.diagram_ui(ui),
@@ -515,6 +579,8 @@ pub(crate) struct Snapshot {
     minimized: BTreeSet<Kind>,
     #[serde(default)]
     active: Option<Kind>,
+    #[serde(default)]
+    splits: tiling::Splits,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub(crate) struct SavedView {
@@ -528,6 +594,7 @@ impl Snapshot {
             || !std::path::Path::new(&self.database).is_absolute()
             || self.views.is_empty()
             || self.views.len() > MAX_VIEWS
+            || !self.splits.valid()
         {
             return false;
         }
@@ -584,6 +651,7 @@ impl App {
             expanded: self.workspace.expanded.map(|_| focused),
             active: Some(self.workspace.active),
             minimized: self.workspace.minimized.clone(),
+            splits: self.workspace.splits,
         };
         saved.valid().then_some(saved)
     }
@@ -655,6 +723,7 @@ impl App {
         self.workspace.active = active;
         self.workspace.expanded = saved.expanded.map(|_| active);
         self.workspace.minimized = saved.minimized;
+        self.workspace.splits = saved.splits;
         if let Some(id) = self.pane_document(active) {
             self.switch_document(id);
             self.workspace.focused = id;

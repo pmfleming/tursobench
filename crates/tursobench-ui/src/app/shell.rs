@@ -174,7 +174,7 @@ impl App {
             let panel = egui::Panel::left("workspace-sidebar")
                 .resizable(true)
                 .default_size(layout.sidebar_width)
-                .size_range(180.0..=300.0)
+                .size_range(180.0..=(ui.available_width() - 360.0).clamp(180.0, 600.0))
                 .show(ui, |ui| {
                     if self.session.is_some() {
                         egui::Panel::bottom("navigator-utilities")

@@ -53,7 +53,7 @@ are unsupported. The exclusive-use checkbox is an acknowledgement, not an OS loc
 ## Features
 
 - Startup database discovery across application data/state and development folders, with recent files, Turso/SQLite/unknown type icons, a per-file SQLite override, and search-folder controls. See [discovery behavior and limits](database-discovery.md).
-- Persistent database navigator and five fixed tiles with compact local ribbons, minimize-to-header and workspace expansion.
+- Persistent database navigator and five tiles with compact local ribbons, full-length draggable dividers, minimize-to-header and workspace expansion. Tile proportions are saved per database.
 - Engine-enforced read-only opening by default; read/write is explicit opt-in.
 - Searchable schema/DDL, native index/FK details, related-row navigation and read-only diagnostics.
 - Relationship-arranged schema home: tables, keys, composite/self/cyclic FKs, Map/List fallback and saved map layout.

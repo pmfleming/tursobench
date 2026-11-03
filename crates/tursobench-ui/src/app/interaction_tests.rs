@@ -1851,6 +1851,139 @@ fn cancelling_a_recent_database_switch_clears_the_pending_path() {
 }
 
 #[test]
+fn full_length_workspace_dividers_resize_adjacent_tiles_and_preserve_live_state() {
+    let (_dir, ctx, mut app) = fixture(
+        &[
+            "CREATE TABLE sample(id INTEGER PRIMARY KEY, body TEXT)",
+            "INSERT INTO sample VALUES(1,'retained')",
+        ],
+        true,
+    );
+    app.browse_table("sample".into());
+    wait(&mut app, &ctx);
+    app.select_cell(0, 1, false);
+    app.stage_cell(0, 1, Value::Text("draft".into()));
+    for _ in 0..2 {
+        frame(&mut app, &ctx, vec![]);
+    }
+    let ticket = app.document.result.current;
+    let sequence = app.sequence;
+    let focus = app.workspace.focused;
+    let drag = |app: &mut App, start: egui::Pos2, delta: egui::Vec2| {
+        frame(
+            app,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(start),
+                pointer_button(start, true),
+            ],
+        );
+        frame(app, &ctx, vec![egui::Event::PointerMoved(start + delta)]);
+        frame(app, &ctx, vec![]);
+        frame(app, &ctx, vec![pointer_button(start + delta, false)]);
+        frame(app, &ctx, vec![]);
+    };
+    for divider in [
+        tiling::Divider::Columns,
+        tiling::Divider::Rows(0, 1),
+        tiling::Divider::Rows(2, 3),
+        tiling::Divider::Rows(3, 4),
+    ] {
+        for (fraction, distance) in [(0.08, 30.0), (0.92, -20.0)] {
+            let before = app.workspace.pane_rects.clone();
+            let rect = tiling::dividers(&before, &app.workspace.minimized, app.workspace.area)
+                .into_iter()
+                .find(|(d, _)| *d == divider)
+                .unwrap()
+                .1;
+            let original_splits = app.workspace.splits;
+            click(&mut app, &ctx, rect.center());
+            assert_eq!(
+                app.workspace.splits, original_splits,
+                "clicking without dragging must not change proportions"
+            );
+            let (start, delta) = if divider.vertical() {
+                (
+                    egui::pos2(rect.center().x, rect.top() + rect.height() * fraction),
+                    egui::vec2(distance, 0.0),
+                )
+            } else {
+                (
+                    egui::pos2(rect.left() + rect.width() * fraction, rect.center().y),
+                    egui::vec2(0.0, distance),
+                )
+            };
+            drag(&mut app, start, delta);
+            let after = &app.workspace.pane_rects;
+            match divider {
+                tiling::Divider::Columns => {
+                    for i in 0..5 {
+                        let expected = if i < 2 { distance } else { -distance };
+                        assert!((after[i].1.width() - before[i].1.width() - expected).abs() < 0.1);
+                        assert!((after[i].1.height() - before[i].1.height()).abs() < 0.1);
+                    }
+                }
+                tiling::Divider::Rows(a, b) => {
+                    assert!((after[a].1.bottom() - before[a].1.bottom() - distance).abs() < 0.1);
+                    assert!((after[b].1.top() - before[b].1.top() - distance).abs() < 0.1);
+                    for i in 0..5 {
+                        if i != a && i != b {
+                            assert!((after[i].1.min - before[i].1.min).length() < 0.1);
+                            assert!((after[i].1.max - before[i].1.max).length() < 0.1);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for distance in [10000.0, -10000.0] {
+        let panes = &app.workspace.pane_rects;
+        let handle = tiling::dividers(panes, &app.workspace.minimized, app.workspace.area)[0].1;
+        drag(&mut app, handle.center(), egui::vec2(distance, 0.0));
+        assert!(
+            app.workspace
+                .pane_rects
+                .iter()
+                .all(|(_, rect)| rect.width() >= 179.9)
+        );
+        let panes = &app.workspace.pane_rects;
+        let handle = tiling::dividers(panes, &app.workspace.minimized, app.workspace.area)[1].1;
+        drag(&mut app, handle.center(), egui::vec2(0.0, distance));
+        assert!(
+            app.workspace
+                .pane_rects
+                .iter()
+                .all(|(_, rect)| rect.height() >= 95.9)
+        );
+    }
+    let splits = app.workspace.splits;
+    for fraction in [0.08, 0.92] {
+        let before = app.ui.sidebar_rect;
+        let pos = egui::pos2(before.right(), before.top() + before.height() * fraction);
+        drag(&mut app, pos, egui::vec2(30.0, 0.0));
+        assert!((app.ui.sidebar_rect.width() - before.width() - 30.0).abs() < 1.0);
+        assert_eq!(app.workspace.splits, splits);
+    }
+    assert_eq!(app.document.result.current, ticket);
+    assert_eq!(
+        app.document.result.rows[0][1],
+        Value::Text("retained".into())
+    );
+    assert_staged(&app, 0, 1, Value::Text("draft".into()));
+    assert_eq!(app.document.inspect, Some((0, 1)));
+    assert_eq!(app.workspace.focused, focus);
+    assert_eq!(
+        app.sequence, sequence,
+        "resizing must not fetch or execute SQL"
+    );
+    assert_eq!(
+        app.preferences.workspace_layouts.first(),
+        app.workspace_snapshot().as_ref()
+    );
+    app.close();
+}
+
+#[test]
 fn workspace_geometry_roundtrips_without_query_data_or_bindings() {
     let (_dir, ctx, mut app) = fixture(
         &[
@@ -1892,9 +2025,32 @@ fn workspace_geometry_roundtrips_without_query_data_or_bindings() {
     app.retile();
     app.minimize_pane(tiling::Kind::Map);
     app.expand_window(editor);
+    app.workspace.splits = tiling::Splits {
+        column: 0.48,
+        rows: [1.0, 2.0, 1.5, 0.8, 1.0],
+    };
     let snapshot = app.workspace_snapshot().unwrap();
     let encoded = serde_json::to_string(&snapshot).unwrap();
     assert!(!encoded.contains("private") && !encoded.contains("buffer-"));
+    let mut legacy: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+    legacy.as_object_mut().unwrap().remove("splits");
+    let legacy: workspace::Snapshot = serde_json::from_value(legacy).unwrap();
+    assert!(legacy.valid());
+    app.preferences.workspace_layouts = vec![legacy];
+    app.restore_workspace();
+    assert_eq!(app.workspace.splits, tiling::Splits::default());
+    for invalid in [
+        serde_json::json!({"column": 0.0}),
+        serde_json::json!({"rows": [1.0, 1.0, 1.0, 0.0, 1.0]}),
+    ] {
+        let mut value: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        value["splits"] = invalid;
+        assert!(
+            !serde_json::from_value::<workspace::Snapshot>(value)
+                .unwrap()
+                .valid()
+        );
+    }
     app.preferences.workspace_layouts = vec![serde_json::from_str(&encoded).unwrap()];
     app.restore_workspace();
     assert_eq!(app.workspace_snapshot(), Some(snapshot));
