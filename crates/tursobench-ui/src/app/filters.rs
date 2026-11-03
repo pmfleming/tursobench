@@ -107,181 +107,234 @@ pub(super) fn parse_filter(input: &str, table: &Table) -> Result<Filter, String>
     }
     Ok(Filter { column, op, value })
 }
-impl App {
-    fn apply_filters(&mut self, mut next: Browse) -> bool {
+pub(super) struct FilterEditor {
+    index: usize,
+    op: FilterOp,
+    kind: CellKind,
+    input: String,
+}
+impl FilterEditor {
+    fn new(index: usize, filter: &Filter) -> Self {
+        Self {
+            index,
+            op: filter.op,
+            kind: kind(&filter.value),
+            input: match &filter.value {
+                Value::Blob(b) => crate::export::hex(b),
+                v => crate::export::cell_text(v),
+            },
+        }
+    }
+    fn filter(&self, column: usize) -> Result<Filter, String> {
+        Ok(Filter {
+            column,
+            op: self.op,
+            value: if self.op.unary() {
+                Value::Null
+            } else {
+                self.kind.parse(&self.input)?
+            },
+        })
+    }
+    fn ui(&mut self, ui: &mut egui::Ui, column: usize) -> Option<Result<FilterChange, String>> {
+        egui::ComboBox::from_id_salt(("chip-op", self.index))
+            .selected_text(self.op.label())
+            .show_ui(ui, |ui| {
+                for op in FilterOp::ALL {
+                    ui.selectable_value(&mut self.op, op, op.label());
+                }
+            });
+        egui::ComboBox::from_id_salt(("chip-type", self.index))
+            .selected_text(self.kind.label())
+            .show_ui(ui, |ui| {
+                for kind in [
+                    CellKind::Text,
+                    CellKind::Integer,
+                    CellKind::Real,
+                    CellKind::Null,
+                    CellKind::Blob,
+                ] {
+                    ui.selectable_value(&mut self.kind, kind, kind.label());
+                }
+            });
+        ui.text_edit_singleline(&mut self.input);
+        ui.button("Apply").clicked().then(|| {
+            self.filter(column)
+                .map(|f| FilterChange::Replace(self.index, f))
+        })
+    }
+}
+enum FilterChange {
+    Add(Filter),
+    Replace(usize, Filter),
+    Remove(usize),
+}
+impl FilterChange {
+    fn apply(self, browse: &Browse) -> Result<Browse, String> {
+        let mut next = browse.clone();
+        match self {
+            Self::Add(filter) => next.filters.push(filter),
+            Self::Replace(i, filter) => {
+                *next.filters.get_mut(i).ok_or("Filter no longer exists")? = filter
+            }
+            Self::Remove(i) => {
+                if i >= next.filters.len() {
+                    return Err("Filter no longer exists".into());
+                }
+                next.filters.remove(i);
+            }
+        }
         if next.filters.len() > 32
             || next.filters.iter().map(|f| f.value.bytes()).sum::<usize>() > 1024 * 1024
         {
-            self.document.tools.filter_error = "Filters exceed 32 predicates / 1 MiB".into();
-            return false;
+            return Err("Filters exceed 32 predicates / 1 MiB".into());
         }
         next.offset = 0;
-        if self
-            .submit(Operation::Browse(next.clone()), View::Browse)
-            .is_some()
-        {
-            self.document.browse = Some(next);
-            self.document.tools.filter_error.clear();
-            true
-        } else {
-            false
-        }
+        Ok(next)
     }
-    pub(super) fn add_filter(&mut self, filter: Filter) -> bool {
-        let Some(mut next) = self.document.browse.clone() else {
+}
+fn filter_chips(
+    ui: &mut egui::Ui,
+    table: &Table,
+    filters: &[Filter],
+    editor: &mut Option<FilterEditor>,
+) -> Option<Result<FilterChange, String>> {
+    let mut action = None;
+    egui::ScrollArea::horizontal()
+        .id_salt("filter-tokens")
+        .max_width((ui.available_width() - 100.0).max(0.0))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                for (i, f) in filters.iter().enumerate() {
+                    let name = table.columns.get(f.column).map_or("?", |c| c.name.as_str());
+                    let label = format!(
+                        "{name} {} {}",
+                        f.op.label(),
+                        if f.op.unary() {
+                            String::new()
+                        } else {
+                            f.value.preview()
+                        }
+                    );
+                    let chip = ui.button(label);
+                    if chip.clicked() {
+                        *editor = Some(FilterEditor::new(i, f));
+                    }
+                    egui::Popup::menu(&chip).show(|ui| {
+                        if let Some(editor) = editor.as_mut().filter(|e| e.index == i) {
+                            ui.label(format!("{name} · stored comparison type"));
+                            if let Some(change) = editor.ui(ui, f.column) {
+                                action = Some(change);
+                            }
+                        }
+                    });
+                    if ui
+                        .small_button("×")
+                        .on_hover_text("Remove filter")
+                        .clicked()
+                    {
+                        action = Some(Ok(FilterChange::Remove(i)));
+                    }
+                }
+            });
+        });
+    action
+}
+impl App {
+    fn change_filters(&mut self, change: FilterChange) -> bool {
+        let Some(browse) = &self.document.browse else {
             return false;
         };
-        next.filters.push(filter);
-        self.apply_filters(next)
+        let next = match change.apply(browse) {
+            Ok(next) => next,
+            Err(error) => {
+                self.document.tools.filter_error = error;
+                return false;
+            }
+        };
+        if self
+            .submit(Operation::Browse(next.clone()), View::Browse)
+            .is_none()
+        {
+            return false;
+        }
+        self.document.browse = Some(next);
+        self.document.tools.filter_editor = None;
+        self.document.tools.filter_error.clear();
+        true
+    }
+    pub(super) fn add_filter(&mut self, filter: Filter) -> bool {
+        self.change_filters(FilterChange::Add(filter))
     }
     pub(super) fn filter_controls(&mut self, ui: &mut egui::Ui) {
-        let (Some(table), Some(next)) = (self.document.table.clone(), self.document.browse.clone())
-        else {
+        let (Some(table), Some(browse)) = (&self.document.table, &self.document.browse) else {
             return;
         };
         let enabled =
             !self.has_drafts() && self.commit_ticket.is_none() && self.ready && !self.closing;
-        ui.add_enabled_ui(enabled, |ui| {
-            ui.horizontal(|ui| {
-                // A horizontal scroller keeps chips from growing the header vertically.
-                egui::ScrollArea::horizontal()
-                    .id_salt("filter-tokens")
-                    .max_width((ui.available_width() - 100.0).max(0.0))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            for (i, f) in next.filters.iter().enumerate() {
-                                let name =
-                                    table.columns.get(f.column).map_or("?", |c| c.name.as_str());
-                                let label = format!(
-                                    "{name} {} {}",
-                                    f.op.label(),
-                                    if f.op.unary() {
-                                        String::new()
-                                    } else {
-                                        f.value.preview()
-                                    }
-                                );
-                                let chip = ui.button(label);
-                                if chip.clicked() {
-                                    self.document.tools.filter_edit = Some(i);
-                                    self.document.filter_column = f.column;
-                                    self.document.filter_op = f.op;
-                                    self.document.filter_kind = kind(&f.value);
-                                    self.document.tools.filter_value = match &f.value {
-                                        Value::Blob(b) => crate::export::hex(b),
-                                        v => crate::export::cell_text(v),
-                                    };
-                                }
-                                egui::Popup::menu(&chip).show(|ui| {
-                                    if self.document.tools.filter_edit != Some(i) {
-                                        return;
-                                    }
-                                    ui.label(format!("{name} · stored comparison type"));
-                                    egui::ComboBox::from_id_salt(("chip-op", i))
-                                        .selected_text(self.document.filter_op.label())
-                                        .show_ui(ui, |ui| {
-                                            for op in FilterOp::ALL {
-                                                ui.selectable_value(
-                                                    &mut self.document.filter_op,
-                                                    op,
-                                                    op.label(),
-                                                );
-                                            }
-                                        });
-                                    egui::ComboBox::from_id_salt(("chip-type", i))
-                                        .selected_text(self.document.filter_kind.label())
-                                        .show_ui(ui, |ui| {
-                                            for k in [
-                                                CellKind::Text,
-                                                CellKind::Integer,
-                                                CellKind::Real,
-                                                CellKind::Null,
-                                                CellKind::Blob,
-                                            ] {
-                                                ui.selectable_value(
-                                                    &mut self.document.filter_kind,
-                                                    k,
-                                                    k.label(),
-                                                );
-                                            }
-                                        });
-                                    ui.text_edit_singleline(&mut self.document.tools.filter_value);
-                                    if ui.button("Apply").clicked() {
-                                        match if self.document.filter_op.unary() {
-                                            Ok(Value::Null)
-                                        } else {
-                                            self.document
-                                                .filter_kind
-                                                .parse(&self.document.tools.filter_value)
-                                        } {
-                                            Ok(value) => {
-                                                let mut b = next.clone();
-                                                b.filters[i] = Filter {
-                                                    column: f.column,
-                                                    op: self.document.filter_op,
-                                                    value,
-                                                };
-                                                if self.apply_filters(b) {
-                                                    ui.close();
-                                                }
-                                            }
-                                            Err(e) => self.document.tools.filter_error = e,
-                                        }
-                                    }
-                                });
-                                if ui
-                                    .small_button("×")
-                                    .on_hover_text("Remove filter")
-                                    .clicked()
-                                {
-                                    let mut b = next.clone();
-                                    b.filters.remove(i);
-                                    self.apply_filters(b);
-                                }
-                            }
-                        });
-                    });
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut self.document.filter)
-                        .id_salt("token-input")
-                        .hint_text("column = value")
-                        .desired_width(ui.available_width().max(90.0))
-                        .char_limit(65536),
-                );
-                if self.document.tools.filter_focus {
-                    response.request_focus();
-                    self.document.tools.filter_focus = false;
-                    self.document.ui.filter_open = self.workspace.enabled;
-                }
-                if (response.has_focus() || response.lost_focus())
-                    && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
-                {
-                    match parse_filter(&self.document.filter, &table) {
-                        Ok(f) => {
-                            if self.add_filter(f) {
-                                self.document.filter.clear();
-                                self.document.tools.filter_focus = true;
-                            }
+        let action = ui
+            .add_enabled_ui(enabled, |ui| {
+                ui.horizontal(|ui| {
+                    let mut action = filter_chips(
+                        ui,
+                        table,
+                        &browse.filters,
+                        &mut self.document.tools.filter_editor,
+                    );
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut self.document.filter)
+                            .id_salt("token-input")
+                            .hint_text("column = value")
+                            .desired_width(ui.available_width().max(90.0))
+                            .char_limit(65536),
+                    );
+                    if std::mem::take(&mut self.document.tools.filter_focus) {
+                        response.request_focus();
+                        self.document.ui.filter_open = self.workspace.enabled;
+                    }
+                    if response.has_focus() || response.lost_focus() {
+                        if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
+                        {
+                            action = Some(
+                                parse_filter(&self.document.filter, table).map(FilterChange::Add),
+                            );
                         }
-                        Err(e) => self.document.tools.filter_error = e,
+                        if self.document.filter.is_empty()
+                            && !browse.filters.is_empty()
+                            && ui.input_mut(|i| {
+                                i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)
+                            })
+                        {
+                            action = Some(Ok(FilterChange::Remove(browse.filters.len() - 1)));
+                            self.document.tools.filter_focus = true;
+                        }
+                    }
+                    if !self.document.tools.filter_error.is_empty() {
+                        ui.colored_label(ui.visuals().error_fg_color, "!")
+                            .on_hover_text(&self.document.tools.filter_error);
+                    }
+                    action
+                })
+                .inner
+            })
+            .inner;
+        match action {
+            Some(Ok(change)) => {
+                let add = matches!(change, FilterChange::Add(_));
+                let replace = matches!(change, FilterChange::Replace(..));
+                if self.change_filters(change) {
+                    if add {
+                        self.document.filter.clear();
+                        self.document.tools.filter_focus = true;
+                    }
+                    if replace {
+                        egui::Popup::close_all(ui.ctx());
                     }
                 }
-                if (response.has_focus() || response.lost_focus())
-                    && self.document.filter.is_empty()
-                    && !next.filters.is_empty()
-                    && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace))
-                {
-                    let mut b = next.clone();
-                    b.filters.pop();
-                    self.apply_filters(b);
-                    self.document.tools.filter_focus = true;
-                }
-                if !self.document.tools.filter_error.is_empty() {
-                    ui.colored_label(ui.visuals().error_fg_color, "!")
-                        .on_hover_text(&self.document.tools.filter_error);
-                }
-            });
-        });
+            }
+            Some(Err(error)) => self.document.tools.filter_error = error,
+            None => {}
+        }
     }
     pub(super) fn column_facets(&mut self, ui: &mut egui::Ui, column: usize) {
         if self.document.view != View::Browse || self.document.browse.is_none() {
@@ -342,7 +395,8 @@ fn kind(value: &Value) -> CellKind {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{FilterChange, FilterEditor, parse_filter};
+    use tursobench_core::{Browse, FilterOp, Table, Value};
     fn table() -> Table {
         Table {
             name: "t".into(),
@@ -363,36 +417,115 @@ mod tests {
     #[test]
     fn tokens_preserve_identifiers_storage_types_and_operator_boundaries() {
         let t = table();
-        assert_eq!(
-            parse_filter("\"odd \"\" name\" = 'it''s ✓'", &t)
-                .unwrap()
-                .value,
-            Value::Text("it's ✓".into())
+        for (input, column, op, value) in [
+            (
+                "\"odd \"\" name\" = 'it''s ✓'",
+                0,
+                FilterOp::Equal,
+                Value::Text("it's ✓".into()),
+            ),
+            (
+                "n>=-9007199254740993",
+                1,
+                FilterOp::GreaterOrEqual,
+                Value::Integer(-9007199254740993),
+            ),
+            ("n<=3", 1, FilterOp::LessOrEqual, Value::Integer(3)),
+            ("n = '003'", 1, FilterOp::Equal, Value::Text("003".into())),
+            ("n IS NOT NULL", 1, FilterOp::IsNotNull, Value::Null),
+            ("n is null", 1, FilterOp::IsNull, Value::Null),
+            ("n=x'00ff'", 1, FilterOp::Equal, Value::Blob(vec![0, 255])),
+            ("n = X''", 1, FilterOp::Equal, Value::Blob(vec![])),
+            (
+                "n contains '100%_'",
+                1,
+                FilterOp::Contains,
+                Value::Text("100%_".into()),
+            ),
+            ("r < -1.5", 2, FilterOp::Less, Value::Real(-1.5)),
+            ("n != null", 1, FilterOp::NotEqual, Value::Null),
+            ("n≠3", 1, FilterOp::NotEqual, Value::Integer(3)),
+            ("n > 1", 1, FilterOp::Greater, Value::Integer(1)),
+        ] {
+            let f = parse_filter(input, &t).unwrap();
+            assert_eq!((f.column, f.op, &f.value), (column, op, &value), "{input}");
+            let mut editor = FilterEditor::new(0, &f);
+            assert_eq!(editor.filter(column).unwrap().value, value);
+            editor.op = FilterOp::IsNull;
+            editor.input = "invalid numeric/blob input".into();
+            assert_eq!(editor.filter(column).unwrap().value, Value::Null);
+        }
+        for input in [
+            "n=",
+            "n>=oops",
+            "n = 'bad'quote'",
+            "n==1",
+            "missing=1",
+            "\"unclosed=1",
+            "n contains null",
+            "n=x'f'",
+            "n=x'gg'",
+            "r=NaN",
+            "r=inf",
+            "n=9223372036854775808",
+            "n='unclosed",
+            "n like 1",
+        ] {
+            assert!(parse_filter(input, &t).is_err(), "{input}");
+        }
+    }
+    #[test]
+    fn filter_changes_are_bounded_and_leave_the_source_untouched() {
+        let filter = parse_filter("n=1", &table()).unwrap();
+        let original = Browse {
+            table: "t".into(),
+            offset: 100,
+            sort: Some(1),
+            descending: true,
+            filters: vec![filter.clone()],
+        };
+        let replacement = parse_filter("n=2", &table()).unwrap();
+        for (change, values) in [
+            (
+                FilterChange::Add(replacement.clone()),
+                vec![Value::Integer(1), Value::Integer(2)],
+            ),
+            (
+                FilterChange::Replace(0, replacement),
+                vec![Value::Integer(2)],
+            ),
+            (FilterChange::Remove(0), vec![]),
+        ] {
+            let next = change.apply(&original).unwrap();
+            assert_eq!(
+                next.filters
+                    .into_iter()
+                    .map(|f| f.value)
+                    .collect::<Vec<_>>(),
+                values
+            );
+            assert_eq!(
+                (next.offset, next.sort, next.descending),
+                (0, Some(1), true)
+            );
+        }
+        assert!(FilterChange::Remove(1).apply(&original).is_err());
+        assert!(
+            FilterChange::Replace(1, filter.clone())
+                .apply(&original)
+                .is_err()
         );
-        assert_eq!(
-            parse_filter("n>=-9007199254740993", &t).unwrap().value,
-            Value::Integer(-9007199254740993)
-        );
-        assert_eq!(parse_filter("n<=3", &t).unwrap().op, FilterOp::LessOrEqual);
-        assert_eq!(
-            parse_filter("n = '003'", &t).unwrap().value,
-            Value::Text("003".into())
-        );
-        assert_eq!(
-            parse_filter("n IS NOT NULL", &t).unwrap().op,
-            FilterOp::IsNotNull
-        );
-        assert_eq!(
-            parse_filter("n=x'00ff'", &t).unwrap().value,
-            Value::Blob(vec![0, 255])
-        );
-        assert!(parse_filter("n=", &t).is_err());
-        assert!(parse_filter("n>=oops", &t).is_err());
-        assert!(parse_filter("n = 'bad'quote'", &t).is_err());
-        assert!(parse_filter("n==1", &t).is_err());
-        assert_eq!(
-            parse_filter("n contains '100%_'", &t).unwrap().value,
-            Value::Text("100%_".into())
-        );
+        let full = Browse {
+            filters: vec![filter.clone(); 32],
+            ..original.clone()
+        };
+        assert!(FilterChange::Add(filter.clone()).apply(&full).is_err());
+        let large = tursobench_core::Filter {
+            value: Value::Blob(vec![0; 1024 * 1024]),
+            ..filter
+        };
+        assert!(FilterChange::Add(large).apply(&original).is_err());
+        assert_eq!(original.offset, 100);
+        assert_eq!(original.filters[0].value, Value::Integer(1));
     }
 }

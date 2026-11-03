@@ -1442,10 +1442,13 @@ fn token_entry_enter_retains_typed_filter_and_empty_clipboard_fields() {
         app.document.browse.as_ref().unwrap().filters[0].op,
         tursobench_core::FilterOp::GreaterOrEqual
     );
-    app.document.browse.as_mut().unwrap().filters.clear();
-    app.reload();
+    app.document.tools.filter_focus = true;
+    frame(&mut app, &ctx, vec![]);
+    press_key(&mut app, &ctx, egui::Key::Backspace, egui::Modifiers::NONE);
     wait(&mut app, &ctx);
     frame(&mut app, &ctx, vec![]);
+    assert!(app.document.browse.as_ref().unwrap().filters.is_empty());
+    assert_eq!(app.document.result.rows.len(), 2);
     app.document.tools.columns.move_before(2, 0);
     app.select_cell(0, 2, false);
     app.select_cell(0, 0, true);

@@ -1,5 +1,5 @@
 //! A view owns its buffers and interaction state. Switching moves ownership, never clones rows.
-use super::{App, View, results, shell, tools};
+use super::{App, View, shell, tools};
 use tursobench_core::{Browse, DraftBatch, ResultSet, Table, Ticket};
 
 pub(super) struct Document {
@@ -19,9 +19,6 @@ pub(super) struct Document {
     pub sql: String,
     pub params: String,
     pub filter: String,
-    pub filter_column: usize,
-    pub filter_op: tursobench_core::FilterOp,
-    pub filter_kind: results::CellKind,
     pub inspect: Option<(usize, usize)>,
     pub drafts: Option<DraftBatch>,
     pub insert_json: String,
@@ -50,9 +47,6 @@ impl Default for Document {
             sql: "SELECT name, type FROM sqlite_schema ORDER BY name".into(),
             params: "[]".into(),
             filter: String::new(),
-            filter_column: 0,
-            filter_op: Default::default(),
-            filter_kind: Default::default(),
             inspect: None,
             drafts: None,
             insert_json: String::new(),
