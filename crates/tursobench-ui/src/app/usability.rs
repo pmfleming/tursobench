@@ -156,11 +156,18 @@ impl App {
             ui.add(egui::DragValue::new(&mut self.preferences.slow_query_ms).range(1..=60_000));
             ui.label("NULL display marker (types unchanged)");
             ui.add(egui::TextEdit::singleline(&mut self.preferences.null_display).char_limit(32));
-            if ui
-                .checkbox(&mut self.preferences.dark_mode, "Dark theme")
-                .changed()
-            {
+            ui.label("Appearance");
+            let before = self.preferences.appearance;
+            for (mode, label) in [(crate::appearance::Mode::System, "Follow system"), (crate::appearance::Mode::Light, "Light"), (crate::appearance::Mode::Dark, "Dark")] {
+                ui.radio_value(&mut self.preferences.appearance, Some(mode), label);
+            }
+            if self.preferences.legacy_appearance {
+                ui.small("Your previous light/dark choice was retained. Choose Follow system to track desktop changes.");
+            }
+            if before != self.preferences.appearance {
+                self.preferences.legacy_appearance = false;
                 self.apply_theme(ui.ctx());
+                self.store.save(&self.preferences);
             }
             if ui.button("Save settings").clicked() {
                 self.preferences.normalize();

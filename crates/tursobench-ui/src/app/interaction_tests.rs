@@ -184,7 +184,7 @@ fn diagram_preserves_drafts_and_result_ownership_and_chrome_fits_both_themes() {
     );
     let draft = format!("{:?}", app.drafts);
     for dark in [true, false] {
-        app.preferences.dark_mode = dark;
+        app.preferences.appearance = Some(crate::appearance::Mode::from_dark(dark));
         app.apply_theme(&ctx);
         for (width, height, scale) in [
             (960.0, 640.0, 1.0),
@@ -951,7 +951,7 @@ fn table_views_sidebar_and_transactions_fit_themes_and_scaled_viewports() {
     app.browse_table(name.into());
     wait(&mut app, &ctx);
     for dark in [true, false] {
-        app.preferences.dark_mode = dark;
+        app.preferences.appearance = Some(crate::appearance::Mode::from_dark(dark));
         app.apply_theme(&ctx);
         for (width, height, scale) in [
             (1280.0, 720.0, 1.0),

@@ -43,6 +43,7 @@ pub struct App {
     ui: shell::UiState,
     smoke: Option<smoke::Smoke>,
     preferences: crate::storage::Preferences,
+    appearance: crate::appearance::Appearance,
     store: crate::storage::Store,
     export_job: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     picker: Option<std::sync::mpsc::Receiver<files::PickResult>>,
@@ -93,7 +94,7 @@ impl App {
         let wake = ctx.clone();
         let (store, preferences, load_error) =
             crate::storage::Store::start(move || wake.request_repaint());
-        crate::appearance::theme(ctx, preferences.dark_mode);
+
         let args: Vec<_> = if cfg!(test) {
             vec![]
         } else {
@@ -106,6 +107,7 @@ impl App {
             ui: shell::UiState::new(ctx),
             smoke: smoke.then(smoke::Smoke::new),
             databases: databases::Chooser::new(&preferences.discovery),
+            appearance: crate::appearance::Appearance::new(ctx, !cfg!(test) && !smoke),
             preferences,
             store,
             export_job: None,
@@ -157,6 +159,7 @@ impl App {
             #[cfg(test)]
             fk_cell_rect: None,
         };
+        app.apply_theme(ctx);
         // Tests and desktop smoke runs must never inspect the user's filesystem.
         if !cfg!(test) && !smoke && app.preferences.discovery.enabled {
             app.start_discovery(ctx, None);
@@ -375,6 +378,7 @@ impl App {
     }
     fn poll(&mut self, ctx: &egui::Context) {
         self.poll_storage(ctx);
+        self.apply_theme(ctx);
         if let Some(rx) = &self.ui.font_rx {
             match rx.try_recv() {
                 Ok((fonts, label)) => {

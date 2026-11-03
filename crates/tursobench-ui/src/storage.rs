@@ -148,6 +148,10 @@ pub struct Preferences {
     pub query_history: Vec<HistoryEntry>,
     pub saved_queries: Vec<Bookmark>,
     pub dark_mode: bool,
+    #[serde(default)]
+    pub appearance: Option<crate::appearance::Mode>,
+    #[serde(skip)]
+    pub legacy_appearance: bool,
     pub slow_query_ms: u64,
     pub null_display: String,
     pub discovery: DiscoveryPreferences,
@@ -173,6 +177,8 @@ impl Default for Preferences {
             query_history: vec![],
             saved_queries: vec![],
             dark_mode: true,
+            appearance: Some(crate::appearance::Mode::System),
+            legacy_appearance: false,
             slow_query_ms: 500,
             null_display: "NULL".into(),
             discovery: DiscoveryPreferences::default(),
@@ -217,6 +223,10 @@ impl Preferences {
         self.normalize();
     }
     fn migrate_legacy(&mut self) {
+        if self.appearance.is_none() {
+            self.appearance = Some(crate::appearance::Mode::from_dark(self.dark_mode));
+            self.legacy_appearance = true;
+        }
         for sql in std::mem::take(&mut self.history).into_iter().rev() {
             self.record_query("", &sql, None, false);
         }
@@ -383,6 +393,20 @@ fn save(path: &Path, prefs: &Preferences) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn appearance_defaults_to_system_and_migrates_explicit_legacy_choices() {
+        use crate::appearance::Mode;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prefs.json");
+        assert_eq!(load(&path).unwrap().appearance, Some(Mode::System));
+        fs_write(&path, r#"{"dark_mode":false}"#);
+        let mut prefs = load(&path).unwrap();
+        assert_eq!(prefs.appearance, Some(Mode::Light));
+        assert!(prefs.legacy_appearance);
+        prefs.appearance = Some(Mode::System);
+        save(&path, &prefs).unwrap();
+        assert_eq!(load(&path).unwrap().appearance, Some(Mode::System));
+    }
     #[test]
     fn discovery_preferences_migrate_bound_and_roundtrip() {
         let dir = tempfile::tempdir().unwrap();

@@ -447,8 +447,7 @@ impl App {
             self.tools.help = !self.tools.help;
         }
         if consumed(egui::Modifiers::CTRL, egui::Key::T) {
-            self.preferences.dark_mode = !self.preferences.dark_mode;
-            self.apply_theme(ctx);
+            self.toggle_theme(ctx);
             self.store.save(&self.preferences);
         }
         if consumed(egui::Modifiers::CTRL, egui::Key::Comma) {
@@ -483,7 +482,15 @@ impl App {
             }
         }
     }
-    pub(super) fn apply_theme(&self, ctx: &egui::Context) {
-        crate::appearance::theme(ctx, self.preferences.dark_mode);
+    pub(super) fn toggle_theme(&mut self, ctx: &egui::Context) {
+        self.preferences.dark_mode = !ctx.global_style().visuals.dark_mode;
+        self.preferences.appearance = Some(crate::appearance::Mode::from_dark(
+            self.preferences.dark_mode,
+        ));
+        self.apply_theme(ctx);
+    }
+    pub(super) fn apply_theme(&mut self, ctx: &egui::Context) {
+        self.appearance
+            .update(ctx, self.preferences.appearance.unwrap_or_default());
     }
 }

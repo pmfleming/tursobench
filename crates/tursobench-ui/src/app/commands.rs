@@ -255,8 +255,7 @@ impl App {
                 Command::Review => self.show_preview = true,
                 Command::Help => self.tools.help = true,
                 Command::Theme => {
-                    self.preferences.dark_mode = !self.preferences.dark_mode;
-                    self.apply_theme(ctx);
+                    self.toggle_theme(ctx);
                     self.store.save(&self.preferences);
                 }
             }
