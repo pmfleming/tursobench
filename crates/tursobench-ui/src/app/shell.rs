@@ -112,7 +112,7 @@ impl Layout {
     pub fn new(width: f32) -> Self {
         Self {
             bottom_inspector: width < 1440.0,
-            sidebar_width: if width < 900.0 { 190.0 } else { 240.0 },
+            sidebar_width: if width < 900.0 { 190.0 } else { 272.0 },
             inspector_width: if width >= 1920.0 { 360.0 } else { 320.0 },
         }
     }
@@ -338,47 +338,69 @@ impl App {
         }
     }
     fn status_bar(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::bottom("status").frame(egui::Frame::new().fill(ui.visuals().panel_fill).inner_margin(2.0)).exact_size(32.0).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                if self.session.is_some() && icons::control(
-                    ui, if self.writable { Icon::Edit } else { Icon::Lock },
-                    if self.writable { "Editing" } else { "Read-only" }, "", false, true,
-                ).on_hover_text("Turso 0.8.3 · FTS · click to close cleanly and change access").clicked() {
-                    self.ui.access_dialog = true;
-                    self.ui.access_ack = false;
-                }
-                let warn = ui.visuals().warn_fg_color;
-                let (state, color) = self.connection_status(ui.visuals());
-                ui.colored_label(color, state).on_hover_text(&self.status);
-                if self.transaction != TransactionState::Autocommit {
-                    ui.colored_label(warn, format!("{:?}", self.transaction));
-                    for (label, sql) in [("Commit", "COMMIT"), ("Roll back", "ROLLBACK")] {
-                        let enabled = self.ready && !self.closing && !self.executing() && self.commit_ticket.is_none() && !self.has_drafts() && (sql!="COMMIT" || self.transaction==TransactionState::Active);
-                        let response = ui.add_enabled(enabled, egui::Button::new(label)).on_hover_text("Persistent editor connection. Transactions also apply to read-only sessions.");
-                        #[cfg(test)] self.ui.transaction_rects.push(response.rect);
-                        if response.clicked() { self.submit(Operation::Execute { sql: sql.into(), parameters: vec![], budget: Budget::default() }, View::Query); }
+        let tokens = crate::appearance::Tokens::of(ui.ctx());
+        let unknown = self.uncertain_edit || self.transaction == TransactionState::Unknown;
+        let fill = if unknown {
+            crate::appearance::mix(ui.visuals().panel_fill, ui.visuals().error_fg_color, 0.13)
+        } else {
+            ui.visuals().panel_fill
+        };
+        egui::Panel::bottom("status")
+            .frame(egui::Frame::new().fill(fill).inner_margin(egui::Margin::symmetric(8, 2)))
+            .exact_size(34.0).show(ui, |ui| {
+                ui.painter().hline(ui.max_rect().x_range(), ui.max_rect().top() - 2.0, egui::Stroke::new(1.0, tokens.line));
+                ui.spacing_mut().interact_size.y = 24.0;
+                ui.spacing_mut().button_padding = egui::vec2(8.0, 4.0);
+                ui.horizontal_centered(|ui| {
+                    ui.spacing_mut().item_spacing.x = 7.0;
+                    if self.session.is_some() && super::presentation::chip(ui,
+                        if self.writable { "Editing" } else { "Read-only" },
+                        if self.writable { tokens.pending } else { tokens.muted },
+                    ).on_hover_text("Turso 0.8.3 · FTS · click to close cleanly and change access").clicked() {
+                        self.ui.access_dialog = true;
+                        self.ui.access_ack = false;
                     }
-                }
-                if self.has_drafts() {
-                    let count:usize = self.documents.values().chain(std::iter::once(&self.document)).filter_map(|d| d.drafts.as_ref()).map(|d|d.edits.len()).sum();
-                    if ui.button(format!("Review {count}")).clicked() { self.focus_drafts(); self.document.show_preview = true; }
-                }
-                if !self.workspace.enabled && self.document.active.is_some() && ui.button("Discard results").on_hover_text("Suppresses delivery only; execution and writes continue. Does not roll back.").clicked() {
-                    if let (Some(session), Some(ticket)) = (&self.session, self.document.active) { session.discard_results(ticket.request); }
-                    self.document.discard_ticket = self.document.active;
-                    self.document.result.rows.clear();
-                    self.status = "Delivery suppressed; awaiting execution outcome".into();
-                }
-                let summary=self.selection_summary();
-                if !summary.is_empty() && ui.available_width()>160.0 {ui.add(egui::Label::new(summary).truncate());}
-                if let Some(c) = &self.document.result.completion && ui.available_width() > 200.0 {
-                    ui.small(format!("{:?} · {} ms", c.delivery, c.elapsed_ms)).on_hover_text(self.export_scope());
-                }
-                if icons::control(ui, Icon::History, "Outcomes", "", self.ui.outcomes, false).clicked() { self.ui.outcomes = !self.ui.outcomes; }
-
+                    let (state, color) = self.connection_status(ui.visuals());
+                    let (dot, _) = ui.allocate_exact_size(egui::vec2(7.0, 7.0), egui::Sense::hover());
+                    ui.painter().circle_filled(dot.center(), 3.0, color);
+                    ui.colored_label(color, state).on_hover_text(&self.status);
+                    if self.transaction != TransactionState::Autocommit {
+                        let text = format!("● {:?}", self.transaction);
+                        super::presentation::chip(ui, &text, if unknown { ui.visuals().error_fg_color } else { tokens.pending })
+                            .on_hover_text("Persistent editor connection transaction");
+                        for (label, sql) in [("Commit", "COMMIT"), ("Roll back", "ROLLBACK")] {
+                            let enabled = self.ready && !self.closing && !self.executing() && self.commit_ticket.is_none() && !self.has_drafts() && (sql != "COMMIT" || self.transaction == TransactionState::Active);
+                            let response = ui.add_enabled(enabled, egui::Button::new(label)).on_hover_text("Persistent editor connection. Transactions also apply to read-only sessions.");
+                            #[cfg(test)] self.ui.transaction_rects.push(response.rect);
+                            if response.clicked() { self.submit(Operation::Execute { sql: sql.into(), parameters: vec![], budget: Budget::default() }, View::Query); }
+                        }
+                    }
+                    if self.has_drafts() {
+                        let count: usize = self.documents.values().chain(std::iter::once(&self.document)).filter_map(|d| d.drafts.as_ref()).map(|d| d.edits.len()).sum();
+                        if super::presentation::chip(ui, &format!("Review {count}"), tokens.pending).clicked() {
+                            self.focus_drafts(); self.document.show_preview = true;
+                        }
+                    }
+                    if !self.workspace.enabled && self.document.active.is_some() && ui.button("Discard results").on_hover_text("Suppresses delivery only; execution and writes continue. Does not roll back.").clicked() {
+                        if let (Some(session), Some(ticket)) = (&self.session, self.document.active) { session.discard_results(ticket.request); }
+                        self.document.discard_ticket = self.document.active;
+                        self.document.result.rows.clear();
+                        self.status = "Delivery suppressed; awaiting execution outcome".into();
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if icons::control(ui, Icon::History, "Outcomes", "", self.ui.outcomes, false).clicked() { self.ui.outcomes = !self.ui.outcomes; }
+                        if let Some(c) = &self.document.result.completion && ui.available_width() > 200.0 {
+                            ui.add(egui::Label::new(egui::RichText::new(format!("{:?} · {} ms", c.delivery, c.elapsed_ms)).monospace().small().color(tokens.faint))).on_hover_text(self.export_scope());
+                        }
+                        let summary = self.selection_summary();
+                        if !summary.is_empty() && ui.available_width() > 100.0 {
+                            ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 24.0), egui::Layout::left_to_right(egui::Align::Center).with_main_align(egui::Align::Center), |ui| {
+                                ui.add(egui::Label::new(egui::RichText::new(summary).small().color(tokens.muted)).truncate());
+                            });
+                        }
+                    });
+                });
             });
-        });
     }
     fn workspace_ui(&mut self, ui: &mut egui::Ui) {
         #[cfg(test)]

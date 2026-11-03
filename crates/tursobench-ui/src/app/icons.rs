@@ -59,8 +59,8 @@ pub(super) fn button(ui: &mut egui::Ui, icon: Icon, name: &str, shortcut: &str) 
     widget(ui, icon, name, shortcut, None, false, 1.0)
 }
 
-pub(super) const RIBBON_BUTTON_SIZE: f32 = 56.0;
-pub(super) const RIBBON_TEXT_SIZE: f32 = 24.0;
+pub(super) const RIBBON_BUTTON_SIZE: f32 = 30.0;
+pub(super) const RIBBON_TEXT_SIZE: f32 = 13.5;
 
 /// A quiet, accessible placeholder that stays centered in the visible tile body.
 pub(super) fn empty_state(ui: &mut egui::Ui, icon: Icon, description: &str) {
@@ -85,7 +85,7 @@ pub(super) fn empty_state_at(ui: &mut egui::Ui, rect: egui::Rect, icon: Icon, de
     response.on_hover_text(description);
 }
 
-/// Tile ribbons use twice the normal glyph, padding, and hit-target size.
+/// Compact tile actions keep the same native focus and accessibility behavior.
 pub(super) fn ribbon_button(
     ui: &mut egui::Ui,
     icon: Icon,
@@ -93,7 +93,15 @@ pub(super) fn ribbon_button(
     shortcut: &str,
     selected: Option<bool>,
 ) -> egui::Response {
-    widget(ui, icon, name, shortcut, selected, false, 2.0)
+    widget(
+        ui,
+        icon,
+        name,
+        shortcut,
+        selected,
+        false,
+        RIBBON_BUTTON_SIZE / 28.0,
+    )
 }
 
 pub(super) fn control(
@@ -123,7 +131,9 @@ fn widget(
     };
     let primary = matches!(icon, Icon::Run);
     let tokens = crate::appearance::Tokens::of(ui.ctx());
-    let mut native = egui::Button::new(text).min_size(egui::vec2(28.0, 28.0) * scale);
+    let mut native = egui::Button::new(text)
+        .frame(selected == Some(true) || primary)
+        .min_size(egui::vec2(28.0, 28.0) * scale);
     if let Some(selected) = selected {
         native = native.selected(selected);
     }
@@ -142,7 +152,7 @@ fn widget(
             response.rect.left() + 14.0 * scale,
             response.rect.center().y,
         ),
-        egui::vec2(16.0, 16.0) * scale,
+        egui::Vec2::splat(if scale > 1.0 { 18.0 } else { 16.0 }),
     );
     paint(
         ui.painter(),
@@ -519,13 +529,14 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
 mod tests {
     use super::*;
     #[test]
-    fn ribbon_buttons_double_the_icon_and_hit_target_without_losing_accessibility() {
+    fn compact_ribbon_buttons_keep_their_hit_target_and_accessibility() {
         let ctx = egui::Context::default();
         ctx.enable_accesskit();
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let normal = button(ui, Icon::Columns, "Normal columns", "");
             let large = ribbon_button(ui, Icon::Columns, "Ribbon columns", "", Some(true));
-            assert_eq!(large.rect.size(), normal.rect.size() * 2.0);
+            assert_eq!(large.rect.size(), egui::Vec2::splat(RIBBON_BUTTON_SIZE));
+            assert!(large.rect.width() >= normal.rect.width());
         });
         output.textures_delta.clear();
         let update = output.platform_output.accesskit_update.unwrap();
@@ -537,7 +548,7 @@ mod tests {
                     && n.toggled() == Some(egui::accesskit::Toggled::True))
         );
         assert!(output.shapes.iter().any(|shape| match &shape.shape {
-            egui::Shape::Rect(rect) => (rect.stroke.width - 2.8).abs() < 0.01,
+            egui::Shape::Rect(rect) => (rect.stroke.width - 1.575).abs() < 0.01,
             _ => false,
         }));
     }

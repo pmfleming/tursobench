@@ -2323,8 +2323,8 @@ fn every_tile_exposes_its_actions_without_an_overflow_menu() {
         );
         for &(pane, minimize, expand) in &app.workspace.controls {
             assert_eq!(pane, kind);
-            assert_eq!(minimize.size(), egui::vec2(56.0, 56.0));
-            assert_eq!(expand.size(), egui::vec2(56.0, 56.0));
+            assert_eq!(minimize.size(), egui::vec2(30.0, 30.0));
+            assert_eq!(expand.size(), egui::vec2(30.0, 30.0));
         }
     }
     app.close();

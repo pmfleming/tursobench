@@ -292,14 +292,43 @@ impl App {
                 }
             }
             let focused = self.workspace.active == kind;
-            let stroke = if focused {
-                ui.visuals().selection.stroke
-            } else {
-                ui.visuals().widgets.noninteractive.bg_stroke
-            };
-            ui.painter().rect_filled(rect, 7.0, ui.visuals().panel_fill);
+            let tokens = crate::appearance::Tokens::of(ui.ctx());
             ui.painter()
-                .rect_stroke(rect, 7.0, stroke, egui::StrokeKind::Inside);
+                .rect_filled(rect, 10.0, ui.visuals().extreme_bg_color);
+            let header = egui::Rect::from_min_max(
+                rect.min,
+                egui::pos2(rect.right(), (rect.top() + tiling::BAR).min(rect.bottom())),
+            );
+            ui.painter().rect_filled(
+                header,
+                egui::CornerRadius {
+                    nw: 10,
+                    ne: 10,
+                    sw: 0,
+                    se: 0,
+                },
+                tokens.raised,
+            );
+            ui.painter().rect_stroke(
+                rect,
+                10.0,
+                egui::Stroke::new(
+                    1.0,
+                    if focused {
+                        tokens.primary.gamma_multiply(0.5)
+                    } else {
+                        tokens.line
+                    },
+                ),
+                egui::StrokeKind::Inside,
+            );
+            if focused {
+                ui.painter().hline(
+                    rect.x_range().shrink(8.0),
+                    rect.top() + 1.0,
+                    egui::Stroke::new(2.0, tokens.primary),
+                );
+            }
             let content = rect.shrink(4.0);
             ui.scope_builder(
                 egui::UiBuilder::new()

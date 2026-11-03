@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 pub(super) const GAP: f32 = 8.0;
-pub(super) const BAR: f32 = super::icons::RIBBON_BUTTON_SIZE + 8.0;
+pub(super) const BAR: f32 = 44.0;
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
 )]

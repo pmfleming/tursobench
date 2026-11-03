@@ -360,20 +360,20 @@ impl App {
         }
         // Keep tile identity and window controls fixed while the action ribbon scrolls.
         // Never drop actions based on width or replace them with an overflow menu.
-        ui.horizontal_top(|ui| {
+        ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
             ui.style_mut().override_font_id = Some(crate::appearance::proportional(ui.ctx(), icons::RIBBON_TEXT_SIZE));
             ui.spacing_mut().interact_size.y = icons::RIBBON_BUTTON_SIZE;
-            let controls_width = 2.0 * icons::RIBBON_BUTTON_SIZE + 9.0;
+            let controls_width = 2.0 * icons::RIBBON_BUTTON_SIZE + 20.0;
             let remaining = (ui.available_width() - controls_width).max(0.0);
             let title_size = ui.painter().layout_no_wrap(
                 kind.label().into(),
                 crate::appearance::proportional(ui.ctx(), icons::RIBBON_TEXT_SIZE),
                 ui.visuals().text_color(),
             ).size();
-            let mut title_width = (remaining * 0.3)
+            let mut title_width = (remaining * 0.25)
                 .max(title_size.x + 4.0)
-                .min(240.0)
+                .min(200.0)
                 .min((remaining - 32.0).max(0.0));
             if matches!(kind, Kind::Data | Kind::Record) {
                 title_width = title_width.max(48.0).min((remaining - 6.0).max(0.0));
@@ -385,11 +385,11 @@ impl App {
             );
             let ribbon_width = (ui.available_width() - controls_width).max(1.0);
             ui.allocate_ui_with_layout(
-                egui::vec2(ribbon_width, icons::RIBBON_BUTTON_SIZE + 12.0),
+                egui::vec2(ribbon_width, icons::RIBBON_BUTTON_SIZE),
                 egui::Layout::left_to_right(egui::Align::Min),
                 |ui| {
-                    ui.style_mut().spacing.scroll = egui::style::ScrollStyle::solid();
-                    egui::ScrollArea::horizontal()
+                    ui.style_mut().spacing.scroll = egui::style::ScrollStyle::floating();
+                    let scroll = egui::ScrollArea::horizontal()
                         .id_salt(("pane-actions", kind))
                         .max_width(ribbon_width)
                         .min_scrolled_width(0.0)
@@ -400,7 +400,10 @@ impl App {
                                     if kind == Kind::Record {
                                         self.ribbon_record_slider(ui);
                                     }
+                                    let mut group = None;
                                     for &(action, icon, label) in kind.ribbon_actions() {
+                                        if group.is_some_and(|previous| previous != action.group()) { ui.separator(); }
+                                        group = Some(action.group());
                                         self.ribbon_action(ui, action, icon, label);
                                     }
                                     match kind {
@@ -449,8 +452,20 @@ impl App {
                                 }
                             });
                         });
+                    // A small fade signals that more direct actions can be scrolled
+                    // into view. It never covers the fixed window controls.
+                    if scroll.content_size.x > scroll.inner_rect.width() + scroll.state.clamped_offset().x + 1.0 {
+                        let rect = scroll.inner_rect;
+                        let width = rect.width().min(24.0);
+                        for step in 0..12 {
+                            let x = rect.right() - width + width * step as f32 / 12.0;
+                            ui.painter().rect_filled(egui::Rect::from_min_max(egui::pos2(x, rect.top()), egui::pos2(x + width / 12.0 + 0.5, rect.bottom())), 0.0,
+                                ui.visuals().faint_bg_color.gamma_multiply(step as f32 / 12.0));
+                        }
+                    }
                 },
             );
+            ui.separator();
             let minimize = icons::ribbon_button(ui, Icon::Minimize, "Minimize to header", "", None);
             let expand = icons::ribbon_button(
                 ui,
@@ -615,6 +630,17 @@ impl App {
 }
 
 impl Action {
+    fn group(self) -> u8 {
+        use Action::*;
+        match self {
+            Refresh | Count | FitMap | ArrangeMap | Run | RunSelection | Explain | Bytecode => 0,
+            Filter | FitColumns | ShowColumns | Inspect | MapColumns | SystemTables | Find
+            | Parameters | Completion => 1,
+            Export | CopyRows | CopyDdl | CopyValue | CopyRecord | SaveSql | NewSql => 2,
+            ZoomOut | Zoom100 | ZoomIn => 4,
+            _ => 3,
+        }
+    }
     fn shortcut(self) -> &'static str {
         use Action::*;
         match self {
@@ -639,13 +665,13 @@ impl Kind {
         match self {
             Kind::Data => &[
                 (Refresh, Icon::Refresh, "Refresh"),
+                (Count, Icon::Count, "Count table rows (full scan)"),
                 (Filter, Icon::Filter, "Filter"),
                 (FitColumns, Icon::FitColumns, "Fit columns"),
-                (Export, Icon::Export, "Export"),
                 (Inspect, Icon::Selection, "Inspect selected record"),
                 (ShowColumns, Icon::Complete, "Show all columns"),
+                (Export, Icon::Export, "Export"),
                 (CopyRows, Icon::Copy, "Copy retained rows"),
-                (Count, Icon::Count, "Count table rows (full scan)"),
                 (Insert, Icon::Plus, "New row (staged)"),
             ],
             Kind::Result => &[
