@@ -185,6 +185,13 @@ impl Header<'_> {
     }
 }
 impl Columns {
+    pub fn visible(&self, count: usize) -> impl Iterator<Item = usize> + '_ {
+        self.order
+            .iter()
+            .copied()
+            .filter(move |c| *c < count && !self.hidden.contains(c))
+    }
+
     pub fn fit(&mut self, i: usize) {
         self.manual.remove(&i);
         self.refit = true;
@@ -235,13 +242,7 @@ impl App {
         self.document
             .tools
             .columns
-            .order
-            .iter()
-            .copied()
-            .filter(|c| {
-                *c < self.document.result.columns.len()
-                    && !self.document.tools.columns.hidden.contains(c)
-            })
+            .visible(self.document.result.columns.len())
             .collect()
     }
     pub(super) fn prepare_columns(&mut self, ui: &egui::Ui) {

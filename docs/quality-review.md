@@ -36,6 +36,17 @@ simplifying stateful code and repeated work on UI paths.
    UI tests, all-target Clippy, formatting and hotspots pass. `grid_cell`
    cognitive/cyclomatic complexity fell from 57/51 to 37/34; paint is 17/13.
 
+4. **Streaming selection and statistics.** Selection bounds borrow the column
+   order and preserve hidden-column, ticket and row-window rules. Grid membership,
+   clipboard traversal and aggregate traversal no longer allocate coordinate lists;
+   statistics no longer allocate value, integer, real and combined numeric vectors.
+   Cached summaries return a borrowed string and compare visible columns through
+   an iterator. Removed two extrema `unwrap` paths. A single numeric matrix covers
+   empty/non-numeric selections, integer limits and precision beyond 2^53, mixed
+   values, NaN, infinity and floating overflow. Integer sums/extrema remain exact;
+   mixed-real sums remain explicitly approximate and now accumulate in selection
+   order. All 112 UI tests, all-target Clippy, formatting and hotspots pass.
+
 ---
 
 # Quality review — 2026-11-03

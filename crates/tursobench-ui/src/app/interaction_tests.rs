@@ -1570,7 +1570,10 @@ fn actual_grid_keys_extend_copy_and_stage_inline_without_writing() {
         egui::Modifiers::SHIFT,
         vec![key_event(egui::Key::ArrowRight, egui::Modifiers::SHIFT)],
     );
-    assert_eq!(app.selected_cells(), vec![(0, 0), (0, 1)]);
+    assert_eq!(
+        app.selected_cells().collect::<Vec<_>>(),
+        vec![(0, 0), (0, 1)]
+    );
     let output = send(
         &mut app,
         egui::Modifiers::CTRL,
@@ -1632,13 +1635,19 @@ fn actual_grid_keys_extend_copy_and_stage_inline_without_writing() {
     assert!(app.document.tools.inline.is_none());
     app.select_cell(0, 1, false);
     app.select_cell(1, 1, true);
-    assert_eq!(app.selected_cells(), vec![(0, 1), (1, 1)]);
+    assert_eq!(
+        app.selected_cells().collect::<Vec<_>>(),
+        vec![(0, 1), (1, 1)]
+    );
     let summary = app.selection_summary();
     assert!(summary.contains("18014398509481988"), "{summary}");
     app.document.tools.columns.move_before(2, 1);
     app.select_cell(0, 2, false);
     app.select_cell(1, 1, true);
-    assert_eq!(app.selected_cells(), vec![(0, 2), (0, 1), (1, 2), (1, 1)]);
+    assert_eq!(
+        app.selected_cells().collect::<Vec<_>>(),
+        vec![(0, 2), (0, 1), (1, 2), (1, 1)]
+    );
     app.close();
 }
 

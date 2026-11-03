@@ -9,7 +9,7 @@ pub(super) struct Selection {
     pub cursor: (usize, usize),
 }
 pub(super) struct SummaryCache {
-    selection: Option<Selection>,
+    selection: Selection,
     visible: Vec<usize>,
     rows: usize,
     text: String,
@@ -63,56 +63,53 @@ impl App {
         self.document.tools.detail = Some(row);
         self.document.ui.inspector = shell::DetailMode::Record;
     }
-    pub(super) fn cell_selected(&self, row: usize, column: usize) -> bool {
-        let Some(s) = self
+    fn selection_bounds(&self) -> Option<(std::ops::Range<usize>, &[usize])> {
+        let s = self
             .document
             .tools
             .grid_selection
-            .filter(|s| s.ticket == self.document.result.current)
-        else {
-            return false;
-        };
-        if row < s.anchor.0.min(s.cursor.0) || row > s.anchor.0.max(s.cursor.0) {
-            return false;
-        }
-        let cols = self.visible_columns();
-        let (Some(a), Some(b), Some(c)) = (
-            cols.iter().position(|&c| c == s.anchor.1),
-            cols.iter().position(|&c| c == s.cursor.1),
-            cols.iter().position(|&c| c == column),
-        ) else {
-            return false;
-        };
-        (a.min(b)..=a.max(b)).contains(&c)
-    }
-    pub(super) fn selected_cells(&self) -> Vec<(usize, usize)> {
-        let Some(s) = self
-            .document
-            .tools
-            .grid_selection
-            .filter(|s| s.ticket == self.document.result.current)
-        else {
-            return vec![];
-        };
-        let cols = self.visible_columns();
-        let (Some(a), Some(b)) = (
-            cols.iter().position(|&c| c == s.anchor.1),
-            cols.iter().position(|&c| c == s.cursor.1),
-        ) else {
-            return vec![];
-        };
-        (s.anchor.0.min(s.cursor.0)
-            ..=s.anchor
+            .filter(|s| s.ticket == self.document.result.current)?;
+        let rows = s.anchor.0.min(s.cursor.0)
+            ..s.anchor
                 .0
                 .max(s.cursor.0)
-                .min(self.document.result.rows.len().saturating_sub(1)))
-            .flat_map(|row| {
-                cols[a.min(b)..=a.max(b)]
-                    .iter()
-                    .copied()
-                    .map(move |c| (row, c))
+                .saturating_add(1)
+                .min(self.document.result.rows.len());
+        if rows.is_empty() {
+            return None;
+        }
+        let columns = &self.document.tools.columns;
+        let position = |column| {
+            (column < self.document.result.columns.len() && !columns.hidden.contains(&column))
+                .then(|| columns.order.iter().position(|&c| c == column))
+                .flatten()
+        };
+        let (a, b) = (position(s.anchor.1)?, position(s.cursor.1)?);
+        Some((rows, &columns.order[a.min(b)..=a.max(b)]))
+    }
+    pub(super) fn cell_selected(&self, row: usize, column: usize) -> bool {
+        self.selection_bounds().is_some_and(|(rows, cols)| {
+            rows.contains(&row)
+                && cols.contains(&column)
+                && column < self.document.result.columns.len()
+                && !self.document.tools.columns.hidden.contains(&column)
+        })
+    }
+    pub(super) fn selected_cells(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.selection_bounds()
+            .into_iter()
+            .flat_map(move |(rows, columns)| {
+                rows.flat_map(move |row| {
+                    columns
+                        .iter()
+                        .copied()
+                        .filter(move |c| {
+                            *c < self.document.result.columns.len()
+                                && !self.document.tools.columns.hidden.contains(c)
+                        })
+                        .map(move |c| (row, c))
+                })
             })
-            .collect()
     }
     pub(super) fn selection_tsv(&self) -> Result<String, String> {
         let mut text = String::new();
@@ -136,95 +133,42 @@ impl App {
         }
         Ok(text)
     }
-    pub(super) fn selection_summary(&mut self) -> String {
-        let selection = self
+    pub(super) fn selection_summary(&mut self) -> &str {
+        let Some(selection) = self
             .document
             .tools
             .grid_selection
-            .filter(|s| s.ticket == self.document.result.current);
-        if selection.is_none() {
-            return String::new();
-        }
-        let visible = self.visible_columns();
+            .filter(|s| s.ticket == self.document.result.current)
+        else {
+            return "";
+        };
         let rows = self.document.result.rows.len();
-        if let Some(c) = &self.document.tools.summary_cache
-            && c.selection == selection
-            && c.visible == visible
-            && c.rows == rows
-        {
-            return c.text.clone();
-        }
-        let text = self.compute_selection_summary();
-        self.document.tools.summary_cache = Some(SummaryCache {
-            selection,
-            visible,
-            rows,
-            text: text.clone(),
+        let cached = self.document.tools.summary_cache.as_ref().is_some_and(|c| {
+            c.selection == selection
+                && c.rows == rows
+                && c.visible.iter().copied().eq(self
+                    .document
+                    .tools
+                    .columns
+                    .visible(self.document.result.columns.len()))
         });
-        text
-    }
-    fn compute_selection_summary(&self) -> String {
-        let cells = self.selected_cells();
-        if cells.is_empty() {
-            return String::new();
+        if !cached {
+            let text = summarize(
+                self.selected_cells()
+                    .filter_map(|(r, c)| self.document.result.rows.get(r)?.get(c)),
+            );
+            self.document.tools.summary_cache = Some(SummaryCache {
+                selection,
+                visible: self.visible_columns(),
+                rows,
+                text,
+            });
         }
-        let values: Vec<_> = cells
-            .iter()
-            .filter_map(|&(r, c)| self.document.result.rows.get(r)?.get(c))
-            .collect();
-        let integers: Vec<_> = values
-            .iter()
-            .filter_map(|v| {
-                if let Value::Integer(n) = v {
-                    Some(*n)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        let reals: Vec<_> = values
-            .iter()
-            .filter_map(|v| {
-                if let Value::Real(n) = v {
-                    Some(*n)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        let prefix = format!("{} cells", cells.len());
-        if integers.is_empty() && reals.is_empty() {
-            return prefix;
-        }
-        if reals.is_empty() {
-            let sum: Option<i128> = integers
-                .iter()
-                .try_fold(0i128, |s, &n| s.checked_add(n as i128));
-            let Some(sum) = sum else {
-                return format!("{prefix} · sum overflow");
-            };
-            // Average is explicitly approximate; integer sums and extrema remain exact.
-            format!(
-                "{prefix} · {} numeric · Σ {sum} · avg ≈{} · min {} · max {}",
-                integers.len(),
-                sum as f64 / integers.len() as f64,
-                integers.iter().min().unwrap(),
-                integers.iter().max().unwrap()
-            )
-        } else {
-            let numeric: Vec<_> = integers.iter().map(|&n| n as f64).chain(reals).collect();
-            let sum: f64 = numeric.iter().sum();
-            if !sum.is_finite() || numeric.iter().any(|n| !n.is_finite()) {
-                return format!("{prefix} · numeric aggregate nonfinite");
-            }
-            format!(
-                "{prefix} · {} numeric · Σ ≈{sum} · avg ≈{} · min ≈{} · max ≈{}",
-                numeric.len(),
-                sum / numeric.len() as f64,
-                numeric.iter().copied().fold(f64::INFINITY, f64::min),
-                numeric.iter().copied().fold(f64::NEG_INFINITY, f64::max)
-            )
-        }
+        self.document
+            .tools
+            .summary_cache
+            .as_ref()
+            .map_or("", |c| c.text.as_str())
     }
     pub(super) fn start_inline(&mut self, row: usize, column: usize) {
         if !self.can_edit() {
@@ -346,5 +290,75 @@ impl App {
                 break;
             }
         }
+    }
+}
+
+/// Integer sums/extrema stay exact; mixed-real aggregates are explicitly approximate.
+fn summarize<'a>(values: impl IntoIterator<Item = &'a Value>) -> String {
+    let (mut cells, mut numeric, mut real) = (0usize, 0usize, false);
+    let mut exact = Some((0i128, i64::MAX, i64::MIN));
+    let (mut sum, mut min, mut max) = (0.0, f64::INFINITY, f64::NEG_INFINITY);
+    for value in values {
+        cells += 1;
+        let number = match value {
+            Value::Integer(n) => {
+                exact = exact.and_then(|(sum, min, max)| {
+                    sum.checked_add(i128::from(*n))
+                        .map(|sum| (sum, min.min(*n), max.max(*n)))
+                });
+                *n as f64
+            }
+            Value::Real(n) => {
+                real = true;
+                *n
+            }
+            _ => continue,
+        };
+        numeric += 1;
+        sum += number;
+        min = min.min(number);
+        max = max.max(number);
+    }
+    if cells == 0 {
+        return String::new();
+    }
+    let prefix = format!("{cells} cells");
+    if numeric == 0 {
+        return prefix;
+    }
+    if !real {
+        let Some((sum, min, max)) = exact else {
+            return format!("{prefix} · sum overflow");
+        };
+        return format!(
+            "{prefix} · {numeric} numeric · Σ {sum} · avg ≈{} · min {min} · max {max}",
+            sum as f64 / numeric as f64
+        );
+    }
+    if !sum.is_finite() {
+        return format!("{prefix} · numeric aggregate nonfinite");
+    }
+    format!(
+        "{prefix} · {numeric} numeric · Σ ≈{sum} · avg ≈{} · min ≈{min} · max ≈{max}",
+        sum / numeric as f64
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::summarize;
+    use tursobench_core::Value::{Integer, Null, Real, Text};
+    #[test]
+    fn aggregates_preserve_integer_precision_and_handle_empty_mixed_and_nonfinite_values() {
+        for (values, expected) in [
+            (vec![], String::new()),
+            (vec![Text("text".into()), Null], "2 cells".into()),
+            (vec![Integer(i64::MAX), Integer(i64::MIN)], format!("2 cells · 2 numeric · Σ -1 · avg ≈-0.5 · min {} · max {}", i64::MIN, i64::MAX)),
+            (vec![Integer(9007199254740993), Integer(9007199254740995)], "2 cells · 2 numeric · Σ 18014398509481988 · avg ≈9007199254740994 · min 9007199254740993 · max 9007199254740995".into()),
+            (vec![Null, Integer(2), Real(1.0)], "3 cells · 2 numeric · Σ ≈3 · avg ≈1.5 · min ≈1 · max ≈2".into()),
+            (vec![Real(f64::NAN)], "1 cells · numeric aggregate nonfinite".into()),
+            (vec![Real(f64::INFINITY)], "1 cells · numeric aggregate nonfinite".into()),
+            (vec![Real(f64::MAX), Real(f64::MAX)], "2 cells · numeric aggregate nonfinite".into()),
+        ] { assert_eq!(summarize(&values), expected, "{values:?}"); }
     }
 }
