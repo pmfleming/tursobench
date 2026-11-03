@@ -12,6 +12,7 @@ pub(super) struct Smoke {
     start: Instant,
     table: String,
     project_fixture: bool,
+    scene: usize,
 }
 impl Smoke {
     pub(super) fn new() -> Self {
@@ -24,6 +25,7 @@ impl Smoke {
             capture_frames: 0,
             start: Instant::now(),
             project_fixture: table.is_some(),
+            scene: 0,
             table: table.unwrap_or_else(|| "items".into()),
         }
     }
@@ -55,7 +57,9 @@ impl App {
                 smoke.capture_result = None;
             }
         }
-        if smoke.start.elapsed() > Duration::from_secs(20) {
+        if smoke.start.elapsed()
+            > Duration::from_secs(if smoke.capture_dir.is_some() { 60 } else { 20 })
+        {
             eprintln!(
                 "DESKTOP SMOKE FAILED at stage {}: {}",
                 smoke.stage, self.status
@@ -264,12 +268,87 @@ impl App {
             }
             5 if self.session.is_none() => {
                 assert!(self.status.contains("cleanup confirmed"), "{}", self.status);
-                eprintln!(
-                    "DESKTOP SMOKE PASSED: open, schema, page, diagram, typed query, read-only rejection, close; elapsed {:?}",
-                    smoke.start.elapsed()
-                );
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                return;
+                if smoke.capture_dir.is_some() {
+                    // Capture-only pass uses the disposable fixture with real writable
+                    // access. Stage locally to exercise edit surfaces; never commit.
+                    self.writable = true;
+                    self.exclusive = true;
+                    self.open(ctx);
+                    smoke.stage = 40;
+                } else {
+                    eprintln!(
+                        "DESKTOP SMOKE PASSED: open, schema, page, diagram, typed query, read-only rejection, close; elapsed {:?}",
+                        smoke.start.elapsed()
+                    );
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    return;
+                }
+            }
+            40 if self.ready
+                && self.catalog_ticket.is_none()
+                && self.ui.diagram.ticket.is_none() =>
+            {
+                self.browse_table(smoke.table.clone());
+                smoke.stage = 41;
+            }
+            41 if self.document.active.is_none()
+                && self.document.tools.inspection_ticket.is_none() =>
+            {
+                self.retile();
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1366.0, 768.0)));
+                if self.can_edit() && !self.document.result.rows.is_empty() {
+                    let col = usize::from(self.document.result.columns.len() > 1);
+                    self.stage_cell(
+                        0,
+                        col,
+                        Value::Text("Staged locally for visual review".into()),
+                    );
+                }
+                let sql = format!("SELECT * FROM {} LIMIT 100", quote_identifier(&smoke.table));
+                self.preferences
+                    .record_query(&self.tools.database_scope, &sql, Some(12), false);
+                self.preferences
+                    .bookmark(&self.tools.database_scope, "Sample table", &sql);
+                self.prepare_visual_scene(0);
+                smoke.stage = 42;
+            }
+            42 => {
+                smoke.capture_frames += 1;
+                if smoke.capture_frames >= 8 {
+                    smoke.capture_pending = Some(VISUAL_SCENES[smoke.scene].into());
+                    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+                    let wake = ctx.clone();
+                    ctx.request_screenshot(move |image| {
+                        let _ = tx.try_send(image);
+                        wake.request_repaint();
+                    });
+                    smoke.capture_result = Some(rx);
+                    smoke.capture_frames = 0;
+                    smoke.stage = 43;
+                }
+            }
+            43 if smoke.capture_pending.is_none() => {
+                smoke.scene += 1;
+                if smoke.scene == 14 {
+                    self.prepare_visual_scene(14);
+                    self.close();
+                    smoke.stage = 44;
+                } else if smoke.scene == VISUAL_SCENES.len() {
+                    assert!(self.session.is_none());
+                    eprintln!(
+                        "DESKTOP VISUAL SMOKE PASSED: six workspace sizes/themes, navigator tools, staged edits, dialogs, chooser and search settings; elapsed {:?}",
+                        smoke.start.elapsed()
+                    );
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    return;
+                } else {
+                    self.prepare_visual_scene(smoke.scene);
+                    smoke.stage = 42;
+                }
+            }
+            44 if self.session.is_none() => {
+                self.prepare_visual_scene(14);
+                smoke.stage = 42;
             }
             _ => {}
         }
@@ -277,9 +356,73 @@ impl App {
         // Automated smoke mode only; normal rendering is event-driven.
         ctx.request_repaint_after(Duration::from_millis(25));
     }
+    fn prepare_visual_scene(&mut self, scene: usize) {
+        self.preferences.appearance = Some(crate::appearance::Mode::Dark);
+        self.ui.sidebar = shell::ToolPanel::Schema;
+        self.ui.palette_open = false;
+        self.ui.export_open = false;
+        self.ui.outcomes = false;
+        self.ui.access_dialog = false;
+        self.confirm_close = false;
+        self.tools.help = false;
+        self.document.show_preview = false;
+        self.document.show_insert = false;
+        self.document.ui.inspector_detached = false;
+        self.document.ui.inspector_open = false;
+        self.databases.settings_open = false;
+        match scene {
+            1 => self.document.show_preview = true,
+            2 => self.begin_insert(),
+            3 => self.ui.sidebar = shell::ToolPanel::History,
+            4 => self.ui.sidebar = shell::ToolPanel::Saved,
+            5 => self.ui.sidebar = shell::ToolPanel::Diagnostics,
+            6 => self.ui.sidebar = shell::ToolPanel::Settings,
+            7 => {
+                self.ui.palette_open = true;
+                self.ui.palette_query.clear();
+            }
+            8 => self.ui.export_open = true,
+            9 => self.ui.outcomes = true,
+            10 => self.tools.help = true,
+            11 => {
+                self.ui.access_dialog = true;
+                self.ui.access_ack = false;
+            }
+            12 => {
+                self.document.inspect = Some((0, 0));
+                self.document.ui.inspector_detached = true;
+                self.document.ui.inspector_open = true;
+                self.document.ui.inspector = shell::DetailMode::Cell;
+            }
+            13 => self.confirm_close = true,
+            14 => self.document.ui.nav = shell::Nav::Databases,
+            15 => self.databases.settings_open = true,
+            _ => {}
+        }
+    }
     fn smoke_readonly_write(&mut self, table: &str) {
         self.document.sql = format!("DELETE FROM {}", quote_identifier(table));
         self.document.params = "[]".into();
         self.run_sql();
     }
 }
+
+// Additional captures are opt-in and operate only on the smoke fixture.
+const VISUAL_SCENES: &[&str] = &[
+    "staged-workspace.png",
+    "review-dialog.png",
+    "insert-dialog.png",
+    "navigator-history.png",
+    "navigator-saved.png",
+    "navigator-checks.png",
+    "navigator-settings.png",
+    "command-palette.png",
+    "export-dialog.png",
+    "execution-outcomes.png",
+    "keyboard-reference.png",
+    "access-dialog.png",
+    "cell-detail.png",
+    "close-dialog.png",
+    "database-chooser.png",
+    "search-settings.png",
+];

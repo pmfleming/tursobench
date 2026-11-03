@@ -203,7 +203,7 @@ impl App {
             return;
         }
         let mut open = true;
-        egui::Window::new(if self.writable { "Reopen read-only?" } else { "Enable editing?" }).frame(crate::app::presentation::window_frame(&ctx))
+        egui::Window::new(if self.writable { "Reopen read-only?" } else { "Enable editing?" }).frame(crate::app::presentation::window_frame(ctx)).default_pos(ctx.content_rect().center()-egui::vec2(280.0,180.0))
             .open(&mut open).anchor(egui::Align2::LEFT_BOTTOM, [12.0,-48.0]).max_width((ctx.content_rect().width()-40.0).min(520.0)).collapsible(false).show(ctx, |ui| {
                 presentation::notice(ui, super::icons::Icon::Lock, Intent::Pending,"The current session will close and roll back any open transaction before reopening. Local drafts will be discarded. Committed writes are not undone.");
                 if !self.writable { ui.label("Back up the closed database with its WAL state before editing. SQL writes autocommit unless you BEGIN; grid edits are staged for review."); }
@@ -240,7 +240,7 @@ impl App {
         }
         let mut open = true;
         let mut chosen = None;
-        egui::Window::new("Search tables, columns and commands").frame(crate::app::presentation::window_frame(&ctx))
+        egui::Window::new("Search tables, columns and commands").frame(crate::app::presentation::window_frame(ctx)).default_pos(ctx.content_rect().center()-egui::vec2(280.0,180.0))
             .id(egui::Id::unique("command-palette"))
             .open(&mut open)
             .collapsible(false)

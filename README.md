@@ -25,8 +25,8 @@ Each tile has its own toolbar. Tiles can collapse to a header.
 Any tile can fill the workspace.
 
 <picture>
-  <source media="(prefers-color-scheme: light)" srcset="docs/assets/ui/v6/laptop-light.png">
-  <img src="docs/assets/ui/v6/laptop-dark.png" alt="Five fixed tiles on a laptop display" width="1366">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/ui/v8/laptop-light.png">
+  <img src="docs/assets/ui/v8/laptop-dark.png" alt="Five fixed tiles on a laptop display" width="1366">
 </picture>
 
 - Browse tables with typed filters.
@@ -43,15 +43,15 @@ Databases open read-only by default. The app follows the system theme.
 
 ## Relationships
 
-![Expanded relationship map](docs/assets/ui/v6/expanded-map.png)
+![Expanded relationship map](docs/assets/ui/v8/expanded-map.png)
 
 ## Minimized tiles
 
-![Record, Structure and SQL collapsed to headers](docs/assets/ui/v6/minimized-tiles.png)
+![Record, Structure and SQL collapsed to headers](docs/assets/ui/v8/minimized-tiles.png)
 
 ## Widescreen
 
-![The fixed workspace at 3440 × 1440](docs/assets/ui/v6/widescreen.png)
+![The fixed workspace at 3440 × 1440](docs/assets/ui/v8/widescreen.png)
 
 These native captures use synthetic data.
 [Capture details](docs/assets/ui/README.md).

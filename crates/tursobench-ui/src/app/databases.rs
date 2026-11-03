@@ -88,7 +88,7 @@ pub(super) struct Chooser {
     pub focus_filter: bool,
     pub picking_folder: bool,
     pub editing_path: bool,
-    settings_open: bool,
+    pub(super) settings_open: bool,
     pub message: Option<String>,
     summary: Option<Summary>,
     cancelling: bool,

@@ -2469,3 +2469,70 @@ fn relationship_zoom_buttons_change_scale_and_percentage_resets_it() {
     assert_eq!(app.ui.diagram.zoom, 1.0);
     app.close();
 }
+
+#[test]
+fn redesigned_dialog_actions_remain_visible_at_minimum_and_laptop_sizes() {
+    let (_dir, ctx, mut app) = fixture(
+        &[
+            "CREATE TABLE sample(id INTEGER PRIMARY KEY, body TEXT)",
+            "INSERT INTO sample VALUES(1,'stored')",
+        ],
+        true,
+    );
+    ctx.enable_accesskit();
+    app.browse_table("sample".into());
+    wait(&mut app, &ctx);
+    app.stage_cell(0, 1, Value::Text("local draft".into()));
+    for dark in [true, false] {
+        for (size, font_size) in [
+            (egui::vec2(720.0, 480.0), 14),
+            (egui::vec2(1366.0, 768.0), 20),
+        ] {
+            app.preferences.appearance = Some(crate::appearance::Mode::from_dark(dark));
+            app.preferences.font_size = font_size;
+            app.apply_theme(&ctx);
+            for (scene, label) in [
+                (0, "COMMIT staged edits to database"),
+                (1, "Stage insert (no database write)"),
+                (2, "Close cleanly and reopen"),
+                (3, "Wait, roll back transaction, and close"),
+                (4, "Export retained result…"),
+                (5, "Copy stored value"),
+            ] {
+                app.document.show_preview = scene == 0;
+                app.document.show_insert = false;
+                if scene == 1 {
+                    app.begin_insert();
+                }
+                app.ui.access_dialog = scene == 2;
+                app.confirm_close = scene == 3;
+                app.ui.export_open = scene == 4;
+                app.document.ui.inspector_detached = scene == 5;
+                app.document.ui.inspector_open = scene == 5;
+                app.document.ui.inspector = shell::DetailMode::Cell;
+                app.document.inspect = Some((0, 1));
+                for _ in 0..3 {
+                    frame_at(&mut app, &ctx, size, vec![]);
+                }
+                let output = frame_at(&mut app, &ctx, size, vec![]);
+                let tree = output.platform_output.accesskit_update.unwrap();
+                let bounds = tree
+                    .nodes
+                    .iter()
+                    .find_map(|(_, n)| (n.label() == Some(label)).then(|| n.bounds()).flatten())
+                    .unwrap_or_else(|| panic!("Missing dialog action: {label}"));
+                let rect = egui::Rect::from_min_max(
+                    egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
+                    egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+                );
+                assert!(
+                    egui::Rect::from_min_size(egui::Pos2::ZERO, size).contains_rect(rect),
+                    "{label} outside {size:?} with font {font_size}: {rect:?}"
+                );
+                assert_eq!(app.document.result.rows[0][1], Value::Text("stored".into()));
+                assert!(app.has_drafts());
+            }
+        }
+    }
+    app.close();
+}

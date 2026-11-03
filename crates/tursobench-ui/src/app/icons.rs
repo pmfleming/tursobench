@@ -152,7 +152,7 @@ fn widget(
     let primary = matches!(icon, Icon::Run);
     let tokens = crate::appearance::Tokens::of(ui.ctx());
     let mut native = egui::Button::new(text)
-        .frame(selected == Some(true) || primary)
+        .frame_when_inactive(selected == Some(true) || primary)
         .min_size(egui::vec2(28.0, 28.0) * scale);
     if let Some(selected) = selected {
         native = native.selected(selected);
@@ -206,7 +206,7 @@ pub(super) fn rail_button(
     });
     let tokens = crate::appearance::Tokens::of(ui.ctx());
     let color = if selected {
-        tokens.primary
+        tokens.primary_text
     } else {
         tokens.muted
     };

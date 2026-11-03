@@ -2,11 +2,17 @@
 use eframe::egui;
 
 pub(super) fn chip(ui: &mut egui::Ui, text: &str, color: egui::Color32) -> egui::Response {
+    let tokens = crate::appearance::Tokens::of(ui.ctx());
+    let text_color = if color == tokens.primary {
+        tokens.primary_text
+    } else {
+        color
+    };
     ui.add(
         egui::Button::new(
             egui::RichText::new(text)
                 .size(crate::appearance::text_size(ui.ctx(), 12.0))
-                .color(color),
+                .color(text_color),
         )
         .fill(color.gamma_multiply(0.13))
         .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.48)))
@@ -89,7 +95,8 @@ pub(super) fn footer<R>(
         .corner_radius(8)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.with_layout(
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), 30.0),
                 egui::Layout::right_to_left(egui::Align::Center).with_main_wrap(true),
                 contents,
             )

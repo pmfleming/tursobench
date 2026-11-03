@@ -76,6 +76,7 @@ impl Appearance {
 pub struct Tokens {
     pub primary: egui::Color32,
     pub primary_ink: egui::Color32,
+    pub primary_text: egui::Color32,
     pub pending: egui::Color32,
     pub relationship: egui::Color32,
     pub raised: egui::Color32,
@@ -97,6 +98,7 @@ impl Tokens {
         Self {
             primary: v.hyperlink_color,
             primary_ink: contrasting_ink(v.hyperlink_color),
+            primary_text: v.hyperlink_color,
             pending: v.warn_fg_color,
             relationship: v.hyperlink_color,
             raised: mix(bg, fg, 0.045),
@@ -169,6 +171,24 @@ fn apply(ctx: &egui::Context, dark: bool, palette: &Palette) {
         names
             .iter()
             .find_map(|name| colors.get(*name).copied())
+            .or_else(|| {
+                // An explicit opposite scheme keeps the desktop's neutral hue,
+                // adapting its brightness rather than importing a fixed palette.
+                (palette.dark.is_some() && palette.dark != Some(dark))
+                    .then(|| {
+                        names
+                            .iter()
+                            .find_map(|name| palette.colors.get(*name).copied())
+                            .map(|source| {
+                                let gray = ((u16::from(source.r())
+                                    + u16::from(source.g())
+                                    + u16::from(source.b()))
+                                    / 3) as u8;
+                                mix(egui::Color32::from_gray(255 - gray), source, 0.04)
+                            })
+                    })
+                    .flatten()
+            })
             .unwrap_or(fallback)
     };
     visuals.panel_fill = color(
@@ -220,6 +240,8 @@ fn apply(ctx: &egui::Context, dark: bool, palette: &Palette) {
     tokens.line_strong = mix(tokens.line, text, 0.16);
     tokens.line_soft = mix(visuals.extreme_bg_color, tokens.line, 0.55);
     let surfaces = [visuals.panel_fill, visuals.extreme_bg_color, tokens.raised];
+    tokens.primary_text = readable(tokens.primary, &surfaces, text);
+    visuals.hyperlink_color = tokens.primary_text;
     tokens.pending = readable(
         semantic(
             &["warning_color", "warning_bg_color"],
@@ -427,6 +449,13 @@ mod tests {
             assert_eq!(t.primary, palette.colors["accent_color"]);
             assert!(contrast(t.primary, t.primary_ink) >= 4.5);
             for bg in [v.panel_fill, v.extreme_bg_color, t.raised] {
+                assert!(
+                    contrast(t.primary_text, bg) >= 4.5,
+                    "dark={dark} primary={:?} bg={bg:?} text={:?} ratio={}",
+                    t.primary_text,
+                    v.text_color(),
+                    contrast(t.primary_text, bg)
+                );
                 assert!(contrast(t.pending, bg) >= 4.5);
                 assert!(contrast(t.relationship, bg) >= 4.5);
                 assert!(contrast(t.muted, bg) >= 4.5);

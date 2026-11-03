@@ -1,7 +1,9 @@
 # TursoBench fixed workspace
 
-The v6 native design adapts the [approved HTML mockup](redesign-v6-fixed-workspace.html)
-to egui, using native controls, accessible painter icons and the desktop theme.
+The v8 native design adapts the [interface mockup](redesign-v8-interface.html)
+to egui, using native controls, themed vector icons and the laptop's desktop palette.
+The HTML supplies the layout; its fixed brass and iris colours are replaced by
+the desktop's warning and relationship roles.
 
 ## Workspace
 
@@ -16,10 +18,10 @@ separate open-tile title bar, window dragging or divider resizing.
   returns to the fixed arrangement and preserves the other minimized tiles.
 - Ctrl Alt Enter expands/restores the focused tile. Ctrl Tab cycles the five tiles.
   Escape dismisses an active edit, popup or dialog before restoring expansion.
-- Tile ribbons expose actions directly with 32-point icons and 56-point buttons,
-  twice their previous size. Titles, object names and text controls use a consistent
-  24-point base size on the same horizontal line as the icons. A subtle divider separates
-  each header from its contents. Narrow ribbons scroll horizontally; actions never
+- Tile ribbons expose actions directly with 18-point icons and 30-point buttons
+  inside 44-point headers. Titles use a 13.5-point base size, and thin dividers group
+  related actions. A two-point accent marks the focused tile's top edge. A subtle
+  divider separates each header from its contents. Narrow ribbons scroll horizontally; actions never
   collapse into a More menu. Column visibility and open SQL editors have dedicated
   selectors. Tile navigation is not repeated in each ribbon. Restore all tiles
   appears only when a tile is minimized or expanded; review appears in Data and
@@ -105,8 +107,13 @@ values, optimistic conflict checks and atomic batch semantics remain unchanged.
 
 Follow system is the default. Linux observes the desktop portal and supported GTK
 named colors off the UI thread, including live scheme, accent and contrast changes.
-Explicit Light and Dark overrides remain available. Native fonts are reused; the
-fallback palette adopts the mockup's green accent. Ribbons scroll as the window
+Explicit Light and Dark overrides remain available. Primary actions use the desktop
+accent; neutral surfaces follow GTK. Pending work uses the warning colour, and keys,
+foreign-key values and relationships use the desktop link/info/success colour.
+When a role is unavailable it is derived from the current accent. Light/dark overrides
+adapt incompatible desktop neutrals, and small coloured text receives contrast
+adjustments. No fixed brass or iris colours are imported from the mockup.
+Native fonts and the existing font-size preference are reused. Ribbons scroll as the window
 narrows while minimize and expand stay fixed; expanding any tile gives its contents the full
 workspace. Record and Structure scroll independently.
 
@@ -115,10 +122,10 @@ for up to 20 databases. Reopening loads table data and metadata without executin
 saved SQL. SQL text, parameters, filters, rows and staged edits are not persisted
 in layout preferences. Legacy split-tree layouts migrate to the fixed arrangement.
 
-Native captures use synthetic data: [laptop dark](assets/ui/v6/laptop-dark.png),
-[laptop light](assets/ui/v6/laptop-light.png), [minimized tiles](assets/ui/v6/minimized-tiles.png),
-[expanded relationships](assets/ui/v6/expanded-map.png) and
-[widescreen](assets/ui/v6/widescreen.png).
+Native captures use synthetic data: [laptop dark](assets/ui/v8/laptop-dark.png),
+[laptop light](assets/ui/v8/laptop-light.png), [minimized tiles](assets/ui/v8/minimized-tiles.png),
+[expanded relationships](assets/ui/v8/expanded-map.png) and
+[widescreen](assets/ui/v8/widescreen.png).
 
 Settings sections, including Discovery, stay expanded. Appearance provides direct
 font-size decrease/increase buttons, a numeric input (10–20 pt, default 14), and
@@ -133,5 +140,12 @@ actual minimize/restore clicks, ribbon bounds across themes and scaling, SQL rer
 live record edits, direct commit without review, full-table filtering beyond retained
 rows, and visibility restoration without persisting query data. Existing ownership,
 transaction, paging, export and database-switch tests remain in place.
+
+The dialog regression checks primary-action visibility at 720 × 480 and laptop
+sizes in both themes, including enlarged text. The theme regression checks desktop
+role changes, contrast and forced light/dark schemes. The opt-in native capture pass
+also covers staged edits, all navigator tools, dialogs, database access and search
+settings. Reproduce it with `nix develop -c bash scripts/capture-v8.sh`; see
+[capture details](assets/ui/README.md).
 
 Use the [desktop checklist](desktop-smoke-test.md) for manual verification.

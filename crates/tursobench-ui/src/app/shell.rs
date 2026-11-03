@@ -161,11 +161,7 @@ impl App {
         {
             let panel = egui::Panel::left("workspace-sidebar")
                 .resizable(true)
-                .default_size(if self.session.is_none() && ui.available_width() >= 900.0 {
-                    300.0
-                } else {
-                    layout.sidebar_width
-                })
+                .default_size(layout.sidebar_width)
                 .size_range(180.0..=300.0)
                 .show(ui, |ui| {
                     if self.session.is_some() {
@@ -256,7 +252,7 @@ impl App {
         }
         egui::CentralPanel::default().show(ui, |ui| self.workspace_ui(ui));
         if self.confirm_close {
-            egui::Window::new("Close writable database?").frame(crate::app::presentation::window_frame(&ctx)).anchor(egui::Align2::CENTER_CENTER,egui::Vec2::ZERO).collapsible(false).max_width((ctx.content_rect().width()-48.0).min(520.0)).show(&ctx,|ui|{
+            egui::Window::new("Close writable database?").frame(crate::app::presentation::window_frame(&ctx)).default_pos(ctx.content_rect().center()-egui::vec2(280.0,180.0)).anchor(egui::Align2::CENTER_CENTER,egui::Vec2::ZERO).collapsible(false).max_width((ctx.content_rect().width()-48.0).min(520.0)).show(&ctx,|ui|{
                 presentation::notice(ui,Icon::Disconnect,Intent::Pending,"Local drafts will be discarded. Active execution will finish. Any remaining editor transaction will be explicitly rolled back. This does not undo committed writes.");
                 presentation::footer(ui, |ui| {
                     if ui.add(presentation::action(ui,"Wait, roll back transaction, and close",Intent::Pending)).clicked(){self.close();}
@@ -273,6 +269,7 @@ impl App {
             let mut open = true;
             egui::Window::new("Execution outcomes")
                 .frame(crate::app::presentation::window_frame(&ctx))
+                .default_pos(ctx.content_rect().center() - egui::vec2(280.0, 180.0))
                 .open(&mut open)
                 .default_width(580.0)
                 .max_width((ctx.content_rect().width() - 40.0).max(240.0))
@@ -300,8 +297,10 @@ impl App {
             let mut open = true;
             egui::Window::new("Export retained result")
                 .frame(crate::app::presentation::window_frame(&ctx))
+                .default_pos(ctx.content_rect().center() - egui::vec2(280.0, 180.0))
                 .open(&mut open)
                 .default_width(600.0)
+                .default_height(200.0)
                 .max_width((ctx.content_rect().width() - 40.0).max(240.0))
                 .max_height(ctx.content_rect().height() * 0.8)
                 .vscroll(true)
@@ -342,13 +341,11 @@ impl App {
                 match c.delivery {
                     tursobench_core::Delivery::Limited => ("Limited", warn),
                     tursobench_core::Delivery::Discarded => ("Discarded", warn),
-                    tursobench_core::Delivery::Complete => {
-                        ("Connected", visuals.selection.stroke.color)
-                    }
+                    tursobench_core::Delivery::Complete => ("Connected", visuals.hyperlink_color),
                 }
             }
         } else {
-            ("Connected", visuals.selection.stroke.color)
+            ("Connected", visuals.hyperlink_color)
         }
     }
     fn status_bar(&mut self, ui: &mut egui::Ui) {
@@ -379,9 +376,14 @@ impl App {
                     ui.painter().circle_filled(dot.center(), 3.0, color);
                     ui.colored_label(color, state).on_hover_text(&self.status);
                     if self.transaction != TransactionState::Autocommit {
-                        let text = format!("● {:?}", self.transaction);
-                        super::presentation::chip(ui, &text, if unknown { ui.visuals().error_fg_color } else { tokens.pending })
-                            .on_hover_text("Persistent editor connection transaction");
+                        let color = if unknown { ui.visuals().error_fg_color } else { tokens.pending };
+                        let text = format!("    {:?}", self.transaction);
+                        let transaction = super::presentation::chip(ui, &text, color);
+                        let animate = ui.style().animation_time > 0.0;
+                        let pulse = if animate { ui.input(|i| 0.6 + 0.4 * (i.time as f32 * 3.0).sin().abs()) } else { 1.0 };
+                        ui.painter().circle_filled(transaction.rect.left_center()+egui::vec2(10.0,0.0),3.0,color.gamma_multiply(pulse));
+                        transaction.on_hover_text("Persistent editor connection transaction");
+                        if animate { ui.ctx().request_repaint_after(std::time::Duration::from_millis(80)); }
                         for (label, sql) in [("Commit", "COMMIT"), ("Roll back", "ROLLBACK")] {
                             let enabled = self.ready && !self.closing && !self.executing() && self.commit_ticket.is_none() && !self.has_drafts() && (sql != "COMMIT" || self.transaction == TransactionState::Active);
                             let response = ui.add_enabled(enabled, egui::Button::new(label)).on_hover_text("Persistent editor connection. Transactions also apply to read-only sessions.");

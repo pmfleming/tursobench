@@ -52,6 +52,7 @@ impl App {
         let mut open = self.databases.settings_open;
         egui::Window::new("Search settings")
             .frame(crate::app::presentation::window_frame(&ctx))
+            .default_pos(ctx.content_rect().center() - egui::vec2(280.0, 180.0))
             .id(egui::Id::unique("database-search-settings"))
             .open(&mut open)
             .collapsible(false)

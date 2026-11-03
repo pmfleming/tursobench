@@ -110,7 +110,7 @@ impl App {
     pub(super) fn edit_windows(&mut self, ctx: &egui::Context) {
         if self.document.show_insert {
             let mut open = true;
-            egui::Window::new("Stage insert — typed column values").frame(crate::app::presentation::window_frame(&ctx))
+            egui::Window::new("Stage insert — typed column values").frame(crate::app::presentation::window_frame(ctx)).default_pos(ctx.content_rect().center()-egui::vec2(280.0,180.0))
                 .open(&mut open).default_width(580.0).max_width((ctx.content_rect().width()-40.0).max(280.0))
                 .show(ctx, |ui| {
                     presentation::notice(ui,super::icons::Icon::Plus,Intent::Pending,"One entry per column. JSON null = omit/use DEFAULT; {\"type\":\"Null\"} = SQL NULL.");
@@ -130,7 +130,7 @@ impl App {
         }
         if self.document.show_preview {
             let mut open = true;
-            egui::Window::new("Review staged atomic transaction").frame(crate::app::presentation::window_frame(&ctx))
+            egui::Window::new("Review staged atomic transaction").frame(crate::app::presentation::window_frame(ctx)).default_pos(ctx.content_rect().center()-egui::vec2(280.0,180.0))
                 .open(&mut open).default_width(760.0).max_width((ctx.content_rect().width()-40.0).max(280.0))
                 .show(ctx, |ui| {
                     presentation::notice(ui,super::icons::Icon::ReviewEdits,Intent::Pending,"Dedicated connection · foreign keys enabled · original values checked · atomic batch. Only a confirmed commit clears these drafts.");

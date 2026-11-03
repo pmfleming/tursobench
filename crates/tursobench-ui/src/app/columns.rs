@@ -205,7 +205,7 @@ impl CellStyle {
                 let color = match text.to_ascii_lowercase().as_str() {
                     "blocked" | "failed" | "error" => ui.visuals().error_fg_color,
                     "pending" | "in progress" | "review" => tokens.relationship,
-                    _ => accent,
+                    _ => tokens.primary_text,
                 };
                 let galley = painter.layout_no_wrap(
                     text.clone(),

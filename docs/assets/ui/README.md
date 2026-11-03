@@ -1,8 +1,47 @@
 # UI screenshots
 
-## Current fixed workspace (v6)
+## Current interface (v8)
 
-The README uses native captures from the fixed workspace implementation in
+The `v8/` images are native egui captures from 2026-11-03, using this laptop's
+Home Manager GTK palette and system fonts. The four interface roles use the
+desktop accent, neutral surfaces, warning colour and relationship colour
+(link/info/success). Here those sources are blue, black, amber and green.
+The Light override adapts desktop neutrals and coloured text for legibility.
+These are actual application screenshots, not HTML renders.
+
+Reproduce all 22 captures with:
+
+```sh
+nix develop -c bash scripts/capture-v8.sh
+# Optional output directory:
+nix develop -c bash scripts/capture-v8.sh /tmp/tursobench-captures
+```
+
+The script copies only GTK theme inputs into an isolated configuration directory.
+It creates a disposable SQLite compatibility fixture with 1,000 generated items,
+three projects, two accounts, foreign keys, status/priority/progress fields and a
+view. No personal database or application preferences are read or changed.
+The initial smoke pass opens read-only and checks typed SQL, write rejection and
+clean close. The visual pass reopens the disposable fixture writable, stages a
+local change and shows editing dialogs, then closes without committing drafts.
+
+- `workspace-dark.png`, `expanded-map.png`, `laptop-dark.png`, `laptop-light.png`,
+  `minimized-tiles.png` and `widescreen.png`: six workspace theme/size states.
+- `staged-workspace.png`, `review-dialog.png`, `insert-dialog.png`: local edits
+  and their review/insert surfaces.
+- `navigator-{history,saved,checks,settings}.png`: each navigator tool.
+- `command-palette.png`, `export-dialog.png`, `execution-outcomes.png`,
+  `keyboard-reference.png`, `access-dialog.png`, `cell-detail.png`,
+  `close-dialog.png`: custom windows.
+- `database-chooser.png`, `search-settings.png`: database opening and discovery.
+
+The main workspace and expanded map use 1800 × 1000; widescreen uses 3440 × 1440.
+All other captures use 1366 × 768. Screenshot generation is opt-in; ordinary
+smoke runs retain their original checks and do not save images.
+
+## Fixed workspace v6 (historical)
+
+These historical native captures show the fixed workspace implementation in
 commit `0afd0ba`, captured on 2026-11-03 under Xvfb/Mesa with isolated preferences.
 These are actual application screenshots, not HTML mockups.
 
@@ -73,4 +112,5 @@ capture uses the app's explicit Light override. No personal database was opened.
   this table and recorded the extra layout. All four captures use this fixture.
 
 These v5 captures predate the fixed workspace. The current smoke capture sequence
-produces the v6 filenames listed above; it no longer captures movable-window layouts.
+uses the workspace filenames above and adds the v8 interface states; it no longer
+captures movable-window layouts.

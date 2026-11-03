@@ -438,8 +438,8 @@ impl App {
                                         "Restore all tiles",
                                     );
                                 }
-                                if available && self.action_enabled(Action::Discard) {
-                                    if ui
+                                if available && self.action_enabled(Action::Discard)
+                                    && ui
                                         .add(
                                             egui::Button::new("Discard results")
                                                 .min_size(egui::vec2(0.0, icons::RIBBON_BUTTON_SIZE)),
@@ -448,7 +448,6 @@ impl App {
                                         .clicked()
                                     {
                                         self.dispatch_action(Action::Discard, ui.ctx());
-                                    }
                                 }
                             });
                         });
@@ -530,6 +529,8 @@ impl App {
         let response = ui
             .scope(|ui| {
                 ui.spacing_mut().slider_width = 140.0;
+                ui.visuals_mut().widgets.inactive.bg_fill =
+                    crate::appearance::Tokens::of(ui.ctx()).line_strong;
                 ui.add_enabled(
                     count > 1,
                     egui::Slider::new(&mut position, usize::from(count > 0)..=count)
