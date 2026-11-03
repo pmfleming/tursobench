@@ -251,7 +251,7 @@ impl App {
                 if self.document.tools.filter_focus {
                     response.request_focus();
                     self.document.tools.filter_focus = false;
-                    self.document.ui.filter_open = false;
+                    self.document.ui.filter_open = self.workspace.enabled;
                 }
                 if (response.has_focus() || response.lost_focus())
                     && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))

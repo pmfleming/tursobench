@@ -8,7 +8,10 @@ impl App {
         self.document.has_drafts() || self.documents.values().any(|d| d.has_drafts())
     }
     pub(super) fn can_edit(&self) -> bool {
-        !self.documents.values().any(|d| d.has_drafts())
+        !self
+            .documents
+            .values()
+            .any(|d| d.has_drafts() || d.active.is_some())
             && self.writable
             && self.ready
             && !self.closing

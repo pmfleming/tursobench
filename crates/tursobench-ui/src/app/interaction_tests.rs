@@ -80,39 +80,33 @@ fn independent_documents_route_results_and_keep_filters_drafts_and_sql() {
     );
     let (ctx, mut app) = connected(&path, true);
     app.browse_table("a".into());
+    let a_id = app.document.id;
     let a_ticket = app.document.result.current.unwrap();
     app.document.sql = "SELECT 'draft a'".into();
     app.document.filter = "body = alpha".into();
-    app.documents.insert(
-        1,
-        document::Document {
-            id: 1,
-            ..Default::default()
-        },
-    );
-    assert!(app.switch_document(1));
     app.browse_table("b".into());
+    let b_id = app.document.id;
     app.document.sql = "SELECT 'draft b'".into();
     wait(&mut app, &ctx);
     assert_eq!(
-        app.document.id, 1,
+        app.document.id, b_id,
         "background completions must not change focus"
     );
     assert_eq!(app.document.result.rows[0][1], Value::Text("beta".into()));
-    app.switch_document(0);
+    app.switch_document(a_id);
     assert_eq!(app.document.result.current, Some(a_ticket));
     assert_eq!(app.document.result.rows[0][1], Value::Text("alpha".into()));
     assert_eq!(app.document.sql, "SELECT 'draft a'");
     assert_eq!(app.document.filter, "body = alpha");
     app.stage_cell(0, 1, Value::Text("staged alpha".into()));
     assert!(app.document.has_drafts());
-    app.switch_document(1);
+    app.switch_document(b_id);
     assert!(app.has_drafts(), "draft protection is session wide");
     assert!(!app.can_edit(), "another view owns the pending edit batch");
     assert!(app.document.drafts.is_none());
     assert_eq!(app.document.sql, "SELECT 'draft b'");
     // A closed view's late delivery cannot append to another view's rows.
-    app.documents.remove(&0);
+    app.documents.remove(&a_id);
     app.handle_event(
         &ctx,
         Event {
@@ -220,104 +214,54 @@ fn diagram_preserves_drafts_and_result_ownership_and_chrome_fits_both_themes() {
     let (ctx, mut app) = connected(&path, true);
     app.browse_table("buffer_ids".into());
     wait(&mut app, &ctx);
+    let data = app.document.id;
     let retained = app.document.result.rows.clone();
     let ticket = app.document.result.current;
     app.stage_cell(0, 0, Value::Text("pending diagram edit".into()));
-    assert!(app.has_drafts());
-    app.document.ui.nav = shell::Nav::Overview;
     app.show_structure();
-    app.load_diagram();
     wait(&mut app, &ctx);
-    assert_eq!(app.document.result.current, ticket);
-    assert_eq!(app.document.result.rows, retained);
+    assert_eq!(app.document.kind, tiling::Kind::Structure);
+    assert_eq!(app.document_ref(data).unwrap().result.current, ticket);
+    assert_eq!(app.document_ref(data).unwrap().result.rows, retained);
+    app.overview();
+    let map = app.document.id;
     assert!(app.has_drafts());
-    assert!(
-        app.ui
-            .diagram
-            .data
-            .as_ref()
-            .unwrap()
-            .tables
-            .iter()
-            .any(|t| t.name == "buffer_ids")
-    );
-    let draft = format!("{:?}", app.document.drafts);
+    assert_eq!(app.document.kind, tiling::Kind::Map);
     for dark in [true, false] {
         app.preferences.appearance = Some(crate::appearance::Mode::from_dark(dark));
         app.apply_theme(&ctx);
         for (width, height, scale) in [
-            (960.0, 640.0, 1.0),
-            (1280.0, 720.0, 1.0),
+            (720.0, 480.0, 1.0),
             (1366.0, 768.0, 1.0),
             (1920.0, 1080.0, 1.0),
             (3440.0, 1440.0, 1.0),
             (1440.0, 960.0, 1.5),
         ] {
             ctx.set_pixels_per_point(scale);
-            for mode in [shell::Nav::Result, shell::Nav::Table, shell::Nav::Overview] {
-                app.document.ui.nav = mode;
-                app.ui.diagram.fit = true;
-                for _ in 0..2 {
-                    let output = frame_at(&mut app, &ctx, egui::vec2(width, height), vec![]);
-                    assert!(!output.shapes.is_empty());
-                    assert!(app.ui.transaction_rects.is_empty());
-                    for rect in &app.ui.transaction_rects {
-                        assert!(
-                            ctx.content_rect().contains_rect(*rect),
-                            "{mode:?} {width}x{height} @{scale}: {rect:?}"
-                        );
-                    }
-                    assert!(
-                        app.ui.workspace_rect.width() >= 500.0,
-                        "{mode:?}: {:?}",
-                        app.ui.workspace_rect
-                    );
-                }
+            for _ in 0..2 {
+                frame_at(&mut app, &ctx, egui::vec2(width, height), vec![]);
             }
+            assert!(app.ui.sidebar_rect.left() >= app.workspace.area.right());
+            for (_, rect) in &app.workspace.tiles {
+                assert!(app.workspace.area.contains_rect(*rect));
+            }
+            let saved = app.workspace.tree.clone();
+            app.expand_window(map);
+            frame_at(&mut app, &ctx, egui::vec2(width, height), vec![]);
+            assert_eq!(app.workspace.tiles.len(), 1);
+            assert_eq!(app.workspace.tiles[0].0, map);
+            assert!(app.ui.sidebar_rect.left() >= app.workspace.tiles[0].1.right());
+            app.expand_window(map);
+            assert_eq!(app.workspace.tree, saved);
         }
     }
-    assert_eq!(format!("{:?}", app.document.drafts), draft);
-    assert_eq!(app.document.result.rows, retained);
-    ctx.set_pixels_per_point(1.0);
-    app.document.ui.nav = shell::Nav::Overview;
-    app.ui.diagram.fit = true;
-    frame(&mut app, &ctx, vec![]);
-    let before_selection = app.ui.diagram.selected.clone();
-    let (name, rect) = app.ui.diagram.table_rects[0].clone();
-    let pos = rect.center();
-    for pressed in [true, false] {
-        frame(
-            &mut app,
-            &ctx,
-            vec![
-                egui::Event::PointerMoved(pos),
-                egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ],
-        );
-    }
-    assert_eq!(app.ui.diagram.selected, before_selection);
-    assert_eq!(app.document.ui.inspector, shell::DetailMode::Structure);
-    // Diagram navigation must not bypass the draft guard.
-    app.browse_table(name.clone());
-    assert_eq!(app.document.ui.nav, shell::Nav::Overview);
-    assert!(app.has_drafts());
-    app.document.drafts = None;
-    app.browse_table(name.clone());
-    wait(&mut app, &ctx);
-    assert_eq!(app.document.table.as_ref().unwrap().name, name);
-    assert_eq!(app.document.ui.nav, shell::Nav::Table);
-    assert_eq!(app.document.ui.nav, shell::Nav::Table);
+    assert!(app.document_ref(data).unwrap().has_drafts());
+    assert_eq!(app.document_ref(data).unwrap().result.rows, retained);
+    app.activate_table("buffer_ids".into());
+    assert_eq!(app.document.id, data);
     app.close();
-    while app.session.is_some() {
-        app.poll(&ctx);
-        std::thread::sleep(Duration::from_millis(5));
-    }
 }
+
 #[test]
 fn reverted_empty_batch_cannot_carry_identity_to_another_table() {
     let dir = tempfile::tempdir().unwrap();
@@ -382,8 +326,8 @@ fn reverted_empty_batch_cannot_carry_identity_to_another_table() {
     app.copy_results(&ctx, crate::export::Format::Json);
     assert!(app.status.contains("Copied retained"));
     app.browse_table("a".into());
-    assert_eq!(app.document.table.as_ref().unwrap().name, "b");
-    assert_eq!(app.document.result.rows, retained);
+    assert_eq!(app.document.table.as_ref().unwrap().name, "a");
+    assert_eq!(app.document.result.rows[0][1], Value::Text("same".into()));
     app.document.ui.nav = shell::Nav::Result;
     frame(&mut app, &ctx, vec![]);
     assert!(app.session.is_none());
@@ -787,7 +731,7 @@ fn rapid_map_selection_keeps_latest_rows_and_structure_including_views() {
 }
 
 #[test]
-fn sql_dock_keeps_result_identity_and_read_transactions_visible() {
+fn sql_tile_keeps_result_identity_and_read_transactions_visible() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("sql-drawer.db");
     crate::test_support::create(
@@ -808,10 +752,11 @@ fn sql_dock_keeps_result_identity_and_read_transactions_visible() {
     assert!(app.document.table.is_none());
     assert_eq!(app.document.result.rows, vec![vec![Value::Integer(42)]]);
     let ticket = app.document.result.current;
+    let result_id = app.document.id;
     app.toggle_sql();
-    assert!(!app.document.ui.sql_open);
+    assert_eq!(app.document.kind, tiling::Kind::Sql);
     frame(&mut app, &ctx, vec![]);
-    assert_eq!(app.document.result.current, ticket);
+    assert_eq!(app.document_ref(result_id).unwrap().result.current, ticket);
     app.toggle_sql();
     app.run_text("BEGIN".into(), None);
     wait(&mut app, &ctx);
@@ -1082,7 +1027,13 @@ fn table_views_sidebar_and_transactions_fit_themes_and_scaled_viewports() {
                 );
                 assert!(app.ui.view_header.width() > 200.0);
                 if !structure {
-                    assert!(app.ui.workspace_rect.contains_rect(app.ui.grid_rect));
+                    assert!(
+                        app.ui.workspace_rect.contains_rect(app.ui.grid_rect),
+                        "{width}x{height}: workspace {:?}, grid {:?}, tiles {:?}",
+                        app.ui.workspace_rect,
+                        app.ui.grid_rect,
+                        app.workspace.tiles
+                    );
                 }
                 if width == 1280.0 && !details && !sql && !structure {
                     assert!(
@@ -1490,7 +1441,8 @@ fn token_entry_enter_retains_typed_filter_and_empty_clipboard_fields() {
         app.document.browse.as_ref().unwrap().filters[0].op,
         tursobench_core::FilterOp::GreaterOrEqual
     );
-    app.browse_table("sample".into());
+    app.document.browse.as_mut().unwrap().filters.clear();
+    app.reload();
     wait(&mut app, &ctx);
     frame(&mut app, &ctx, vec![]);
     app.document.tools.columns.move_before(2, 0);
@@ -1501,7 +1453,7 @@ fn token_entry_enter_retains_typed_filter_and_empty_clipboard_fields() {
 }
 
 #[test]
-fn clipboard_columns_fit_large_docked_workspace_and_defaults_follow_breakpoints() {
+fn clipboard_grid_and_record_use_independent_tiles_without_overlays() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("clipboard.db");
     crate::test_support::run(crate::local_project_fixtures::create(&path, "clipboard")).unwrap();
@@ -1515,8 +1467,12 @@ fn clipboard_columns_fit_large_docked_workspace_and_defaults_follow_breakpoints(
     for _ in 0..2 {
         frame_at(&mut app, &ctx, egui::vec2(1920.0, 1080.0), vec![]);
     }
-    assert!(app.document.ui.inspector_open);
+    assert!(!app.document.ui.inspector_open);
     assert_eq!(app.document.result.columns.len(), 11);
+    app.expand_window(app.document.id);
+    for _ in 0..2 {
+        frame_at(&mut app, &ctx, egui::vec2(1920.0, 1080.0), vec![]);
+    }
     let width: f32 = app.document.tools.columns.widths.iter().sum::<f32>()
         + 44.0
         + app.document.result.columns.len() as f32
@@ -1526,9 +1482,11 @@ fn clipboard_columns_fit_large_docked_workspace_and_defaults_follow_breakpoints(
         "columns {width} > grid {}",
         app.ui.grid_rect.width()
     );
-    assert!(app.ui.visible_rows >= 37, "{} rows", app.ui.visible_rows);
-    app.toggle_inspector();
-    assert!(!app.document.ui.inspector_open);
+    assert!(app.ui.visible_rows >= 34, "{} rows", app.ui.visible_rows);
+    let data_id = app.document.id;
+    app.open_record_window(0, 0);
+    assert_eq!(app.document.kind, tiling::Kind::Record);
+    assert_eq!(app.document.source, Some(data_id));
     for _ in 0..2 {
         frame_at(&mut app, &ctx, egui::vec2(2560.0, 1440.0), vec![]);
     }

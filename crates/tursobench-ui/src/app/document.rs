@@ -4,6 +4,9 @@ use tursobench_core::{Browse, DraftBatch, ResultSet, Table, Ticket};
 
 pub(super) struct Document {
     pub id: u64,
+    pub kind: super::tiling::Kind,
+    pub object: Option<String>,
+    pub source: Option<u64>,
     pub tools: tools::ViewTools,
     pub ui: shell::ViewUi,
     pub discard_ticket: Option<Ticket>,
@@ -28,6 +31,9 @@ impl Default for Document {
     fn default() -> Self {
         Self {
             id: 0,
+            kind: Default::default(),
+            object: None,
+            source: None,
             tools: tools::ViewTools {
                 export_table: "exported_rows".into(),
                 ..Default::default()
@@ -54,6 +60,20 @@ impl Default for Document {
     }
 }
 impl Document {
+    pub fn title(&self) -> String {
+        match self.kind {
+            super::tiling::Kind::Map => "Database · Map".into(),
+            super::tiling::Kind::Sql => format!("Query {} · SQL", self.id),
+            super::tiling::Kind::Result => {
+                format!("Query {} · Result", self.source.unwrap_or(self.id))
+            }
+            kind => format!(
+                "{} · {}",
+                self.object.as_deref().unwrap_or("Retained"),
+                kind.label()
+            ),
+        }
+    }
     pub fn owns(&self, ticket: Ticket) -> bool {
         self.result.current == Some(ticket)
             || self.tools.inspection_ticket == Some(ticket)

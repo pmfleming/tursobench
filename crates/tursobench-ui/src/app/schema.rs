@@ -144,6 +144,7 @@ impl App {
             .ddl
             .as_ref()
             .map(|o| o.name.clone())
+            .or_else(|| self.document.object.clone())
             .or_else(|| self.ui.diagram.selected.clone());
         let Some(name) = name else {
             ui.label("Choose a table to inspect its structure.");
@@ -382,6 +383,18 @@ impl App {
             keys.push((target, value.clone()));
         }
         let previous = self.navigation_entry();
+        if self.workspace.enabled
+            && self
+                .create_window(
+                    super::tiling::Kind::Data,
+                    Some(key.target.clone()),
+                    Some(self.document.id),
+                    true,
+                )
+                .is_none()
+        {
+            return;
+        }
         if self
             .submit(
                 Operation::Lookup {
@@ -436,6 +449,21 @@ impl App {
         }
         let destination = Destination::References(child.clone(), key, bound);
         let previous = self.navigation_entry();
+        if self.has_drafts() || self.commit_ticket.is_some() {
+            return;
+        }
+        if self.workspace.enabled
+            && self
+                .create_window(
+                    super::tiling::Kind::Data,
+                    Some(child.clone()),
+                    Some(self.document.id),
+                    true,
+                )
+                .is_none()
+        {
+            return;
+        }
         if self.submit(destination.operation(), View::Browse).is_some() {
             if let Some(previous) = previous {
                 self.tools.back.push(previous);
@@ -481,6 +509,21 @@ impl App {
         })
     }
     pub(super) fn restore_destination(&mut self, entry: NavigationEntry) -> bool {
+        if self.has_drafts() || self.commit_ticket.is_some() {
+            return false;
+        }
+        if self.workspace.enabled
+            && self
+                .create_window(
+                    super::tiling::Kind::Data,
+                    Some(entry.destination.table().into()),
+                    None,
+                    false,
+                )
+                .is_none()
+        {
+            return false;
+        }
         if self
             .submit(entry.destination.operation(), View::Browse)
             .is_none()

@@ -24,8 +24,10 @@ mod selection;
 mod shell;
 mod sidebar;
 mod smoke;
+mod tiling;
 mod tools;
 mod usability;
+mod workspace;
 use eframe::egui;
 
 use tursobench_db::{Operation, Request, Session};
@@ -42,6 +44,7 @@ pub struct App {
     path: String,
     tools: tools::Tools,
     document: document::Document,
+    workspace: workspace::Workspace,
     documents: std::collections::BTreeMap<u64, document::Document>,
     commit_owner: Option<u64>,
     ui: shell::UiState,
@@ -92,6 +95,7 @@ impl App {
             pending_database: None,
             tools: tools::Tools::new(),
             document: document::Document::default(),
+            workspace: Default::default(),
             documents: Default::default(),
             commit_owner: None,
             ui: shell::UiState::new(ctx),
@@ -179,7 +183,8 @@ impl App {
         ) {
             Ok(s) => {
                 self.documents.clear();
-                self.document.id = 0;
+                self.workspace = Default::default();
+                self.document = document::Document::default();
                 self.commit_owner = None;
                 self.document.result = ResultSet::default();
                 self.schema.clear();
@@ -229,6 +234,12 @@ impl App {
             return None;
         }
         let previous = self.navigation_entry();
+        if self.workspace.enabled
+            && view != View::Browse
+            && self.document.kind != tiling::Kind::Result
+        {
+            self.create_window(tiling::Kind::Result, None, Some(self.document.id), true)?;
+        }
         let s = self.session.as_ref()?;
         if !self.ready || self.closing {
             return None;
@@ -284,6 +295,16 @@ impl App {
         self.run_text(self.document.sql.clone(), None);
     }
     fn browse_table(&mut self, name: String) {
+        if self.workspace.enabled
+            && let Some(id) = self.find_window(tiling::Kind::Data, Some(&name), None)
+        {
+            // Focusing retained data is allowed even while that same view owns staged edits.
+            if !self.has_drafts() || self.document_ref(id).is_some_and(|d| d.has_drafts()) {
+                self.focus_window(id);
+                self.workspace.expanded = None;
+                return;
+            }
+        }
         if self.has_drafts() || self.commit_ticket.is_some() {
             self.status = "Commit or discard drafts first".into();
             return;
@@ -293,6 +314,19 @@ impl App {
             return;
         }
         let previous = self.navigation_entry();
+        if self.workspace.enabled {
+            if let Some(id) = self.find_window(tiling::Kind::Data, Some(&name), None) {
+                self.focus_window(id);
+                self.workspace.expanded = None;
+                return;
+            }
+            if self
+                .create_window(tiling::Kind::Data, Some(name.clone()), None, false)
+                .is_none()
+            {
+                return;
+            }
+        }
         let browse = Browse {
             table: name.clone(),
             offset: 0,
@@ -300,6 +334,8 @@ impl App {
             descending: false,
             filters: vec![],
         };
+        self.document.browse = Some(browse.clone());
+        self.document.view = View::Browse;
         if self
             .submit(Operation::Browse(browse.clone()), View::Browse)
             .is_some()
@@ -531,6 +567,10 @@ impl App {
                 }
             }
             EventKind::Opened => {
+                self.workspace.enabled = true;
+                self.workspace.tree = Some(tiling::Node::leaf(self.document.id));
+                self.workspace.focused = self.document.id;
+                self.document.kind = tiling::Kind::Map;
                 self.ready = true;
                 self.record_database_open();
                 self.refresh_catalog();

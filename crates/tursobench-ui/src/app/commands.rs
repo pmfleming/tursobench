@@ -69,6 +69,10 @@ impl App {
         self.ui.palette_index = 0;
     }
     pub(super) fn toggle_sql(&mut self) {
+        if self.workspace.enabled {
+            self.open_sql_window(false);
+            return;
+        }
         self.document.ui.sql_open = !self.document.ui.sql_open;
     }
     pub(super) fn command_palette(&mut self, ctx: &egui::Context) {

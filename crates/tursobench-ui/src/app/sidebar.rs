@@ -8,6 +8,9 @@ use tursobench_core::Inspection;
 
 impl App {
     pub(super) fn overview(&mut self) {
+        if self.workspace.enabled {
+            self.create_window(super::tiling::Kind::Map, None, None, false);
+        }
         self.document.ui.nav = Nav::Overview;
         self.document.ui.inspector_open = false;
         if self.ui.diagram.data.is_none() {
@@ -16,6 +19,10 @@ impl App {
     }
 
     pub(super) fn activate_table(&mut self, name: String) {
+        if self.workspace.enabled {
+            self.browse_table(name);
+            return;
+        }
         if self.document.view == View::Browse
             && self
                 .document

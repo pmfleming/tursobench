@@ -115,7 +115,13 @@ impl App {
                 ui.input(|i| i.modifiers.shift) || self.document.tools.dragging_selection,
             ),
             Some(GridAction::Edit(r, c)) => self.start_inline(r, c),
-            Some(GridAction::Inspect(r, c)) => self.open_cell(r, c),
+            Some(GridAction::Inspect(r, c)) => {
+                if self.workspace.enabled {
+                    self.open_record_window(r, c);
+                } else {
+                    self.open_cell(r, c);
+                }
+            }
             Some(GridAction::Stage(r, c, v)) => {
                 self.stage_cell(r, c, v);
                 self.document.tools.inline = None;
@@ -123,6 +129,7 @@ impl App {
                     ui.ctx().memory_mut(|m| m.request_focus(id));
                 }
             }
+            Some(GridAction::Record(r)) if self.workspace.enabled => self.open_record_window(r, 0),
             Some(GridAction::Record(r)) => {
                 self.document.tools.detail = Some(r);
                 self.document.ui.inspector = shell::DetailMode::Record;

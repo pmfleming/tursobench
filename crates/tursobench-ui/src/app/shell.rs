@@ -118,11 +118,37 @@ impl Layout {
 }
 impl App {
     pub(super) fn show_structure(&mut self) {
+        if self.workspace.enabled {
+            self.open_structure_window();
+            return;
+        }
         self.document.ui.inspector = DetailMode::Structure;
         self.document.ui.inspector_open = true;
     }
     pub(super) fn shell(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        if self.workspace.enabled {
+            self.switch_document(self.workspace.focused);
+            if ctx.input_mut(|i| {
+                i.consume_key(
+                    egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
+                    egui::Key::Enter,
+                )
+            }) {
+                self.expand_window(self.workspace.focused);
+            }
+            if self.workspace.expanded.is_some()
+                && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+            {
+                self.workspace.expanded = None;
+            }
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Tab)) {
+                let ids = self.window_ids();
+                if let Some(index) = ids.iter().position(|id| *id == self.workspace.focused) {
+                    self.focus_window(ids[(index + 1) % ids.len()]);
+                }
+            }
+        }
         self.shortcuts(&ctx);
         #[cfg(test)]
         {
@@ -133,13 +159,13 @@ impl App {
         let layout = Layout::new(ui.available_width());
         self.status_bar(ui);
         if self.session.is_some() {
-            egui::Panel::left("activity-rail")
+            egui::Panel::right("activity-rail")
                 .exact_size(44.0)
                 .resizable(false)
                 .show(ui, |ui| self.activity_rail(ui));
         }
         {
-            let panel = egui::Panel::left("workspace-sidebar")
+            let panel = egui::Panel::right("workspace-sidebar")
                 .resizable(true)
                 .default_size(if self.session.is_none() && ui.available_width() >= 900.0 {
                     300.0
@@ -149,6 +175,13 @@ impl App {
                 .size_range(180.0..=300.0)
                 .show(ui, |ui| {
                     if self.session.is_some() {
+                        if self.workspace.enabled {
+                            egui::Panel::bottom("window-navigation")
+                                .default_size(150.0)
+                                .resizable(true)
+                                .size_range(70.0..=240.0)
+                                .show(ui, |ui| self.window_navigation(ui));
+                        }
                         self.navigation_sidebar(ui);
                     } else {
                         ui.heading("Databases");
@@ -162,65 +195,67 @@ impl App {
             #[cfg(not(test))]
             let _ = panel;
         }
-        if self.document.ui.nav == Nav::Table
-            && (!self.document.ui.inspector_initialized
-                || self.document.ui.inspector_compact != Some(layout.bottom_inspector)
-                    && !self
-                        .preferences
-                        .inspector_visibility
-                        .contains_key(&self.tools.database_scope))
-        {
-            self.document.ui.inspector_open = self
-                .preferences
-                .inspector_visibility
-                .get(&self.tools.database_scope)
-                .copied()
-                .unwrap_or(!layout.bottom_inspector);
-            self.document.ui.inspector_initialized = true;
-            self.document.ui.inspector_compact = Some(layout.bottom_inspector);
-        }
-        if self.document.ui.inspector_open
-            && !self.document.ui.inspector_detached
-            && matches!(self.document.ui.nav, Nav::Table | Nav::Result)
-        {
-            if layout.bottom_inspector {
-                egui::Area::new(egui::Id::new("inspector-overlay"))
-                    .order(egui::Order::Foreground)
-                    .anchor(egui::Align2::RIGHT_TOP, [-8.0, 8.0])
-                    .show(&ctx, |ui| {
-                        egui::Frame::popup(ui.style()).show(ui, |ui| {
-                            ui.set_width(320.0_f32.min(ctx.content_rect().width() - 60.0));
-                            ui.set_max_height((ctx.content_rect().height() - 65.0).max(100.0));
-                            self.docked_inspector(ui);
-                        });
-                    });
-            } else {
-                egui::Panel::right("inspector-right")
-                    .resizable(true)
-                    .default_size(layout.inspector_width)
-                    .size_range(260.0..=420.0)
-                    .show(ui, |ui| self.docked_inspector(ui));
+        if !self.workspace.enabled {
+            if self.document.ui.nav == Nav::Table
+                && (!self.document.ui.inspector_initialized
+                    || self.document.ui.inspector_compact != Some(layout.bottom_inspector)
+                        && !self
+                            .preferences
+                            .inspector_visibility
+                            .contains_key(&self.tools.database_scope))
+            {
+                self.document.ui.inspector_open = self
+                    .preferences
+                    .inspector_visibility
+                    .get(&self.tools.database_scope)
+                    .copied()
+                    .unwrap_or(!layout.bottom_inspector);
+                self.document.ui.inspector_initialized = true;
+                self.document.ui.inspector_compact = Some(layout.bottom_inspector);
             }
-        }
-        if self.document.ui.sql_open {
-            let height = if self.document.ui.sql_expanded {
-                ui.available_height() * 0.65
-            } else {
-                ui.available_height() * 0.30
-            };
-            egui::Panel::bottom(if self.document.ui.sql_expanded {
-                "sql-editor-expanded"
-            } else {
-                "sql-editor-dock"
-            })
-            .resizable(true)
-            .default_size(height.max(130.0))
-            .size_range(100.0..=(ui.available_height() * 0.75).max(100.0))
-            .show(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .id_salt("sql-dock-scroll")
-                    .show(ui, |ui| self.editor_ui(ui));
-            });
+            if self.document.ui.inspector_open
+                && !self.document.ui.inspector_detached
+                && matches!(self.document.ui.nav, Nav::Table | Nav::Result)
+            {
+                if layout.bottom_inspector {
+                    egui::Area::new(egui::Id::new("inspector-overlay"))
+                        .order(egui::Order::Foreground)
+                        .anchor(egui::Align2::RIGHT_TOP, [-8.0, 8.0])
+                        .show(&ctx, |ui| {
+                            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                                ui.set_width(320.0_f32.min(ctx.content_rect().width() - 60.0));
+                                ui.set_max_height((ctx.content_rect().height() - 65.0).max(100.0));
+                                self.docked_inspector(ui);
+                            });
+                        });
+                } else {
+                    egui::Panel::right("inspector-right")
+                        .resizable(true)
+                        .default_size(layout.inspector_width)
+                        .size_range(260.0..=420.0)
+                        .show(ui, |ui| self.docked_inspector(ui));
+                }
+            }
+            if self.document.ui.sql_open {
+                let height = if self.document.ui.sql_expanded {
+                    ui.available_height() * 0.65
+                } else {
+                    ui.available_height() * 0.30
+                };
+                egui::Panel::bottom(if self.document.ui.sql_expanded {
+                    "sql-editor-expanded"
+                } else {
+                    "sql-editor-dock"
+                })
+                .resizable(true)
+                .default_size(height.max(130.0))
+                .size_range(100.0..=(ui.available_height() * 0.75).max(100.0))
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("sql-dock-scroll")
+                        .show(ui, |ui| self.editor_ui(ui));
+                });
+            }
         }
         egui::CentralPanel::default().show(ui, |ui| self.workspace_ui(ui));
         if self.confirm_close {
@@ -230,6 +265,7 @@ impl App {
                 if ui.button("Keep open").clicked(){self.confirm_close=false;self.quit=false;self.pending_database=None;}
             });
         }
+        self.window_close_dialog(&ctx);
         self.edit_windows(&ctx);
         self.inspection_surfaces(&ctx);
         self.command_palette(&ctx);
@@ -350,6 +386,25 @@ impl App {
         }
         if self.document.ui.nav == Nav::Settings {
             egui::ScrollArea::vertical().show(ui, |ui| self.settings_ui(ui));
+            return;
+        }
+        if self.workspace.enabled {
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Map").clicked() {
+                    self.overview();
+                }
+                if ui.button("Structure").clicked() {
+                    self.open_structure_window();
+                }
+                if ui.button("SQL").clicked() {
+                    self.open_sql_window(false);
+                }
+                if ui.button("Retile").clicked() {
+                    self.retile();
+                }
+            });
+            ui.separator();
+            self.tiled_workspace(ui);
             return;
         }
         self.workspace_header(ui);
@@ -527,6 +582,14 @@ impl App {
         ui.separator();
     }
     pub(super) fn toggle_inspector(&mut self) {
+        if self.workspace.enabled {
+            if let Some((r, c)) = self.document.inspect {
+                self.open_record_window(r, c);
+            } else {
+                self.status = "Select a cell to open its record".into();
+            }
+            return;
+        }
         self.document.ui.inspector_open = !self.document.ui.inspector_open;
         self.document.ui.inspector_initialized = true;
         self.preferences.inspector_visibility.insert(

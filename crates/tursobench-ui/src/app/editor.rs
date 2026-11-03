@@ -128,6 +128,26 @@ impl App {
                         },
                     },
                 };
+                if self.workspace.enabled {
+                    if let Some(previous) = self.navigation_entry() {
+                        self.tools.result_return = Some(previous);
+                    }
+                    let source = if self.document.kind == super::tiling::Kind::Result {
+                        self.document.source.unwrap_or(self.document.id)
+                    } else {
+                        self.document.id
+                    };
+                    let sql = self.document.sql.clone();
+                    let params = self.document.params.clone();
+                    if self
+                        .create_window(super::tiling::Kind::Result, None, Some(source), false)
+                        .is_none()
+                    {
+                        return;
+                    }
+                    self.document.sql = sql;
+                    self.document.params = params;
+                }
                 if let Some(ticket) = self.submit(
                     operation,
                     if explain.is_some() {
@@ -429,9 +449,21 @@ impl App {
             self.document.tools.filter_focus = true;
         }
         if consumed(egui::Modifiers::CTRL, egui::Key::Num1) {
+            if self.workspace.enabled
+                && let Some(name) = self
+                    .document
+                    .object
+                    .clone()
+                    .or_else(|| self.ui.diagram.selected.clone())
+            {
+                self.browse_table(name);
+            }
             self.document.ui.table_view = shell::TableView::Data;
         }
         if consumed(egui::Modifiers::CTRL, egui::Key::Num2) {
+            if self.workspace.enabled {
+                self.open_structure_window();
+            }
             self.document.ui.table_view = shell::TableView::Structure;
         }
         if consumed(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::C)
