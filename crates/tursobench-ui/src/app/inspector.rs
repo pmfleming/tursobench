@@ -172,14 +172,7 @@ impl App {
             });
         }
         let mut follow = None;
-        if let Some(info) = self.document.tools.inspection.as_ref().filter(|i| {
-            self.document.view == View::Browse
-                && self
-                    .document
-                    .table
-                    .as_ref()
-                    .is_some_and(|t| t.name == i.table.name)
-        }) {
+        if let Some(info) = self.document.browse_inspection() {
             for key in &info.foreign_keys {
                 if ui
                     .add_enabled(

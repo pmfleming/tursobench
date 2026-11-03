@@ -500,7 +500,7 @@ fn sql_preview(sql: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{App, Diagnostic, Mode, egui};
     use crate::app::shell::ToolPanel;
 
     fn frame(
@@ -510,65 +510,25 @@ mod tests {
         width: f32,
         events: Vec<egui::Event>,
     ) -> egui::FullOutput {
-        let mut output = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(width, 1400.0),
-                )),
-                events,
-                ..Default::default()
-            },
-            |ui| match panel {
-                ToolPanel::Settings => app.settings_ui(ui),
-                ToolPanel::History => app.query_history_ui(ui),
-                ToolPanel::Saved => app.saved_queries_ui(ui),
-                ToolPanel::Diagnostics => app.diagnostics_ui(ui),
-                _ => unreachable!(),
-            },
-        );
-        output.textures_delta.clear();
-        output
-    }
-
-    fn button(output: &egui::FullOutput, name: &str) -> egui::Pos2 {
-        let bounds = output
-            .platform_output
-            .accesskit_update
-            .as_ref()
-            .unwrap()
-            .nodes
-            .iter()
-            .find_map(|(_, node)| {
-                (node.label() == Some(name))
-                    .then(|| node.bounds())
-                    .flatten()
-            })
-            .unwrap_or_else(|| panic!("Missing control: {name}"));
-        egui::pos2(
-            (bounds.x0 + bounds.x1) as f32 / 2.0,
-            (bounds.y0 + bounds.y1) as f32 / 2.0,
-        )
+        crate::app::test_ui::render(ctx, egui::vec2(width, 1400.0), events, |ui| match panel {
+            ToolPanel::Settings => app.settings_ui(ui),
+            ToolPanel::History => app.query_history_ui(ui),
+            ToolPanel::Saved => app.saved_queries_ui(ui),
+            ToolPanel::Diagnostics => app.diagnostics_ui(ui),
+            _ => unreachable!(),
+        })
     }
 
     fn click(app: &mut App, ctx: &egui::Context, panel: ToolPanel, name: &str) {
         let output = frame(app, ctx, panel, 240.0, vec![]);
-        let pos = button(&output, name);
+        let pos = crate::app::test_ui::control(&output, name).center();
         for pressed in [true, false] {
             frame(
                 app,
                 ctx,
                 panel,
                 240.0,
-                vec![
-                    egui::Event::PointerMoved(pos),
-                    egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                ],
+                crate::app::test_ui::pointer(pos, pressed),
             );
         }
     }
@@ -587,7 +547,7 @@ mod tests {
             "Increase font size",
             "Reset font size",
         ] {
-            button(&output, name);
+            crate::app::test_ui::control(&output, name).center();
         }
         click(&mut app, &ctx, ToolPanel::Settings, "Increase font size");
         assert_eq!(app.preferences.font_size, 15);
@@ -660,7 +620,7 @@ mod tests {
                     }
                     if panel == ToolPanel::Diagnostics {
                         for diagnostic in Diagnostic::ALL {
-                            button(&output, diagnostic.label());
+                            crate::app::test_ui::control(&output, diagnostic.label());
                         }
                     }
                 }

@@ -518,7 +518,7 @@ impl Entry {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Entry, egui};
     use crate::{app::databases::State, discovery::DatabaseKind};
 
     #[test]

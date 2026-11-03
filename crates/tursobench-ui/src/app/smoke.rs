@@ -153,72 +153,7 @@ impl App {
                     smoke.stage = 8;
                 }
             }
-            26 if self.document.active.is_some()
-                || self.document.tools.inspection_ticket.is_some() => {}
-            20 | 22 | 24 | 26 | 28 | 30 => {
-                if smoke.capture_frames == 0 {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::CursorPosition(egui::pos2(
-                        1795.0, 995.0,
-                    )));
-                }
-                smoke.capture_frames += 1;
-                if smoke.capture_frames >= 15 {
-                    smoke.capture_pending = Some(
-                        match smoke.stage {
-                            20 => "workspace-dark.png",
-                            22 => "expanded-map.png",
-                            24 => "laptop-light.png",
-                            26 => "laptop-dark.png",
-                            28 => "minimized-tiles.png",
-                            _ => "widescreen.png",
-                        }
-                        .into(),
-                    );
-                    let (tx, rx) = std::sync::mpsc::sync_channel(1);
-                    let wake = ctx.clone();
-                    ctx.request_screenshot(move |image| {
-                        let _ = tx.try_send(image);
-                        wake.request_repaint();
-                    });
-                    smoke.capture_result = Some(rx);
-                    smoke.capture_frames = 0;
-                    smoke.stage += 1;
-                }
-            }
-            21 if smoke.capture_pending.is_none() => {
-                self.overview();
-                self.expand_window(self.document.id);
-                smoke.stage = 22;
-            }
-            23 if smoke.capture_pending.is_none() => {
-                self.expand_window(self.document.id);
-                self.browse_table(smoke.table.clone());
-                self.preferences.appearance = Some(crate::appearance::Mode::Light);
-                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1366.0, 768.0)));
-                smoke.stage = 24;
-            }
-            25 if smoke.capture_pending.is_none() => {
-                self.preferences.appearance = Some(crate::appearance::Mode::Dark);
-                smoke.stage = 26;
-            }
-            27 if smoke.capture_pending.is_none() => {
-                for kind in [
-                    super::tiling::Kind::Record,
-                    super::tiling::Kind::Structure,
-                    super::tiling::Kind::Sql,
-                ] {
-                    self.minimize_pane(kind);
-                }
-                smoke.stage = 28;
-            }
-            29 if smoke.capture_pending.is_none() => {
-                self.retile();
-                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(3440.0, 1440.0)));
-                smoke.stage = 30;
-            }
-            31 if smoke.capture_pending.is_none() => {
-                smoke.stage = 8;
-            }
+            20..=31 => self.smoke_capture_layout(ctx, &mut smoke),
             8 => {
                 self.document.sql = "SELECT ?1 AS typed_blob".into();
                 self.document.params = "[{\"type\":\"Blob\",\"value\":[0,255]}]".into();
@@ -397,6 +332,77 @@ impl App {
             13 => self.confirm_close = true,
             14 => self.document.ui.nav = shell::Nav::Databases,
             15 => self.databases.settings_open = true,
+            _ => {}
+        }
+    }
+    fn smoke_capture_layout(&mut self, ctx: &egui::Context, smoke: &mut Smoke) {
+        match smoke.stage {
+            26 if self.document.active.is_some()
+                || self.document.tools.inspection_ticket.is_some() => {}
+            20 | 22 | 24 | 26 | 28 | 30 => {
+                if smoke.capture_frames == 0 {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::CursorPosition(egui::pos2(
+                        1795.0, 995.0,
+                    )));
+                }
+                smoke.capture_frames += 1;
+                if smoke.capture_frames >= 15 {
+                    smoke.capture_pending = Some(
+                        match smoke.stage {
+                            20 => "workspace-dark.png",
+                            22 => "expanded-map.png",
+                            24 => "laptop-light.png",
+                            26 => "laptop-dark.png",
+                            28 => "minimized-tiles.png",
+                            _ => "widescreen.png",
+                        }
+                        .into(),
+                    );
+                    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+                    let wake = ctx.clone();
+                    ctx.request_screenshot(move |image| {
+                        let _ = tx.try_send(image);
+                        wake.request_repaint();
+                    });
+                    smoke.capture_result = Some(rx);
+                    smoke.capture_frames = 0;
+                    smoke.stage += 1;
+                }
+            }
+            21 if smoke.capture_pending.is_none() => {
+                self.overview();
+                self.expand_window(self.document.id);
+                smoke.stage = 22;
+            }
+            23 if smoke.capture_pending.is_none() => {
+                self.expand_window(self.document.id);
+                self.browse_table(smoke.table.clone());
+                self.preferences.appearance = Some(crate::appearance::Mode::Light);
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1366.0, 768.0)));
+                smoke.stage = 24;
+            }
+            25 if smoke.capture_pending.is_none() => {
+                self.preferences.appearance = Some(crate::appearance::Mode::Dark);
+                smoke.stage = 26;
+            }
+            27 if smoke.capture_pending.is_none() => {
+                for kind in [
+                    super::tiling::Kind::Record,
+                    super::tiling::Kind::Structure,
+                    super::tiling::Kind::Sql,
+                ] {
+                    self.minimize_pane(kind);
+                }
+                smoke.stage = 28;
+            }
+            29 if smoke.capture_pending.is_none() => {
+                self.retile();
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(3440.0, 1440.0)));
+                smoke.stage = 30;
+            }
+            31 if smoke.capture_pending.is_none() => {
+                smoke.stage = 8;
+            }
             _ => {}
         }
     }

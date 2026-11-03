@@ -4,7 +4,7 @@ use super::{
     shell,
 };
 use eframe::egui;
-use tursobench_core::{ForeignKey, Value};
+use tursobench_core::{ForeignKey, Inspection, Table, Value};
 
 enum GridAction {
     Cell(usize, usize),
@@ -149,11 +149,7 @@ impl App {
         if self.workspace.enabled && !self.document.result.rows.is_empty() {
             let start = self.document.browse.as_ref().map_or(0, |b| b.offset);
             let count = self.document.result.rows.len();
-            let range = if count == 0 {
-                "0 rows".into()
-            } else {
-                format!("{}–{} · {} retained", start + 1, start + count, count)
-            };
+            let range = format!("{}–{} · {} retained", start + 1, start + count, count);
             ui.small(format!("{range} · {}", self.export_scope()))
                 .on_hover_text(
                     "Only retained rows are exported. Scroll to load another table page.",
@@ -215,60 +211,14 @@ impl App {
     }
     fn grid_header(&mut self, ui: &mut egui::Ui) {
         let mut sort = None;
-        let tokens = crate::appearance::Tokens::of(ui.ctx());
-        ui.horizontal(|ui|{
-                ui.add_sized([44.0,42.0],egui::Label::new("#"));
-                for i in self.visible_columns() {
-                    let column=&self.document.result.columns[i];
-                    let info=self.document.tools.inspection.as_ref().filter(|info|self.document.view==View::Browse&&self.document.table.as_ref().is_some_and(|t|t.name==info.table.name));
-                    let pk=info.and_then(|info|info.table.columns.get(i)).map_or(0,|c|c.primary_key);
-                    let indexed=info.is_some_and(|info|info.indexes.iter().any(|idx|idx.columns.first().and_then(Option::as_ref)==Some(&column.name)));
-                    let foreign=info.is_some_and(|info|info.foreign_keys.iter().any(|fk|fk.columns.iter().any(|(name,_)|name==&column.name)));
-                    let tags=format!("{}{}{}",if pk>0{format!(" PK{pk}")}else{String::new()},if indexed{" IX"}else{""},if foreign{" FK"}else{""});
-                    let sorted=self.document.browse.as_ref().filter(|b|b.sort==Some(i)).map_or("",|b|if b.descending{" descending"}else{" ascending"});
-                    let (rect,response)=ui.allocate_exact_size(egui::vec2(self.document.tools.columns.widths[i],42.0),egui::Sense::click_and_drag());
-                    response.widget_info(||egui::WidgetInfo::labeled(egui::Role::Button,ui.is_enabled(),format!("Column {}{tags}{sorted}",column.name)));
-                    let highlighted = self.document.tools.highlight_column.as_ref().is_some_and(|(table, name)| self.document.view == View::Browse && self.document.table.as_ref().is_some_and(|t| &t.name == table) && &column.name == name);
-                    if highlighted && self.document.tools.scroll_to_column { ui.scroll_to_rect(rect, Some(egui::Align::Center)); self.document.tools.scroll_to_column = false; }
-                    let painter=ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));painter.rect_filled(rect,2.0,if highlighted { ui.visuals().selection.bg_fill } else { ui.visuals().faint_bg_color });
-                    let mut left=rect.left()+7.0;
-                    for (show,icon) in [(pk>0,Icon::Key),(foreign,Icon::Link)] {
-                        if show { icons::paint(&painter,egui::Rect::from_min_size(egui::pos2(left,rect.top()+7.0),egui::vec2(12.0,12.0)),icon,tokens.relationship);left+=15.0; }
-                    }
-                    painter.with_clip_rect(egui::Rect::from_min_max(rect.min,egui::pos2(rect.right()-if sorted.is_empty(){28.0}else{44.0},rect.bottom())).intersect(ui.clip_rect())).text(egui::pos2(left,rect.top()+14.0),egui::Align2::LEFT_CENTER,&column.name,crate::appearance::proportional(ui.ctx(), 12.0),ui.visuals().text_color());
-                    painter.text(egui::pos2(rect.left()+8.0,rect.top()+31.0),egui::Align2::LEFT_CENTER,column.declared_type.as_deref().unwrap_or("VALUE"),crate::appearance::monospace(ui.ctx(),9.5),tokens.faint);
-                    painter.hline(rect.x_range(),rect.bottom()-0.5,egui::Stroke::new(1.0,tokens.line_strong));
-                    painter.vline(rect.right()-0.5,rect.y_range(),egui::Stroke::new(1.0,tokens.line));
-                    if !sorted.is_empty() { painter.hline(rect.x_range(),rect.bottom()-1.0,egui::Stroke::new(2.0,tokens.primary)); }
-                    if !sorted.is_empty(){icons::paint(&painter,egui::Rect::from_min_size(rect.right_top()+egui::vec2(-47.0,8.0),egui::vec2(12.0,12.0)),if self.document.browse.as_ref().is_some_and(|b|b.descending){Icon::Down}else{Icon::Up},ui.visuals().selection.stroke.color);}
-                    let response=response.on_hover_text(format!("{} · {}\nPK = key position; IX = declared leading index; FK = foreign key. Index method/partial predicate may not apply. Drag the right edge or right-click to resize.",column.name,column.declared_type.as_deref().unwrap_or("runtime type")));
-                    response.context_menu(|ui|{
-                        ui.menu_button("Cell appearance", |ui| {
-                            let style=self.document.tools.columns.visuals.entry(i).or_default();
-                            for (value,label) in super::columns::CellStyle::ALL {ui.selectable_value(style,value,label);}
-                        });
-                        if ui.button("Fit contents").clicked(){self.document.tools.columns.manual.remove(&i);self.document.tools.columns.refit=true;ui.close();}
-                        if ui.button("Move left").clicked(){self.document.tools.columns.shift(i,-1);ui.close();}
-                        if ui.button("Move right").clicked(){self.document.tools.columns.shift(i,1);ui.close();}
-                        if ui.button("Hide column").clicked(){self.document.tools.columns.hidden.insert(i);ui.close();}
-                    });
-                    if response.drag_started(){response.dnd_set_drag_payload(i);}
-                    if let Some(from)=response.dnd_release_payload::<usize>() {self.document.tools.columns.move_before(*from,i);}
-
-                    let funnel_rect=egui::Rect::from_min_size(rect.right_top()+egui::vec2(-24.0,5.0),egui::vec2(17.0,20.0));
-                    let funnel=ui.interact(funnel_rect,ui.scope_id().with(("column-filter",i)),egui::Sense::click());
-                    let filtered = self.document.browse.as_ref().is_some_and(|b| b.filters.iter().any(|f| f.column == i));
-                    icons::paint(ui.painter(),funnel_rect.shrink(2.0),Icon::Filter,if filtered { tokens.primary } else { tokens.faint });
-                    funnel.widget_info(||egui::WidgetInfo::labeled(egui::Role::Button,ui.is_enabled(),format!("Filter {}",column.name)));
-                    egui::Popup::menu(&funnel).show(|ui|self.column_facets(ui,i));
-                    let handle=egui::Rect::from_min_max(egui::pos2(rect.right()-6.0,rect.top()),rect.right_bottom());
-                    let drag=ui.interact(handle,ui.scope_id().with(("resize-column",i)),egui::Sense::click_and_drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
-                    if drag.double_clicked(){self.document.tools.columns.manual.remove(&i);self.document.tools.columns.refit=true;}
-                    if drag.dragged(){self.document.tools.columns.manual.insert(i);self.document.tools.columns.widths[i]=(self.document.tools.columns.widths[i]+drag.drag_delta().x).clamp(60.0,640.0);}
-                    if response.clicked()&&!drag.contains_pointer()&&!funnel.contains_pointer(){sort=Some(i);}
+        ui.horizontal(|ui| {
+            ui.add_sized([44.0, 42.0], egui::Label::new("#"));
+            for i in self.visible_columns() {
+                if self.grid_column_header(ui, i) {
+                    sort = Some(i);
                 }
-            });
-
+            }
+        });
         if let Some(i) = sort
             && self.document.view == View::Browse
             && self.ready
@@ -289,6 +239,94 @@ impl App {
             b.offset = 0;
             self.reload();
         }
+    }
+    fn grid_column_header(&mut self, ui: &mut egui::Ui, i: usize) -> bool {
+        let tokens = crate::appearance::Tokens::of(ui.ctx());
+        let header = self.document.column_header(i);
+        let (rect, response) = ui.allocate_exact_size(
+            egui::vec2(self.document.tools.columns.widths[i], 42.0),
+            egui::Sense::click_and_drag(),
+        );
+        header.describe(&response, ui.is_enabled());
+        let highlighted =
+            self.document
+                .tools
+                .highlight_column
+                .as_ref()
+                .is_some_and(|(table, name)| {
+                    self.document.view == View::Browse
+                        && self
+                            .document
+                            .table
+                            .as_ref()
+                            .is_some_and(|t| &t.name == table)
+                        && &header.column.name == name
+                });
+        if highlighted && self.document.tools.scroll_to_column {
+            ui.scroll_to_rect(rect, Some(egui::Align::Center));
+        }
+        header.paint(ui, rect, highlighted);
+        let response=response.on_hover_text(format!("{} · {}\nPK = key position; IX = declared leading index; FK = foreign key. Index method/partial predicate may not apply. Drag the right edge or right-click to resize.",header.column.name,header.column.declared_type.as_deref().unwrap_or("runtime type")));
+        let filter_label = format!("Filter {}", header.column.name);
+        if highlighted {
+            self.document.tools.scroll_to_column = false;
+        }
+        response.context_menu(|ui| self.document.tools.columns.header_menu(ui, i));
+        if response.drag_started() {
+            response.dnd_set_drag_payload(i);
+        }
+        if let Some(from) = response.dnd_release_payload::<usize>() {
+            self.document.tools.columns.move_before(*from, i);
+        }
+
+        let funnel_rect = egui::Rect::from_min_size(
+            rect.right_top() + egui::vec2(-24.0, 5.0),
+            egui::vec2(17.0, 20.0),
+        );
+        let funnel = ui.interact(
+            funnel_rect,
+            ui.scope_id().with(("column-filter", i)),
+            egui::Sense::click(),
+        );
+        let filtered = self
+            .document
+            .browse
+            .as_ref()
+            .is_some_and(|b| b.filters.iter().any(|f| f.column == i));
+        icons::paint(
+            ui.painter(),
+            funnel_rect.shrink(2.0),
+            Icon::Filter,
+            if filtered {
+                tokens.primary
+            } else {
+                tokens.faint
+            },
+        );
+        funnel.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), &filter_label)
+        });
+        egui::Popup::menu(&funnel).show(|ui| self.column_facets(ui, i));
+        let handle = egui::Rect::from_min_max(
+            egui::pos2(rect.right() - 6.0, rect.top()),
+            rect.right_bottom(),
+        );
+        let drag = ui
+            .interact(
+                handle,
+                ui.scope_id().with(("resize-column", i)),
+                egui::Sense::click_and_drag(),
+            )
+            .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+        if drag.double_clicked() {
+            self.document.tools.columns.fit(i);
+        }
+        if drag.dragged() {
+            self.document.tools.columns.manual.insert(i);
+            self.document.tools.columns.widths[i] =
+                (self.document.tools.columns.widths[i] + drag.drag_delta().x).clamp(60.0, 640.0);
+        }
+        response.clicked() && !drag.contains_pointer() && !funnel.contains_pointer()
     }
     fn grid_row(&mut self, ui: &mut egui::Ui, row: usize, editable: bool) -> Option<GridAction> {
         let mut action = None;
@@ -363,7 +401,13 @@ impl App {
         let mut action = None;
         let values = &self.document.result.rows[row];
         let value = &values[col];
-        let references = self.cell_references(row, col);
+        let references = matching_keys(
+            self.document.view,
+            self.document.table.as_ref(),
+            self.document.tools.inspection.as_ref(),
+            Some(values),
+            col,
+        );
         let staged = self
             .document
             .drafts
@@ -558,7 +602,7 @@ impl App {
         } else if response.clicked() {
             action = Some(
                 if references.len() == 1 && !ui.input(|i| i.modifiers.shift) {
-                    GridAction::Follow(row, references[0].clone())
+                    GridAction::Follow(row, (*references[0]).clone())
                 } else {
                     GridAction::Cell(row, col)
                 },
@@ -568,7 +612,7 @@ impl App {
             action = Some(GridAction::Edit(row, col));
         }
         if response.hovered() && references.len() == 1 {
-            self.document.tools.context.hovered = Some((row, references[0].clone()));
+            self.document.tools.context.hovered = Some((row, (*references[0]).clone()));
         }
         let response = if references.is_empty() {
             response
@@ -577,100 +621,123 @@ impl App {
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
                 .on_hover_ui(|ui| {
                     if references.len() == 1 {
-                        self.peek_view(ui, row, &references[0]);
+                        self.peek_view(ui, row, references[0]);
                     } else {
                         ui.label("Multiple references: right-click to choose");
                     }
                 })
         };
         response.context_menu(|ui| {
-            if self.document.view == View::Browse && self.document.browse.is_some() {
-                for (op, label) in [
-                    (tursobench_core::FilterOp::Equal, "Filter = value"),
-                    (tursobench_core::FilterOp::NotEqual, "Exclude value"),
-                ] {
-                    if ui.button(label).clicked() {
-                        action = Some(GridAction::Filter(tursobench_core::Filter {
-                            column: col,
-                            op,
-                            value: value.clone(),
-                        }));
-                        ui.close();
-                    }
-                }
-            }
-            for key in &references {
-                if ui
-                    .button(format!("Parent: {} (FK {})", key.target, key.id))
-                    .clicked()
-                {
-                    action = Some(GridAction::Follow(row, key.clone()));
-                    ui.close();
-                }
-            }
-            if ui.button("Inspect / edit cell").clicked() {
-                action = Some(GridAction::Inspect(row, col));
-                ui.close();
-            }
-            if ui.button("Copy stored cell").clicked() {
-                ui.ctx().copy_text(crate::export::cell_text(value));
-                ui.close();
-            }
-            if ui.button("Copy stored row (TSV)").clicked() {
-                action = Some(GridAction::Copy(row));
-                ui.close();
-            }
-            if ui.button("Record detail").clicked() {
-                action = Some(GridAction::Record(row));
-                ui.close();
-            }
-            if self.writable
-                && ui
-                    .add_enabled(editable, egui::Button::new("Stage row deletion"))
-                    .clicked()
-            {
-                action = Some(GridAction::Delete(row));
-                ui.close();
+            if let Some(next) = self.cell_menu(ui, row, col, editable, &references) {
+                action = Some(next);
             }
         });
         action
     }
-    pub(super) fn cell_references(&self, row: usize, col: usize) -> Vec<ForeignKey> {
-        if self.document.view != View::Browse {
-            return vec![];
+    fn cell_menu(
+        &self,
+        ui: &mut egui::Ui,
+        row: usize,
+        col: usize,
+        editable: bool,
+        references: &[&ForeignKey],
+    ) -> Option<GridAction> {
+        let mut action = None;
+        let value = &self.document.result.rows[row][col];
+
+        if self.document.view == View::Browse && self.document.browse.is_some() {
+            for (op, label) in [
+                (tursobench_core::FilterOp::Equal, "Filter = value"),
+                (tursobench_core::FilterOp::NotEqual, "Exclude value"),
+            ] {
+                if ui.button(label).clicked() {
+                    action = Some(GridAction::Filter(tursobench_core::Filter {
+                        column: col,
+                        op,
+                        value: value.clone(),
+                    }));
+                    ui.close();
+                }
+            }
         }
-        let (Some(table), Some(info), Some(values)) = (
-            &self.document.table,
-            &self.document.tools.inspection,
-            self.document.result.rows.get(row),
-        ) else {
-            return vec![];
-        };
-        if table.name != info.table.name {
-            return vec![];
+        for key in references {
+            if ui
+                .button(format!("Parent: {} (FK {})", key.target, key.id))
+                .clicked()
+            {
+                action = Some(GridAction::Follow(row, (*key).clone()));
+                ui.close();
+            }
         }
-        let Some(column) = table.columns.get(col) else {
-            return vec![];
-        };
-        info.foreign_keys
-            .iter()
-            .filter(|key| {
-                key.columns
-                    .iter()
-                    .any(|(name, _)| name.eq_ignore_ascii_case(&column.name))
-                    && key.columns.iter().all(|(source, target)| {
-                        target.is_some()
-                            && table
-                                .columns
-                                .iter()
-                                .position(|c| c.name.eq_ignore_ascii_case(source))
-                                .and_then(|i| values.get(i))
-                                .is_some_and(|v| *v != Value::Null)
-                    })
-            })
-            .cloned()
-            .collect()
+        if ui.button("Inspect / edit cell").clicked() {
+            action = Some(GridAction::Inspect(row, col));
+            ui.close();
+        }
+        if ui.button("Copy stored cell").clicked() {
+            ui.ctx().copy_text(crate::export::cell_text(value));
+            ui.close();
+        }
+        if ui.button("Copy stored row (TSV)").clicked() {
+            action = Some(GridAction::Copy(row));
+            ui.close();
+        }
+        if ui.button("Record detail").clicked() {
+            action = Some(GridAction::Record(row));
+            ui.close();
+        }
+        if self.writable
+            && ui
+                .add_enabled(editable, egui::Button::new("Stage row deletion"))
+                .clicked()
+        {
+            action = Some(GridAction::Delete(row));
+            ui.close();
+        }
+        action
     }
+    pub(super) fn cell_references(&self, row: usize, col: usize) -> Vec<&ForeignKey> {
+        matching_keys(
+            self.document.view,
+            self.document.table.as_ref(),
+            self.document.tools.inspection.as_ref(),
+            self.document.result.rows.get(row).map(Vec::as_slice),
+            col,
+        )
+    }
+}
+fn matching_keys<'a>(
+    view: View,
+    table: Option<&Table>,
+    info: Option<&'a Inspection>,
+    values: Option<&[Value]>,
+    col: usize,
+) -> Vec<&'a ForeignKey> {
+    let (Some(table), Some(info), Some(values)) = (table, info, values) else {
+        return vec![];
+    };
+    if view != View::Browse || table.name != info.table.name {
+        return vec![];
+    }
+    let Some(column) = table.columns.get(col) else {
+        return vec![];
+    };
+    info.foreign_keys
+        .iter()
+        .filter(|key| {
+            key.columns
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case(&column.name))
+                && key.columns.iter().all(|(source, target)| {
+                    target.is_some()
+                        && table
+                            .columns
+                            .iter()
+                            .position(|c| c.name.eq_ignore_ascii_case(source))
+                            .and_then(|i| values.get(i))
+                            .is_some_and(|v| *v != Value::Null)
+                })
+        })
+        .collect()
 }
 
 fn cell_fill(ui: &egui::Ui, deleted: bool, staged: bool, row: usize) -> egui::Color32 {

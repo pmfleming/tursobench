@@ -1,7 +1,21 @@
-use super::{App, View, context, egui, shell, tiling, workspace};
+use super::{
+    App, View, context, egui, shell,
+    test_ui::{control, control_from, pointer_button},
+    tiling, workspace,
+};
 use std::time::{Duration, Instant};
 use tursobench_core::{Budget, Event, EventKind, TransactionState, Value};
 use tursobench_db::{Operation, Request};
+fn assert_staged(app: &App, row: usize, col: usize, value: Value) {
+    assert_eq!(
+        app.document
+            .drafts
+            .as_ref()
+            .and_then(|d| d.displayed(&app.document.result.rows[row], col)),
+        Some(&value),
+        "row {row}, column {col}"
+    );
+}
 fn inspect_selected(app: &mut App, ctx: &egui::Context) {
     let start = Instant::now();
     loop {
@@ -34,6 +48,14 @@ fn wait(app: &mut App, ctx: &egui::Context) {
         std::thread::sleep(Duration::from_millis(5));
     }
 }
+fn wait_closed(app: &mut App, ctx: &egui::Context) {
+    let start = Instant::now();
+    while app.session.is_some() {
+        app.poll(ctx);
+        assert!(start.elapsed() < Duration::from_secs(5), "{}", app.status);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
 fn connected(path: &std::path::Path, writable: bool) -> (egui::Context, App) {
     let ctx = egui::Context::default();
     let mut app = App::new(&ctx);
@@ -61,14 +83,6 @@ fn key_event(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
         modifiers,
     }
 }
-fn pointer_button(pos: egui::Pos2, pressed: bool) -> egui::Event {
-    egui::Event::PointerButton {
-        pos,
-        button: egui::PointerButton::Primary,
-        pressed,
-        modifiers: egui::Modifiers::NONE,
-    }
-}
 fn click(app: &mut App, ctx: &egui::Context, pos: egui::Pos2) {
     for pressed in [true, false] {
         frame(
@@ -87,16 +101,7 @@ fn frame_at(
     size: egui::Vec2,
     events: Vec<egui::Event>,
 ) -> egui::FullOutput {
-    let mut output = ctx.run_ui(
-        egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
-            events,
-            ..Default::default()
-        },
-        |ui| app.render(ui),
-    );
-    output.textures_delta.clear();
-    output
+    super::test_ui::render(ctx, size, events, |ui| app.render(ui))
 }
 fn frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) {
     frame_at(app, ctx, egui::vec2(1400.0, 900.0), events);
@@ -266,12 +271,7 @@ fn failed_open_after_close_can_retry_a_valid_database() {
     assert!(app.session.is_some());
     app.request_close();
     assert!(app.closing);
-    let started = Instant::now();
-    while app.session.is_some() {
-        app.poll(&ctx);
-        assert!(started.elapsed() < Duration::from_secs(5));
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    wait_closed(&mut app, &ctx);
     assert!(!app.ready && !app.closing && !app.confirm_close);
     assert!(app.document.active.is_none());
     assert!(
@@ -288,12 +288,7 @@ fn failed_open_after_close_can_retry_a_valid_database() {
     assert_eq!(app.preferences.discovery.recent.len(), 1);
     assert_eq!(app.preferences.discovery.recent[0].path, path);
     app.close();
-    let started = Instant::now();
-    while app.session.is_some() {
-        app.poll(&ctx);
-        assert!(started.elapsed() < Duration::from_secs(5));
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    wait_closed(&mut app, &ctx);
 }
 
 #[test]
@@ -567,12 +562,7 @@ fn local_project_pages_and_fts_results_render_and_export() {
             .unwrap();
         }
         app.close();
-        let start = Instant::now();
-        while app.session.is_some() {
-            app.poll(&ctx);
-            assert!(start.elapsed() < Duration::from_secs(5));
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        wait_closed(&mut app, &ctx);
         assert!(app.status.contains("cleanup confirmed"));
     }
 }
@@ -605,14 +595,7 @@ fn click_inspect_stage_no_write_failed_commit_retains_drafts() {
     app.document.show_insert = false;
     app.stage_cell(0, 1, Value::Text("draft".into()));
     let original = app.document.result.rows[0].clone();
-    assert_eq!(
-        app.document
-            .drafts
-            .as_ref()
-            .unwrap()
-            .displayed(&original, 1),
-        Some(&Value::Text("draft".into()))
-    );
+    assert_staged(&app, 0, 1, Value::Text("draft".into()));
     app.document
         .drafts
         .as_mut()
@@ -695,37 +678,21 @@ fn click_inspect_stage_no_write_failed_commit_retains_drafts() {
     app.commit_drafts();
     app.stage_cell(0, 1, Value::Text("blocked edit".into()));
     assert_eq!(app.sequence, sequence);
-    assert_eq!(
-        app.document
-            .drafts
-            .as_ref()
-            .unwrap()
-            .displayed(&app.document.result.rows[0], 1),
-        Some(&Value::Text("uncertain draft".into()))
-    );
+    assert_staged(&app, 0, 1, Value::Text("uncertain draft".into()));
     app.close();
 }
 
 #[test]
 fn selection_named_history_metadata_reference_back_and_tools_render() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("navigation.db");
-    crate::test_support::run(async {
-        let db = turso::Builder::new_local(path.to_str().unwrap())
-            .build()
-            .await
-            .unwrap();
-        let c = db.connect().unwrap();
-        for sql in [
+    let (_dir, ctx, mut app) = fixture(
+        &[
             "CREATE TABLE parent(a INTEGER,b TEXT,payload TEXT,PRIMARY KEY(a,b))",
             "CREATE TABLE child(id INTEGER PRIMARY KEY,a INTEGER,b TEXT,FOREIGN KEY(a,b) REFERENCES parent)",
             "INSERT INTO parent VALUES(7,'001','{\"x\":1}')",
             "INSERT INTO child VALUES(1,7,'001'),(2,NULL,NULL)",
-        ] {
-            c.execute(sql, ()).await.unwrap();
-        }
-    });
-    let (ctx, mut app) = connected(&path, false);
+        ],
+        false,
+    );
     assert!(
         app.schema
             .iter()
@@ -826,7 +793,7 @@ fn overview_and_table_views_preserve_camera_and_rejects_navigation_with_drafts()
     frame(&mut app, &ctx, vec![]);
     // Explicit user camera choices survive opening/resizing other views.
     app.ui.diagram.freeze_camera();
-    let camera = (app.ui.diagram.zoom, app.ui.diagram.pan);
+    let camera = (app.ui.diagram.camera.zoom, app.ui.diagram.camera.pan);
     app.browse_table("a".into());
     wait(&mut app, &ctx);
     assert_eq!(app.document.ui.nav, shell::Nav::Table);
@@ -849,7 +816,10 @@ fn overview_and_table_views_preserve_camera_and_rejects_navigation_with_drafts()
     ] {
         app.document.ui.table_view = view;
         frame(&mut app, &ctx, vec![]);
-        assert_eq!((app.ui.diagram.zoom, app.ui.diagram.pan), camera);
+        assert_eq!(
+            (app.ui.diagram.camera.zoom, app.ui.diagram.camera.pan),
+            camera
+        );
     }
     app.stage_cell(0, 1, Value::Text("draft".into()));
     let ticket = app.document.result.current;
@@ -957,8 +927,8 @@ fn sql_tile_keeps_result_identity_and_read_transactions_visible() {
 fn access_switch_waits_for_closed_then_opens_a_new_session() {
     let (_dir, ctx, mut app) = fixture(&["CREATE TABLE a(id INTEGER PRIMARY KEY)"], false);
     let old_session = app.session.as_ref().unwrap().id;
-    app.ui.diagram.zoom = 0.7;
-    app.ui.diagram.pan = egui::vec2(30.0, 42.0);
+    app.ui.diagram.camera.zoom = 0.7;
+    app.ui.diagram.camera.pan = egui::vec2(30.0, 42.0);
     app.pending_access = Some(true);
     app.close();
     assert!(app.closing);
@@ -968,8 +938,8 @@ fn access_switch_waits_for_closed_then_opens_a_new_session() {
     assert_ne!(app.session.as_ref().unwrap().id, old_session);
     assert_eq!(app.document.ui.nav, shell::Nav::Overview);
     assert!(app.pending_access.is_none());
-    assert_eq!(app.ui.diagram.zoom, 0.7);
-    assert_eq!(app.ui.diagram.pan, egui::vec2(30.0, 42.0));
+    assert_eq!(app.ui.diagram.camera.zoom, 0.7);
+    assert_eq!(app.ui.diagram.camera.pan, egui::vec2(30.0, 42.0));
     app.close();
 }
 
@@ -1324,6 +1294,18 @@ fn column_presentation_preserves_schema_indices_and_manual_widths() {
     app.browse_table("sample".into());
     wait(&mut app, &ctx);
     frame(&mut app, &ctx, vec![]);
+    ctx.enable_accesskit();
+    for (label, sorted, descending) in [
+        ("Column number", Some(2), false),
+        ("Column number ascending", Some(2), true),
+        ("Column number descending", None, false),
+    ] {
+        let output = frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
+        click(&mut app, &ctx, control(&output, label).center());
+        wait(&mut app, &ctx);
+        let browse = app.document.browse.as_ref().unwrap();
+        assert_eq!((browse.sort, browse.descending), (sorted, descending));
+    }
     app.document.tools.columns.move_before(2, 0);
     for (from, target, expected) in [
         (2, 2, vec![2, 0, 1]),
@@ -1344,55 +1326,70 @@ fn column_presentation_preserves_schema_indices_and_manual_widths() {
     app.open_cell(0, 2);
     assert_eq!(app.document.tools.cell_editor.input, "42");
     app.stage_cell(0, 2, Value::Integer(55));
-    let draft = app.document.drafts.as_ref().unwrap();
-    assert_eq!(
-        draft.displayed(&app.document.result.rows[0], 2),
-        Some(&Value::Integer(55))
-    );
+    assert_staged(&app, 0, 2, Value::Integer(55));
     assert_eq!(app.document.result.rows[0][0], Value::Integer(1));
-    app.close();
-}
-
-#[test]
-fn range_selection_uses_visible_order_and_exact_numeric_values_and_inline_stages() {
-    let (_dir, ctx, mut app) = fixture(
-        &[
-            "CREATE TABLE sample(id INTEGER PRIMARY KEY,n INTEGER,text TEXT)",
-            "INSERT INTO sample VALUES(1,9007199254740993,''),(2,9007199254740995,'two')",
-        ],
-        true,
-    );
-    app.browse_table("sample".into());
-    wait(&mut app, &ctx);
-    frame(&mut app, &ctx, vec![]);
-    app.select_cell(0, 1, false);
-    app.select_cell(1, 1, true);
-    assert_eq!(app.selected_cells(), vec![(0, 1), (1, 1)]);
-    let summary = app.selection_summary();
-    assert!(summary.contains("18014398509481988"), "{summary}");
-    app.document.tools.columns.move_before(2, 1);
-    app.select_cell(0, 2, false);
-    app.select_cell(1, 1, true);
-    assert_eq!(app.selected_cells(), vec![(0, 2), (0, 1), (1, 2), (1, 1)]);
-    app.start_inline(0, 1);
-    assert!(app.document.tools.inline.is_some());
-    let edit = app.document.tools.inline.as_mut().unwrap();
-    edit.editor.input = "123".into();
-    let value = edit.editor.parse().unwrap();
-    app.stage_cell(0, 1, value);
-    app.document.tools.inline = None;
-    assert_eq!(
-        app.document.result.rows[0][1],
-        Value::Integer(9007199254740993)
-    );
-    assert_eq!(
-        app.document
-            .drafts
-            .as_ref()
-            .unwrap()
-            .displayed(&app.document.result.rows[0], 1),
-        Some(&Value::Integer(123))
-    );
+    super::test_ui::render(&ctx, egui::vec2(300.0, 240.0), vec![], |ui| {
+        let rect = ui.available_rect_before_wrap();
+        for (style, name, value, painted) in [
+            (
+                super::columns::CellStyle::Auto,
+                "status",
+                Value::Text("blocked".into()),
+                true,
+            ),
+            (
+                super::columns::CellStyle::Status,
+                "state",
+                Value::Text("pending".into()),
+                true,
+            ),
+            (
+                super::columns::CellStyle::Percent,
+                "progress",
+                Value::Real(50.0),
+                false,
+            ),
+            (
+                super::columns::CellStyle::Priority,
+                "priority",
+                Value::Integer(3),
+                false,
+            ),
+            (
+                super::columns::CellStyle::Priority,
+                "priority",
+                Value::Null,
+                false,
+            ),
+            (
+                super::columns::CellStyle::Percent,
+                "progress",
+                Value::Real(f64::NAN),
+                false,
+            ),
+        ] {
+            assert_eq!(style.paint(ui, rect, name, &value), painted);
+        }
+    });
+    let menu_ctx = egui::Context::default();
+    menu_ctx.enable_accesskit();
+    for label in ["Fit contents", "Move left", "Move right", "Hide column"] {
+        let mut draw = |events| {
+            super::test_ui::render(&menu_ctx, egui::vec2(300.0, 240.0), events, |ui| {
+                app.document.tools.columns.header_menu(ui, 2)
+            })
+        };
+        draw(vec![]);
+        let output = draw(vec![]);
+        let pos = control(&output, label).center();
+        for pressed in [true, false] {
+            draw(super::test_ui::pointer(pos, pressed));
+        }
+    }
+    assert!(!app.document.tools.columns.manual.contains(&2));
+    assert!(app.document.tools.columns.refit);
+    assert_eq!(app.document.tools.columns.order, vec![0, 2, 1]);
+    assert!(app.document.tools.columns.hidden.contains(&2));
     app.close();
 }
 
@@ -1543,7 +1540,7 @@ fn actual_grid_keys_extend_copy_and_stage_inline_without_writing() {
     let (_dir, ctx, mut app) = fixture(
         &[
             "CREATE TABLE sample(id INTEGER PRIMARY KEY,n INTEGER,text TEXT)",
-            "INSERT INTO sample VALUES(1,9007199254740993,'')",
+            "INSERT INTO sample VALUES(1,9007199254740993,''),(2,9007199254740995,'two')",
         ],
         true,
     );
@@ -1614,14 +1611,7 @@ fn actual_grid_keys_extend_copy_and_stage_inline_without_writing() {
         output.textures_delta.clear();
         assert_eq!(app.document.tools.inline.is_none(), accepted);
     }
-    assert_eq!(
-        app.document
-            .drafts
-            .as_ref()
-            .unwrap()
-            .displayed(&app.document.result.rows[0], 1),
-        Some(&Value::Integer(123))
-    );
+    assert_staged(&app, 0, 1, Value::Integer(123));
     assert_eq!(
         app.document.result.rows[0][1],
         Value::Integer(9007199254740993)
@@ -1629,6 +1619,15 @@ fn actual_grid_keys_extend_copy_and_stage_inline_without_writing() {
     app.start_inline(0, 1);
     press_key(&mut app, &ctx, egui::Key::Escape, egui::Modifiers::NONE);
     assert!(app.document.tools.inline.is_none());
+    app.select_cell(0, 1, false);
+    app.select_cell(1, 1, true);
+    assert_eq!(app.selected_cells(), vec![(0, 1), (1, 1)]);
+    let summary = app.selection_summary();
+    assert!(summary.contains("18014398509481988"), "{summary}");
+    app.document.tools.columns.move_before(2, 1);
+    app.select_cell(0, 2, false);
+    app.select_cell(1, 1, true);
+    assert_eq!(app.selected_cells(), vec![(0, 2), (0, 1), (1, 2), (1, 1)]);
     app.close();
 }
 
@@ -1901,12 +1900,7 @@ fn workspace_geometry_roundtrips_without_query_data_or_bindings() {
     app.preferences.normalize();
     assert_eq!(app.preferences.workspace_layouts.len(), 1);
     app.close();
-    let start = Instant::now();
-    while app.session.is_some() {
-        app.poll(&ctx);
-        assert!(start.elapsed() < Duration::from_secs(5));
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_closed(&mut app, &ctx);
     app.open(&ctx);
     let start = Instant::now();
     while !app.ready {
@@ -1984,23 +1978,11 @@ fn record_slider_moves_between_loaded_rows_and_keeps_field_and_drafts() {
     for (x_offset, row, value) in [(139.0, 2, "third"), (1.0, 0, "first")] {
         frame(&mut app, &ctx, vec![]);
         let output = frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
-        let tree = output.platform_output.accesskit_update.unwrap();
-        let bounds = tree
-            .nodes
-            .iter()
-            .find_map(|(_, node)| {
-                (node.label() == Some("Record position"))
-                    .then(|| node.bounds())
-                    .flatten()
-            })
-            .expect("record slider");
+        let bounds = control(&output, "Record position");
         click(
             &mut app,
             &ctx,
-            egui::pos2(
-                bounds.x0 as f32 + x_offset,
-                (bounds.y0 + bounds.y1) as f32 / 2.0,
-            ),
+            egui::pos2(bounds.left() + x_offset, bounds.center().y),
         );
         assert_eq!(app.document.inspect, Some((row, 1)));
         assert_eq!(app.document.tools.detail, Some(row));
@@ -2045,24 +2027,8 @@ fn record_header_selects_hidden_fields_without_changing_row_or_drafts() {
             .unwrap()
             .1
             .left();
-        let tree = output.platform_output.accesskit_update.unwrap();
-        let bounds = tree
-            .nodes
-            .iter()
-            .rev()
-            .find_map(|(_, node)| {
-                node.bounds()
-                    .filter(|bounds| node.label() == Some(label) && bounds.x0 >= f64::from(left))
-            })
-            .unwrap_or_else(|| panic!("Missing field selector control: {label}"));
-        click(
-            &mut app,
-            &ctx,
-            egui::pos2(
-                (bounds.x0 + bounds.x1) as f32 / 2.0,
-                (bounds.y0 + bounds.y1) as f32 / 2.0,
-            ),
-        );
+        let bounds = control_from(&output, label, left);
+        click(&mut app, &ctx, bounds.center());
     }
     assert_eq!(app.document.inspect, Some((1, 5)));
     assert_eq!(app.document.result.current, ticket);
@@ -2096,25 +2062,8 @@ fn table_header_selector_browses_tables_and_views_and_protects_drafts() {
         for label in ["Choose table", name] {
             frame(app, &ctx, vec![]);
             let output = frame_at(app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
-            let tree = output.platform_output.accesskit_update.unwrap();
-            let bounds = tree
-                .nodes
-                .iter()
-                .find_map(|(_, node)| {
-                    node.bounds().filter(|bounds| {
-                        node.label() == Some(label)
-                            && bounds.x0 >= f64::from(app.workspace.area.left())
-                    })
-                })
-                .unwrap_or_else(|| panic!("Missing table selector control: {label}"));
-            click(
-                app,
-                &ctx,
-                egui::pos2(
-                    (bounds.x0 + bounds.x1) as f32 / 2.0,
-                    (bounds.y0 + bounds.y1) as f32 / 2.0,
-                ),
-            );
+            let bounds = control_from(&output, label, app.workspace.area.left());
+            click(app, &ctx, bounds.center());
         }
         wait(app, &ctx);
     };
@@ -2361,20 +2310,8 @@ fn sql_result_ribbon_actions_use_the_linked_result_not_the_editor_or_table() {
     let press = |app: &mut App, label: &str| {
         frame_at(app, &ctx, size, vec![]);
         let output = frame_at(app, &ctx, size, vec![]);
-        let tree = output.platform_output.accesskit_update.unwrap();
-        let bounds = tree
-            .nodes
-            .iter()
-            .find_map(|(_, node)| {
-                (node.label() == Some(label))
-                    .then(|| node.bounds())
-                    .flatten()
-            })
-            .unwrap_or_else(|| panic!("missing result action: {label}"));
-        let pos = egui::pos2(
-            (bounds.x0 + bounds.x1) as f32 / 2.0,
-            (bounds.y0 + bounds.y1) as f32 / 2.0,
-        );
+        let bounds = control(&output, label);
+        let pos = egui::pos2(bounds.center().x, bounds.center().y);
         assert!(app.workspace.pane_rects[0].1.contains(pos));
         for pressed in [true, false] {
             frame_at(
@@ -2435,38 +2372,22 @@ fn relationship_zoom_buttons_change_scale_and_percentage_resets_it() {
     let press = |app: &mut App, label: &str| {
         frame(app, &ctx, vec![]);
         let output = frame_at(app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
-        let tree = output.platform_output.accesskit_update.unwrap();
-        let bounds = tree
-            .nodes
-            .iter()
-            .find_map(|(_, node)| {
-                (node.label() == Some(label))
-                    .then(|| node.bounds())
-                    .flatten()
-            })
-            .unwrap_or_else(|| panic!("missing zoom control: {label}"));
-        click(
-            app,
-            &ctx,
-            egui::pos2(
-                (bounds.x0 + bounds.x1) as f32 / 2.0,
-                (bounds.y0 + bounds.y1) as f32 / 2.0,
-            ),
-        );
+        let bounds = control(&output, label);
+        click(app, &ctx, egui::pos2(bounds.center().x, bounds.center().y));
     };
     press(&mut app, "Reset zoom to 100%");
-    assert_eq!(app.ui.diagram.zoom, 1.0);
+    assert_eq!(app.ui.diagram.camera.zoom, 1.0);
     press(&mut app, "Zoom in");
-    assert_eq!(app.ui.diagram.zoom, 1.25);
+    assert_eq!(app.ui.diagram.camera.zoom, 1.25);
     let output = frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
     assert!(output.shapes.iter().any(|s| matches!(&s.shape,
         egui::Shape::Text(t) if t.galley.job.text == "125%")));
     press(&mut app, "Zoom out");
-    assert_eq!(app.ui.diagram.zoom, 1.0);
+    assert_eq!(app.ui.diagram.camera.zoom, 1.0);
     press(&mut app, "Zoom out");
-    assert_eq!(app.ui.diagram.zoom, 0.8);
+    assert_eq!(app.ui.diagram.camera.zoom, 0.8);
     press(&mut app, "Reset zoom to 100%");
-    assert_eq!(app.ui.diagram.zoom, 1.0);
+    assert_eq!(app.ui.diagram.camera.zoom, 1.0);
     app.close();
 }
 
@@ -2515,16 +2436,7 @@ fn redesigned_dialog_actions_remain_visible_at_minimum_and_laptop_sizes() {
                     frame_at(&mut app, &ctx, size, vec![]);
                 }
                 let output = frame_at(&mut app, &ctx, size, vec![]);
-                let tree = output.platform_output.accesskit_update.unwrap();
-                let bounds = tree
-                    .nodes
-                    .iter()
-                    .find_map(|(_, n)| (n.label() == Some(label)).then(|| n.bounds()).flatten())
-                    .unwrap_or_else(|| panic!("Missing dialog action: {label}"));
-                let rect = egui::Rect::from_min_max(
-                    egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
-                    egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
-                );
+                let rect = control(&output, label);
                 assert!(
                     egui::Rect::from_min_size(egui::Pos2::ZERO, size).contains_rect(rect),
                     "{label} outside {size:?} with font {font_size}: {rect:?}"

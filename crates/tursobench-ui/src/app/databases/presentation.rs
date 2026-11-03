@@ -125,7 +125,7 @@ fn turso_texture(ctx: &egui::Context, dark: bool) -> egui::TextureHandle {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{DatabaseKind, EngineMark, Entry, Path, folder_label};
     use crate::{
         app::databases::{Chooser, State},
         discovery::Availability,

@@ -608,9 +608,9 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Icon, RIBBON_BUTTON_SIZE, button, control, egui, ribbon_button};
     #[test]
-    fn compact_ribbon_buttons_keep_their_hit_target_and_accessibility() {
+    fn painter_buttons_expose_names_and_selected_state_to_accesskit() {
         let ctx = egui::Context::default();
         ctx.enable_accesskit();
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
@@ -618,9 +618,15 @@ mod tests {
             let large = ribbon_button(ui, Icon::Columns, "Ribbon columns", "", Some(true));
             assert_eq!(large.rect.size(), egui::Vec2::splat(RIBBON_BUTTON_SIZE));
             assert!(large.rect.width() >= normal.rect.width());
+            control(ui, Icon::Structure, "Structure", "Ctrl 2", true, false);
+            button(ui, Icon::Export, "Export retained rows", "Ctrl E");
         });
         output.textures_delta.clear();
-        let update = output.platform_output.accesskit_update.unwrap();
+        let update = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("accessibility tree");
         assert!(
             update
                 .nodes
@@ -632,22 +638,6 @@ mod tests {
             egui::Shape::Rect(rect) => (rect.stroke.width - 1.575).abs() < 0.01,
             _ => false,
         }));
-    }
-
-    #[test]
-    fn painter_buttons_expose_names_and_selected_state_to_accesskit() {
-        let ctx = egui::Context::default();
-        ctx.enable_accesskit();
-        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            control(ui, Icon::Structure, "Structure", "Ctrl 2", true, false);
-            button(ui, Icon::Export, "Export retained rows", "Ctrl E");
-        });
-        output.textures_delta.clear();
-        let update = output
-            .platform_output
-            .accesskit_update
-            .as_ref()
-            .expect("accessibility tree");
         assert!(
             update
                 .nodes

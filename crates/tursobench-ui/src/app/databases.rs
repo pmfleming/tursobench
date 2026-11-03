@@ -463,7 +463,10 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        App, Availability, CachedDatabase, Chooser, DatabaseKind, DiscoveryPreferences, Event,
+        Path, State, egui, request,
+    };
     use crate::app::shell;
     use crate::{discovery::Candidate, storage::RecentDatabase};
     use std::{
@@ -480,18 +483,9 @@ mod tests {
         })
     }
     fn frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>, width: f32) {
-        let mut output = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(width, 900.0),
-                )),
-                events,
-                ..Default::default()
-            },
-            |ui| app.database_chooser_ui(ui),
-        );
-        output.textures_delta.clear();
+        let output = crate::app::test_ui::render(ctx, egui::vec2(width, 900.0), events, |ui| {
+            app.database_chooser_ui(ui)
+        });
         assert!(!output.shapes.is_empty());
     }
     fn click(app: &mut App, ctx: &egui::Context, position: egui::Pos2) {
@@ -499,15 +493,7 @@ mod tests {
             frame(
                 app,
                 ctx,
-                vec![
-                    egui::Event::PointerMoved(position),
-                    egui::Event::PointerButton {
-                        pos: position,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                ],
+                crate::app::test_ui::pointer(position, pressed),
                 900.0,
             );
         }

@@ -1,4 +1,8 @@
-use super::{App, View};
+use super::{
+    App, View,
+    document::Document,
+    icons::{self, Icon},
+};
 use eframe::egui;
 use std::collections::{BTreeMap, BTreeSet};
 use tursobench_core::Value;
@@ -15,7 +19,188 @@ pub(super) struct Columns {
     natural: Vec<f32>,
     measured_rows: usize,
 }
+pub(super) struct Header<'a> {
+    pub column: &'a tursobench_core::Column,
+    primary_key: i64,
+    indexed: bool,
+    foreign: bool,
+    descending: Option<bool>,
+}
+impl Document {
+    pub fn column_header(&self, i: usize) -> Header<'_> {
+        let column = &self.result.columns[i];
+        let info = self.browse_inspection();
+        Header {
+            column,
+            primary_key: info
+                .and_then(|info| info.table.columns.get(i))
+                .map_or(0, |c| c.primary_key),
+            indexed: info.is_some_and(|info| {
+                info.indexes
+                    .iter()
+                    .any(|idx| idx.columns.first().and_then(Option::as_ref) == Some(&column.name))
+            }),
+            foreign: info.is_some_and(|info| {
+                info.foreign_keys
+                    .iter()
+                    .any(|fk| fk.columns.iter().any(|(name, _)| name == &column.name))
+            }),
+            descending: self
+                .browse
+                .as_ref()
+                .filter(|b| b.sort == Some(i))
+                .map(|b| b.descending),
+        }
+    }
+}
+impl Header<'_> {
+    fn has_key(&self) -> bool {
+        self.primary_key > 0 || self.foreign
+    }
+    pub fn describe(&self, response: &egui::Response, enabled: bool) {
+        let tags = format!(
+            "{}{}{}",
+            if self.primary_key > 0 {
+                format!(" PK{}", self.primary_key)
+            } else {
+                String::new()
+            },
+            if self.indexed { " IX" } else { "" },
+            if self.foreign { " FK" } else { "" }
+        );
+        let sorted = match self.descending {
+            None => "",
+            Some(true) => " descending",
+            Some(false) => " ascending",
+        };
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::Role::Button,
+                enabled,
+                format!("Column {}{tags}{sorted}", self.column.name),
+            )
+        });
+    }
+    pub fn paint(&self, ui: &egui::Ui, rect: egui::Rect, highlighted: bool) {
+        let tokens = crate::appearance::Tokens::of(ui.ctx());
+        let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+        painter.rect_filled(
+            rect,
+            2.0,
+            if highlighted {
+                ui.visuals().selection.bg_fill
+            } else {
+                ui.visuals().faint_bg_color
+            },
+        );
+        let mut left = rect.left() + 7.0;
+        for (show, icon) in [
+            (self.primary_key > 0, Icon::Key),
+            (self.foreign, Icon::Link),
+        ] {
+            if show {
+                icons::paint(
+                    &painter,
+                    egui::Rect::from_min_size(
+                        egui::pos2(left, rect.top() + 7.0),
+                        egui::vec2(12.0, 12.0),
+                    ),
+                    icon,
+                    tokens.relationship,
+                );
+                left += 15.0;
+            }
+        }
+        let reserve = if self.descending.is_some() {
+            44.0
+        } else {
+            28.0
+        };
+        for (text, pos, font, color, reserve) in [
+            (
+                self.column.name.as_str(),
+                egui::pos2(left, rect.top() + 14.0),
+                crate::appearance::proportional(ui.ctx(), 12.0),
+                ui.visuals().text_color(),
+                reserve,
+            ),
+            (
+                self.column.declared_type.as_deref().unwrap_or("VALUE"),
+                rect.min + egui::vec2(8.0, 31.0),
+                crate::appearance::monospace(ui.ctx(), 9.5),
+                tokens.faint,
+                0.0,
+            ),
+        ] {
+            let clip = egui::Rect::from_min_max(rect.min, rect.max - egui::vec2(reserve, 0.0));
+            painter.with_clip_rect(clip.intersect(ui.clip_rect())).text(
+                pos,
+                egui::Align2::LEFT_CENTER,
+                text,
+                font,
+                color,
+            );
+        }
+        painter.hline(
+            rect.x_range(),
+            rect.bottom() - 0.5,
+            egui::Stroke::new(1.0, tokens.line_strong),
+        );
+        painter.vline(
+            rect.right() - 0.5,
+            rect.y_range(),
+            egui::Stroke::new(1.0, tokens.line),
+        );
+        if self.descending.is_some() {
+            painter.hline(
+                rect.x_range(),
+                rect.bottom() - 1.0,
+                egui::Stroke::new(2.0, tokens.primary),
+            );
+            icons::paint(
+                &painter,
+                egui::Rect::from_min_size(
+                    rect.right_top() + egui::vec2(-47.0, 8.0),
+                    egui::vec2(12.0, 12.0),
+                ),
+                if self.descending == Some(true) {
+                    Icon::Down
+                } else {
+                    Icon::Up
+                },
+                ui.visuals().selection.stroke.color,
+            );
+        }
+    }
+}
 impl Columns {
+    pub fn fit(&mut self, i: usize) {
+        self.manual.remove(&i);
+        self.refit = true;
+    }
+    pub fn header_menu(&mut self, ui: &mut egui::Ui, i: usize) {
+        ui.menu_button("Cell appearance", |ui| {
+            let style = self.visuals.entry(i).or_default();
+            for (value, label) in CellStyle::ALL {
+                ui.selectable_value(style, value, label);
+            }
+        });
+        if ui.button("Fit contents").clicked() {
+            self.fit(i);
+            ui.close();
+        }
+        for (label, direction) in [("Move left", -1), ("Move right", 1)] {
+            if ui.button(label).clicked() {
+                self.shift(i, direction);
+                ui.close();
+            }
+        }
+        if ui.button("Hide column").clicked() {
+            self.hidden.insert(i);
+            ui.close();
+        }
+    }
+
     pub fn move_before(&mut self, from: usize, target: usize) {
         let Some(from) = self.order.iter().position(|&c| c == from) else {
             return;
@@ -102,6 +287,10 @@ impl App {
         }
         let sample = self.document.result.rows.len().min(200);
         if c.refit || sample > c.measured_rows {
+            let key_columns: Vec<_> = (0..self.document.result.columns.len())
+                .map(|i| self.document.column_header(i).has_key())
+                .collect();
+            let c = &mut self.document.tools.columns;
             c.natural = self
                 .document
                 .result
@@ -119,18 +308,7 @@ impl App {
                         .size()
                         .x
                         + 36.0
-                        + if self.document.view == View::Browse
-                            && self.document.tools.inspection.as_ref().is_some_and(|info| {
-                                info.table.columns.get(i).is_some_and(|c| c.primary_key > 0)
-                                    || info.foreign_keys.iter().any(|k| {
-                                        k.columns.iter().any(|(name, _)| name == &col.name)
-                                    })
-                            })
-                        {
-                            15.0
-                        } else {
-                            0.0
-                        };
+                        + if key_columns[i] { 15.0 } else { 0.0 };
                     self.document
                         .result
                         .rows

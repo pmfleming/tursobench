@@ -4,6 +4,7 @@ use eframe::egui;
 use tursobench_core::{
     CommitOutcome, Completion, Event, EventKind, Failure, Ticket, TransactionState,
 };
+use tursobench_db::{Operation, Request};
 
 enum Target {
     Result,
@@ -43,6 +44,27 @@ impl Document {
     }
 }
 impl App {
+    pub(super) fn load_diagram(&mut self) {
+        if !self.ready || self.closing || self.ui.diagram.ticket.is_some() {
+            return;
+        }
+        let Some(session) = &self.session else {
+            return;
+        };
+        self.sequence += 1;
+        let ticket = session.ticket(self.sequence, self.generation);
+        match session.submit(Request {
+            ticket,
+            operation: Operation::Diagram,
+        }) {
+            Ok(()) => {
+                self.ui.diagram.ticket = Some(ticket);
+                self.ui.diagram.error.clear();
+            }
+            Err(e) => self.ui.diagram.error = e.to_string(),
+        }
+    }
+
     fn event_target(&self, ticket: Ticket) -> Option<(Option<u64>, Target)> {
         let session = self.session.as_ref()?;
         if ticket.session != session.id || ticket.database != session.id {

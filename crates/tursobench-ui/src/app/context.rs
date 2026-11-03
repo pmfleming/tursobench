@@ -132,7 +132,7 @@ impl App {
     }
     pub(super) fn context_event(&mut self, event: Event) {
         let done = matches!(event.kind, EventKind::Failed(_) | EventKind::Finished(_));
-        let Some(read) = &mut self.document.tools.context.pending else {
+        let Some(mut read) = self.document.tools.context.pending.take() else {
             return;
         };
         match &event.kind {
@@ -147,9 +147,9 @@ impl App {
         }
         read.result.apply(event);
         if !done {
+            self.document.tools.context.pending = Some(read);
             return;
         }
-        let read = self.document.tools.context.pending.take().unwrap();
         if read.owner != self.document.result.current || self.closing {
             return;
         }

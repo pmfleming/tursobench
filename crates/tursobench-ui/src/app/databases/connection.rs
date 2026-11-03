@@ -185,7 +185,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{App, egui};
     use crate::app::databases::{Chooser, Entry, State};
     use crate::discovery::Availability;
 
@@ -195,15 +195,7 @@ mod tests {
         events: Vec<egui::Event>,
         size: egui::Vec2,
     ) -> Vec<String> {
-        let mut output = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
-                events,
-                ..Default::default()
-            },
-            |ui| app.render(ui),
-        );
-        output.textures_delta.clear();
+        let output = crate::app::test_ui::render(ctx, size, events, |ui| app.render(ui));
         output
             .shapes
             .iter()
@@ -219,15 +211,7 @@ mod tests {
             frame(
                 app,
                 ctx,
-                vec![
-                    egui::Event::PointerMoved(pos),
-                    egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                ],
+                crate::app::test_ui::pointer(pos, pressed),
                 egui::vec2(1280.0, 720.0),
             );
         }

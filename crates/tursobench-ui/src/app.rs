@@ -554,8 +554,62 @@ impl eframe::App for App {
     }
 }
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod test_ui {
+    use eframe::egui;
+
+    pub(super) fn render(
+        ctx: &egui::Context,
+        size: egui::Vec2,
+        events: Vec<egui::Event>,
+        draw: impl FnMut(&mut egui::Ui),
+    ) -> egui::FullOutput {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                events,
+                ..Default::default()
+            },
+            draw,
+        );
+        output.textures_delta.clear();
+        output
+    }
+
+    pub(super) fn pointer_button(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+    pub(super) fn pointer(pos: egui::Pos2, pressed: bool) -> Vec<egui::Event> {
+        vec![egui::Event::PointerMoved(pos), pointer_button(pos, pressed)]
+    }
+
+    pub(super) fn control(output: &egui::FullOutput, name: &str) -> egui::Rect {
+        control_from(output, name, f32::NEG_INFINITY)
+    }
+    pub(super) fn control_from(output: &egui::FullOutput, name: &str, left: f32) -> egui::Rect {
+        let bounds = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("accessibility tree")
+            .nodes
+            .iter()
+            .rev()
+            .find_map(|(_, node)| {
+                node.bounds()
+                    .filter(|bounds| node.label() == Some(name) && bounds.x0 >= f64::from(left))
+            })
+            .unwrap_or_else(|| panic!("Missing control: {name}"));
+        egui::Rect::from_min_max(
+            egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
+            egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+        )
+    }
+    use super::{App, shell};
     use tursobench_core::Column;
     use tursobench_core::Value;
     #[test]

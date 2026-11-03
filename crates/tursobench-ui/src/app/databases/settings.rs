@@ -226,7 +226,7 @@ fn metric(ui: &mut egui::Ui, icon: Icon, count: usize, name: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{App, PathBuf, egui};
     use std::collections::HashMap;
 
     fn frame(
@@ -235,18 +235,9 @@ mod tests {
         events: Vec<egui::Event>,
         width: f32,
     ) -> HashMap<String, egui::Rect> {
-        let mut output = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(width, 600.0),
-                )),
-                events,
-                ..Default::default()
-            },
-            |ui| app.discovery_settings_ui(ui),
-        );
-        output.textures_delta.clear();
+        let output = crate::app::test_ui::render(ctx, egui::vec2(width, 600.0), events, |ui| {
+            app.discovery_settings_ui(ui)
+        });
         output
             .platform_output
             .accesskit_update
@@ -270,20 +261,7 @@ mod tests {
     fn click(app: &mut App, ctx: &egui::Context, rect: egui::Rect) {
         let pos = rect.center();
         for pressed in [true, false] {
-            frame(
-                app,
-                ctx,
-                vec![
-                    egui::Event::PointerMoved(pos),
-                    egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                ],
-                420.0,
-            );
+            frame(app, ctx, crate::app::test_ui::pointer(pos, pressed), 420.0);
         }
     }
 

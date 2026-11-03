@@ -54,8 +54,8 @@ impl App {
     fn action_enabled(&self, action: Action) -> bool {
         use Action::*;
         match action {
-            ZoomOut => self.ui.diagram.camera_zoom() > super::diagram::MIN_ZOOM,
-            ZoomIn => self.ui.diagram.camera_zoom() < super::diagram::MAX_ZOOM,
+            ZoomOut => self.ui.diagram.camera.zoom() > super::diagram::MIN_ZOOM,
+            ZoomIn => self.ui.diagram.camera.zoom() < super::diagram::MAX_ZOOM,
             Run | RunSelection | Explain | Bytecode | Begin | Commit | Rollback => {
                 self.ready
                     && !self.closing
@@ -135,14 +135,14 @@ impl App {
                     self.open_record_window(row, col);
                 }
             }
-            FitMap => self.ui.diagram.fit = true,
+            FitMap => self.ui.diagram.camera.fit = true,
             ArrangeMap => self.ui.diagram.arrange_nodes(),
             MapColumns => self.ui.diagram.toggle_columns(),
             SystemTables => self.ui.diagram.toggle_system(),
             Find => self.open_palette(),
-            Zoom100 => self.ui.diagram.reset_camera_zoom(),
-            ZoomOut => self.ui.diagram.step_camera_zoom(1.0 / 1.25),
-            ZoomIn => self.ui.diagram.step_camera_zoom(1.25),
+            Zoom100 => self.ui.diagram.camera.reset_zoom(),
+            ZoomOut => self.ui.diagram.camera.step_zoom(1.0 / 1.25),
+            ZoomIn => self.ui.diagram.camera.step_zoom(1.25),
             Run => self.run_sql(),
             RunSelection => self.run_selection(),
             Explain => self.run_text(self.document.sql.clone(), Some(false)),
@@ -252,7 +252,7 @@ impl App {
         let response = ui
             .add_enabled_ui(self.action_enabled(action), |ui| {
                 if action == Action::Zoom100 {
-                    let percent = self.ui.diagram.camera_zoom() * 100.0;
+                    let percent = self.ui.diagram.camera.zoom() * 100.0;
                     let text = if percent < 1.0 {
                         format!("{percent:.2}%")
                     } else {
@@ -726,7 +726,7 @@ impl Kind {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{App, Kind, egui};
 
     #[test]
     fn narrow_ribbon_scrolls_to_a_direct_action_and_keeps_window_controls_fixed() {
@@ -773,20 +773,7 @@ mod tests {
             render(&mut app, vec![]);
         }
         let output = render(&mut app, vec![]);
-        let tree = output.platform_output.accesskit_update.unwrap();
-        let bounds = tree
-            .nodes
-            .iter()
-            .find_map(|(_, n)| {
-                (n.label() == Some("Toggle system tables"))
-                    .then(|| n.bounds())
-                    .flatten()
-            })
-            .expect("direct system tables toggle");
-        let target = egui::pos2(
-            (bounds.x0 + bounds.x1) as f32 / 2.0,
-            (bounds.y0 + bounds.y1) as f32 / 2.0,
-        );
+        let target = crate::app::test_ui::control(&output, "Toggle system tables").center();
         assert!(
             target.x > 0.0 && target.x < minimize.left(),
             "action must be scrolled into view: {target:?}"

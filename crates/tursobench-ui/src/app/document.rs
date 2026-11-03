@@ -1,6 +1,6 @@
 //! A view owns its buffers and interaction state. Switching moves ownership, never clones rows.
 use super::{App, View, shell, tools};
-use tursobench_core::{Browse, DraftBatch, ResultSet, Table, Ticket};
+use tursobench_core::{Browse, DraftBatch, Inspection, ResultSet, Table, Ticket};
 
 pub(super) struct Document {
     pub id: u64,
@@ -56,6 +56,16 @@ impl Default for Document {
     }
 }
 impl Document {
+    pub fn browse_inspection(&self) -> Option<&Inspection> {
+        self.tools.inspection.as_ref().filter(|info| {
+            self.view == View::Browse
+                && self
+                    .table
+                    .as_ref()
+                    .is_some_and(|t| t.name == info.table.name)
+        })
+    }
+
     pub fn disconnect(&mut self) {
         self.active = None;
         self.tools.inspection_ticket = None;

@@ -119,6 +119,18 @@ impl Layout {
     }
 }
 impl App {
+    pub(super) fn diagram_ui(&mut self, ui: &mut egui::Ui) {
+        let relatives = self
+            .ui
+            .hover_table
+            .as_deref()
+            .map(|t| self.related_tables(t))
+            .unwrap_or_default();
+        if let Some(name) = self.ui.diagram.show(ui, &relatives) {
+            self.browse_table(name);
+        }
+    }
+
     pub(super) fn show_structure(&mut self) {
         if self.workspace.enabled {
             self.open_structure_window();

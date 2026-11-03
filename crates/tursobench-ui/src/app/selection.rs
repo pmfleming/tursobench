@@ -291,7 +291,7 @@ impl App {
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
             let keys = self.cell_references(s.cursor.0, s.cursor.1);
             if keys.len() == 1 {
-                self.follow_key(s.cursor.0, keys[0].clone());
+                self.follow_key(s.cursor.0, (*keys[0]).clone());
             } else {
                 self.start_inline(s.cursor.0, s.cursor.1);
             }

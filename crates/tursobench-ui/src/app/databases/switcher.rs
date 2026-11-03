@@ -177,25 +177,13 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{App, egui};
 
     fn frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) -> egui::FullOutput {
-        let mut output = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(720.0, 480.0),
-                )),
-                events,
-                ..Default::default()
-            },
-            |ui| {
-                ui.set_width(220.0);
-                app.database_switcher_ui(ui);
-            },
-        );
-        output.textures_delta.clear();
-        output
+        crate::app::test_ui::render(ctx, egui::vec2(720.0, 480.0), events, |ui| {
+            ui.set_width(220.0);
+            app.database_switcher_ui(ui);
+        })
     }
 
     #[test]
@@ -223,19 +211,7 @@ mod tests {
             frame(&mut app, &ctx, vec![]);
             let pos = egui::pos2(100.0, 25.0);
             for pressed in [true, false] {
-                frame(
-                    &mut app,
-                    &ctx,
-                    vec![
-                        egui::Event::PointerMoved(pos),
-                        egui::Event::PointerButton {
-                            pos,
-                            button: egui::PointerButton::Primary,
-                            pressed,
-                            modifiers: egui::Modifiers::NONE,
-                        },
-                    ],
-                );
+                frame(&mut app, &ctx, crate::app::test_ui::pointer(pos, pressed));
             }
             let output = frame(&mut app, &ctx, vec![]);
             let nodes = &output

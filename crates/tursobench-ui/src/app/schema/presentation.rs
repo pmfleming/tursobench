@@ -304,19 +304,9 @@ mod tests {
                 };
                 let mut action = None;
                 let mut render = |events| {
-                    let mut output = ctx.run_ui(
-                        egui::RawInput {
-                            screen_rect: Some(egui::Rect::from_min_size(
-                                egui::Pos2::ZERO,
-                                egui::vec2(width, 1200.0),
-                            )),
-                            events,
-                            ..Default::default()
-                        },
-                        |ui| action = structure.show(ui),
-                    );
-                    output.textures_delta.clear();
-                    output
+                    crate::app::test_ui::render(&ctx, egui::vec2(width, 1200.0), events, |ui| {
+                        action = structure.show(ui)
+                    })
                 };
                 let output = render(vec![]);
                 let texts: Vec<_> = output
@@ -340,21 +330,9 @@ mod tests {
                 if let Some(label) = click {
                     let text = texts.iter().find(|t| t.galley.job.text == label).unwrap();
                     let pos = text.pos + text.galley.size() / 2.0;
-                    render(vec![
-                        egui::Event::PointerMoved(pos),
-                        egui::Event::PointerButton {
-                            pos,
-                            button: egui::PointerButton::Primary,
-                            pressed: true,
-                            modifiers: egui::Modifiers::NONE,
-                        },
-                    ]);
-                    render(vec![egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Primary,
-                        pressed: false,
-                        modifiers: egui::Modifiers::NONE,
-                    }]);
+                    for pressed in [true, false] {
+                        render(crate::app::test_ui::pointer(pos, pressed));
+                    }
                     match action {
                         Some(Action::Load) => assert_eq!(label, "Load structure"),
                         Some(Action::Browse(name)) => assert_eq!(name, label),
