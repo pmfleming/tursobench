@@ -421,7 +421,7 @@ impl App {
                                     self.ribbon_action(
                                         ui,
                                         Action::Review,
-                                        Icon::Edit,
+                                        Icon::ReviewEdits,
                                         "Review staged edits",
                                     );
                                 }
@@ -640,7 +640,7 @@ impl Kind {
             Kind::Data => &[
                 (Refresh, Icon::Refresh, "Refresh"),
                 (Filter, Icon::Filter, "Filter"),
-                (FitColumns, Icon::Fit, "Fit columns"),
+                (FitColumns, Icon::FitColumns, "Fit columns"),
                 (Export, Icon::Export, "Export"),
                 (Inspect, Icon::Selection, "Inspect selected record"),
                 (ShowColumns, Icon::Complete, "Show all columns"),
@@ -651,7 +651,7 @@ impl Kind {
             Kind::Result => &[
                 (Export, Icon::Export, "Export query results"),
                 (CopyRows, Icon::Copy, "Copy query results"),
-                (FitColumns, Icon::Fit, "Fit result columns"),
+                (FitColumns, Icon::FitColumns, "Fit result columns"),
                 (Inspect, Icon::Selection, "Inspect selected result record"),
                 (ShowColumns, Icon::Complete, "Show all result columns"),
             ],
@@ -671,27 +671,27 @@ impl Kind {
                 (ZoomIn, Icon::Plus, "Zoom in"),
             ],
             Kind::Sql => &[
-                (Run, Icon::Sql, "Run"),
+                (Run, Icon::Run, "Run"),
                 (
                     RunSelection,
                     Icon::Selection,
                     "Run selection / statement at cursor",
                 ),
                 (Explain, Icon::Explain, "Explain query plan"),
-                (Bytecode, Icon::Structure, "Explain bytecode"),
+                (Bytecode, Icon::Bytecode, "Explain bytecode"),
                 (Parameters, Icon::Parameters, "Typed parameters"),
                 (Completion, Icon::Complete, "Completions"),
                 (SaveSql, Icon::Saved, "Save query"),
                 (NewSql, Icon::Plus, "New SQL editor"),
-                (Begin, Icon::Lock, "Begin editor transaction"),
-                (Commit, Icon::Checks, "Commit transaction"),
+                (Begin, Icon::BeginTransaction, "Begin editor transaction"),
+                (Commit, Icon::CommitTransaction, "Commit transaction"),
                 (Rollback, Icon::Undo, "Roll back transaction"),
             ],
             Kind::Record => &[
                 (CopyRecord, Icon::Copy, "Copy record"),
-                (CloneRecord, Icon::Plus, "Clone record"),
+                (CloneRecord, Icon::CloneRecord, "Clone record"),
                 (DeleteRecord, Icon::Trash, "Stage deletion"),
-                (CopyValue, Icon::Selection, "Copy selected value"),
+                (CopyValue, Icon::CopyValue, "Copy selected value"),
             ],
         }
     }
