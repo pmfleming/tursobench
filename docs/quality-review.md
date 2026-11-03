@@ -16,6 +16,17 @@ simplifying stateful code and repeated work on UI paths.
    UI tests (111), workspace/all-target Clippy, formatting and RQLens hotspots pass.
    `status_bar` cognitive/cyclomatic complexity fell from 73/30 to 10/5.
 
+2. **Borrowed record-field presentation.** Separate field labels, values,
+   parent navigation and inline submissions. Checked column metadata now drives
+   key badges and relationship colors in the record inspector as well as the
+   grid, so unrelated query/schema metadata cannot decorate a field. Tooltip
+   detail/JSON formatting happens only on hover. Double-click starts an editor
+   without cloning the displayed value; typed actions distinguish starting an
+   edit from submitting one. Removed a redundant reference-list forwarding method.
+   The 111 UI tests, all-target Clippy, formatting and hotspot measurement pass.
+   Record orchestration cognitive/cyclomatic complexity fell from 72/30 to
+   8/8.
+
 ---
 
 # Quality review — 2026-11-03

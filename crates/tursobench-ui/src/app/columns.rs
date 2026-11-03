@@ -54,6 +54,17 @@ impl Document {
     }
 }
 impl Header<'_> {
+    pub fn key_icon(&self) -> Option<Icon> {
+        if self.primary_key > 0 {
+            Some(Icon::Key)
+        } else {
+            self.foreign.then_some(Icon::Link)
+        }
+    }
+    pub fn is_foreign(&self) -> bool {
+        self.foreign
+    }
+
     fn has_key(&self) -> bool {
         self.primary_key > 0 || self.foreign
     }
