@@ -5,6 +5,11 @@
 <h1 align="center">TursoBench</h1>
 
 <p align="center">
+  <em>“These heavy sands are language tide and wind have silted here”</em><br>
+  <sub>— James Joyce, <em>Ulysses</em> (“Proteus”)</sub>
+</p>
+
+<p align="center">
   <strong>A native workbench for local Turso databases.</strong><br>
   Rust 1.95 · egui 0.37 · Turso 0.8.3 · Linux preview
 </p>
