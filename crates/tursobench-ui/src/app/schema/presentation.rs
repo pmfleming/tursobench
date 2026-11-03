@@ -96,7 +96,7 @@ fn columns(ui: &mut egui::Ui, table: &Table) {
             "Engine-managed storage · generated edits disabled",
         );
     }
-    ui.strong("Columns")
+    ui.strong(format!("Columns · {}", table.columns.len()))
         .on_hover_text("Committed browse metadata. Uncommitted editor changes are not visible.");
     ui.group(|ui| {
         for c in &table.columns {
@@ -104,10 +104,20 @@ fn columns(ui: &mut egui::Ui, table: &Table) {
                 if c.primary_key > 0 {
                     let (r, _) =
                         ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
-                    icons::paint(ui.painter(), r, Icon::Key, ui.visuals().warn_fg_color);
+                    icons::paint(
+                        ui.painter(),
+                        r,
+                        Icon::Key,
+                        crate::appearance::Tokens::of(ui.ctx()).relationship,
+                    );
                 }
                 ui.monospace(&c.name);
-                ui.weak(&c.declared_type);
+                ui.add(egui::Label::new(
+                    egui::RichText::new(&c.declared_type)
+                        .monospace()
+                        .small()
+                        .color(crate::appearance::Tokens::of(ui.ctx()).faint),
+                ));
                 if c.primary_key > 0 {
                     ui.small(format!("PK {}", c.primary_key));
                 }
@@ -126,7 +136,7 @@ fn columns(ui: &mut egui::Ui, table: &Table) {
     });
 }
 fn indexes(ui: &mut egui::Ui, indexes: &[IndexInfo]) {
-    ui.strong("Indexes");
+    ui.strong(format!("Indexes · {}", indexes.len()));
     if indexes.is_empty() {
         ui.weak("No declared indexes returned");
     }
@@ -154,13 +164,19 @@ fn indexes(ui: &mut egui::Ui, indexes: &[IndexInfo]) {
 }
 fn foreign_keys(ui: &mut egui::Ui, keys: &[ForeignKey]) -> Option<String> {
     let mut browse = None;
-    ui.strong("Foreign keys");
+    ui.strong(format!("Foreign keys · {}", keys.len()));
     if keys.is_empty() {
         ui.weak("No declared foreign keys");
     }
     for key in keys {
         ui.group(|ui| {
-            if ui.link(&key.target).clicked() {
+            if ui
+                .link(
+                    egui::RichText::new(&key.target)
+                        .color(crate::appearance::Tokens::of(ui.ctx()).relationship),
+                )
+                .clicked()
+            {
                 browse = Some(key.target.clone());
             }
             ui.monospace(

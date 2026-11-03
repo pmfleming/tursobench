@@ -195,32 +195,45 @@ impl CellStyle {
             _ => Self::Plain,
         }
     }
-    pub fn paint(self, ui: &egui::Ui, rect: egui::Rect, name: &str, value: &Value) {
+    pub fn paint(self, ui: &egui::Ui, rect: egui::Rect, name: &str, value: &Value) -> bool {
         let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
         let style = self.resolved(name);
-        let accent = ui.visuals().hyperlink_color;
+        let tokens = crate::appearance::Tokens::of(ui.ctx());
+        let accent = tokens.primary;
         match (style, value) {
             (Self::Status, Value::Text(text)) if !text.is_empty() && text.len() <= 32 => {
                 let color = match text.to_ascii_lowercase().as_str() {
                     "blocked" | "failed" | "error" => ui.visuals().error_fg_color,
-                    "pending" | "in progress" | "review" => ui.visuals().warn_fg_color,
+                    "pending" | "in progress" | "review" => tokens.relationship,
                     _ => accent,
                 };
-                let width = (text.chars().count() as f32 * 7.2 + 14.0).min(rect.width() - 8.0);
-                painter.rect_filled(
-                    egui::Rect::from_min_size(
-                        rect.min + egui::vec2(3.0, 3.0),
-                        egui::vec2(width.max(0.0), 18.0),
-                    ),
-                    7.0,
-                    color.gamma_multiply(0.18),
+                let galley = painter.layout_no_wrap(
+                    text.clone(),
+                    crate::appearance::proportional(ui.ctx(), 11.5),
+                    color,
                 );
+                let pill = egui::Rect::from_min_size(
+                    rect.left_center() + egui::vec2(5.0, -10.0),
+                    egui::vec2(
+                        (galley.size().x + 26.0).min((rect.width() - 10.0).max(0.0)),
+                        20.0,
+                    ),
+                );
+                painter.rect_filled(pill, 10.0, color.gamma_multiply(0.13));
+                let painter = painter.with_clip_rect(pill.intersect(ui.clip_rect()));
+                painter.circle_filled(pill.left_center() + egui::vec2(8.0, 0.0), 3.0, color);
+                painter.galley(
+                    pill.left_center() + egui::vec2(16.0, -galley.size().y / 2.0),
+                    galley,
+                    color,
+                );
+                return true;
             }
             (Self::Priority | Self::Percent, value) => {
                 let number = match value {
                     Value::Integer(n) => *n as f64,
                     Value::Real(n) => *n,
-                    _ => return,
+                    _ => return false,
                 };
                 let max = if style == Self::Priority { 5.0 } else { 100.0 };
                 if number.is_finite() && (0.0..=max).contains(&number) {
@@ -233,5 +246,6 @@ impl CellStyle {
             }
             _ => {}
         }
+        false
     }
 }

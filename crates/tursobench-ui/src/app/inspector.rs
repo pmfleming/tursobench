@@ -164,7 +164,15 @@ impl App {
                 if ui
                     .add_enabled(
                         !self.has_drafts() && self.document.active.is_none(),
-                        egui::Button::new(format!("Parent: {}", key.target)),
+                        egui::Button::new(
+                            egui::RichText::new(format!("Parent: {}", key.target))
+                                .color(crate::appearance::Tokens::of(ui.ctx()).relationship),
+                        )
+                        .fill(
+                            crate::appearance::Tokens::of(ui.ctx())
+                                .relationship
+                                .gamma_multiply(0.09),
+                        ),
                     )
                     .clicked()
                 {
@@ -180,16 +188,51 @@ impl App {
         let mut edit = None;
         let scroll_to = self.document.tools.record_scroll_to.take();
         if let Some(values) = self.document.result.rows.get(row) {
+            let tokens = crate::appearance::Tokens::of(ui.ctx());
+            let name_width = (ui.available_width() * 0.32).clamp(48.0, 124.0);
+            let value_width = (ui.available_width() - name_width - 8.0).max(24.0);
             egui::Grid::new("compact-record")
                 .num_columns(2)
-                .spacing([8.0, 1.0])
+                .spacing([8.0, 0.0])
                 .show(ui, |ui| {
                     for (col, value) in values.iter().enumerate() {
                         let name = &self.document.result.columns[col].name;
-                        let label = ui.add_sized(
-                            [100.0, 25.0],
-                            egui::Label::new(egui::RichText::new(name).monospace()).truncate(),
-                        );
+                        let key = self.document.tools.inspection.as_ref().is_some_and(|i| {
+                            i.table.columns.get(col).is_some_and(|c| c.primary_key > 0)
+                        });
+                        let foreign = self.document.tools.inspection.as_ref().is_some_and(|i| {
+                            i.foreign_keys
+                                .iter()
+                                .any(|k| k.columns.iter().any(|(from, _)| from == name))
+                        });
+                        let label = ui
+                            .allocate_ui_with_layout(
+                                egui::vec2(name_width, 31.0),
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    if key || foreign {
+                                        let (r, _) = ui.allocate_exact_size(
+                                            egui::vec2(12.0, 12.0),
+                                            egui::Sense::hover(),
+                                        );
+                                        icons::paint(
+                                            ui.painter(),
+                                            r,
+                                            if key { Icon::Key } else { Icon::Link },
+                                            tokens.relationship,
+                                        );
+                                    }
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(name)
+                                                .size(crate::appearance::text_size(ui.ctx(), 12.5))
+                                                .color(tokens.muted),
+                                        )
+                                        .truncate(),
+                                    );
+                                },
+                            )
+                            .response;
                         if scroll_to == Some(col) {
                             label.scroll_to_me(Some(egui::Align::Center));
                         }
@@ -206,7 +249,7 @@ impl App {
                                     || self.workspace.active == super::tiling::Kind::Record)
                         }) {
                             let response = ui.add_sized(
-                                [ui.available_width().min(240.0), 25.0],
+                                [value_width, 31.0],
                                 egui::TextEdit::singleline(&mut inline.editor.input),
                             );
                             match inline.submitted(ui, &response) {
@@ -217,9 +260,20 @@ impl App {
                         } else {
                             let response = ui
                                 .add_sized(
-                                    [ui.available_width().min(240.0), 25.0],
+                                    [value_width, 31.0],
                                     egui::Button::new(
-                                        egui::RichText::new(shown.preview()).monospace(),
+                                        egui::RichText::new(shown.preview())
+                                            .monospace()
+                                            .size(crate::appearance::text_size(ui.ctx(), 12.5))
+                                            .color(if shown != value {
+                                                tokens.pending
+                                            } else if foreign {
+                                                tokens.relationship
+                                            } else if matches!(shown, Value::Null) {
+                                                tokens.faint
+                                            } else {
+                                                ui.visuals().text_color()
+                                            }),
                                     )
                                     .selected(self.document.inspect == Some((row, col)))
                                     .frame_when_inactive(false)
@@ -231,6 +285,23 @@ impl App {
                                     kind_name(shown),
                                     detail_text(shown)
                                 ));
+                            if shown != value {
+                                ui.painter().rect_filled(
+                                    response.rect,
+                                    0.0,
+                                    tokens.pending.gamma_multiply(0.08),
+                                );
+                                ui.painter().vline(
+                                    response.rect.left() + 1.5,
+                                    response.rect.y_range(),
+                                    egui::Stroke::new(3.0, tokens.pending),
+                                );
+                            }
+                            ui.painter().hline(
+                                response.rect.x_range(),
+                                response.rect.bottom(),
+                                egui::Stroke::new(1.0, tokens.line_soft),
+                            );
                             if response.clicked() {
                                 inspect = Some(col);
                             }

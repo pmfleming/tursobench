@@ -87,8 +87,10 @@ fn highlighted(ui: &egui::Ui, text: &str, width: f32) -> std::sync::Arc<egui::Ga
         for token in sql::tokens(text) {
             let color = match token.style {
                 TokenStyle::Keyword => ui.visuals().hyperlink_color,
-                TokenStyle::String => plain,
-                TokenStyle::Number | TokenStyle::Parameter => ui.visuals().warn_fg_color,
+                TokenStyle::String | TokenStyle::Number => {
+                    crate::appearance::Tokens::of(ui.ctx()).relationship
+                }
+                TokenStyle::Parameter => ui.visuals().warn_fg_color,
                 TokenStyle::Comment => ui.visuals().weak_text_color(),
                 _ => plain,
             };
@@ -98,6 +100,7 @@ fn highlighted(ui: &egui::Ui, text: &str, width: f32) -> std::sync::Arc<egui::Ga
                 egui::TextFormat {
                     font_id: crate::appearance::monospace(ui.ctx(), 14.0),
                     color,
+                    italics: token.style == TokenStyle::Comment,
                     ..Default::default()
                 },
             );
@@ -299,6 +302,30 @@ impl App {
                 Icon::Sql,
                 "Write SQL · Ctrl Enter to run",
             );
+        }
+        if output.response.has_focus()
+            && let Some(cursor) = output.cursor_range
+        {
+            let caret = output.galley.pos_from_cursor(cursor.primary);
+            let line = egui::Rect::from_min_max(
+                egui::pos2(
+                    output.response.rect.left(),
+                    output.galley_pos.y + caret.top(),
+                ),
+                egui::pos2(
+                    output.response.rect.right(),
+                    output.galley_pos.y + caret.bottom(),
+                ),
+            );
+            ui.painter()
+                .with_clip_rect(output.response.rect.intersect(ui.clip_rect()))
+                .rect_filled(
+                    line,
+                    0.0,
+                    crate::appearance::Tokens::of(ui.ctx())
+                        .primary
+                        .gamma_multiply(0.06),
+                );
         }
         self.document.tools.sql_focus = Some(output.response.id);
         if let Some(cursor) = output.cursor_range {

@@ -1232,7 +1232,7 @@ fn table_views_sidebar_and_transactions_fit_themes_and_scaled_viewports() {
                 }
                 if width == 1280.0 && !details && !sql && !structure {
                     assert!(
-                        app.ui.visible_rows >= 10,
+                        app.ui.visible_rows >= 9,
                         "{} fully visible rows",
                         app.ui.visible_rows
                     );
@@ -1704,7 +1704,7 @@ fn clipboard_grid_and_record_share_live_rows_without_overlays() {
         "columns {width} > grid {}",
         app.ui.grid_rect.width()
     );
-    assert!(app.ui.visible_rows >= 33, "{} rows", app.ui.visible_rows);
+    assert!(app.ui.visible_rows >= 30, "{} rows", app.ui.visible_rows);
     let data_id = app.document.id;
     app.open_record_window(0, 0);
     assert_eq!(app.workspace.active, tiling::Kind::Record);

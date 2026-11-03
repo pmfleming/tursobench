@@ -405,7 +405,11 @@ impl DiagramDrawing<'_> {
                         short(&col.declared_type, 12)
                     ),
                     crate::appearance::monospace(ui.ctx(), (12.0 * zoom).max(9.0)),
-                    ui.visuals().text_color(),
+                    if col.primary_key > 0 || !fk.is_empty() {
+                        crate::appearance::Tokens::of(ui.ctx()).relationship
+                    } else {
+                        ui.visuals().text_color()
+                    },
                 );
             }
             painter.text(
@@ -453,7 +457,7 @@ impl DiagramDrawing<'_> {
             zoom,
             ..
         } = *self;
-        let accent = ui.visuals().selection.stroke.color;
+        let accent = crate::appearance::Tokens::of(ui.ctx()).relationship;
         let index: BTreeMap<_, _> = graph
             .tables
             .iter()
@@ -506,12 +510,11 @@ impl DiagramDrawing<'_> {
                     let color = if highlighted {
                         accent
                     } else {
-                        ui.visuals().weak_text_color()
+                        accent.gamma_multiply(0.55)
                     };
-                    painter.add(egui::Shape::line(
-                        points,
-                        egui::Stroke::new(if highlighted { 2.0 } else { 1.0 }, color),
-                    ));
+                    painter.add(egui::Shape::line(points, egui::Stroke::new(1.6, color)));
+                    painter.circle_filled(start, 2.5, color);
+                    painter.circle_filled(end, 2.5, color);
                     if zoom >= 0.25 {
                         painter.arrow(
                             end + egui::vec2(end_side * 10.0, 0.0),
@@ -636,6 +639,21 @@ impl App {
         );
         let painter = ui.painter_at(canvas);
         painter.rect_filled(canvas, 4.0, ui.visuals().extreme_bg_color);
+        let tokens = crate::appearance::Tokens::of(ui.ctx());
+        let grid_origin = canvas.min
+            + egui::vec2(
+                self.ui.diagram.pan.x.rem_euclid(18.0),
+                self.ui.diagram.pan.y.rem_euclid(18.0),
+            );
+        let mut y = grid_origin.y;
+        while y < canvas.bottom() {
+            let mut x = grid_origin.x;
+            while x < canvas.right() {
+                painter.circle_filled(egui::pos2(x, y), 0.75, tokens.line);
+                x += 18.0;
+            }
+            y += 18.0;
+        }
         let bounds = layout
             .iter()
             .fold(egui::Rect::NOTHING, |r, (next, _)| r.union(*next));
@@ -708,9 +726,17 @@ impl App {
             }
             #[cfg(test)]
             self.ui.diagram.table_rects.push((node.name.clone(), r));
-            let painter = painter.with_clip_rect(r.intersect(canvas));
             let is_selected = self.ui.diagram.selected.as_ref() == Some(&node.name);
-            painter.rect_filled(r, 4.0, ui.visuals().panel_fill);
+            if is_selected {
+                painter.rect_stroke(
+                    r.expand(3.0),
+                    8.0,
+                    egui::Stroke::new(3.0, accent.gamma_multiply(0.13)),
+                    egui::StrokeKind::Outside,
+                );
+            }
+            let painter = painter.with_clip_rect(r.intersect(canvas));
+            painter.rect_filled(r, 7.0, ui.visuals().panel_fill);
             painter.rect_stroke(
                 r,
                 4.0,
@@ -720,8 +746,10 @@ impl App {
                     } else {
                         1.0
                     },
-                    if is_selected || relatives.contains(&node.name) {
+                    if is_selected {
                         accent
+                    } else if relatives.contains(&node.name) {
+                        tokens.relationship
                     } else {
                         ui.visuals().widgets.noninteractive.bg_stroke.color
                     },
@@ -729,7 +757,15 @@ impl App {
                 egui::StrokeKind::Inside,
             );
             let header = egui::Rect::from_min_size(r.min, egui::vec2(r.width(), 34.0 * zoom));
-            painter.rect_filled(header, 3.0, ui.visuals().selection.bg_fill);
+            painter.rect_filled(
+                header,
+                6.0,
+                if is_selected {
+                    ui.visuals().selection.bg_fill
+                } else {
+                    tokens.raised
+                },
+            );
             painter.text(
                 point(world.min + egui::vec2(10.0, 17.0)),
                 egui::Align2::LEFT_CENTER,

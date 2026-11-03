@@ -70,12 +70,32 @@ pub(super) fn empty_state(ui: &mut egui::Ui, icon: Icon, description: &str) {
 }
 
 pub(super) fn empty_state_at(ui: &mut egui::Ui, rect: egui::Rect, icon: Icon, description: &str) {
-    let size = (rect.width().min(rect.height()) - 16.0).clamp(0.0, 64.0);
+    let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+    let size = (rect.width().min(rect.height()) - 44.0).clamp(0.0, 40.0);
     if size <= 0.0 {
         return;
     }
-    let glyph = egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(size));
-    paint(ui.painter(), glyph, icon, ui.visuals().weak_text_color());
+    let glyph = egui::Rect::from_center_size(
+        rect.center() - egui::vec2(0.0, 12.0),
+        egui::Vec2::splat(size),
+    );
+    let tokens = crate::appearance::Tokens::of(ui.ctx());
+    painter.rect_filled(glyph.expand(8.0), 12.0, tokens.raised);
+    paint(&painter, glyph, icon, tokens.muted);
+    let galley = painter.layout(
+        description.to_owned(),
+        crate::appearance::proportional(ui.ctx(), 12.0),
+        tokens.muted,
+        (rect.width() - 24.0).max(1.0),
+    );
+    painter.galley(
+        egui::pos2(
+            rect.center().x - galley.size().x / 2.0,
+            glyph.bottom() + 15.0,
+        ),
+        galley,
+        tokens.muted,
+    );
     let response = ui.interact(
         glyph,
         ui.scope_id().with("empty-state"),

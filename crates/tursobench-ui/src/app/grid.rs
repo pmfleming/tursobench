@@ -23,7 +23,7 @@ impl App {
         {
             self.fk_cell_rect = None;
         }
-        ui.spacing_mut().item_spacing.y = 1.0;
+        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
         let grid_id = ui.scope_id().with("grid-keyboard");
         self.document.tools.grid_focus = Some(grid_id);
         let grid_response = ui.interact(
@@ -57,7 +57,7 @@ impl App {
             self.document.tools.dragging_selection = false;
         }
         let remaining =
-            (ui.available_height() - if self.workspace.enabled { 58.0 } else { 38.0 }).max(0.0);
+            (ui.available_height() - if self.workspace.enabled { 72.0 } else { 52.0 }).max(0.0);
         self.document.tools.grid_height = remaining;
         #[cfg(test)]
         {
@@ -90,14 +90,14 @@ impl App {
                     )
                     .id_salt("result-rows")
                     .max_height(remaining)
-                    .show_rows(ui, 24.0, self.document.result.rows.len(), |ui, range| {
+                    .show_rows(ui, 29.0, self.document.result.rows.len(), |ui, range| {
                         page_range = range.clone();
                         #[cfg(test)]
                         {
                             self.ui.visible_rows = range
                                 .clone()
                                 .filter(|r| {
-                                    (*r + 1) as f32 * (24.0 + ui.spacing().item_spacing.y)
+                                    (*r + 1) as f32 * (29.0 + ui.spacing().item_spacing.y)
                                         <= remaining
                                 })
                                 .count();
@@ -215,8 +215,9 @@ impl App {
     }
     fn grid_header(&mut self, ui: &mut egui::Ui) {
         let mut sort = None;
+        let tokens = crate::appearance::Tokens::of(ui.ctx());
         ui.horizontal(|ui|{
-                ui.add_sized([44.0,30.0],egui::Label::new("#"));
+                ui.add_sized([44.0,42.0],egui::Label::new("#"));
                 for i in self.visible_columns() {
                     let column=&self.document.result.columns[i];
                     let info=self.document.tools.inspection.as_ref().filter(|info|self.document.view==View::Browse&&self.document.table.as_ref().is_some_and(|t|t.name==info.table.name));
@@ -225,16 +226,20 @@ impl App {
                     let foreign=info.is_some_and(|info|info.foreign_keys.iter().any(|fk|fk.columns.iter().any(|(name,_)|name==&column.name)));
                     let tags=format!("{}{}{}",if pk>0{format!(" PK{pk}")}else{String::new()},if indexed{" IX"}else{""},if foreign{" FK"}else{""});
                     let sorted=self.document.browse.as_ref().filter(|b|b.sort==Some(i)).map_or("",|b|if b.descending{" descending"}else{" ascending"});
-                    let (rect,response)=ui.allocate_exact_size(egui::vec2(self.document.tools.columns.widths[i],30.0),egui::Sense::click_and_drag());
+                    let (rect,response)=ui.allocate_exact_size(egui::vec2(self.document.tools.columns.widths[i],42.0),egui::Sense::click_and_drag());
                     response.widget_info(||egui::WidgetInfo::labeled(egui::Role::Button,ui.is_enabled(),format!("Column {}{tags}{sorted}",column.name)));
                     let highlighted = self.document.tools.highlight_column.as_ref().is_some_and(|(table, name)| self.document.view == View::Browse && self.document.table.as_ref().is_some_and(|t| &t.name == table) && &column.name == name);
                     if highlighted && self.document.tools.scroll_to_column { ui.scroll_to_rect(rect, Some(egui::Align::Center)); self.document.tools.scroll_to_column = false; }
                     let painter=ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));painter.rect_filled(rect,2.0,if highlighted { ui.visuals().selection.bg_fill } else { ui.visuals().faint_bg_color });
                     let mut left=rect.left()+7.0;
                     for (show,icon) in [(pk>0,Icon::Key),(foreign,Icon::Link)] {
-                        if show { icons::paint(&painter,egui::Rect::from_min_size(egui::pos2(left,rect.center().y-6.0),egui::vec2(12.0,12.0)),icon,if foreign{ui.visuals().hyperlink_color}else{ui.visuals().warn_fg_color});left+=15.0; }
+                        if show { icons::paint(&painter,egui::Rect::from_min_size(egui::pos2(left,rect.top()+7.0),egui::vec2(12.0,12.0)),icon,tokens.relationship);left+=15.0; }
                     }
-                    painter.with_clip_rect(egui::Rect::from_min_max(rect.min,egui::pos2(rect.right()-if sorted.is_empty(){28.0}else{44.0},rect.bottom())).intersect(ui.clip_rect())).text(egui::pos2(left,rect.center().y),egui::Align2::LEFT_CENTER,&column.name,crate::appearance::proportional(ui.ctx(), 12.0),ui.visuals().text_color());
+                    painter.with_clip_rect(egui::Rect::from_min_max(rect.min,egui::pos2(rect.right()-if sorted.is_empty(){28.0}else{44.0},rect.bottom())).intersect(ui.clip_rect())).text(egui::pos2(left,rect.top()+14.0),egui::Align2::LEFT_CENTER,&column.name,crate::appearance::proportional(ui.ctx(), 12.0),ui.visuals().text_color());
+                    painter.text(egui::pos2(rect.left()+8.0,rect.top()+31.0),egui::Align2::LEFT_CENTER,column.declared_type.as_deref().unwrap_or("VALUE"),crate::appearance::monospace(ui.ctx(),9.5),tokens.faint);
+                    painter.hline(rect.x_range(),rect.bottom()-0.5,egui::Stroke::new(1.0,tokens.line_strong));
+                    painter.vline(rect.right()-0.5,rect.y_range(),egui::Stroke::new(1.0,tokens.line));
+                    if !sorted.is_empty() { painter.hline(rect.x_range(),rect.bottom()-1.0,egui::Stroke::new(2.0,tokens.primary)); }
                     if !sorted.is_empty(){icons::paint(&painter,egui::Rect::from_min_size(rect.right_top()+egui::vec2(-47.0,8.0),egui::vec2(12.0,12.0)),if self.document.browse.as_ref().is_some_and(|b|b.descending){Icon::Down}else{Icon::Up},ui.visuals().selection.stroke.color);}
                     let response=response.on_hover_text(format!("{} · {}\nPK = key position; IX = declared leading index; FK = foreign key. Index method/partial predicate may not apply. Drag the right edge or right-click to resize.",column.name,column.declared_type.as_deref().unwrap_or("runtime type")));
                     response.context_menu(|ui|{
@@ -252,7 +257,8 @@ impl App {
 
                     let funnel_rect=egui::Rect::from_min_size(rect.right_top()+egui::vec2(-24.0,5.0),egui::vec2(17.0,20.0));
                     let funnel=ui.interact(funnel_rect,ui.scope_id().with(("column-filter",i)),egui::Sense::click());
-                    icons::paint(ui.painter(),funnel_rect.shrink(2.0),Icon::Filter,ui.visuals().weak_text_color());
+                    let filtered = self.document.browse.as_ref().is_some_and(|b| b.filters.iter().any(|f| f.column == i));
+                    icons::paint(ui.painter(),funnel_rect.shrink(2.0),Icon::Filter,if filtered { tokens.primary } else { tokens.faint });
                     funnel.widget_info(||egui::WidgetInfo::labeled(egui::Role::Button,ui.is_enabled(),format!("Filter {}",column.name)));
                     egui::Popup::menu(&funnel).show(|ui|self.column_facets(ui,i));
                     let handle=egui::Rect::from_min_max(egui::pos2(rect.right()-6.0,rect.top()),rect.right_bottom());
@@ -306,14 +312,37 @@ impl App {
             } else {
                 ""
             };
-            ui.add_sized(
-                [44.0, 24.0],
+            let tokens = crate::appearance::Tokens::of(ui.ctx());
+            let marker_color = if deleted {
+                ui.visuals().error_fg_color
+            } else if modified {
+                tokens.pending
+            } else {
+                tokens.faint
+            };
+            let gutter = ui.add_sized(
+                [44.0, 29.0],
                 egui::Label::new(
                     egui::RichText::new(format!("{marker}{}", offset + row + 1))
+                        .color(marker_color)
                         .monospace()
                         .small(),
                 ),
             );
+            if deleted || modified || self.document.inspect.is_some_and(|(r, _)| r == row) {
+                ui.painter().vline(
+                    gutter.rect.left() + 1.5,
+                    gutter.rect.y_range(),
+                    egui::Stroke::new(
+                        3.0,
+                        if deleted || modified {
+                            marker_color
+                        } else {
+                            tokens.primary
+                        },
+                    ),
+                );
+            }
             for col in self.visible_columns() {
                 if let Some(next) = self.grid_cell(ui, row, col, deleted, offset, editable) {
                     action = Some(next);
@@ -347,9 +376,9 @@ impl App {
             Value::Real(n) => format!("{n:?}"),
             _ => displayed.preview(),
         };
-        let fill = cell_fill(ui.visuals(), deleted, staged.is_some(), row);
+        let fill = cell_fill(ui, deleted, staged.is_some(), row);
         let (rect, response) = ui.allocate_exact_size(
-            egui::vec2(self.document.tools.columns.widths[col], 24.0),
+            egui::vec2(self.document.tools.columns.widths[col], 29.0),
             egui::Sense::click_and_drag(),
         );
         response.widget_info(|| {
@@ -408,7 +437,8 @@ impl App {
                 egui::StrokeKind::Inside,
             );
         }
-        self.document
+        let styled = self
+            .document
             .tools
             .columns
             .visuals
@@ -417,8 +447,11 @@ impl App {
             .unwrap_or_default()
             .paint(ui, rect, &self.document.result.columns[col].name, displayed);
         let numeric = matches!(displayed, Value::Integer(_) | Value::Real(_));
-        let color = if !references.is_empty() {
-            ui.visuals().hyperlink_color
+        let tokens = crate::appearance::Tokens::of(ui.ctx());
+        let color = if deleted {
+            ui.visuals().error_fg_color
+        } else if !references.is_empty() {
+            tokens.relationship
         } else if matches!(displayed, Value::Null) {
             ui.visuals().weak_text_color()
         } else {
@@ -439,15 +472,26 @@ impl App {
         } else {
             rect.left_center() + egui::vec2(7.0, -galley.size().y * 0.5)
         };
-        painter.galley(position, galley, color);
+        if !styled {
+            painter.galley(position, galley, color);
+        }
+        painter.hline(
+            rect.x_range(),
+            rect.bottom() - 0.5,
+            egui::Stroke::new(1.0, tokens.line_soft),
+        );
+        painter.vline(
+            rect.right() - 0.5,
+            rect.y_range(),
+            egui::Stroke::new(1.0, tokens.line_soft),
+        );
         if !references.is_empty() {
-            painter.line_segment(
-                [
-                    rect.left_bottom() + egui::vec2(7.0, -3.0),
-                    rect.right_bottom() + egui::vec2(-7.0, -3.0),
-                ],
-                egui::Stroke::new(0.5, color),
-            );
+            let end = rect.right() - 7.0;
+            let mut x = rect.left() + 7.0;
+            while x < end {
+                painter.circle_filled(egui::pos2(x, rect.bottom() - 4.0), 0.65, color);
+                x += 3.0;
+            }
             #[cfg(test)]
             {
                 self.fk_cell_rect = Some(rect);
@@ -462,11 +506,18 @@ impl App {
                 egui::Stroke::new(1.0, ui.visuals().error_fg_color),
             );
         }
-        if staged.is_some() {
-            painter.circle_filled(
-                rect.left_top() + egui::vec2(3.0, 3.0),
-                2.0,
-                ui.visuals().warn_fg_color,
+        if staged.is_some() || deleted {
+            painter.vline(
+                rect.left() + 1.5,
+                rect.y_range(),
+                egui::Stroke::new(
+                    3.0,
+                    if deleted {
+                        ui.visuals().error_fg_color
+                    } else {
+                        tokens.pending
+                    },
+                ),
             );
         }
         #[cfg(test)]
@@ -622,13 +673,19 @@ impl App {
     }
 }
 
-fn cell_fill(visuals: &egui::Visuals, deleted: bool, staged: bool, row: usize) -> egui::Color32 {
-    match (deleted, staged, visuals.dark_mode) {
-        (true, _, true) => egui::Color32::from_rgb(61, 28, 27),
-        (true, _, false) => egui::Color32::from_rgb(246, 218, 216),
-        (false, true, true) => egui::Color32::from_rgb(58, 42, 18),
-        (false, true, false) => egui::Color32::from_rgb(249, 232, 201),
-        _ if row.is_multiple_of(2) => visuals.faint_bg_color,
-        _ => visuals.extreme_bg_color,
+fn cell_fill(ui: &egui::Ui, deleted: bool, staged: bool, row: usize) -> egui::Color32 {
+    let surface = ui.visuals().extreme_bg_color;
+    if deleted {
+        crate::appearance::mix(surface, ui.visuals().error_fg_color, 0.13)
+    } else if staged {
+        crate::appearance::mix(
+            surface,
+            crate::appearance::Tokens::of(ui.ctx()).pending,
+            0.13,
+        )
+    } else if row.is_multiple_of(2) {
+        crate::appearance::mix(surface, ui.visuals().text_color(), 0.025)
+    } else {
+        surface
     }
 }

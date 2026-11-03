@@ -202,7 +202,8 @@ fn filter_chips(
                             f.value.preview()
                         }
                     );
-                    let chip = ui.button(label);
+                    let color = crate::appearance::Tokens::of(ui.ctx()).primary;
+                    let chip = super::presentation::chip(ui, &label, color);
                     if chip.clicked() {
                         *editor = Some(FilterEditor::new(i, f));
                     }

@@ -168,36 +168,50 @@ impl App {
     }
     pub(super) fn staged_edit_dock(&mut self, ui: &mut egui::Ui) {
         let count = self.document.drafts.as_ref().map_or(0, |d| d.edits.len());
-        ui.horizontal_wrapped(|ui| {
-            ui.strong(format!("{count} staged"));
-            if ui
-                .add_enabled(self.can_edit() && count > 0, egui::Button::new("Commit"))
-                .clicked()
-            {
-                self.commit_drafts();
-            }
-            if ui.button("Diff / SQL").clicked() {
-                self.document.show_preview = true;
-            }
-            if ui
-                .add_enabled(
-                    self.commit_ticket.is_none() && !self.uncertain_edit,
-                    egui::Button::new("Discard"),
-                )
-                .clicked()
-            {
-                self.document.drafts = None;
-            }
-            if self.commit_ticket.is_some() {
-                ui.small("Committing…");
-            }
-            if self.uncertain_edit {
-                ui.colored_label(
-                    ui.visuals().error_fg_color,
-                    "Outcome unknown — inspect before retrying",
-                );
-            }
-        });
+        let tokens = crate::appearance::Tokens::of(ui.ctx());
+        egui::Frame::new()
+            .fill(tokens.pending.gamma_multiply(0.08))
+            .inner_margin(8.0)
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(tokens.pending, format!("{count} staged"));
+                    if ui
+                        .add_enabled(
+                            self.can_edit() && count > 0,
+                            egui::Button::new(egui::RichText::new("Commit").color(tokens.pending))
+                                .fill(tokens.pending.gamma_multiply(0.13))
+                                .stroke(egui::Stroke::new(
+                                    1.0,
+                                    tokens.pending.gamma_multiply(0.48),
+                                )),
+                        )
+                        .clicked()
+                    {
+                        self.commit_drafts();
+                    }
+                    if ui.button("Diff / SQL").clicked() {
+                        self.document.show_preview = true;
+                    }
+                    if ui
+                        .add_enabled(
+                            self.commit_ticket.is_none() && !self.uncertain_edit,
+                            egui::Button::new("Discard"),
+                        )
+                        .clicked()
+                    {
+                        self.document.drafts = None;
+                    }
+                    if self.commit_ticket.is_some() {
+                        ui.small("Committing…");
+                    }
+                    if self.uncertain_edit {
+                        ui.colored_label(
+                            ui.visuals().error_fg_color,
+                            "Outcome unknown — inspect before retrying",
+                        );
+                    }
+                });
+            });
     }
     pub(super) fn commit_drafts(&mut self) {
         if !self.can_edit() || !self.has_drafts() {
@@ -238,7 +252,7 @@ fn edit_diff(ui: &mut egui::Ui, table: &tursobench_core::Table, edit: &Edit) {
             }
             ui.label("->");
             ui.colored_label(
-                ui.visuals().hyperlink_color,
+                crate::appearance::Tokens::of(ui.ctx()).pending,
                 after.map_or_else(|| "DEFAULT / removed".into(), Value::preview),
             );
         });
