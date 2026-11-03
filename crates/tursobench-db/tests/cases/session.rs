@@ -90,7 +90,23 @@ fn parser_not_semicolon_splitting() {
 #[test]
 fn real_readonly_bounded_results_and_cleanup() {
     let (_dir, path) = fixture();
-    let s = common::opened(&path, Access::ReadOnly);
+    use std::sync::{
+        Arc, Barrier,
+        atomic::{AtomicBool, Ordering},
+    };
+    let gate = Arc::new(Barrier::new(2));
+    let armed = Arc::new(AtomicBool::new(false));
+    let s = Session::open(path, Access::ReadOnly, true, {
+        let gate = gate.clone();
+        let armed = armed.clone();
+        move || {
+            if armed.swap(false, Ordering::AcqRel) {
+                gate.wait();
+            }
+        }
+    })
+    .unwrap();
+    assert!(matches!(common::event(&s).kind, EventKind::Opened));
     let r = run(&s, 1, "SELECT * FROM items ORDER BY id", Budget::default());
     assert_eq!(r.rows.len(), 2);
     assert_eq!(r.rows[1][1], Value::Null);
@@ -170,6 +186,23 @@ fn real_readonly_bounded_results_and_cleanup() {
         .result;
         assert_eq!(r.completion.unwrap().error.unwrap().kind, ErrorKind::Input);
     }
+    // Hold the worker inside the wake callback after its terminal event is visible.
+    // Reusing the ID must succeed even before that callback returns.
+    armed.store(true, Ordering::Release);
+    assert!(
+        run(&s, 30, "?", Budget::default())
+            .completion
+            .unwrap()
+            .error
+            .is_some()
+    );
+    let reused = s.submit(Request {
+        ticket: s.ticket(30, 0),
+        operation: Operation::Schema,
+    });
+    gate.wait();
+    reused.unwrap();
+    while !matches!(common::event(&s).kind, EventKind::Finished(_)) {}
     s.close();
     assert!(matches!(
         s.events.recv_timeout(Duration::from_secs(5)).unwrap().kind,

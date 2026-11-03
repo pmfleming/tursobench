@@ -1,10 +1,85 @@
-use super::{App, Chooser};
+use super::{App, Chooser, Entry};
 use eframe::egui;
+use std::{path::Path, path::PathBuf};
 
 const SEARCH_ID: &str = "database-search";
 const ROW_HEIGHT: f32 = 60.0;
 
 impl Chooser {
+    fn rows_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        filtered: &[usize],
+        path: &str,
+        picker_active: bool,
+    ) -> (Option<PathBuf>, Option<PathBuf>) {
+        let mut selected = None;
+        let mut forget = None;
+        #[cfg(test)]
+        {
+            self.row_rects.clear();
+        }
+        if filtered.is_empty() {
+            ui.add_space(16.0);
+            ui.label(if self.entries.is_empty() {
+                "No databases found yet"
+            } else {
+                "No matching databases"
+            });
+            ui.small("Browse files or enter a database path below.");
+            ui.add_space(16.0);
+        } else {
+            // Leave the access review and primary action visible on laptop screens.
+            let reserve = if ui.available_width() < 400.0 || path.is_empty() {
+                110.0
+            } else {
+                410.0
+            };
+            let minimum = if path.is_empty() { 96.0 } else { ROW_HEIGHT };
+            let height = (ui.available_height() - reserve).clamp(minimum, 360.0);
+            let stride = ROW_HEIGHT + ui.spacing().item_spacing.y;
+            let mut scroll = egui::ScrollArea::vertical()
+                .id_salt("database-candidates")
+                .max_height(height)
+                .auto_shrink([false, true]);
+            if std::mem::take(&mut self.reveal_highlight) {
+                if let Some(index) = filtered
+                    .iter()
+                    .position(|&i| Some(&self.entries[i].path) == self.highlighted.as_ref())
+                {
+                    let top = index as f32 * stride;
+                    if top < self.list_offset {
+                        self.list_offset = top;
+                    }
+                    if top + ROW_HEIGHT > self.list_offset + height {
+                        self.list_offset = (top + ROW_HEIGHT - height).max(0.0);
+                    }
+                }
+                scroll = scroll.vertical_scroll_offset(self.list_offset);
+            }
+            let output = scroll.show_rows(ui, ROW_HEIGHT, filtered.len(), |ui, range| {
+                for &index in &filtered[range] {
+                    let entry = &self.entries[index];
+                    let highlighted = self.highlighted.as_ref() == Some(&entry.path);
+                    let selected_path = Path::new(path) == entry.path;
+                    let available = entry.selectable() && !picker_active;
+                    let (response, forget_clicked) =
+                        entry.row_ui(ui, selected_path, highlighted && self.navigating, available);
+                    #[cfg(test)]
+                    self.row_rects.push((entry.path.clone(), response.rect));
+                    if response.clicked() && available {
+                        selected = Some(entry.path.clone());
+                    }
+                    if forget_clicked {
+                        forget = Some(entry.path.clone());
+                    }
+                }
+            });
+            self.list_offset = output.state.offset.y;
+        }
+        (selected, forget)
+    }
+
     fn filtered(&self) -> Vec<usize> {
         let query = self.filter.to_lowercase();
         self.entries
@@ -151,34 +226,36 @@ impl App {
             egui::pos2(rect.left() + 46.0, rect.center().y - 14.0),
             egui::pos2(rect.right() - 12.0, rect.center().y + 14.0),
         );
-        let before = self.databases.filter.clone();
-        ui.scope(|ui| {
-            // The result marker owns browsing focus; hide the retained editor's
-            // caret until typing or Up from the first result returns to search.
-            if self.databases.navigating {
-                ui.visuals_mut().text_cursor.stroke.color = egui::Color32::TRANSPARENT;
-            }
-            let response = ui.put(
-                edit_rect,
-                egui::TextEdit::singleline(&mut self.databases.filter)
-                    .id(id)
-                    .frame(egui::Frame::NONE)
-                    .font(egui::FontId::proportional(16.0))
-                    .margin(egui::Margin::ZERO)
-                    .event_filter(egui::EventFilter {
-                        vertical_arrows: true,
-                        horizontal_arrows: true,
-                        escape: true,
-                        tab: false,
-                    })
-                    .hint_text("Search databases…")
-                    .char_limit(256),
-            );
-            if response.clicked() {
-                self.databases.navigating = false;
-            }
-        });
-        if before != self.databases.filter {
+        let changed = ui
+            .scope(|ui| {
+                // The result marker owns browsing focus; hide the retained editor's
+                // caret until typing or Up from the first result returns to search.
+                if self.databases.navigating {
+                    ui.visuals_mut().text_cursor.stroke.color = egui::Color32::TRANSPARENT;
+                }
+                let response = ui.put(
+                    edit_rect,
+                    egui::TextEdit::singleline(&mut self.databases.filter)
+                        .id(id)
+                        .frame(egui::Frame::NONE)
+                        .font(egui::FontId::proportional(16.0))
+                        .margin(egui::Margin::ZERO)
+                        .event_filter(egui::EventFilter {
+                            vertical_arrows: true,
+                            horizontal_arrows: true,
+                            escape: true,
+                            tab: false,
+                        })
+                        .hint_text("Search databases…")
+                        .char_limit(256),
+                );
+                if response.clicked() {
+                    self.databases.navigating = false;
+                }
+                response.changed()
+            })
+            .inner;
+        if changed {
             self.databases.highlighted = None;
             self.databases.navigating = false;
             self.databases.list_offset = 0.0;
@@ -241,198 +318,9 @@ impl App {
         }
         ui.add_space(6.0);
 
-        let mut selected = None;
-        let mut forget = None;
-        #[cfg(test)]
-        {
-            self.databases.row_rects.clear();
-        }
-        if filtered.is_empty() {
-            ui.add_space(16.0);
-            ui.label(if self.databases.entries.is_empty() {
-                "No databases found yet"
-            } else {
-                "No matching databases"
-            });
-            ui.small("Browse files or enter a database path below.");
-            ui.add_space(16.0);
-        } else {
-            // Leave the access review and primary action visible on laptop screens.
-            let reserve = if ui.available_width() < 400.0 || self.path.is_empty() {
-                110.0
-            } else {
-                410.0
-            };
-            let minimum = if self.path.is_empty() {
-                96.0
-            } else {
-                ROW_HEIGHT
-            };
-            let height = (ui.available_height() - reserve).clamp(minimum, 360.0);
-            let stride = ROW_HEIGHT + ui.spacing().item_spacing.y;
-            let mut scroll = egui::ScrollArea::vertical()
-                .id_salt("database-candidates")
-                .max_height(height)
-                .auto_shrink([false, true]);
-            if std::mem::take(&mut self.databases.reveal_highlight) {
-                if let Some(index) = filtered.iter().position(|&i| {
-                    Some(&self.databases.entries[i].path) == self.databases.highlighted.as_ref()
-                }) {
-                    let top = index as f32 * stride;
-                    if top < self.databases.list_offset {
-                        self.databases.list_offset = top;
-                    }
-                    if top + ROW_HEIGHT > self.databases.list_offset + height {
-                        self.databases.list_offset = (top + ROW_HEIGHT - height).max(0.0);
-                    }
-                }
-                scroll = scroll.vertical_scroll_offset(self.databases.list_offset);
-            }
-            let output = scroll.show_rows(ui, ROW_HEIGHT, filtered.len(), |ui, range| {
-                for &index in &filtered[range] {
-                    let entry = &self.databases.entries[index];
-                    let highlighted = self.databases.highlighted.as_ref() == Some(&entry.path);
-                    let selected_path = std::path::Path::new(&self.path) == entry.path;
-                    let available = entry.selectable() && self.picker.is_none();
-                    let (rect, _) = ui.allocate_exact_size(
-                        egui::vec2(ui.available_width(), ROW_HEIGHT),
-                        egui::Sense::hover(),
-                    );
-                    let response =
-                        ui.interact(rect, ui.id().with(&entry.path), egui::Sense::click());
-                    response.widget_info(|| {
-                        egui::WidgetInfo::selected(
-                            egui::WidgetType::SelectableLabel,
-                            available,
-                            selected_path,
-                            format!("{} · {}", entry.path.display(), entry.kind.label()),
-                        )
-                    });
-                    let fill = if selected_path {
-                        ui.visuals().selection.bg_fill
-                    } else if response.hovered() || (highlighted && self.databases.navigating) {
-                        ui.visuals().widgets.hovered.weak_bg_fill
-                    } else {
-                        ui.visuals().faint_bg_color
-                    };
-                    ui.painter().rect_filled(rect, 10.0, fill);
-                    if highlighted
-                        && self.databases.navigating
-                        && ui.memory(|m| m.has_focus(egui::Id::new(SEARCH_ID)))
-                    {
-                        ui.painter().rect_filled(
-                            egui::Rect::from_min_size(
-                                rect.left_top() + egui::vec2(3.0, 13.0),
-                                egui::vec2(3.0, 34.0),
-                            ),
-                            2.0,
-                            ui.visuals().selection.stroke.color,
-                        );
-                    }
-                    let color = if available {
-                        ui.visuals().text_color()
-                    } else {
-                        ui.visuals().weak_text_color()
-                    };
-                    let icon = egui::Rect::from_center_size(
-                        egui::pos2(rect.left() + 30.0, rect.center().y),
-                        egui::vec2(32.0, 32.0),
-                    );
-                    ui.painter()
-                        .rect_filled(icon, 9.0, ui.visuals().widgets.inactive.weak_bg_fill);
-                    let kind_color = match entry.kind {
-                        crate::discovery::DatabaseKind::LikelyTurso => ui.visuals().hyperlink_color,
-                        crate::discovery::DatabaseKind::LikelySqlite => ui.visuals().warn_fg_color,
-                        crate::discovery::DatabaseKind::Unknown => color,
-                    };
-                    database_icon(ui.painter(), icon.shrink(6.0), kind_color, entry.kind);
-                    let name = entry
-                        .path
-                        .file_name()
-                        .unwrap_or(entry.path.as_os_str())
-                        .to_string_lossy();
-                    let title = egui::WidgetText::from(egui::RichText::new(name).size(15.0));
-                    let subtitle = egui::WidgetText::from(
-                        egui::RichText::new(
-                            entry.path.parent().unwrap_or(&entry.path).to_string_lossy(),
-                        )
-                        .size(12.0),
-                    );
-                    let width = (rect.width() - 76.0).max(0.0);
-                    let badge_color = if entry.selectable() {
-                        ui.visuals().weak_text_color()
-                    } else {
-                        ui.visuals().warn_fg_color
-                    };
-                    let badge =
-                        egui::WidgetText::from(egui::RichText::new(entry.badge()).size(12.0))
-                            .into_galley(
-                                ui,
-                                Some(egui::TextWrapMode::Truncate),
-                                width * 0.45,
-                                egui::TextStyle::Small,
-                            );
-                    let title_width = (width - badge.size().x - 12.0).max(0.0);
-                    ui.painter().galley(
-                        egui::pos2(rect.right() - 16.0 - badge.size().x, rect.top() + 13.0),
-                        badge,
-                        badge_color,
-                    );
-                    ui.painter().galley(
-                        rect.left_top() + egui::vec2(58.0, 11.0),
-                        title.into_galley(
-                            ui,
-                            Some(egui::TextWrapMode::Truncate),
-                            title_width,
-                            egui::TextStyle::Body,
-                        ),
-                        color,
-                    );
-                    ui.painter().galley(
-                        rect.left_top() + egui::vec2(58.0, 33.0),
-                        subtitle.into_galley(
-                            ui,
-                            Some(egui::TextWrapMode::Truncate),
-                            width,
-                            egui::TextStyle::Small,
-                        ),
-                        ui.visuals().weak_text_color(),
-                    );
-                    #[cfg(test)]
-                    {
-                        self.databases.row_rects.push((entry.path.clone(), rect));
-                    }
-                    if response.clicked() && available {
-                        selected = Some(entry.path.clone());
-                    }
-                    response.context_menu(|ui| {
-                        ui.label(entry.label());
-                        ui.label(entry.kind.label());
-                        ui.small(entry.kind.explanation());
-                        if let Some(bytes) = entry.size {
-                            ui.small(format!("{} KiB", bytes.div_ceil(1024)));
-                        }
-                        if ui.button("Forget database").clicked() {
-                            forget = Some(entry.path.clone());
-                            ui.close();
-                        }
-                    });
-                    response.on_hover_text(format!(
-                        "{}\n{}\n{}: {}{}",
-                        entry.path.display(),
-                        entry.label(),
-                        entry.kind.label(),
-                        entry.kind.explanation(),
-                        if entry.path.to_str().is_none() {
-                            " · path unsupported by engine"
-                        } else {
-                            ""
-                        }
-                    ));
-                }
-            });
-            self.databases.list_offset = output.state.offset.y;
-        }
+        let (selected, forget) =
+            self.databases
+                .rows_ui(ui, &filtered, &self.path, self.picker.is_some());
         if let Some(path) = selected {
             self.databases.highlighted = Some(path.clone());
             self.databases.navigating = true;
@@ -442,6 +330,10 @@ impl App {
         if let Some(path) = forget {
             self.forget_database(&path);
         }
+        self.database_search_status(ui, filtered.len());
+    }
+
+    fn database_search_status(&mut self, ui: &mut egui::Ui, count: usize) {
         ui.horizontal_wrapped(|ui| {
             if self.databases.job.is_some() {
                 ui.spinner();
@@ -453,8 +345,8 @@ impl App {
             } else {
                 ui.small(format!(
                     "{} database{}",
-                    filtered.len(),
-                    if filtered.len() == 1 { "" } else { "s" }
+                    count,
+                    if count == 1 { "" } else { "s" }
                 ));
             }
             if ui.available_width() > 400.0 {
@@ -521,4 +413,138 @@ fn database_icon(
         egui::FontId::proportional(13.0),
         color,
     );
+}
+
+impl Entry {
+    fn row_ui(
+        &self,
+        ui: &mut egui::Ui,
+        selected_path: bool,
+        highlighted: bool,
+        available: bool,
+    ) -> (egui::Response, bool) {
+        let mut forget = false;
+        let (rect, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), ROW_HEIGHT),
+            egui::Sense::hover(),
+        );
+        let response = ui.interact(rect, ui.id().with(&self.path), egui::Sense::click());
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(
+                egui::WidgetType::SelectableLabel,
+                available,
+                selected_path,
+                format!("{} · {}", self.path.display(), self.kind.label()),
+            )
+        });
+        let fill = if selected_path {
+            ui.visuals().selection.bg_fill
+        } else if response.hovered() || (highlighted) {
+            ui.visuals().widgets.hovered.weak_bg_fill
+        } else {
+            ui.visuals().faint_bg_color
+        };
+        ui.painter().rect_filled(rect, 10.0, fill);
+        if highlighted && ui.memory(|m| m.has_focus(egui::Id::new(SEARCH_ID))) {
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(
+                    rect.left_top() + egui::vec2(3.0, 13.0),
+                    egui::vec2(3.0, 34.0),
+                ),
+                2.0,
+                ui.visuals().selection.stroke.color,
+            );
+        }
+        let color = if available {
+            ui.visuals().text_color()
+        } else {
+            ui.visuals().weak_text_color()
+        };
+        let icon = egui::Rect::from_center_size(
+            egui::pos2(rect.left() + 30.0, rect.center().y),
+            egui::vec2(32.0, 32.0),
+        );
+        ui.painter()
+            .rect_filled(icon, 9.0, ui.visuals().widgets.inactive.weak_bg_fill);
+        let kind_color = match self.kind {
+            crate::discovery::DatabaseKind::LikelyTurso => ui.visuals().hyperlink_color,
+            crate::discovery::DatabaseKind::LikelySqlite => ui.visuals().warn_fg_color,
+            crate::discovery::DatabaseKind::Unknown => color,
+        };
+        database_icon(ui.painter(), icon.shrink(6.0), kind_color, self.kind);
+        let name = self
+            .path
+            .file_name()
+            .unwrap_or(self.path.as_os_str())
+            .to_string_lossy();
+        let title = egui::WidgetText::from(egui::RichText::new(name).size(15.0));
+        let subtitle = egui::WidgetText::from(
+            egui::RichText::new(self.path.parent().unwrap_or(&self.path).to_string_lossy())
+                .size(12.0),
+        );
+        let width = (rect.width() - 76.0).max(0.0);
+        let badge_color = if self.selectable() {
+            ui.visuals().weak_text_color()
+        } else {
+            ui.visuals().warn_fg_color
+        };
+        let badge = egui::WidgetText::from(egui::RichText::new(self.badge()).size(12.0))
+            .into_galley(
+                ui,
+                Some(egui::TextWrapMode::Truncate),
+                width * 0.45,
+                egui::TextStyle::Small,
+            );
+        let title_width = (width - badge.size().x - 12.0).max(0.0);
+        ui.painter().galley(
+            egui::pos2(rect.right() - 16.0 - badge.size().x, rect.top() + 13.0),
+            badge,
+            badge_color,
+        );
+        ui.painter().galley(
+            rect.left_top() + egui::vec2(58.0, 11.0),
+            title.into_galley(
+                ui,
+                Some(egui::TextWrapMode::Truncate),
+                title_width,
+                egui::TextStyle::Body,
+            ),
+            color,
+        );
+        ui.painter().galley(
+            rect.left_top() + egui::vec2(58.0, 33.0),
+            subtitle.into_galley(
+                ui,
+                Some(egui::TextWrapMode::Truncate),
+                width,
+                egui::TextStyle::Small,
+            ),
+            ui.visuals().weak_text_color(),
+        );
+        response.context_menu(|ui| {
+            ui.label(self.label());
+            ui.label(self.kind.label());
+            ui.small(self.kind.explanation());
+            if let Some(bytes) = self.size {
+                ui.small(format!("{} KiB", bytes.div_ceil(1024)));
+            }
+            if ui.button("Forget database").clicked() {
+                forget = true;
+                ui.close();
+            }
+        });
+        let response = response.on_hover_text(format!(
+            "{}\n{}\n{}: {}{}",
+            self.path.display(),
+            self.label(),
+            self.kind.label(),
+            self.kind.explanation(),
+            if self.path.to_str().is_none() {
+                " · path unsupported by engine"
+            } else {
+                ""
+            }
+        ));
+        (response, forget)
+    }
 }

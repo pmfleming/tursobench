@@ -259,6 +259,70 @@ impl App {
             ui.close();
         }
     }
+    fn ribbon_more(&mut self, ui: &mut egui::Ui, actions: &[(Action, Icon, &str)], compact: bool) {
+        use Action::*;
+        for &(a, _, label) in actions {
+            self.ribbon_menu_action(ui, a, label);
+        }
+        ui.separator();
+        match self.document.kind {
+            Kind::Data | Kind::Result => {
+                for (a, l) in [
+                    (Inspect, "Inspect selected record · Space"),
+                    (ShowColumns, "Show all columns"),
+                    (CopyRows, "Copy retained rows · Ctrl Shift C"),
+                    (Count, "Count table rows (full scan)"),
+                    (Insert, "New row (staged)"),
+                ] {
+                    self.ribbon_menu_action(ui, a, l);
+                }
+                ui.menu_button("Visible columns", |ui| {
+                    let hidden = &mut self.document.tools.columns.hidden;
+                    for (i, column) in self.document.result.columns.iter().enumerate() {
+                        let mut shown = !hidden.contains(&i);
+                        if ui.checkbox(&mut shown, &column.name).changed() {
+                            if shown {
+                                hidden.remove(&i);
+                            } else {
+                                hidden.insert(i);
+                            }
+                        }
+                    }
+                });
+            }
+            Kind::Map => {
+                for (a, l) in [
+                    (Refresh, "Refresh schema"),
+                    (SystemTables, "Toggle system tables"),
+                    (Zoom100, "Reset zoom to 100%"),
+                ] {
+                    self.ribbon_menu_action(ui, a, l);
+                }
+            }
+            Kind::Sql => {
+                for (a, l) in [
+                    (RunSelection, "Run selection · Ctrl Shift Enter"),
+                    (Bytecode, "Explain bytecode"),
+                    (Completion, "Completions · Ctrl Space"),
+                    (SaveSql, "Save query · Ctrl S"),
+                    (NewSql, "New SQL editor"),
+                    (Begin, "Begin editor transaction"),
+                ] {
+                    self.ribbon_menu_action(ui, a, l);
+                }
+            }
+            _ => {}
+        }
+        self.window_move_menu(ui, self.workspace.focused);
+        if compact {
+            ui.separator();
+            self.ribbon_menu_action(ui, Retile, "Retile windows");
+        }
+        if self.executing() {
+            ui.separator();
+            self.ribbon_menu_action(ui, Discard, "Discard result delivery (execution continues)");
+        }
+    }
     pub(super) fn command_ribbon(&mut self, ui: &mut egui::Ui) {
         use Action::*;
         egui::Panel::top("command-ribbon")
@@ -314,38 +378,7 @@ impl App {
                                 .truncate(),
                         );
                         ui.horizontal(|ui| {
-                            let actions: Vec<_> = match self.document.kind {
-                                Kind::Data => vec![
-                                    (Refresh, Icon::Refresh, "Refresh"),
-                                    (Filter, Icon::Filter, "Filter"),
-                                    (FitColumns, Icon::Columns, "Fit columns"),
-                                    (Export, Icon::Export, "Export"),
-                                ],
-                                Kind::Result => vec![
-                                    (Export, Icon::Export, "Export"),
-                                    (CopyRows, Icon::Copy, "Copy rows"),
-                                    (FitColumns, Icon::Columns, "Fit columns"),
-                                ],
-                                Kind::Structure => vec![
-                                    (CopyDdl, Icon::Copy, "Copy DDL"),
-                                    (Refresh, Icon::Refresh, "Refresh"),
-                                ],
-                                Kind::Map => vec![
-                                    (FitMap, Icon::Fit, "Fit map"),
-                                    (ArrangeMap, Icon::Arrange, "Arrange nodes"),
-                                    (MapColumns, Icon::Columns, "Columns"),
-                                    (Find, Icon::Search, "Find"),
-                                ],
-                                Kind::Sql => vec![
-                                    (Run, Icon::Sql, "Run"),
-                                    (Explain, Icon::Explain, "Explain"),
-                                    (Parameters, Icon::Parameters, "Parameters"),
-                                ],
-                                Kind::Record => vec![
-                                    (CopyValue, Icon::Copy, "Copy value"),
-                                    (Export, Icon::Export, "Export record"),
-                                ],
-                            };
+                            let actions = self.document.kind.ribbon_actions();
                             for (a, i, l) in actions.iter().take(if wide {
                                 actions.len()
                             } else if narrow {
@@ -356,87 +389,8 @@ impl App {
                                 self.ribbon_action(ui, *a, *i, l);
                             }
                             let more = icons::action(ui, Icon::More, "More");
-                            egui::Popup::menu(&more).show(|ui| {
-                                for (a, _, label) in actions {
-                                    self.ribbon_menu_action(ui, a, label);
-                                }
-                                ui.separator();
-                                match self.document.kind {
-                                    Kind::Data | Kind::Result => {
-                                        for (a, l) in [
-                                            (Inspect, "Inspect selected record · Space"),
-                                            (ShowColumns, "Show all columns"),
-                                            (CopyRows, "Copy retained rows · Ctrl Shift C"),
-                                            (Count, "Count table rows (full scan)"),
-                                            (Insert, "New row (staged)"),
-                                        ] {
-                                            self.ribbon_menu_action(ui, a, l);
-                                        }
-                                        ui.menu_button("Visible columns", |ui| {
-                                            for (i, column) in
-                                                self.document.result.columns.iter().enumerate()
-                                            {
-                                                let mut shown = !self
-                                                    .document
-                                                    .tools
-                                                    .columns
-                                                    .hidden
-                                                    .contains(&i);
-                                                if ui.checkbox(&mut shown, &column.name).changed() {
-                                                    if shown {
-                                                        self.document
-                                                            .tools
-                                                            .columns
-                                                            .hidden
-                                                            .remove(&i);
-                                                    } else {
-                                                        self.document
-                                                            .tools
-                                                            .columns
-                                                            .hidden
-                                                            .insert(i);
-                                                    }
-                                                }
-                                            }
-                                        });
-                                    }
-                                    Kind::Map => {
-                                        for (a, l) in [
-                                            (Refresh, "Refresh schema"),
-                                            (SystemTables, "Toggle system tables"),
-                                            (Zoom100, "Reset zoom to 100%"),
-                                        ] {
-                                            self.ribbon_menu_action(ui, a, l);
-                                        }
-                                    }
-                                    Kind::Sql => {
-                                        for (a, l) in [
-                                            (RunSelection, "Run selection · Ctrl Shift Enter"),
-                                            (Bytecode, "Explain bytecode"),
-                                            (Completion, "Completions · Ctrl Space"),
-                                            (SaveSql, "Save query · Ctrl S"),
-                                            (NewSql, "New SQL editor"),
-                                            (Begin, "Begin editor transaction"),
-                                        ] {
-                                            self.ribbon_menu_action(ui, a, l);
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                                self.window_move_menu(ui, self.workspace.focused);
-                                if compact {
-                                    ui.separator();
-                                    self.ribbon_menu_action(ui, Retile, "Retile windows");
-                                }
-                                if self.executing() {
-                                    ui.separator();
-                                    self.ribbon_menu_action(
-                                        ui,
-                                        Discard,
-                                        "Discard result delivery (execution continues)",
-                                    );
-                                }
-                            });
+                            egui::Popup::menu(&more)
+                                .show(|ui| self.ribbon_more(ui, actions, compact));
                         });
                     });
                     ui.separator();
@@ -504,6 +458,44 @@ impl App {
         // Settings is a temporary route; the ribbon remains bound to the retained view.
         if self.document.ui.nav == Nav::Settings {
             self.ui.settings_return.get_or_insert(Nav::Overview);
+        }
+    }
+}
+
+impl Kind {
+    fn ribbon_actions(self) -> &'static [(Action, Icon, &'static str)] {
+        use Action::*;
+        match self {
+            Kind::Data => &[
+                (Refresh, Icon::Refresh, "Refresh"),
+                (Filter, Icon::Filter, "Filter"),
+                (FitColumns, Icon::Columns, "Fit columns"),
+                (Export, Icon::Export, "Export"),
+            ],
+            Kind::Result => &[
+                (Export, Icon::Export, "Export"),
+                (CopyRows, Icon::Copy, "Copy rows"),
+                (FitColumns, Icon::Columns, "Fit columns"),
+            ],
+            Kind::Structure => &[
+                (CopyDdl, Icon::Copy, "Copy DDL"),
+                (Refresh, Icon::Refresh, "Refresh"),
+            ],
+            Kind::Map => &[
+                (FitMap, Icon::Fit, "Fit map"),
+                (ArrangeMap, Icon::Arrange, "Arrange nodes"),
+                (MapColumns, Icon::Columns, "Columns"),
+                (Find, Icon::Search, "Find"),
+            ],
+            Kind::Sql => &[
+                (Run, Icon::Sql, "Run"),
+                (Explain, Icon::Explain, "Explain"),
+                (Parameters, Icon::Parameters, "Parameters"),
+            ],
+            Kind::Record => &[
+                (CopyValue, Icon::Copy, "Copy value"),
+                (Export, Icon::Export, "Export record"),
+            ],
         }
     }
 }

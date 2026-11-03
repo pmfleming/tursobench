@@ -58,11 +58,6 @@ pub(super) struct Tools {
     pub pending_history: BTreeMap<u64, (String, String)>,
     pub database_scope: String,
 }
-impl Tools {
-    pub fn new() -> Self {
-        Self { ..Self::default() }
-    }
-}
 
 #[derive(Default)]
 pub(super) struct ViewTools {
@@ -98,7 +93,6 @@ pub(super) struct ViewTools {
     pub column_layouts: BTreeMap<String, super::columns::Columns>,
     pub highlight_column: Option<(String, String)>,
     pub scroll_to_column: bool,
-    pub last_elapsed: u64,
     pub format: crate::export::Format,
     pub export_table: String,
 }

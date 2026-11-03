@@ -82,6 +82,17 @@ pub struct App {
     fk_cell_rect: Option<egui::Rect>,
 }
 impl App {
+    pub(super) fn toggle_theme(&mut self, ctx: &egui::Context) {
+        self.preferences.dark_mode = !ctx.global_style().visuals.dark_mode;
+        self.preferences.appearance = Some(crate::appearance::Mode::from_dark(
+            self.preferences.dark_mode,
+        ));
+        self.apply_theme(ctx);
+    }
+    pub(super) fn apply_theme(&mut self, ctx: &egui::Context) {
+        self.appearance
+            .update(ctx, self.preferences.appearance.unwrap_or_default());
+    }
     pub fn new(ctx: &egui::Context) -> Self {
         let wake = ctx.clone();
         let (store, preferences, load_error) =
@@ -95,7 +106,7 @@ impl App {
         let smoke = args.get(1).is_some_and(|a| a == "--smoke-test");
         let mut app = Self {
             pending_database: None,
-            tools: tools::Tools::new(),
+            tools: tools::Tools::default(),
             document: document::Document::default(),
             workspace: Default::default(),
             documents: Default::default(),
@@ -366,7 +377,7 @@ impl App {
         }
     }
     fn reload(&mut self) {
-        if let Some(destination) = self.document.tools.related.clone() {
+        if let Some(destination) = &self.document.tools.related {
             self.submit(destination.operation(), View::Browse);
         } else if let Some(b) = self.document.browse.clone() {
             self.submit(Operation::Browse(b), View::Browse);
@@ -703,7 +714,6 @@ impl App {
                 ));
                 self.transaction = c.transaction;
                 if self.document.result.current == Some(event.ticket) {
-                    self.document.tools.last_elapsed = c.elapsed_ms;
                     self.status = format!(
                         "{} ms · {:?}: {} rows seen, {} changes; transaction {:?}{}",
                         c.elapsed_ms,

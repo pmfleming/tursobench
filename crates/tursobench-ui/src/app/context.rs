@@ -368,35 +368,45 @@ impl App {
         if keys.is_empty() {
             return;
         }
-        let chosen = self.document.tools.context.relation.clone();
+        let chosen = &self.document.tools.context.relation;
+        let mut selected = None;
         ui.horizontal_wrapped(|ui| {
             ui.strong("Related rows");
             for (child, key) in &keys {
                 if ui
                     .selectable_label(
-                        chosen.as_ref() == Some(&(child.clone(), key.id)),
+                        chosen
+                            .as_ref()
+                            .is_some_and(|(name, id)| name == child && *id == key.id),
                         format!("{child} · FK {}", key.id),
                     )
                     .clicked()
                 {
-                    self.document.tools.context.relation = Some((child.clone(), key.id));
+                    selected = Some((child.clone(), key.id));
                 }
             }
         });
+        if let Some(selected) = selected {
+            self.document.tools.context.relation = Some(selected);
+        }
         let (child, key) = keys
             .iter()
             .find(|(child, key)| {
-                self.document.tools.context.relation.as_ref() == Some(&(child.clone(), key.id))
+                self.document
+                    .tools
+                    .context
+                    .relation
+                    .as_ref()
+                    .is_some_and(|(name, id)| name == child && *id == key.id)
             })
-            .unwrap_or(&keys[0])
-            .clone();
+            .unwrap_or(&keys[0]);
         self.document.tools.context.relation = Some((child.clone(), key.id));
         if ui.link("Open related rows in full view").clicked() {
             self.follow_incoming(row, child.clone(), key.clone());
             return;
         }
-        self.request_context(row, &child, &key, ReadKind::Rows);
-        let Some((id, _)) = self.relationship_read(row, &child, &key, ReadKind::Rows) else {
+        self.request_context(row, child, key, ReadKind::Rows);
+        let Some((id, _)) = self.relationship_read(row, child, key, ReadKind::Rows) else {
             ui.weak("Select a resolved non-NULL parent key");
             return;
         };
@@ -416,7 +426,7 @@ impl App {
             ui.colored_label(ui.visuals().error_fg_color, &c.error);
             if ui.button("Retry related rows").clicked() {
                 self.document.tools.context.cache.retain(|c| c.key != id);
-                self.request_context(row, &child, &key, ReadKind::Rows);
+                self.request_context(row, child, key, ReadKind::Rows);
             }
             return;
         }

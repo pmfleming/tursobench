@@ -313,272 +313,282 @@ impl App {
                 ),
             );
             for col in self.visible_columns() {
-                let value = &values[col];
-                let references = self.cell_references(row, col);
-                let staged = self
-                    .document
-                    .drafts
-                    .as_ref()
-                    .and_then(|d| d.displayed(values, col));
-                let displayed = staged.unwrap_or(value);
-                let text = match displayed {
-                    Value::Null => self.preferences.null_display.clone(),
-                    Value::Text(s) if s.is_empty() => "(empty text)".into(),
-                    Value::Real(n) => format!("{n:?}"),
-                    _ => displayed.preview(),
-                };
-                let fill = cell_fill(ui.visuals(), deleted, staged.is_some(), row);
-                let (rect, response) = ui.allocate_exact_size(
-                    egui::vec2(self.document.tools.columns.widths[col], 24.0),
-                    egui::Sense::click_and_drag(),
-                );
-                response.widget_info(|| {
-                    egui::WidgetInfo::selected(
-                        egui::WidgetType::SelectableLabel,
-                        ui.is_enabled(),
-                        self.cell_selected(row, col),
-                        format!(
-                            "Row {} · {}: {}{text}",
-                            offset + row + 1,
-                            self.document.result.columns[col].name,
-                            if deleted {
-                                "Deletion staged · "
-                            } else if staged.is_some() {
-                                "Staged · "
-                            } else {
-                                ""
-                            }
-                        ),
-                    )
-                });
-                if let Some(edit) = self
-                    .document
-                    .tools
-                    .inline
-                    .as_mut()
-                    .filter(|e| e.row == row && e.column == col)
-                {
-                    let response = ui.put(rect, egui::TextEdit::singleline(&mut edit.input));
-                    if edit.focus {
-                        response.request_focus();
-                        edit.focus = false;
-                    }
-                    response.context_menu(|ui| {
-                        egui::ComboBox::from_id_salt("inline-type")
-                            .selected_text(edit.kind.label())
-                            .show_ui(ui, |ui| {
-                                for k in [
-                                    super::results::CellKind::Null,
-                                    super::results::CellKind::Integer,
-                                    super::results::CellKind::Real,
-                                    super::results::CellKind::Text,
-                                ] {
-                                    ui.selectable_value(&mut edit.kind, k, k.label());
-                                }
-                            });
-                    });
-                    if (response.has_focus() || response.lost_focus())
-                        && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
-                    {
-                        match edit.kind.parse(&edit.input) {
-                            Ok(v) => action = Some(GridAction::Stage(row, col, v)),
-                            Err(e) => self.status = e,
-                        }
-                    }
-                    continue;
+                if let Some(next) = self.grid_cell(ui, row, col, deleted, offset, editable) {
+                    action = Some(next);
                 }
-                if self.document.tools.scroll_to_cell && self.document.inspect == Some((row, col)) {
-                    ui.scroll_to_rect(rect, Some(egui::Align::Center));
-                    self.document.tools.scroll_to_cell = false;
-                }
-                let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
-                let selected = self.cell_selected(row, col);
-                painter.rect_filled(
-                    rect,
-                    0.0,
-                    if selected {
-                        ui.visuals().selection.bg_fill
+            }
+        });
+        action
+    }
+    fn grid_cell(
+        &mut self,
+        ui: &mut egui::Ui,
+        row: usize,
+        col: usize,
+        deleted: bool,
+        offset: usize,
+        editable: bool,
+    ) -> Option<GridAction> {
+        let mut action = None;
+        let values = &self.document.result.rows[row];
+        let value = &values[col];
+        let references = self.cell_references(row, col);
+        let staged = self
+            .document
+            .drafts
+            .as_ref()
+            .and_then(|d| d.displayed(values, col));
+        let displayed = staged.unwrap_or(value);
+        let text = match displayed {
+            Value::Null => self.preferences.null_display.clone(),
+            Value::Text(s) if s.is_empty() => "(empty text)".into(),
+            Value::Real(n) => format!("{n:?}"),
+            _ => displayed.preview(),
+        };
+        let fill = cell_fill(ui.visuals(), deleted, staged.is_some(), row);
+        let (rect, response) = ui.allocate_exact_size(
+            egui::vec2(self.document.tools.columns.widths[col], 24.0),
+            egui::Sense::click_and_drag(),
+        );
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(
+                egui::WidgetType::SelectableLabel,
+                ui.is_enabled(),
+                self.cell_selected(row, col),
+                format!(
+                    "Row {} · {}: {}{text}",
+                    offset + row + 1,
+                    self.document.result.columns[col].name,
+                    if deleted {
+                        "Deletion staged · "
+                    } else if staged.is_some() {
+                        "Staged · "
                     } else {
-                        fill
-                    },
-                );
-                if self.document.inspect == Some((row, col)) || response.has_focus() {
-                    painter.rect_stroke(
-                        rect,
-                        0.0,
-                        ui.visuals().selection.stroke,
-                        egui::StrokeKind::Inside,
-                    );
-                }
-                let numeric = matches!(displayed, Value::Integer(_) | Value::Real(_));
-                let color = if !references.is_empty() {
-                    ui.visuals().hyperlink_color
-                } else if matches!(displayed, Value::Null) {
-                    ui.visuals().weak_text_color()
-                } else {
-                    ui.visuals().text_color()
-                };
-                let mut job = egui::text::LayoutJob::simple_singleline(
-                    text,
-                    egui::FontId::monospace(12.0),
-                    color,
-                );
-                job.wrap.max_width = (rect.width() - 14.0).max(1.0);
-                job.wrap.max_rows = 1;
-                job.wrap.break_anywhere = true;
-                job.wrap.overflow_character = Some('…');
-                let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
-                let position = if numeric {
-                    rect.right_center() - egui::vec2(7.0 + galley.size().x, galley.size().y * 0.5)
-                } else {
-                    rect.left_center() + egui::vec2(7.0, -galley.size().y * 0.5)
-                };
-                painter.galley(position, galley, color);
-                if !references.is_empty() {
-                    painter.line_segment(
-                        [
-                            rect.left_bottom() + egui::vec2(7.0, -3.0),
-                            rect.right_bottom() + egui::vec2(-7.0, -3.0),
-                        ],
-                        egui::Stroke::new(0.5, color),
-                    );
-                    #[cfg(test)]
-                    {
-                        self.fk_cell_rect = Some(rect);
+                        ""
                     }
-                }
-                if deleted {
-                    painter.line_segment(
-                        [
-                            rect.left_center() + egui::vec2(5.0, 0.0),
-                            rect.right_center() - egui::vec2(5.0, 0.0),
-                        ],
-                        egui::Stroke::new(1.0, ui.visuals().error_fg_color),
-                    );
-                }
-                if staged.is_some() {
-                    painter.circle_filled(
-                        rect.left_top() + egui::vec2(3.0, 3.0),
-                        2.0,
-                        ui.visuals().warn_fg_color,
-                    );
-                }
-                #[cfg(test)]
-                if row == 0 && col == 0 {
-                    self.first_cell_rect = Some(rect);
-                }
-                if response.drag_started_by(egui::PointerButton::Primary) {
-                    self.document.tools.grid_selection = Some(super::selection::Selection {
-                        ticket: self.document.result.current,
-                        anchor: (row, col),
-                        cursor: (row, col),
-                    });
-                    self.document.tools.dragging_selection = true;
-                    if let Some(id) = self.document.tools.grid_focus {
-                        ui.ctx().memory_mut(|m| m.request_focus(id));
-                    }
-                }
-                if response.hovered()
-                    && self.document.tools.dragging_selection
-                    && ui.input(|i| i.pointer.primary_down())
-                {
-                    if let Some(s) = &mut self.document.tools.grid_selection {
-                        s.cursor = (row, col);
-                    }
-                    action = Some(GridAction::Cell(row, col));
-                }
-                if response.clicked()
-                    && let Some(id) = self.document.tools.grid_focus
-                {
-                    ui.ctx().memory_mut(|m| m.request_focus(id));
-                }
-                if response.clicked()
-                    && ui.input(|i| i.modifiers.alt)
-                    && self.document.browse.is_some()
-                {
-                    action = Some(GridAction::Filter(tursobench_core::Filter {
-                        column: col,
-                        op: tursobench_core::FilterOp::Equal,
-                        value: value.clone(),
-                    }));
-                } else if response.clicked() {
-                    action = Some(
-                        if references.len() == 1 && !ui.input(|i| i.modifiers.shift) {
-                            GridAction::Follow(row, references[0].clone())
-                        } else {
-                            GridAction::Cell(row, col)
-                        },
-                    );
-                }
-                if response.double_clicked() {
-                    action = Some(GridAction::Edit(row, col));
-                }
-                if response.hovered() && references.len() == 1 {
-                    self.document.tools.context.hovered = Some((row, references[0].clone()));
-                }
-                let response = if references.is_empty() {
-                    response
-                } else {
-                    response
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .on_hover_ui(|ui| {
-                            if references.len() == 1 {
-                                self.peek_view(ui, row, &references[0]);
-                            } else {
-                                ui.label("Multiple references: right-click to choose");
-                            }
-                        })
-                };
-                response.context_menu(|ui| {
-                    if self.document.view == View::Browse && self.document.browse.is_some() {
-                        for (op, label) in [
-                            (tursobench_core::FilterOp::Equal, "Filter = value"),
-                            (tursobench_core::FilterOp::NotEqual, "Exclude value"),
+                ),
+            )
+        });
+        if let Some(edit) = self
+            .document
+            .tools
+            .inline
+            .as_mut()
+            .filter(|e| e.row == row && e.column == col)
+        {
+            let response = ui.put(rect, egui::TextEdit::singleline(&mut edit.input));
+            if edit.focus {
+                response.request_focus();
+                edit.focus = false;
+            }
+            response.context_menu(|ui| {
+                egui::ComboBox::from_id_salt("inline-type")
+                    .selected_text(edit.kind.label())
+                    .show_ui(ui, |ui| {
+                        for k in [
+                            super::results::CellKind::Null,
+                            super::results::CellKind::Integer,
+                            super::results::CellKind::Real,
+                            super::results::CellKind::Text,
                         ] {
-                            if ui.button(label).clicked() {
-                                action = Some(GridAction::Filter(tursobench_core::Filter {
-                                    column: col,
-                                    op,
-                                    value: value.clone(),
-                                }));
-                                ui.close();
-                            }
+                            ui.selectable_value(&mut edit.kind, k, k.label());
                         }
+                    });
+            });
+            if (response.has_focus() || response.lost_focus())
+                && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
+            {
+                match edit.kind.parse(&edit.input) {
+                    Ok(v) => action = Some(GridAction::Stage(row, col, v)),
+                    Err(e) => self.status = e,
+                }
+            }
+            return action;
+        }
+        if self.document.tools.scroll_to_cell && self.document.inspect == Some((row, col)) {
+            ui.scroll_to_rect(rect, Some(egui::Align::Center));
+            self.document.tools.scroll_to_cell = false;
+        }
+        let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+        let selected = self.cell_selected(row, col);
+        painter.rect_filled(
+            rect,
+            0.0,
+            if selected {
+                ui.visuals().selection.bg_fill
+            } else {
+                fill
+            },
+        );
+        if self.document.inspect == Some((row, col)) || response.has_focus() {
+            painter.rect_stroke(
+                rect,
+                0.0,
+                ui.visuals().selection.stroke,
+                egui::StrokeKind::Inside,
+            );
+        }
+        let numeric = matches!(displayed, Value::Integer(_) | Value::Real(_));
+        let color = if !references.is_empty() {
+            ui.visuals().hyperlink_color
+        } else if matches!(displayed, Value::Null) {
+            ui.visuals().weak_text_color()
+        } else {
+            ui.visuals().text_color()
+        };
+        let mut job =
+            egui::text::LayoutJob::simple_singleline(text, egui::FontId::monospace(12.0), color);
+        job.wrap.max_width = (rect.width() - 14.0).max(1.0);
+        job.wrap.max_rows = 1;
+        job.wrap.break_anywhere = true;
+        job.wrap.overflow_character = Some('…');
+        let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+        let position = if numeric {
+            rect.right_center() - egui::vec2(7.0 + galley.size().x, galley.size().y * 0.5)
+        } else {
+            rect.left_center() + egui::vec2(7.0, -galley.size().y * 0.5)
+        };
+        painter.galley(position, galley, color);
+        if !references.is_empty() {
+            painter.line_segment(
+                [
+                    rect.left_bottom() + egui::vec2(7.0, -3.0),
+                    rect.right_bottom() + egui::vec2(-7.0, -3.0),
+                ],
+                egui::Stroke::new(0.5, color),
+            );
+            #[cfg(test)]
+            {
+                self.fk_cell_rect = Some(rect);
+            }
+        }
+        if deleted {
+            painter.line_segment(
+                [
+                    rect.left_center() + egui::vec2(5.0, 0.0),
+                    rect.right_center() - egui::vec2(5.0, 0.0),
+                ],
+                egui::Stroke::new(1.0, ui.visuals().error_fg_color),
+            );
+        }
+        if staged.is_some() {
+            painter.circle_filled(
+                rect.left_top() + egui::vec2(3.0, 3.0),
+                2.0,
+                ui.visuals().warn_fg_color,
+            );
+        }
+        #[cfg(test)]
+        if row == 0 && col == 0 {
+            self.first_cell_rect = Some(rect);
+        }
+        if response.drag_started_by(egui::PointerButton::Primary) {
+            self.document.tools.grid_selection = Some(super::selection::Selection {
+                ticket: self.document.result.current,
+                anchor: (row, col),
+                cursor: (row, col),
+            });
+            self.document.tools.dragging_selection = true;
+            if let Some(id) = self.document.tools.grid_focus {
+                ui.ctx().memory_mut(|m| m.request_focus(id));
+            }
+        }
+        if response.hovered()
+            && self.document.tools.dragging_selection
+            && ui.input(|i| i.pointer.primary_down())
+        {
+            if let Some(s) = &mut self.document.tools.grid_selection {
+                s.cursor = (row, col);
+            }
+            action = Some(GridAction::Cell(row, col));
+        }
+        if response.clicked()
+            && let Some(id) = self.document.tools.grid_focus
+        {
+            ui.ctx().memory_mut(|m| m.request_focus(id));
+        }
+        if response.clicked() && ui.input(|i| i.modifiers.alt) && self.document.browse.is_some() {
+            action = Some(GridAction::Filter(tursobench_core::Filter {
+                column: col,
+                op: tursobench_core::FilterOp::Equal,
+                value: value.clone(),
+            }));
+        } else if response.clicked() {
+            action = Some(
+                if references.len() == 1 && !ui.input(|i| i.modifiers.shift) {
+                    GridAction::Follow(row, references[0].clone())
+                } else {
+                    GridAction::Cell(row, col)
+                },
+            );
+        }
+        if response.double_clicked() {
+            action = Some(GridAction::Edit(row, col));
+        }
+        if response.hovered() && references.len() == 1 {
+            self.document.tools.context.hovered = Some((row, references[0].clone()));
+        }
+        let response = if references.is_empty() {
+            response
+        } else {
+            response
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_ui(|ui| {
+                    if references.len() == 1 {
+                        self.peek_view(ui, row, &references[0]);
+                    } else {
+                        ui.label("Multiple references: right-click to choose");
                     }
-                    for key in &references {
-                        if ui
-                            .button(format!("Parent: {} (FK {})", key.target, key.id))
-                            .clicked()
-                        {
-                            action = Some(GridAction::Follow(row, key.clone()));
-                            ui.close();
-                        }
-                    }
-                    if ui.button("Inspect / edit cell").clicked() {
-                        action = Some(GridAction::Inspect(row, col));
+                })
+        };
+        response.context_menu(|ui| {
+            if self.document.view == View::Browse && self.document.browse.is_some() {
+                for (op, label) in [
+                    (tursobench_core::FilterOp::Equal, "Filter = value"),
+                    (tursobench_core::FilterOp::NotEqual, "Exclude value"),
+                ] {
+                    if ui.button(label).clicked() {
+                        action = Some(GridAction::Filter(tursobench_core::Filter {
+                            column: col,
+                            op,
+                            value: value.clone(),
+                        }));
                         ui.close();
                     }
-                    if ui.button("Copy stored cell").clicked() {
-                        ui.ctx().copy_text(crate::export::cell_text(value));
-                        ui.close();
-                    }
-                    if ui.button("Copy stored row (TSV)").clicked() {
-                        action = Some(GridAction::Copy(row));
-                        ui.close();
-                    }
-                    if ui.button("Record detail").clicked() {
-                        action = Some(GridAction::Record(row));
-                        ui.close();
-                    }
-                    if self.writable
-                        && ui
-                            .add_enabled(editable, egui::Button::new("Stage row deletion"))
-                            .clicked()
-                    {
-                        action = Some(GridAction::Delete(row));
-                        ui.close();
-                    }
-                });
+                }
+            }
+            for key in &references {
+                if ui
+                    .button(format!("Parent: {} (FK {})", key.target, key.id))
+                    .clicked()
+                {
+                    action = Some(GridAction::Follow(row, key.clone()));
+                    ui.close();
+                }
+            }
+            if ui.button("Inspect / edit cell").clicked() {
+                action = Some(GridAction::Inspect(row, col));
+                ui.close();
+            }
+            if ui.button("Copy stored cell").clicked() {
+                ui.ctx().copy_text(crate::export::cell_text(value));
+                ui.close();
+            }
+            if ui.button("Copy stored row (TSV)").clicked() {
+                action = Some(GridAction::Copy(row));
+                ui.close();
+            }
+            if ui.button("Record detail").clicked() {
+                action = Some(GridAction::Record(row));
+                ui.close();
+            }
+            if self.writable
+                && ui
+                    .add_enabled(editable, egui::Button::new("Stage row deletion"))
+                    .clicked()
+            {
+                action = Some(GridAction::Delete(row));
+                ui.close();
             }
         });
         action

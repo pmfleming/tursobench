@@ -210,7 +210,9 @@ pub fn validate_single(sql: &str) -> Result<(), Failure> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{named_template, parameter_names, selection_or_statement, validate_bindings};
+    use std::collections::BTreeMap;
+    use tursobench_core::Bindings;
     #[test]
     fn selection_handles_unicode_comments_and_trigger_bodies() {
         let sql = "SELECT 'λ;'; /* ; */ CREATE TRIGGER t AFTER INSERT ON x BEGIN UPDATE x SET v=';'; DELETE FROM x; END; SELECT 3;";

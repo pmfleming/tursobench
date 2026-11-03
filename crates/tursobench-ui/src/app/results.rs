@@ -202,7 +202,7 @@ impl App {
 }
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{CellKind, Value, detail_text, export};
     #[test]
     fn json_detail_preserves_raw_numbers_duplicate_keys_and_string_tokens() {
         let raw = r#"{"n":123456789012345678901,"n":1,"s":"a\\\"b","empty":[]}"#;

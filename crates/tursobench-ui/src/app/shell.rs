@@ -315,6 +315,48 @@ impl App {
             self.ui.export_open = open;
         }
     }
+    fn connection_status(&self, visuals: &egui::Visuals) -> (&'static str, egui::Color32) {
+        let warn = visuals.warn_fg_color;
+        let error = visuals.error_fg_color;
+        let muted = visuals.weak_text_color();
+        // First active condition wins: execution state precedes retained-result state.
+        if let Some((_, label, color)) = [
+            (
+                self.uncertain_edit || self.transaction == TransactionState::Unknown,
+                "UNKNOWN",
+                error,
+            ),
+            (self.closing, "Closing", warn),
+            (self.commit_ticket.is_some(), "Committing", warn),
+            (
+                self.executing() || self.tools.count_request.is_some(),
+                "Executing",
+                warn,
+            ),
+            (self.ui.diagram.ticket.is_some(), "Loading schema", muted),
+            (!self.ready, "Disconnected", muted),
+        ]
+        .into_iter()
+        .find(|(active, _, _)| *active)
+        {
+            return (label, color);
+        }
+        if let Some(c) = &self.document.result.completion {
+            if c.error.is_some() {
+                ("Failed", error)
+            } else {
+                match c.delivery {
+                    tursobench_core::Delivery::Limited => ("Limited", warn),
+                    tursobench_core::Delivery::Discarded => ("Discarded", warn),
+                    tursobench_core::Delivery::Complete => {
+                        ("Connected", visuals.selection.stroke.color)
+                    }
+                }
+            }
+        } else {
+            ("Connected", visuals.selection.stroke.color)
+        }
+    }
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         egui::Panel::bottom("status").frame(egui::Frame::new().fill(ui.visuals().panel_fill).inner_margin(2.0)).exact_size(32.0).show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -327,27 +369,10 @@ impl App {
                     self.ui.access_ack = false;
                 }
                 let warn = ui.visuals().warn_fg_color;
-                let error = ui.visuals().error_fg_color;
-                let muted = ui.visuals().weak_text_color();
-                let (state, color) = if self.uncertain_edit || self.transaction == TransactionState::Unknown {
-                    ("UNKNOWN", error)
-                } else if self.closing { ("Closing", warn)
-                } else if self.commit_ticket.is_some() { ("Committing", warn)
-                } else if self.executing() || self.tools.count_request.is_some() { ("Executing", warn)
-                } else if self.ui.diagram.ticket.is_some() { ("Loading schema", muted)
-                } else if !self.ready { ("Disconnected", muted)
-                } else if let Some(c) = &self.document.result.completion {
-                    if c.error.is_some() { ("Failed", error) } else {
-                        match c.delivery {
-                            tursobench_core::Delivery::Limited => ("Limited", warn),
-                            tursobench_core::Delivery::Discarded => ("Discarded", warn),
-                            tursobench_core::Delivery::Complete => ("Connected", ui.visuals().selection.stroke.color),
-                        }
-                    }
-                } else { ("Connected", ui.visuals().selection.stroke.color) };
+                let (state, color) = self.connection_status(ui.visuals());
                 ui.colored_label(color, state).on_hover_text(&self.status);
                 if self.transaction != TransactionState::Autocommit && !self.workspace.enabled {
-                    ui.colored_label(if self.transaction != TransactionState::Autocommit { warn } else { muted }, format!("{:?}", self.transaction));
+                    ui.colored_label(warn, format!("{:?}", self.transaction));
                     for (label, sql) in [("Commit", "COMMIT"), ("Roll back", "ROLLBACK")] {
                         let enabled = self.ready && !self.closing && self.document.active.is_none() && self.commit_ticket.is_none() && !self.has_drafts() && (sql!="COMMIT" || self.transaction==TransactionState::Active);
                         let response = ui.add_enabled(enabled, egui::Button::new(label)).on_hover_text("Persistent editor connection. Transactions also apply to read-only sessions.");
@@ -435,6 +460,39 @@ impl App {
             self.grid_contents(ui);
         }
     }
+    fn workspace_menu(&mut self, ui: &mut egui::Ui) {
+        if icons::control(
+            ui,
+            Icon::Export,
+            "Export retained result…",
+            "Ctrl E",
+            false,
+            true,
+        )
+        .clicked()
+        {
+            self.ui.export_open = true;
+            ui.close();
+        }
+        if ui.button("Copy all retained rows as TSV").clicked() {
+            self.copy_results(ui.ctx(), crate::export::Format::Tsv);
+            ui.close();
+        }
+        if ui.button("Show hidden columns").clicked() {
+            self.document.tools.columns.hidden.clear();
+            ui.close();
+        }
+        if ui.button("Fit all column widths").clicked() {
+            self.document.tools.columns.manual.clear();
+            self.document.tools.columns.refit = true;
+            ui.close();
+        }
+        if self.has_drafts() && ui.button("Show staged data").clicked() {
+            self.document.ui.nav = Nav::Table;
+            self.document.ui.table_view = TableView::Data;
+            ui.close();
+        }
+    }
     fn workspace_header(&mut self, ui: &mut egui::Ui) {
         let header = ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
@@ -479,39 +537,7 @@ impl App {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let more = icons::button(ui, Icon::More, "More actions", "");
-                egui::Popup::menu(&more).show(|ui| {
-                    if icons::control(
-                        ui,
-                        Icon::Export,
-                        "Export retained result…",
-                        "Ctrl E",
-                        false,
-                        true,
-                    )
-                    .clicked()
-                    {
-                        self.ui.export_open = true;
-                        ui.close();
-                    }
-                    if ui.button("Copy all retained rows as TSV").clicked() {
-                        self.copy_results(ui.ctx(), crate::export::Format::Tsv);
-                        ui.close();
-                    }
-                    if ui.button("Show hidden columns").clicked() {
-                        self.document.tools.columns.hidden.clear();
-                        ui.close();
-                    }
-                    if ui.button("Fit all column widths").clicked() {
-                        self.document.tools.columns.manual.clear();
-                        self.document.tools.columns.refit = true;
-                        ui.close();
-                    }
-                    if self.has_drafts() && ui.button("Show staged data").clicked() {
-                        self.document.ui.nav = Nav::Table;
-                        self.document.ui.table_view = TableView::Data;
-                        ui.close();
-                    }
-                });
+                egui::Popup::menu(&more).show(|ui| self.workspace_menu(ui));
                 if icons::control(
                     ui,
                     Icon::Columns,
@@ -716,7 +742,7 @@ impl App {
 }
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::Layout;
     #[test]
     fn sidebar_and_inspector_leave_room_for_content() {
         for width in [720.0, 960.0, 1280.0, 1366.0, 1440.0, 1920.0, 3440.0] {

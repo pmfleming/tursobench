@@ -142,8 +142,10 @@ pub(super) async fn worker(
             Ok(None) => break,
             Err(error) => EventKind::Failed(error),
         };
-        output.send(request.ticket, event);
+        // A terminal event acknowledges that this request is no longer pending.
+        // Retire it before publishing so immediate ID reuse cannot race cleanup.
         output.discard.finished(request.ticket.request);
+        output.send(request.ticket, event);
     }
     let result = rollback(&editor).await;
     let browse_result = rollback(&browse).await;

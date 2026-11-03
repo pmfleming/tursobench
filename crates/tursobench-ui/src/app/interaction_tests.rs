@@ -1,6 +1,7 @@
-use super::*;
+use super::{App, View, context, egui, shell, tiling, workspace};
 use std::time::{Duration, Instant};
-use tursobench_core::{Budget, Value};
+use tursobench_core::{Budget, Event, EventKind, TransactionState, Value};
+use tursobench_db::{Operation, Request};
 fn inspect_selected(app: &mut App, ctx: &egui::Context) {
     let start = Instant::now();
     loop {
@@ -44,6 +45,42 @@ fn connected(path: &std::path::Path, writable: bool) -> (egui::Context, App) {
     wait(&mut app, &ctx);
     (ctx, app)
 }
+fn fixture(statements: &[&str], writable: bool) -> (tempfile::TempDir, egui::Context, App) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fixture.db");
+    crate::test_support::create(&path, statements);
+    let (ctx, app) = connected(&path, writable);
+    (dir, ctx, app)
+}
+fn key_event(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    }
+}
+fn pointer_button(pos: egui::Pos2, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    }
+}
+fn click(app: &mut App, ctx: &egui::Context, pos: egui::Pos2) {
+    for pressed in [true, false] {
+        frame(
+            app,
+            ctx,
+            vec![egui::Event::PointerMoved(pos), pointer_button(pos, pressed)],
+        );
+    }
+}
+fn press_key(app: &mut App, ctx: &egui::Context, key: egui::Key, modifiers: egui::Modifiers) {
+    frame(app, ctx, vec![key_event(key, modifiers)]);
+}
 fn frame_at(
     app: &mut App,
     ctx: &egui::Context,
@@ -67,35 +104,27 @@ fn frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) {
 
 #[test]
 fn sql_selection_shortcut_and_window_expansion_have_distinct_targets() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("ribbon.db");
-    crate::test_support::create(&path, &["CREATE TABLE sample(id INTEGER PRIMARY KEY)"]);
-    let (ctx, mut app) = connected(&path, false);
+    let (_dir, ctx, mut app) = fixture(&["CREATE TABLE sample(id INTEGER PRIMARY KEY)"], false);
     app.open_sql_window(false);
     let editor = app.document.id;
     app.document.sql = "SELECT 73 AS answer".into();
     frame(&mut app, &ctx, vec![]);
-    let key = |modifiers| egui::Event::Key {
-        key: egui::Key::Enter,
-        physical_key: None,
-        pressed: true,
-        repeat: false,
-        modifiers,
-    };
-    frame(
+    press_key(
         &mut app,
         &ctx,
-        vec![key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT)],
+        egui::Key::Enter,
+        egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
     );
     wait(&mut app, &ctx);
     assert_eq!(app.document.result.rows, vec![vec![Value::Integer(73)]]);
     assert_eq!(app.document.kind, tiling::Kind::Result);
     assert_eq!(app.workspace.expanded, None);
     assert_eq!(app.document_ref(editor).unwrap().sql, "SELECT 73 AS answer");
-    frame(
+    press_key(
         &mut app,
         &ctx,
-        vec![key(egui::Modifiers::CTRL | egui::Modifiers::ALT)],
+        egui::Key::Enter,
+        egui::Modifiers::CTRL | egui::Modifiers::ALT,
     );
     assert_eq!(app.workspace.expanded, Some(app.document.id));
     assert!(app.ui.sidebar_rect.right() <= app.workspace.area.left());
@@ -106,17 +135,7 @@ fn sql_selection_shortcut_and_window_expansion_have_distinct_targets() {
         Some(editor),
         "closing an SQL draft requires an in-app choice"
     );
-    frame(
-        &mut app,
-        &ctx,
-        vec![egui::Event::Key {
-            key: egui::Key::Escape,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        }],
-    );
+    press_key(&mut app, &ctx, egui::Key::Escape, egui::Modifiers::NONE);
     assert_eq!(app.workspace.close_pending, None);
     assert!(app.document_ref(editor).is_some());
     app.close();
@@ -124,18 +143,15 @@ fn sql_selection_shortcut_and_window_expansion_have_distinct_targets() {
 
 #[test]
 fn independent_documents_route_results_and_keep_filters_drafts_and_sql() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("documents.db");
-    crate::test_support::create(
-        &path,
+    let (_dir, ctx, mut app) = fixture(
         &[
             "CREATE TABLE a(id INTEGER PRIMARY KEY, body TEXT)",
             "CREATE TABLE b(id INTEGER PRIMARY KEY, body TEXT)",
             "INSERT INTO a VALUES(1, 'alpha')",
             "INSERT INTO b VALUES(2, 'beta')",
         ],
+        true,
     );
-    let (ctx, mut app) = connected(&path, true);
     app.browse_table("a".into());
     let a_id = app.document.id;
     let a_ticket = app.document.result.current.unwrap();
@@ -335,18 +351,15 @@ fn diagram_preserves_drafts_and_result_ownership_and_chrome_fits_both_themes() {
 
 #[test]
 fn reverted_empty_batch_cannot_carry_identity_to_another_table() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("identity.db");
-    crate::test_support::create(
-        &path,
+    let (_dir, ctx, mut app) = fixture(
         &[
             "CREATE TABLE a(id INTEGER PRIMARY KEY,value TEXT)",
             "CREATE TABLE b(id INTEGER PRIMARY KEY,value TEXT)",
             "INSERT INTO a VALUES(1,'same')",
             "INSERT INTO b VALUES(1,'same')",
         ],
+        true,
     );
-    let (ctx, mut app) = connected(&path, true);
     app.browse_table("a".into());
     wait(&mut app, &ctx);
     app.stage_cell(0, 1, Value::Text("temporary".into()));
@@ -479,16 +492,13 @@ fn local_project_pages_and_fts_results_render_and_export() {
 
 #[test]
 fn click_inspect_stage_no_write_failed_commit_retains_drafts() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("ui.db");
-    crate::test_support::create(
-        &path,
+    let (_dir, ctx, mut app) = fixture(
         &[
             "CREATE TABLE items(id INTEGER PRIMARY KEY, name TEXT)",
             "INSERT INTO items VALUES (1, 'original'), (2, 'other')",
         ],
+        true,
     );
-    let (ctx, mut app) = connected(&path, true);
     app.browse_table("items".into());
     wait(&mut app, &ctx);
     frame(&mut app, &ctx, vec![]);
@@ -497,26 +507,9 @@ fn click_inspect_stage_no_write_failed_commit_retains_drafts() {
     frame(
         &mut app,
         &ctx,
-        vec![
-            egui::Event::PointerMoved(pos),
-            egui::Event::PointerButton {
-                pos,
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                modifiers: egui::Modifiers::default(),
-            },
-        ],
+        vec![egui::Event::PointerMoved(pos), pointer_button(pos, true)],
     );
-    frame(
-        &mut app,
-        &ctx,
-        vec![egui::Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Primary,
-            pressed: false,
-            modifiers: egui::Modifiers::default(),
-        }],
-    );
+    frame(&mut app, &ctx, vec![pointer_button(pos, false)]);
     assert_eq!(app.document.inspect, Some((0, 0)));
     app.clone_row(0);
     let clone: Vec<Option<Value>> = serde_json::from_str(&app.document.insert_json).unwrap();
@@ -621,21 +614,7 @@ fn selection_named_history_metadata_reference_back_and_tools_render() {
         .fk_cell_rect
         .expect("composite FK rendered as a link")
         .center();
-    for pressed in [true, false] {
-        frame(
-            &mut app,
-            &ctx,
-            vec![
-                egui::Event::PointerMoved(pos),
-                egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ],
-        );
-    }
+    click(&mut app, &ctx, pos);
     wait(&mut app, &ctx);
     assert_eq!(app.document.ui.nav, shell::Nav::Table);
     assert_eq!(app.ui.diagram.selected.as_deref(), Some("parent"));
@@ -705,17 +684,14 @@ fn selection_named_history_metadata_reference_back_and_tools_render() {
 
 #[test]
 fn overview_and_table_views_preserve_camera_and_rejects_navigation_with_drafts() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("map-home.db");
-    crate::test_support::create(
-        &path,
+    let (_dir, ctx, mut app) = fixture(
         &[
             "CREATE TABLE a(id INTEGER PRIMARY KEY, value TEXT)",
             "CREATE TABLE b(id INTEGER PRIMARY KEY)",
             "INSERT INTO a VALUES(1, 'original')",
         ],
+        true,
     );
-    let (ctx, mut app) = connected(&path, true);
     assert_eq!(app.document.ui.nav, shell::Nav::Overview);
     assert_eq!(app.document.ui.nav, shell::Nav::Overview);
     assert_eq!(app.ui.diagram.data.as_ref().unwrap().tables.len(), 2);
@@ -764,10 +740,7 @@ fn overview_and_table_views_preserve_camera_and_rejects_navigation_with_drafts()
 
 #[test]
 fn rapid_map_selection_keeps_latest_rows_and_structure_including_views() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("selection.db");
-    crate::test_support::create(
-        &path,
+    let (_dir, ctx, mut app) = fixture(
         &[
             "CREATE TABLE a(id INTEGER PRIMARY KEY)",
             "INSERT INTO a VALUES(1)",
@@ -776,8 +749,8 @@ fn rapid_map_selection_keeps_latest_rows_and_structure_including_views() {
             "CREATE VIEW v AS SELECT * FROM b",
             "CREATE TRIGGER b_insert AFTER INSERT ON b BEGIN SELECT 1; END",
         ],
+        false,
     );
-    let (ctx, mut app) = connected(&path, false);
     app.browse_table("a".into());
     app.browse_table("b".into());
     wait(&mut app, &ctx);
@@ -805,16 +778,13 @@ fn rapid_map_selection_keeps_latest_rows_and_structure_including_views() {
 
 #[test]
 fn sql_tile_keeps_result_identity_and_read_transactions_visible() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("sql-drawer.db");
-    crate::test_support::create(
-        &path,
+    let (_dir, ctx, mut app) = fixture(
         &[
             "CREATE TABLE a(id INTEGER PRIMARY KEY)",
             "INSERT INTO a VALUES(1)",
         ],
+        false,
     );
-    let (ctx, mut app) = connected(&path, false);
     frame(&mut app, &ctx, vec![]);
     assert!(app.ui.transaction_rects.is_empty());
     app.toggle_sql();
@@ -844,17 +814,7 @@ fn sql_tile_keeps_result_identity_and_read_transactions_visible() {
     app.open_palette();
     frame(&mut app, &ctx, vec![]);
     app.ui.palette_query = "a.id".into();
-    frame(
-        &mut app,
-        &ctx,
-        vec![egui::Event::Key {
-            key: egui::Key::Enter,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        }],
-    );
+    press_key(&mut app, &ctx, egui::Key::Enter, egui::Modifiers::NONE);
     wait(&mut app, &ctx);
     assert_eq!(app.document.table.as_ref().unwrap().name, "a");
     assert_eq!(
@@ -867,10 +827,7 @@ fn sql_tile_keeps_result_identity_and_read_transactions_visible() {
 
 #[test]
 fn access_switch_waits_for_closed_then_opens_a_new_session() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("access.db");
-    crate::test_support::create(&path, &["CREATE TABLE a(id INTEGER PRIMARY KEY)"]);
-    let (ctx, mut app) = connected(&path, false);
+    let (_dir, ctx, mut app) = fixture(&["CREATE TABLE a(id INTEGER PRIMARY KEY)"], false);
     let old_session = app.session.as_ref().unwrap().id;
     app.ui.diagram.zoom = 0.7;
     app.ui.diagram.pan = egui::vec2(30.0, 42.0);
@@ -890,17 +847,14 @@ fn access_switch_waits_for_closed_then_opens_a_new_session() {
 
 #[test]
 fn navigation_restores_typed_browse_context_and_query_return_without_dropping_drafts() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("navigation.db");
-    crate::test_support::create(
-        &path,
+    let (_dir, ctx, mut app) = fixture(
         &[
             "CREATE TABLE a(id INTEGER PRIMARY KEY, value TEXT)",
             "INSERT INTO a VALUES(1,'first'),(2,'second')",
             "CREATE TABLE b(id INTEGER PRIMARY KEY)",
         ],
+        true,
     );
-    let (ctx, mut app) = connected(&path, true);
     app.browse_table("a".into());
     wait(&mut app, &ctx);
     let browse = app.document.browse.as_mut().unwrap();
@@ -951,17 +905,14 @@ fn navigation_restores_typed_browse_context_and_query_return_without_dropping_dr
 
 #[test]
 fn sidebar_catalog_includes_views_when_map_is_incomplete_and_tools_preserve_rows() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("catalog-sidebar.db");
-    crate::test_support::create(
-        &path,
+    let (_dir, ctx, mut app) = fixture(
         &[
             "CREATE TABLE example(id INTEGER PRIMARY KEY)",
             "INSERT INTO example VALUES(1)",
             "CREATE VIEW example_view AS SELECT * FROM example",
         ],
+        false,
     );
-    let (ctx, mut app) = connected(&path, false);
     app.browse_table("example".into());
     wait(&mut app, &ctx);
     app.ui.diagram.data = Some(tursobench_core::SchemaDiagram {
@@ -1002,16 +953,13 @@ fn sidebar_catalog_includes_views_when_map_is_incomplete_and_tools_preserve_rows
 
 #[test]
 fn explicit_counts_keep_table_rows_and_drafts_owned_by_their_original_ticket() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("count.db");
-    crate::test_support::create(
-        &path,
+    let (_dir, ctx, mut app) = fixture(
         &[
             "CREATE TABLE a(id INTEGER PRIMARY KEY,value TEXT)",
             "INSERT INTO a VALUES(1,'original'),(2,'second')",
         ],
+        true,
     );
-    let (ctx, mut app) = connected(&path, true);
     app.browse_table("a".into());
     wait(&mut app, &ctx);
     app.stage_cell(0, 1, Value::Text("draft".into()));
@@ -1135,77 +1083,84 @@ fn table_views_sidebar_and_transactions_fit_themes_and_scaled_viewports() {
 
 #[test]
 fn escape_and_search_close_popups_without_replacing_the_retained_result() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("keyboard.db");
-    crate::test_support::create(
-        &path,
+    let (_dir, ctx, mut app) = fixture(
         &[
             "CREATE TABLE a(id INTEGER PRIMARY KEY)",
             "INSERT INTO a VALUES(1)",
         ],
+        false,
     );
-    let (ctx, mut app) = connected(&path, false);
     app.browse_table("a".into());
     wait(&mut app, &ctx);
     let ticket = app.document.result.current;
     let popup = egui::Id::new("test-menu");
     egui::Popup::open_id(&ctx, popup);
-    let key = |key, modifiers| egui::Event::Key {
-        key,
-        physical_key: None,
-        pressed: true,
-        repeat: false,
-        modifiers,
-    };
-    frame(
-        &mut app,
-        &ctx,
-        vec![key(egui::Key::Escape, egui::Modifiers::NONE)],
-    );
+    press_key(&mut app, &ctx, egui::Key::Escape, egui::Modifiers::NONE);
     assert!(!egui::Popup::is_any_open(&ctx));
     egui::Popup::open_id(&ctx, popup);
-    frame(
-        &mut app,
-        &ctx,
-        vec![key(egui::Key::K, egui::Modifiers::CTRL)],
-    );
+    press_key(&mut app, &ctx, egui::Key::K, egui::Modifiers::CTRL);
     assert!(app.ui.palette_open);
     assert!(!egui::Popup::is_any_open(&ctx));
-    frame(
-        &mut app,
-        &ctx,
-        vec![key(egui::Key::Escape, egui::Modifiers::NONE)],
-    );
+    press_key(&mut app, &ctx, egui::Key::Escape, egui::Modifiers::NONE);
     assert!(!app.ui.palette_open);
     app.document.ui.sql_open = true;
     app.document.ui.filter_open = true;
+    press_key(&mut app, &ctx, egui::Key::Escape, egui::Modifiers::NONE);
+    assert!(!app.document.ui.filter_open);
+    assert!(app.document.ui.sql_open);
+    for (key, modifiers, opened) in [
+        (
+            egui::Key::E,
+            egui::Modifiers::CTRL,
+            (|a: &App| a.ui.export_open) as fn(&App) -> bool,
+        ),
+        (egui::Key::F, egui::Modifiers::CTRL, |a: &App| {
+            a.document.ui.filter_open
+        }),
+        (egui::Key::F1, egui::Modifiers::NONE, |a: &App| a.tools.help),
+    ] {
+        press_key(&mut app, &ctx, key, modifiers);
+        assert!(opened(&app), "{key:?}");
+        press_key(&mut app, &ctx, egui::Key::Escape, egui::Modifiers::NONE);
+        assert!(!opened(&app), "Escape must close {key:?}'s surface");
+    }
+    app.document.tools.columns.hidden.insert(0);
+    press_key(&mut app, &ctx, egui::Key::K, egui::Modifiers::CTRL);
     frame(
         &mut app,
         &ctx,
-        vec![key(egui::Key::Escape, egui::Modifiers::NONE)],
+        vec![egui::Event::Text("Show hidden columns".into())],
     );
-    assert!(!app.document.ui.filter_open);
-    assert!(app.document.ui.sql_open);
+    press_key(&mut app, &ctx, egui::Key::Enter, egui::Modifiers::NONE);
+    assert!(!app.ui.palette_open);
+    assert!(app.document.tools.columns.hidden.is_empty());
     assert_eq!(app.document.result.current, ticket);
     app.close();
 }
 
 #[test]
 fn column_presentation_preserves_schema_indices_and_manual_widths() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("columns.db");
-    crate::test_support::create(
-        &path,
+    let (_dir, ctx, mut app) = fixture(
         &[
             "CREATE TABLE sample(id INTEGER PRIMARY KEY, label TEXT, number INTEGER)",
             "INSERT INTO sample VALUES(1,'a long string',42)",
         ],
+        true,
     );
-    let (ctx, mut app) = connected(&path, true);
     app.browse_table("sample".into());
     wait(&mut app, &ctx);
     frame(&mut app, &ctx, vec![]);
     app.document.tools.columns.move_before(2, 0);
+    for (from, target, expected) in [
+        (2, 2, vec![2, 0, 1]),
+        (9, 0, vec![2, 0, 1]),
+        (0, 9, vec![2, 0, 1]),
+        (2, 1, vec![0, 2, 1]),
+        (2, 0, vec![2, 0, 1]),
+    ] {
+        app.document.tools.columns.move_before(from, target);
+        assert_eq!(app.document.tools.columns.order, expected);
+    }
     app.document.tools.columns.hidden.insert(1);
     app.document.tools.columns.manual.insert(2);
     app.document.tools.columns.widths[2] = 217.0;
@@ -1226,16 +1181,13 @@ fn column_presentation_preserves_schema_indices_and_manual_widths() {
 
 #[test]
 fn range_selection_uses_visible_order_and_exact_numeric_values_and_inline_stages() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("selection.db");
-    crate::test_support::create(
-        &path,
+    let (_dir, ctx, mut app) = fixture(
         &[
             "CREATE TABLE sample(id INTEGER PRIMARY KEY,n INTEGER,text TEXT)",
             "INSERT INTO sample VALUES(1,9007199254740993,''),(2,9007199254740995,'two')",
         ],
+        true,
     );
-    let (ctx, mut app) = connected(&path, true);
     app.browse_table("sample".into());
     wait(&mut app, &ctx);
     frame(&mut app, &ctx, vec![]);
@@ -1272,16 +1224,13 @@ fn range_selection_uses_visible_order_and_exact_numeric_values_and_inline_stages
 
 #[test]
 fn scroll_pages_append_evict_reload_and_reject_stale_or_draft_owned_fetches() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("pages.db");
-    crate::test_support::create(
-        &path,
+    let (_dir, ctx, mut app) = fixture(
         &[
             "CREATE TABLE sample(id INTEGER PRIMARY KEY,n INTEGER)",
             "INSERT INTO sample WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<450) SELECT x,x FROM n",
         ],
+        true,
     );
-    let (ctx, mut app) = connected(&path, true);
     app.preferences.row_limit = 400;
     app.browse_table("sample".into());
     wait(&mut app, &ctx);
@@ -1295,6 +1244,21 @@ fn scroll_pages_append_evict_reload_and_reject_stale_or_draft_owned_fetches() {
     assert_eq!(app.document.result.current, owner);
     app.request_page(false);
     wait(&mut app, &ctx);
+    frame(&mut app, &ctx, vec![]);
+    app.select_cell(150, 0, false);
+    app.document.tools.grid_scroll.y = 3000.0;
+    app.run_text("SELECT 765".into(), None);
+    wait(&mut app, &ctx);
+    app.return_to_table();
+    wait(&mut app, &ctx);
+    for _ in 0..2 {
+        frame(&mut app, &ctx, vec![]);
+        wait(&mut app, &ctx);
+    }
+    assert_eq!(app.document.result.rows.len(), 300);
+    assert_eq!(app.document.inspect, Some((150, 0)));
+    assert_eq!(app.document.tools.grid_selection.unwrap().cursor, (150, 0));
+    assert!(app.document.tools.restore_navigation.is_none());
     app.select_cell(200, 1, false);
     app.request_page(false);
     wait(&mut app, &ctx);
@@ -1334,18 +1298,15 @@ fn scroll_pages_append_evict_reload_and_reject_stale_or_draft_owned_fetches() {
 
 #[test]
 fn contextual_reads_and_wide_related_grid_preserve_parent_result_and_selection() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("context.db");
-    crate::test_support::create(
-        &path,
+    let (_dir, ctx, mut app) = fixture(
         &[
             "CREATE TABLE parent(a INTEGER,b TEXT COLLATE NOCASE,PRIMARY KEY(a,b))",
             "CREATE TABLE child(id INTEGER PRIMARY KEY,a TEXT,b TEXT,payload TEXT,FOREIGN KEY(a,b) REFERENCES parent)",
             "INSERT INTO parent VALUES(7,'Alpha')",
             "INSERT INTO child VALUES(1,'007','alpha','child-only')",
         ],
+        false,
     );
-    let (ctx, mut app) = connected(&path, false);
     app.browse_table("child".into());
     wait(&mut app, &ctx);
     let child = app.document.tools.inspection.as_ref().unwrap().foreign_keys[0].clone();
@@ -1393,43 +1354,19 @@ fn contextual_reads_and_wide_related_grid_preserve_parent_result_and_selection()
 
 #[test]
 fn actual_grid_keys_extend_copy_and_stage_inline_without_writing() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("keys.db");
-    crate::test_support::create(
-        &path,
+    let (_dir, ctx, mut app) = fixture(
         &[
             "CREATE TABLE sample(id INTEGER PRIMARY KEY,n INTEGER,text TEXT)",
             "INSERT INTO sample VALUES(1,9007199254740993,'')",
         ],
+        true,
     );
-    let (ctx, mut app) = connected(&path, true);
     app.browse_table("sample".into());
     wait(&mut app, &ctx);
     frame(&mut app, &ctx, vec![]);
     frame(&mut app, &ctx, vec![]);
     let pos = app.first_cell_rect.unwrap().center();
-    for pressed in [true, false] {
-        frame(
-            &mut app,
-            &ctx,
-            vec![
-                egui::Event::PointerMoved(pos),
-                egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ],
-        );
-    }
-    let key = |key, modifiers| egui::Event::Key {
-        key,
-        physical_key: None,
-        pressed: true,
-        repeat: false,
-        modifiers,
-    };
+    click(&mut app, &ctx, pos);
     let send = |app: &mut App, mods, mut events: Vec<egui::Event>| {
         events.insert(0, egui::Event::ModifiersChanged(mods));
         frame_at(app, &ctx, egui::vec2(1280.0, 720.0), events)
@@ -1437,13 +1374,13 @@ fn actual_grid_keys_extend_copy_and_stage_inline_without_writing() {
     send(
         &mut app,
         egui::Modifiers::SHIFT,
-        vec![key(egui::Key::ArrowRight, egui::Modifiers::SHIFT)],
+        vec![key_event(egui::Key::ArrowRight, egui::Modifiers::SHIFT)],
     );
     assert_eq!(app.selected_cells(), vec![(0, 0), (0, 1)]);
     let output = send(
         &mut app,
         egui::Modifiers::CTRL,
-        vec![key(egui::Key::C, egui::Modifiers::CTRL)],
+        vec![key_event(egui::Key::C, egui::Modifiers::CTRL)],
     );
     assert!(
         output
@@ -1455,12 +1392,12 @@ fn actual_grid_keys_extend_copy_and_stage_inline_without_writing() {
     send(
         &mut app,
         egui::Modifiers::NONE,
-        vec![key(egui::Key::ArrowRight, egui::Modifiers::NONE)],
+        vec![key_event(egui::Key::ArrowRight, egui::Modifiers::NONE)],
     );
     send(
         &mut app,
         egui::Modifiers::NONE,
-        vec![key(egui::Key::Enter, egui::Modifiers::NONE)],
+        vec![key_event(egui::Key::Enter, egui::Modifiers::NONE)],
     );
     assert!(app.document.tools.inline.is_some());
     send(
@@ -1468,7 +1405,7 @@ fn actual_grid_keys_extend_copy_and_stage_inline_without_writing() {
         egui::Modifiers::NONE,
         vec![
             egui::Event::Text("draft".into()),
-            key(egui::Key::Enter, egui::Modifiers::NONE),
+            key_event(egui::Key::Enter, egui::Modifiers::NONE),
         ],
     );
     assert!(app.document.tools.inline.is_none());
@@ -1479,16 +1416,13 @@ fn actual_grid_keys_extend_copy_and_stage_inline_without_writing() {
 
 #[test]
 fn token_entry_enter_retains_typed_filter_and_empty_clipboard_fields() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("tokens.db");
-    crate::test_support::create(
-        &path,
+    let (_dir, ctx, mut app) = fixture(
         &[
             "CREATE TABLE sample(id INTEGER PRIMARY KEY,n INTEGER,text TEXT)",
             "INSERT INTO sample VALUES(1,1,''),(2,2,'two')",
         ],
+        false,
     );
-    let (ctx, mut app) = connected(&path, false);
     app.browse_table("sample".into());
     wait(&mut app, &ctx);
     app.document.tools.filter_focus = true;
@@ -1498,13 +1432,7 @@ fn token_entry_enter_retains_typed_filter_and_empty_clipboard_fields() {
         &ctx,
         vec![
             egui::Event::Text("n>=2".into()),
-            egui::Event::Key {
-                key: egui::Key::Enter,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers: egui::Modifiers::NONE,
-            },
+            key_event(egui::Key::Enter, egui::Modifiers::NONE),
         ],
     );
     wait(&mut app, &ctx);
@@ -1568,104 +1496,15 @@ fn clipboard_grid_and_record_use_independent_tiles_without_overlays() {
 }
 
 #[test]
-fn incomplete_page_keeps_primary_rows_and_does_not_invent_end_of_table() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("page-error.db");
-    crate::test_support::create(
-        &path,
-        &[
-            "CREATE TABLE sample(id INTEGER PRIMARY KEY)",
-            "INSERT INTO sample WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<250) SELECT x FROM n",
-        ],
-    );
-    let (ctx, mut app) = connected(&path, false);
-    app.browse_table("sample".into());
-    wait(&mut app, &ctx);
-    let original = app.document.result.rows.clone();
-    let owner = app.document.result.current;
-    app.request_page(false);
-    let ticket = app
-        .document
-        .tools
-        .pages
-        .pending
-        .as_ref()
-        .unwrap()
-        .result
-        .current
-        .unwrap();
-    app.handle_event(
-        &ctx,
-        Event {
-            ticket,
-            kind: EventKind::Finished(tursobench_core::Completion {
-                elapsed_ms: 1,
-                delivery: tursobench_core::Delivery::Limited,
-                rows_seen: 100,
-                changed: 0,
-                transaction: TransactionState::Autocommit,
-                error: None,
-            }),
-        },
-    );
-    assert!(app.document.tools.pages.pending.is_none());
-    assert!(!app.document.tools.pages.error.is_empty());
-    assert!(app.document.tools.pages.end.is_none());
-    assert_eq!(app.document.result.rows, original);
-    assert_eq!(app.document.result.current, owner);
-    app.close();
-}
-
-#[test]
-fn query_back_restores_a_multi_page_window_before_matching_the_cursor() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("back-window.db");
-    crate::test_support::create(
-        &path,
-        &[
-            "CREATE TABLE sample(id INTEGER PRIMARY KEY)",
-            "INSERT INTO sample WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<600) SELECT x FROM n",
-        ],
-    );
-    let (ctx, mut app) = connected(&path, false);
-    app.preferences.row_limit = 400;
-    app.browse_table("sample".into());
-    wait(&mut app, &ctx);
-    for _ in 0..2 {
-        app.request_page(false);
-        wait(&mut app, &ctx);
-    }
-    frame(&mut app, &ctx, vec![]);
-    app.select_cell(150, 0, false);
-    app.document.tools.grid_scroll.y = 3000.0;
-    app.run_text("SELECT 765".into(), None);
-    wait(&mut app, &ctx);
-    app.return_to_table();
-    wait(&mut app, &ctx);
-    for _ in 0..2 {
-        frame(&mut app, &ctx, vec![]);
-        wait(&mut app, &ctx);
-    }
-    assert_eq!(app.document.result.rows.len(), 300);
-    assert_eq!(app.document.inspect, Some((150, 0)));
-    assert_eq!(app.document.tools.grid_selection.unwrap().cursor, (150, 0));
-    assert!(app.document.tools.restore_navigation.is_none());
-    app.close();
-}
-
-#[test]
 fn filtered_index_tree_opens_original_ddl_without_replacing_primary_rows() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("ddl-tree.db");
-    crate::test_support::create(
-        &path,
+    let (_dir, ctx, mut app) = fixture(
         &[
             "CREATE TABLE sample(id INTEGER PRIMARY KEY,value TEXT)",
             "CREATE INDEX sample_value ON sample(value)",
             "INSERT INTO sample VALUES(1,'one')",
         ],
+        false,
     );
-    let (ctx, mut app) = connected(&path, false);
     app.browse_table("sample".into());
     wait(&mut app, &ctx);
     app.tools.schema_filter = "sample_value".into();
@@ -1686,21 +1525,7 @@ fn filtered_index_tree_opens_original_ddl_without_replacing_primary_rows() {
     let data_id = app.document.id;
     let owner = app.document.result.current;
     let rows = app.document.result.rows.clone();
-    for pressed in [true, false] {
-        frame(
-            &mut app,
-            &ctx,
-            vec![
-                egui::Event::PointerMoved(pos),
-                egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ],
-        );
-    }
+    click(&mut app, &ctx, pos);
     assert_eq!(
         app.document.tools.ddl.as_ref().unwrap().name,
         "sample_value"
@@ -1724,17 +1549,7 @@ fn cancelling_a_recent_database_switch_clears_the_pending_path() {
     app.pending_database = Some(dir.path().join("other.db"));
     app.request_close();
     assert!(app.confirm_close);
-    frame(
-        &mut app,
-        &ctx,
-        vec![egui::Event::Key {
-            key: egui::Key::Escape,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        }],
-    );
+    press_key(&mut app, &ctx, egui::Key::Escape, egui::Modifiers::NONE);
     assert!(app.pending_database.is_none());
     assert!(!app.confirm_close);
     assert!(!app.closing);
@@ -1745,16 +1560,13 @@ fn cancelling_a_recent_database_switch_clears_the_pending_path() {
 
 #[test]
 fn workspace_geometry_roundtrips_without_query_data_or_bindings() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("layout.db");
-    crate::test_support::create(
-        &path,
+    let (_dir, ctx, mut app) = fixture(
         &[
             "CREATE TABLE chunks(id TEXT PRIMARY KEY, part INTEGER, body BLOB)",
             "INSERT INTO chunks VALUES('buffer-1780913432386559807-118',0,x'001122')",
         ],
+        false,
     );
-    let (ctx, mut app) = connected(&path, false);
     app.browse_table("chunks".into());
     wait(&mut app, &ctx);
     let data_id = app.document.id;
@@ -1844,17 +1656,14 @@ fn workspace_geometry_roundtrips_without_query_data_or_bindings() {
 
 #[test]
 fn automatic_map_fit_keeps_every_node_inside_its_resized_tile() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("map-fit.db");
-    crate::test_support::create(
-        &path,
+    let (_dir, ctx, mut app) = fixture(
         &[
             "CREATE TABLE a(id INTEGER PRIMARY KEY)",
             "CREATE TABLE b(id INTEGER PRIMARY KEY)",
             "CREATE TABLE c(id INTEGER PRIMARY KEY)",
         ],
+        false,
     );
-    let (ctx, mut app) = connected(&path, false);
     let map = app.document.id;
     frame(&mut app, &ctx, vec![]);
     app.browse_table("a".into());
@@ -1954,12 +1763,6 @@ fn wide_tables_open_below_and_header_moves_keep_drafts_and_results() {
         .unwrap()
         .1
         .center();
-    let pointer_button = |pos, pressed| egui::Event::PointerButton {
-        pos,
-        button: egui::PointerButton::Primary,
-        pressed,
-        modifiers: egui::Modifiers::NONE,
-    };
     frame_at(
         &mut app,
         &ctx,
@@ -1995,13 +1798,10 @@ fn wide_tables_open_below_and_header_moves_keep_drafts_and_results() {
         &mut app,
         &ctx,
         size,
-        vec![egui::Event::Key {
-            key: egui::Key::ArrowDown,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: egui::Modifiers::CTRL | egui::Modifiers::ALT | egui::Modifiers::SHIFT,
-        }],
+        vec![key_event(
+            egui::Key::ArrowDown,
+            egui::Modifiers::CTRL | egui::Modifiers::ALT | egui::Modifiers::SHIFT,
+        )],
     );
     assert!(matches!(
         app.workspace.tree,
@@ -2052,13 +1852,7 @@ fn wide_tables_open_below_and_header_moves_keep_drafts_and_results() {
         &mut app,
         &ctx,
         size,
-        vec![egui::Event::Key {
-            key: egui::Key::Escape,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        }],
+        vec![key_event(egui::Key::Escape, egui::Modifiers::NONE)],
     );
     frame_at(&mut app, &ctx, size, vec![pointer_button(target, false)]);
     assert_eq!(app.workspace.tree, tree);

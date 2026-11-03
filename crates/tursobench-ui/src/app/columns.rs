@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 #[derive(Default)]
 pub(super) struct Columns {
-    signature: Vec<(String, Option<String>)>,
+    signature: Vec<tursobench_core::Column>,
     pub widths: Vec<f32>,
     pub order: Vec<usize>,
     pub hidden: BTreeSet<usize>,
@@ -15,12 +15,15 @@ pub(super) struct Columns {
 }
 impl Columns {
     pub fn move_before(&mut self, from: usize, target: usize) {
-        if from == target || !self.order.contains(&from) || !self.order.contains(&target) {
+        let Some(from) = self.order.iter().position(|&c| c == from) else {
             return;
-        }
-        self.order.retain(|&c| c != from);
-        let pos = self.order.iter().position(|&c| c == target).unwrap();
-        self.order.insert(pos, from);
+        };
+        let Some(target) = self.order.iter().position(|&c| c == target) else {
+            return;
+        };
+        let column = self.order.remove(from);
+        self.order
+            .insert(target - usize::from(from < target), column);
     }
     pub fn shift(&mut self, column: usize, delta: isize) {
         if let Some(pos) = self.order.iter().position(|&c| c == column) {
@@ -75,18 +78,11 @@ impl App {
                 self.document.tools.column_layouts.pop_first();
             }
         }
-        let signature: Vec<_> = self
-            .document
-            .result
-            .columns
-            .iter()
-            .map(|c| (c.name.clone(), c.declared_type.clone()))
-            .collect();
         let c = &mut self.document.tools.columns;
-        if c.signature != signature {
+        if c.signature != self.document.result.columns {
             *c = Columns {
-                order: (0..signature.len()).collect(),
-                signature,
+                order: (0..self.document.result.columns.len()).collect(),
+                signature: self.document.result.columns.clone(),
                 refit: true,
                 ..Default::default()
             };

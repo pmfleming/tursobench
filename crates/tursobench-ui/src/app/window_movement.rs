@@ -235,7 +235,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{DropTarget, Placement, Tile, drop_target, egui};
     #[test]
     fn drop_zones_distinguish_workspace_edges_tile_edges_and_centers() {
         let area = egui::Rect::from_min_size(egui::pos2(300.0, 80.0), egui::vec2(1200.0, 800.0));

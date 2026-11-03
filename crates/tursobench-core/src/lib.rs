@@ -118,7 +118,7 @@ impl std::fmt::Display for Failure {
 }
 impl std::error::Error for Failure {}
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Column {
     pub name: String,
     pub declared_type: Option<String>,
@@ -345,7 +345,7 @@ pub fn quote_identifier(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Event, EventKind, ResultSet, Ticket, Value, quote_identifier};
     #[test]
     fn stale_events_cannot_replace_results() {
         let a = Ticket {
