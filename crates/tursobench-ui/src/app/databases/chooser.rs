@@ -75,7 +75,7 @@ impl Chooser {
                     }
                 }
             });
-            self.list_offset = output.state.offset.y;
+            self.list_offset = output.state.clamped_offset().y;
         }
         (selected, forget)
     }
@@ -141,7 +141,7 @@ impl App {
     /// Keep the native search editor/cursor alive while its results have the
     /// browsing marker. Printable text and IME then return to editing directly.
     fn database_chooser_keys(&mut self, ctx: &egui::Context, filtered: &[usize]) -> (bool, bool) {
-        let id = egui::Id::new(SEARCH_ID);
+        let id = egui::Id::unique(SEARCH_ID);
         if !ctx.memory(|m| m.has_focus(id)) || self.picker.is_some() {
             return (false, false);
         }
@@ -201,7 +201,7 @@ impl App {
             toolbar.left_top(),
             egui::pos2(browse_rect.left() - 8.0, toolbar.bottom()),
         );
-        let id = egui::Id::new(SEARCH_ID);
+        let id = egui::Id::unique(SEARCH_ID);
         if std::mem::take(&mut self.databases.focus_filter) {
             ui.memory_mut(|m| m.request_focus(id));
             self.databases.navigating = false;
@@ -280,11 +280,7 @@ impl App {
             self.databases.browse_rect = Some(browse_rect);
         }
         response.widget_info(|| {
-            egui::WidgetInfo::labeled(
-                egui::WidgetType::Button,
-                ui.is_enabled(),
-                "Browse database files",
-            )
+            egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), "Browse database files")
         });
         if toolbar.width() < 400.0 {
             let r = browse_rect.shrink(7.0);
@@ -325,7 +321,7 @@ impl App {
             self.databases.highlighted = Some(path.clone());
             self.databases.navigating = true;
             self.select_database(&path);
-            ui.memory_mut(|m| m.request_focus(egui::Id::new(SEARCH_ID)));
+            ui.memory_mut(|m| m.request_focus(egui::Id::unique(SEARCH_ID)));
         }
         if let Some(path) = forget {
             self.forget_database(&path);
@@ -428,10 +424,10 @@ impl Entry {
             egui::vec2(ui.available_width(), ROW_HEIGHT),
             egui::Sense::hover(),
         );
-        let response = ui.interact(rect, ui.id().with(&self.path), egui::Sense::click());
+        let response = ui.interact(rect, ui.scope_id().with(&self.path), egui::Sense::click());
         response.widget_info(|| {
             egui::WidgetInfo::selected(
-                egui::WidgetType::SelectableLabel,
+                egui::Role::ListBoxOption,
                 available,
                 selected_path,
                 format!("{} · {}", self.path.display(), self.kind.label()),
@@ -445,7 +441,7 @@ impl Entry {
             ui.visuals().faint_bg_color
         };
         ui.painter().rect_filled(rect, 10.0, fill);
-        if highlighted && ui.memory(|m| m.has_focus(egui::Id::new(SEARCH_ID))) {
+        if highlighted && ui.memory(|m| m.has_focus(egui::Id::unique(SEARCH_ID))) {
             ui.painter().rect_filled(
                 egui::Rect::from_min_size(
                     rect.left_top() + egui::vec2(3.0, 13.0),

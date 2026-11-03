@@ -6,17 +6,35 @@ use std::{collections::BTreeMap, io::Read, path::Path, sync::mpsc, time::Duratio
 pub(super) fn observe(ctx: egui::Context) -> mpsc::Receiver<Palette> {
     let (tx, rx) = mpsc::sync_channel(1);
     std::thread::spawn(move || {
+        let mut delivered = None;
         loop {
-            let palette = read();
-            match tx.try_send(palette) {
-                Ok(()) => ctx.request_repaint(),
-                Err(mpsc::TrySendError::Disconnected(_)) => break,
-                Err(mpsc::TrySendError::Full(_)) => {}
+            if !publish_palette(&tx, &mut delivered, read(), || ctx.request_repaint()) {
+                break;
             }
             std::thread::sleep(Duration::from_secs(2));
         }
     });
     rx
+}
+
+/// Keep checking receiver lifetime, but only wake the UI for a changed palette.
+fn publish_palette(
+    tx: &mpsc::SyncSender<Palette>,
+    delivered: &mut Option<Palette>,
+    palette: Palette,
+    wake: impl FnOnce(),
+) -> bool {
+    let changed = delivered.as_ref() != Some(&palette);
+    match tx.try_send(palette.clone()) {
+        Ok(()) => *delivered = Some(palette),
+        Err(mpsc::TrySendError::Disconnected(_)) => return false,
+        // Wake to drain the stale sample; retry the current palette on the next poll.
+        Err(mpsc::TrySendError::Full(_)) => {}
+    }
+    if changed {
+        wake();
+    }
+    true
 }
 
 fn bounded_file(path: &Path) -> String {
@@ -180,6 +198,40 @@ fn named_colors(css: &str) -> BTreeMap<String, egui::Color32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unchanged_palettes_sleep_and_changes_survive_a_full_mailbox() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let mut delivered = None;
+        let wakes = std::cell::Cell::new(0);
+        let wake = || wakes.set(wakes.get() + 1);
+        let light = Palette {
+            dark: Some(false),
+            ..Default::default()
+        };
+        let dark = Palette {
+            dark: Some(true),
+            ..Default::default()
+        };
+
+        assert!(publish_palette(&tx, &mut delivered, light.clone(), wake));
+        assert_eq!(wakes.get(), 1);
+        assert_eq!(rx.try_recv().unwrap(), light);
+        // An idle UI need not drain unchanged samples.
+        for _ in 0..3 {
+            assert!(publish_palette(&tx, &mut delivered, light.clone(), wake));
+        }
+        assert_eq!(wakes.get(), 1);
+        assert!(publish_palette(&tx, &mut delivered, dark.clone(), wake));
+        assert_eq!(wakes.get(), 2);
+        assert_eq!(rx.try_recv().unwrap(), light);
+        assert!(publish_palette(&tx, &mut delivered, dark.clone(), wake));
+        assert_eq!(rx.try_recv().unwrap(), dark);
+        assert_eq!(wakes.get(), 3);
+        assert!(publish_palette(&tx, &mut delivered, dark.clone(), wake));
+        assert_eq!(wakes.get(), 3);
+        drop(rx);
+        assert!(!publish_palette(&tx, &mut delivered, dark, wake));
+    }
     #[test]
     fn named_colors_resolve_aliases_without_executing_css() {
         let colors = named_colors(

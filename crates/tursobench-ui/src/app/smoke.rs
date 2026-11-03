@@ -7,6 +7,7 @@ pub(super) struct Smoke {
     stage: u8,
     capture_dir: Option<std::path::PathBuf>,
     capture_pending: Option<String>,
+    capture_result: Option<std::sync::mpsc::Receiver<std::sync::Arc<egui::ColorImage>>>,
     capture_frames: u8,
     start: Instant,
     table: String,
@@ -19,6 +20,7 @@ impl Smoke {
             stage: 0,
             capture_dir: std::env::var_os("TURSOBENCH_CAPTURE_DIR").map(Into::into),
             capture_pending: None,
+            capture_result: None,
             capture_frames: 0,
             start: Instant::now(),
             project_fixture: table.is_some(),
@@ -32,12 +34,10 @@ impl App {
             return;
         };
         if let (Some(dir), Some(name)) = (&smoke.capture_dir, &smoke.capture_pending) {
-            let screenshot = ctx.input(|i| {
-                i.events.iter().find_map(|e| match e {
-                    egui::Event::Screenshot { image, .. } => Some(image.clone()),
-                    _ => None,
-                })
-            });
+            let screenshot = smoke
+                .capture_result
+                .as_ref()
+                .and_then(|rx| rx.try_recv().ok());
             if let Some(image) = screenshot {
                 use eframe::icon_data::IconDataExt;
                 let icon = egui::IconData {
@@ -52,6 +52,7 @@ impl App {
                 )
                 .expect("write screenshot");
                 smoke.capture_pending = None;
+                smoke.capture_result = None;
             }
         }
         if smoke.start.elapsed() > Duration::from_secs(20) {
@@ -166,7 +167,13 @@ impl App {
                         }
                         .into(),
                     );
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+                    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+                    let wake = ctx.clone();
+                    ctx.request_screenshot(move |image| {
+                        let _ = tx.try_send(image);
+                        wake.request_repaint();
+                    });
+                    smoke.capture_result = Some(rx);
                     smoke.capture_frames = 0;
                     smoke.stage += 1;
                 }

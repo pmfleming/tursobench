@@ -702,7 +702,7 @@ impl App {
             );
             let response = ui.interact(
                 r.intersect(canvas),
-                ui.id().with(("diagram-node", &node.name)),
+                ui.scope_id().with(("diagram-node", &node.name)),
                 egui::Sense::click(),
             );
             if response.clicked() {
@@ -717,7 +717,7 @@ impl App {
             ));
             let drag = ui.interact(
                 header.intersect(canvas),
-                ui.id().with(("diagram-drag", &node.name)),
+                ui.scope_id().with(("diagram-drag", &node.name)),
                 egui::Sense::click_and_drag(),
             );
             if drag.clicked() {

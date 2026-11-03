@@ -16,6 +16,23 @@
       "url": "https://raw.githubusercontent.com/AccessKit/accesskit/a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969/LICENSE.chromium"
     }
   ],
+  "accesskit-0.25.2": [
+    {
+      "file": "AccessKit--accesskit-f3026222559c/LICENSE-APACHE",
+      "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+      "url": "https://raw.githubusercontent.com/AccessKit/accesskit/f3026222559c7f5f46d8f25cb7404de68eb149f0/LICENSE-APACHE"
+    },
+    {
+      "file": "AccessKit--accesskit-f3026222559c/LICENSE-MIT",
+      "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+      "url": "https://raw.githubusercontent.com/AccessKit/accesskit/f3026222559c7f5f46d8f25cb7404de68eb149f0/LICENSE-MIT"
+    },
+    {
+      "file": "AccessKit--accesskit-f3026222559c/LICENSE.chromium",
+      "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308",
+      "url": "https://raw.githubusercontent.com/AccessKit/accesskit/f3026222559c7f5f46d8f25cb7404de68eb149f0/LICENSE.chromium"
+    }
+  ],
   "accesskit_atspi_common-0.18.1": [
     {
       "file": "AccessKit--accesskit-f40dfc01a0c0/LICENSE-APACHE",
@@ -31,6 +48,23 @@
       "file": "AccessKit--accesskit-f40dfc01a0c0/LICENSE.chromium",
       "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308",
       "url": "https://raw.githubusercontent.com/AccessKit/accesskit/f40dfc01a0c0e76de535969f82fb35e19513737d/LICENSE.chromium"
+    }
+  ],
+  "accesskit_atspi_common-0.21.1": [
+    {
+      "file": "AccessKit--accesskit-f3026222559c/LICENSE-APACHE",
+      "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+      "url": "https://raw.githubusercontent.com/AccessKit/accesskit/f3026222559c7f5f46d8f25cb7404de68eb149f0/LICENSE-APACHE"
+    },
+    {
+      "file": "AccessKit--accesskit-f3026222559c/LICENSE-MIT",
+      "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+      "url": "https://raw.githubusercontent.com/AccessKit/accesskit/f3026222559c7f5f46d8f25cb7404de68eb149f0/LICENSE-MIT"
+    },
+    {
+      "file": "AccessKit--accesskit-f3026222559c/LICENSE.chromium",
+      "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308",
+      "url": "https://raw.githubusercontent.com/AccessKit/accesskit/f3026222559c7f5f46d8f25cb7404de68eb149f0/LICENSE.chromium"
     }
   ],
   "accesskit_consumer-0.36.0": [
@@ -50,6 +84,23 @@
       "url": "https://raw.githubusercontent.com/AccessKit/accesskit/f40dfc01a0c0e76de535969f82fb35e19513737d/LICENSE.chromium"
     }
   ],
+  "accesskit_consumer-0.39.2": [
+    {
+      "file": "AccessKit--accesskit-f3026222559c/LICENSE-APACHE",
+      "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+      "url": "https://raw.githubusercontent.com/AccessKit/accesskit/f3026222559c7f5f46d8f25cb7404de68eb149f0/LICENSE-APACHE"
+    },
+    {
+      "file": "AccessKit--accesskit-f3026222559c/LICENSE-MIT",
+      "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+      "url": "https://raw.githubusercontent.com/AccessKit/accesskit/f3026222559c7f5f46d8f25cb7404de68eb149f0/LICENSE-MIT"
+    },
+    {
+      "file": "AccessKit--accesskit-f3026222559c/LICENSE.chromium",
+      "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308",
+      "url": "https://raw.githubusercontent.com/AccessKit/accesskit/f3026222559c7f5f46d8f25cb7404de68eb149f0/LICENSE.chromium"
+    }
+  ],
   "accesskit_unix-0.21.1": [
     {
       "file": "AccessKit--accesskit-f40dfc01a0c0/LICENSE-APACHE",
@@ -67,6 +118,23 @@
       "url": "https://raw.githubusercontent.com/AccessKit/accesskit/f40dfc01a0c0e76de535969f82fb35e19513737d/LICENSE.chromium"
     }
   ],
+  "accesskit_unix-0.24.1": [
+    {
+      "file": "AccessKit--accesskit-f3026222559c/LICENSE-APACHE",
+      "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+      "url": "https://raw.githubusercontent.com/AccessKit/accesskit/f3026222559c7f5f46d8f25cb7404de68eb149f0/LICENSE-APACHE"
+    },
+    {
+      "file": "AccessKit--accesskit-f3026222559c/LICENSE-MIT",
+      "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+      "url": "https://raw.githubusercontent.com/AccessKit/accesskit/f3026222559c7f5f46d8f25cb7404de68eb149f0/LICENSE-MIT"
+    },
+    {
+      "file": "AccessKit--accesskit-f3026222559c/LICENSE.chromium",
+      "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308",
+      "url": "https://raw.githubusercontent.com/AccessKit/accesskit/f3026222559c7f5f46d8f25cb7404de68eb149f0/LICENSE.chromium"
+    }
+  ],
   "accesskit_winit-0.32.2": [
     {
       "file": "AccessKit--accesskit-1bbcf100942b/LICENSE-APACHE",
@@ -82,6 +150,23 @@
       "file": "AccessKit--accesskit-1bbcf100942b/LICENSE.chromium",
       "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308",
       "url": "https://raw.githubusercontent.com/AccessKit/accesskit/1bbcf100942bac96c2c3a4a91cb67b0b20201a24/LICENSE.chromium"
+    }
+  ],
+  "accesskit_winit-0.34.2": [
+    {
+      "file": "AccessKit--accesskit-f3026222559c/LICENSE-APACHE",
+      "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+      "url": "https://raw.githubusercontent.com/AccessKit/accesskit/f3026222559c7f5f46d8f25cb7404de68eb149f0/LICENSE-APACHE"
+    },
+    {
+      "file": "AccessKit--accesskit-f3026222559c/LICENSE-MIT",
+      "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+      "url": "https://raw.githubusercontent.com/AccessKit/accesskit/f3026222559c7f5f46d8f25cb7404de68eb149f0/LICENSE-MIT"
+    },
+    {
+      "file": "AccessKit--accesskit-f3026222559c/LICENSE.chromium",
+      "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308",
+      "url": "https://raw.githubusercontent.com/AccessKit/accesskit/f3026222559c7f5f46d8f25cb7404de68eb149f0/LICENSE.chromium"
     }
   ],
   "aristo-0.4.1": [
@@ -127,6 +212,20 @@
       "url": "https://raw.githubusercontent.com/emilk/egui/49682f8baa058bf49e011035cfbd6e825f88a5ef/LICENSE-MIT"
     }
   ],
+  "ecolor-0.37.0": [
+    {
+      "file": "emilk--egui-841a328ba2dd/LICENSE-APACHE",
+      "provenance_note": "From the upstream 0.37.0 release tag, resolved to an immutable commit; some published crate VCS commits are unavailable upstream.",
+      "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+      "url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-APACHE"
+    },
+    {
+      "file": "emilk--egui-841a328ba2dd/LICENSE-MIT",
+      "provenance_note": "From the upstream 0.37.0 release tag, resolved to an immutable commit; some published crate VCS commits are unavailable upstream.",
+      "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+      "url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-MIT"
+    }
+  ],
   "eframe-0.36.2": [
     {
       "file": "emilk--egui-49682f8baa05/LICENSE-APACHE",
@@ -137,6 +236,20 @@
       "file": "emilk--egui-49682f8baa05/LICENSE-MIT",
       "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
       "url": "https://raw.githubusercontent.com/emilk/egui/49682f8baa058bf49e011035cfbd6e825f88a5ef/LICENSE-MIT"
+    }
+  ],
+  "eframe-0.37.0": [
+    {
+      "file": "emilk--egui-841a328ba2dd/LICENSE-APACHE",
+      "provenance_note": "From the upstream 0.37.0 release tag, resolved to an immutable commit; some published crate VCS commits are unavailable upstream.",
+      "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+      "url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-APACHE"
+    },
+    {
+      "file": "emilk--egui-841a328ba2dd/LICENSE-MIT",
+      "provenance_note": "From the upstream 0.37.0 release tag, resolved to an immutable commit; some published crate VCS commits are unavailable upstream.",
+      "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+      "url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-MIT"
     }
   ],
   "egui-0.36.2": [
@@ -151,6 +264,20 @@
       "url": "https://raw.githubusercontent.com/emilk/egui/49682f8baa058bf49e011035cfbd6e825f88a5ef/LICENSE-MIT"
     }
   ],
+  "egui-0.37.0": [
+    {
+      "file": "emilk--egui-841a328ba2dd/LICENSE-APACHE",
+      "provenance_note": "From the upstream 0.37.0 release tag, resolved to an immutable commit; some published crate VCS commits are unavailable upstream.",
+      "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+      "url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-APACHE"
+    },
+    {
+      "file": "emilk--egui-841a328ba2dd/LICENSE-MIT",
+      "provenance_note": "From the upstream 0.37.0 release tag, resolved to an immutable commit; some published crate VCS commits are unavailable upstream.",
+      "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+      "url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-MIT"
+    }
+  ],
   "egui-wgpu-0.36.2": [
     {
       "file": "emilk--egui-49682f8baa05/LICENSE-APACHE",
@@ -161,6 +288,20 @@
       "file": "emilk--egui-49682f8baa05/LICENSE-MIT",
       "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
       "url": "https://raw.githubusercontent.com/emilk/egui/49682f8baa058bf49e011035cfbd6e825f88a5ef/LICENSE-MIT"
+    }
+  ],
+  "egui-wgpu-0.37.0": [
+    {
+      "file": "emilk--egui-841a328ba2dd/LICENSE-APACHE",
+      "provenance_note": "From the upstream 0.37.0 release tag, resolved to an immutable commit; some published crate VCS commits are unavailable upstream.",
+      "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+      "url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-APACHE"
+    },
+    {
+      "file": "emilk--egui-841a328ba2dd/LICENSE-MIT",
+      "provenance_note": "From the upstream 0.37.0 release tag, resolved to an immutable commit; some published crate VCS commits are unavailable upstream.",
+      "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+      "url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-MIT"
     }
   ],
   "egui-winit-0.36.2": [
@@ -175,6 +316,20 @@
       "url": "https://raw.githubusercontent.com/emilk/egui/49682f8baa058bf49e011035cfbd6e825f88a5ef/LICENSE-MIT"
     }
   ],
+  "egui-winit-0.37.0": [
+    {
+      "file": "emilk--egui-841a328ba2dd/LICENSE-APACHE",
+      "provenance_note": "From the upstream 0.37.0 release tag, resolved to an immutable commit; some published crate VCS commits are unavailable upstream.",
+      "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+      "url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-APACHE"
+    },
+    {
+      "file": "emilk--egui-841a328ba2dd/LICENSE-MIT",
+      "provenance_note": "From the upstream 0.37.0 release tag, resolved to an immutable commit; some published crate VCS commits are unavailable upstream.",
+      "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+      "url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-MIT"
+    }
+  ],
   "egui_glow-0.36.2": [
     {
       "file": "emilk--egui-49682f8baa05/LICENSE-APACHE",
@@ -185,6 +340,20 @@
       "file": "emilk--egui-49682f8baa05/LICENSE-MIT",
       "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
       "url": "https://raw.githubusercontent.com/emilk/egui/49682f8baa058bf49e011035cfbd6e825f88a5ef/LICENSE-MIT"
+    }
+  ],
+  "egui_glow-0.37.0": [
+    {
+      "file": "emilk--egui-841a328ba2dd/LICENSE-APACHE",
+      "provenance_note": "From the upstream 0.37.0 release tag, resolved to an immutable commit; some published crate VCS commits are unavailable upstream.",
+      "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+      "url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-APACHE"
+    },
+    {
+      "file": "emilk--egui-841a328ba2dd/LICENSE-MIT",
+      "provenance_note": "From the upstream 0.37.0 release tag, resolved to an immutable commit; some published crate VCS commits are unavailable upstream.",
+      "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+      "url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-MIT"
     }
   ],
   "emath-0.36.2": [
@@ -199,6 +368,20 @@
       "url": "https://raw.githubusercontent.com/emilk/egui/49682f8baa058bf49e011035cfbd6e825f88a5ef/LICENSE-MIT"
     }
   ],
+  "emath-0.37.0": [
+    {
+      "file": "emilk--egui-841a328ba2dd/LICENSE-APACHE",
+      "provenance_note": "From the upstream 0.37.0 release tag, resolved to an immutable commit; some published crate VCS commits are unavailable upstream.",
+      "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+      "url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-APACHE"
+    },
+    {
+      "file": "emilk--egui-841a328ba2dd/LICENSE-MIT",
+      "provenance_note": "From the upstream 0.37.0 release tag, resolved to an immutable commit; some published crate VCS commits are unavailable upstream.",
+      "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+      "url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-MIT"
+    }
+  ],
   "epaint-0.36.2": [
     {
       "file": "emilk--egui-49682f8baa05/LICENSE-APACHE",
@@ -209,6 +392,20 @@
       "file": "emilk--egui-49682f8baa05/LICENSE-MIT",
       "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
       "url": "https://raw.githubusercontent.com/emilk/egui/49682f8baa058bf49e011035cfbd6e825f88a5ef/LICENSE-MIT"
+    }
+  ],
+  "epaint-0.37.0": [
+    {
+      "file": "emilk--egui-841a328ba2dd/LICENSE-APACHE",
+      "provenance_note": "From the upstream 0.37.0 release tag, resolved to an immutable commit; some published crate VCS commits are unavailable upstream.",
+      "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+      "url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-APACHE"
+    },
+    {
+      "file": "emilk--egui-841a328ba2dd/LICENSE-MIT",
+      "provenance_note": "From the upstream 0.37.0 release tag, resolved to an immutable commit; some published crate VCS commits are unavailable upstream.",
+      "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+      "url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-MIT"
     }
   ],
   "epaint_default_fonts-0.36.2": [

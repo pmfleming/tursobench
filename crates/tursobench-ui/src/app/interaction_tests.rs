@@ -1195,7 +1195,7 @@ fn escape_and_search_close_popups_without_replacing_the_retained_result() {
     app.browse_table("a".into());
     wait(&mut app, &ctx);
     let ticket = app.document.result.current;
-    let popup = egui::Id::new("test-menu");
+    let popup = egui::Id::unique("test-menu");
     egui::Popup::open_id(&ctx, popup);
     press_key(&mut app, &ctx, egui::Key::Escape, egui::Modifiers::NONE);
     assert!(!egui::Popup::is_any_open(&ctx));

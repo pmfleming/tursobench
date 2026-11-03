@@ -50,7 +50,7 @@ impl App {
             });
         let mut open = self.databases.settings_open;
         egui::Window::new("Search settings")
-            .id(egui::Id::new("database-search-settings"))
+            .id(egui::Id::unique("database-search-settings"))
             .open(&mut open)
             .collapsible(false)
             .default_width(520.0)
@@ -160,7 +160,7 @@ impl App {
         let mut path = self.path.clone();
         let response = ui.add(
             egui::TextEdit::singleline(&mut path)
-                .id(egui::Id::new("database-path"))
+                .id(egui::Id::unique("database-path"))
                 .desired_width(ui.available_width())
                 .hint_text("/path/to/existing.db"),
         );
@@ -330,7 +330,7 @@ mod tests {
         let edit = app.databases.edit_path_rect.unwrap().center();
         click(&mut app, &ctx, edit);
         assert!(app.databases.editing_path);
-        assert!(ctx.memory(|m| m.has_focus(egui::Id::new("database-path"))));
+        assert!(ctx.memory(|m| m.has_focus(egui::Id::unique("database-path"))));
         app.writable = true;
         frame(
             &mut app,

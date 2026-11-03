@@ -688,7 +688,7 @@ mod tests {
         assert!(app.databases.navigating);
         key(&mut app, &ctx, egui::Key::ArrowUp);
         assert!(!app.databases.navigating);
-        assert!(ctx.memory(|m| m.has_focus(egui::Id::new("database-search"))));
+        assert!(ctx.memory(|m| m.has_focus(egui::Id::unique("database-search"))));
     }
 
     #[test]

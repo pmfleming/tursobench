@@ -442,7 +442,7 @@ impl App {
             let response = ui
                 .interact(
                     divider.rect,
-                    ui.id().with(("split", &divider.path)),
+                    ui.scope_id().with(("split", &divider.path)),
                     egui::Sense::drag(),
                 )
                 .on_hover_cursor(if divider.horizontal {
@@ -451,7 +451,7 @@ impl App {
                     egui::CursorIcon::ResizeVertical
                 });
             response.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Other, true, "Resize tiled views")
+                egui::WidgetInfo::labeled(egui::Role::Splitter, true, "Resize tiled views")
             });
             let mut ratio = divider.ratio;
             if response.dragged()

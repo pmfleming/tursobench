@@ -233,7 +233,7 @@ impl App {
                 && matches!(self.document.ui.nav, Nav::Table | Nav::Result)
             {
                 if layout.bottom_inspector {
-                    egui::Area::new(egui::Id::new("inspector-overlay"))
+                    egui::Area::new(egui::Id::unique("inspector-overlay"))
                         .order(egui::Order::Foreground)
                         .anchor(egui::Align2::RIGHT_TOP, [-8.0, 8.0])
                         .show(&ctx, |ui| {

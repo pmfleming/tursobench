@@ -230,7 +230,7 @@ impl App {
         let mut open = true;
         let mut chosen = None;
         egui::Window::new("Search tables, columns and commands")
-            .id(egui::Id::new("command-palette"))
+            .id(egui::Id::unique("command-palette"))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)

@@ -225,12 +225,12 @@ impl App {
         );
         let arrow = ui.interact(
             disclosure,
-            ui.id().with(("disclosure", name)),
+            ui.scope_id().with(("disclosure", name)),
             egui::Sense::click(),
         );
         response.widget_info(|| {
             egui::WidgetInfo::selected(
-                egui::WidgetType::SelectableLabel,
+                egui::Role::TreeItem,
                 ui.is_enabled(),
                 selected,
                 format!("{name} · {kind}"),
@@ -418,12 +418,7 @@ fn tree_row(
         egui::Sense::click(),
     );
     response.widget_info(|| {
-        egui::WidgetInfo::selected(
-            egui::WidgetType::SelectableLabel,
-            ui.is_enabled(),
-            selected,
-            name,
-        )
+        egui::WidgetInfo::selected(egui::Role::TreeItem, ui.is_enabled(), selected, name)
     });
     let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
     if selected || response.hovered() || response.has_focus() {

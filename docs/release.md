@@ -5,6 +5,11 @@ not a declaration that every production release gate in PLAN.md has passed.
 
 ## Implemented and locally exercised
 
+- eframe/egui 0.37.0 and Rust 1.95: upstream nonblocking Wayland presentation
+  keeps background-workspace windows responsive, with compositor-paced redraws
+  and sleeping event dispatch. Native app/probe hidden/show/hide/show checks
+  and unchanged-theme repaint suppression are covered in
+  [desktop smoke tests](desktop-smoke-test.md#wayland-background-workspace-regression).
 - Turso 0.8.3 disposable engine probes; explicit feature configuration.
 - Typed core, dedicated session worker, bounded queues/delivery, stale-event checks.
 - Read-only desktop browsing, SQL parameters and cell inspection.

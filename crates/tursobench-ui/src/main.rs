@@ -15,6 +15,9 @@ fn main() -> eframe::Result {
             .expect("the bundled TursoBench icon must be a valid PNG");
     eframe::run_native(
         "TursoBench — Turso 0.8.3 preview",
+        // eframe >= 0.37 uses nonblocking Glow swaps and compositor frame callbacks
+        // on Wayland, so hidden workspaces keep dispatching desktop ping replies.
+        // Retain upstream pacing; disabling VSync alone can cause uncapped rendering.
         eframe::NativeOptions {
             viewport: eframe::egui::ViewportBuilder::default()
                 .with_icon(icon)

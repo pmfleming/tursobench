@@ -52,8 +52,7 @@ pub(super) fn button(ui: &mut egui::Ui, icon: Icon, name: &str, shortcut: &str) 
 pub(super) fn action(ui: &mut egui::Ui, icon: Icon, name: &str) -> egui::Response {
     let response =
         ui.add(egui::Button::new(format!("      {name}")).min_size(egui::vec2(72.0, 40.0)));
-    response
-        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), name));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), name));
     paint(
         ui.painter(),
         egui::Rect::from_center_size(
@@ -97,9 +96,9 @@ fn widget(
     let response = ui.add(native);
     response.widget_info(|| match selected {
         Some(selected) => {
-            egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), selected, name)
+            egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), selected, name)
         }
-        None => egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), name),
+        None => egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), name),
     });
     let rect = egui::Rect::from_center_size(
         egui::pos2(response.rect.left() + 14.0, response.rect.center().y),

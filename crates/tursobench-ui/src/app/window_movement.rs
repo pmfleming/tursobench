@@ -183,7 +183,7 @@ impl App {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                 let painter = ui.ctx().layer_painter(egui::LayerId::new(
                     egui::Order::Foreground,
-                    egui::Id::new("window-drop-preview"),
+                    egui::Id::unique("window-drop-preview"),
                 ));
                 let color = ui.visuals().selection.stroke.color;
                 painter.rect_filled(tile.rect, 3.0, color.gamma_multiply(0.2));

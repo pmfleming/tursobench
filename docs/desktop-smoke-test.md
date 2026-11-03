@@ -139,3 +139,48 @@ are not replaced by Xvfb tests. Record platform results in release notes.
   palette still exposes Commit/Roll back globally, including a read-only session.
 - Automatic counts remain intentionally absent until cancellable execution is
   available; no UI timer, busy timeout or retention cap claims to stop a COUNT.
+
+## Wayland background workspace regression
+
+TursoBench pins eframe 0.37.0. Its Glow presenter selects nonblocking EGL swaps
+on the actual Wayland backend and calls `pre_present_notify` for compositor-paced
+redraws. The event loop sleeps while waiting and runs logic-only updates when a
+redraw is overdue. These pieces keep hidden windows answering desktop pings;
+disabling VSync alone can cause uncapped rendering. Other backends retain
+upstream VSync behavior. The theme observer also avoids repaint requests for
+unchanged palettes, while retaining delivery/retry for real changes.
+
+The opt-in presentation probe uses the same Glow configuration, requests
+continuous redraws, reads no database/preferences, reports frame counts every
+second, and requests close after 30 seconds:
+
+```sh
+nix develop -c cargo build --locked -p tursobench-ui --example presentation_probe
+nix develop -c timeout 40 target/debug/examples/presentation_probe
+```
+
+On a native Wayland desktop, move only the probe window to an inactive workspace,
+show it, hide it again, and show it again. It must resume rendering at the
+compositor's pace without a hidden-workspace busy loop or unresponsive dialog.
+Use `WAYLAND_DEBUG=client` to inspect `xdg_wm_base.ping`/`pong` pairs; retain logs
+locally. Repeat with the real app using isolated XDG configuration/state/cache
+directories and `{"discovery":{"enabled":false}}` in its test
+`tursobench/preferences.json`. Check idle behavior and native close as well.
+
+Local validation on 2026-11-03, Hyprland 0.56.2 on a 75 Hz output:
+
+- The real app and probe both passed hidden startup, show, hide, show, native
+  close. All 30 observed compositor pings had matching pong serials.
+- Each settled seven-second hidden sample used at most one process CPU tick.
+  The continuous-redraw probe resumed at 75 frames per second when shown.
+- The app test changed only its isolated GTK configuration while hidden; it
+  remained responsive. Existing user databases/preferences were not opened.
+- Workspace tests, strict all-target Clippy, Xvfb desktop/discovery/project
+  smokes, and the callback-based screenshot capture smoke passed.
+
+These short native checks cover this compositor/driver, not every Linux desktop.
+Local evidence is under `target/egui037-wayland/`, `target/egui037-validation.log`,
+`target/egui037-desktop.log`, and `target/egui037-capture.log`.
+
+Rebuild and restart the executable being used. An already installed preview
+binary does not inherit the dependency upgrade from this checkout.

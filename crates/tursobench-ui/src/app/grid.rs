@@ -24,7 +24,7 @@ impl App {
             self.fk_cell_rect = None;
         }
         ui.spacing_mut().item_spacing.y = 1.0;
-        let grid_id = ui.id().with("grid-keyboard");
+        let grid_id = ui.scope_id().with("grid-keyboard");
         self.document.tools.grid_focus = Some(grid_id);
         let grid_response = ui.interact(
             ui.available_rect_before_wrap(),
@@ -33,7 +33,7 @@ impl App {
         );
         grid_response.widget_info(|| {
             egui::WidgetInfo::labeled(
-                egui::WidgetType::Other,
+                egui::Role::Grid,
                 ui.is_enabled(),
                 "Result grid · arrows move, Shift selects, Enter edits or follows",
             )
@@ -106,9 +106,9 @@ impl App {
                             }
                         }
                     });
-                self.document.tools.grid_scroll.y = vertical.state.offset.y;
+                self.document.tools.grid_scroll.y = vertical.state.clamped_offset().y;
             });
-        self.document.tools.grid_scroll.x = horizontal.state.offset.x;
+        self.document.tools.grid_scroll.x = horizontal.state.clamped_offset().x;
         match action {
             Some(GridAction::Cell(r, c)) => self.select_cell(
                 r,
@@ -228,7 +228,7 @@ impl App {
                     let tags=format!("{}{}{}",if pk>0{format!(" PK{pk}")}else{String::new()},if indexed{" IX"}else{""},if foreign{" FK"}else{""});
                     let sorted=self.document.browse.as_ref().filter(|b|b.sort==Some(i)).map_or("",|b|if b.descending{" descending"}else{" ascending"});
                     let (rect,response)=ui.allocate_exact_size(egui::vec2(self.document.tools.columns.widths[i],30.0),egui::Sense::click_and_drag());
-                    response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,ui.is_enabled(),format!("Column {}{tags}{sorted}",column.name)));
+                    response.widget_info(||egui::WidgetInfo::labeled(egui::Role::Button,ui.is_enabled(),format!("Column {}{tags}{sorted}",column.name)));
                     let highlighted = self.document.tools.highlight_column.as_ref().is_some_and(|(table, name)| self.document.view == View::Browse && self.document.table.as_ref().is_some_and(|t| &t.name == table) && &column.name == name);
                     if highlighted && self.document.tools.scroll_to_column { ui.scroll_to_rect(rect, Some(egui::Align::Center)); self.document.tools.scroll_to_column = false; }
                     let painter=ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));painter.rect_filled(rect,2.0,if highlighted { ui.visuals().selection.bg_fill } else { ui.visuals().faint_bg_color });
@@ -249,12 +249,12 @@ impl App {
                     if let Some(from)=response.dnd_release_payload::<usize>() {self.document.tools.columns.move_before(*from,i);}
 
                     let funnel_rect=egui::Rect::from_min_size(rect.right_top()+egui::vec2(-24.0,5.0),egui::vec2(17.0,20.0));
-                    let funnel=ui.interact(funnel_rect,ui.id().with(("column-filter",i)),egui::Sense::click());
+                    let funnel=ui.interact(funnel_rect,ui.scope_id().with(("column-filter",i)),egui::Sense::click());
                     icons::paint(ui.painter(),funnel_rect.shrink(2.0),Icon::Filter,ui.visuals().weak_text_color());
-                    funnel.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,ui.is_enabled(),format!("Filter {}",column.name)));
+                    funnel.widget_info(||egui::WidgetInfo::labeled(egui::Role::Button,ui.is_enabled(),format!("Filter {}",column.name)));
                     egui::Popup::menu(&funnel).show(|ui|self.column_facets(ui,i));
                     let handle=egui::Rect::from_min_max(egui::pos2(rect.right()-6.0,rect.top()),rect.right_bottom());
-                    let drag=ui.interact(handle,ui.id().with(("resize-column",i)),egui::Sense::click_and_drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+                    let drag=ui.interact(handle,ui.scope_id().with(("resize-column",i)),egui::Sense::click_and_drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
                     if drag.double_clicked(){self.document.tools.columns.manual.remove(&i);self.document.tools.columns.refit=true;}
                     if drag.dragged(){self.document.tools.columns.manual.insert(i);self.document.tools.columns.widths[i]=(self.document.tools.columns.widths[i]+drag.drag_delta().x).clamp(60.0,640.0);}
                     if response.clicked()&&!drag.contains_pointer()&&!funnel.contains_pointer(){sort=Some(i);}
@@ -352,7 +352,7 @@ impl App {
         );
         response.widget_info(|| {
             egui::WidgetInfo::selected(
-                egui::WidgetType::SelectableLabel,
+                egui::Role::Cell,
                 ui.is_enabled(),
                 self.cell_selected(row, col),
                 format!(
