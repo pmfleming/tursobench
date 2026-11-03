@@ -16,8 +16,8 @@ use std::{
 };
 use turso::{Builder, Connection};
 use tursobench_core::{
-    Access, Bindings, Budget, Column, CommitOutcome, Completion, ConnectionSettings, Delivery,
-    ErrorKind, Event, EventKind, Failure, Ticket, Value, quote_identifier,
+    Access, Bindings, Budget, Column, Completion, ConnectionSettings, Delivery, ErrorKind, Event,
+    EventKind, Failure, Ticket, Value, quote_identifier,
 };
 pub(super) struct Output {
     pub(super) tx: SyncSender<Event>,
@@ -126,7 +126,7 @@ pub(super) async fn worker(
         access,
         settings,
         output: &output,
-        uncertain_edit: false,
+        commits: edits::CommitState::default(),
     };
     while !output.closing.load(Ordering::Acquire) {
         let request = match rx.recv_timeout(Duration::from_millis(25)) {
@@ -166,7 +166,7 @@ struct Worker<'a> {
     access: Access,
     settings: ConnectionSettings,
     output: &'a Output,
-    uncertain_edit: bool,
+    commits: edits::CommitState,
 }
 impl Worker<'_> {
     async fn dispatch(
@@ -181,12 +181,7 @@ impl Worker<'_> {
             Operation::Diagram => return diagram::load(self.browse).await.map(EventKind::Diagram).map(Some),
             Operation::Inspect(name) => return inspection::inspect(self.browse, &name).await.map(EventKind::Inspection).map(Some),
             Operation::CommitEdits(batch) => {
-                let outcome = if self.uncertain_edit {
-                    CommitOutcome::Unknown(Failure { kind: ErrorKind::Unknown, message: "A previous edit commit has an uncertain outcome; close and inspect before retrying".into() })
-                } else {
-                    edits::commit(self.db, self.access, self.settings, batch).await
-                };
-                self.uncertain_edit |= matches!(outcome, CommitOutcome::Unknown(_));
+                let outcome = self.commits.run(edits::commit(self.db, self.access, self.settings, batch)).await;
                 return Ok(Some(EventKind::EditsCommitted(outcome)));
             }
             Operation::Browse(spec) => {

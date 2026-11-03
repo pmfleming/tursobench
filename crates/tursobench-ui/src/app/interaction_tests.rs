@@ -636,6 +636,47 @@ fn click_inspect_stage_no_write_failed_commit_retains_drafts() {
     wait(&mut app, &ctx);
     assert!(!app.has_drafts());
     assert_eq!(app.document.result.rows[1][0], Value::Integer(3));
+    // An ambiguous acknowledgement must retain the owning view's draft and
+    // prevent both another commit and further staging, even in the background.
+    app.stage_cell(0, 1, Value::Text("uncertain draft".into()));
+    let owner = app.document.id;
+    let other = *app.documents.keys().next().unwrap();
+    app.sequence += 1;
+    let ticket = app
+        .session
+        .as_ref()
+        .unwrap()
+        .ticket(app.sequence, app.generation);
+    app.commit_ticket = Some(ticket);
+    app.commit_owner = Some(owner);
+    app.switch_document(other);
+    app.handle_event(
+        &ctx,
+        Event {
+            ticket,
+            kind: EventKind::EditsCommitted(tursobench_core::CommitOutcome::Unknown(
+                tursobench_core::Failure::input("lost commit acknowledgement"),
+            )),
+        },
+    );
+    assert_eq!(app.document.id, other);
+    assert!(app.uncertain_edit && app.has_drafts());
+    assert!(app.status.contains("UNKNOWN") && app.status.contains("Do not retry"));
+    assert!(app.commit_ticket.is_none() && app.commit_owner.is_none());
+    app.switch_document(owner);
+    assert!(!app.can_edit());
+    let sequence = app.sequence;
+    app.commit_drafts();
+    app.stage_cell(0, 1, Value::Text("blocked edit".into()));
+    assert_eq!(app.sequence, sequence);
+    assert_eq!(
+        app.document
+            .drafts
+            .as_ref()
+            .unwrap()
+            .displayed(&app.document.result.rows[0], 1),
+        Some(&Value::Text("uncertain draft".into()))
+    );
     app.close();
 }
 
