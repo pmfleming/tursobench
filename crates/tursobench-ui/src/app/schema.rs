@@ -178,11 +178,7 @@ impl App {
                 &self.document.tools.inspection_error,
             );
         }
-        let count = if ui.ctx().content_rect().width() >= 1920.0 && ui.available_width() >= 800.0 {
-            2
-        } else {
-            1
-        };
+        let count = if ui.available_width() >= 720.0 { 2 } else { 1 };
         ui.columns(count, |panes| {
             let ui = &mut panes[0];
             if let Some(info) = &info {

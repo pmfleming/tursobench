@@ -201,6 +201,9 @@ impl App {
         });
     }
     pub(super) fn export_scope(&self) -> &'static str {
+        if self.document.kind == super::tiling::Kind::Record {
+            return "pinned-record";
+        }
         match self.document.result.completion.as_ref() {
             Some(c) if c.error.is_some() => "failed-query-partial-result",
             Some(c) if c.delivery == Delivery::Discarded => "discarded-query-partial-result",

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 pub(super) const GAP: f32 = 7.0;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) enum Kind {
+pub(crate) enum Kind {
     #[default]
     Data,
     Structure,
@@ -38,7 +38,7 @@ impl Kind {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(super) enum Node {
+pub(crate) enum Node {
     Tabs {
         ids: Vec<u64>,
         selected: u64,
@@ -111,7 +111,7 @@ impl Node {
             }
         }
     }
-    pub fn layout(
+    pub(super) fn layout(
         &self,
         area: Rect,
         focused: u64,

@@ -163,30 +163,7 @@ impl App {
             c.measured_rows = sample;
             c.refit = false;
         }
-        let flex = self
-            .document
-            .result
-            .columns
-            .iter()
-            .enumerate()
-            .filter(|(i, col)| {
-                !c.hidden.contains(i)
-                    && !c.manual.contains(i)
-                    && col
-                        .declared_type
-                        .as_deref()
-                        .is_some_and(|t| t.to_uppercase().contains("TEXT"))
-            })
-            .max_by(|(a, _), (b, _)| c.natural[*a].total_cmp(&c.natural[*b]))
-            .map(|(i, _)| i);
-        if let Some(flex) = flex {
-            let rest: f32 = c
-                .order
-                .iter()
-                .filter(|&&i| i != flex && !c.hidden.contains(&i))
-                .map(|&i| c.widths[i] + ui.spacing().item_spacing.x)
-                .sum();
-            c.widths[flex] = (ui.available_width() - 52.0 - rest).max(160.0);
-        }
+        // Spare space belongs to the workspace, not to an arbitrary TEXT column.
+        // Explicit user widths survive tile resizes; Fit columns uses sampled content.
     }
 }

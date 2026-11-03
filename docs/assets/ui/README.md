@@ -22,3 +22,22 @@ JOIN projects p ON p.id = t.project_id
 JOIN people u ON u.id = t.assignee_id
 WHERE t.status != 'Done' ORDER BY p.name, t.id;
 ```
+
+## v5 tiled workspace
+
+The `v5/` images are native egui captures at 1800 × 1000 on 2026-11-03,
+using the synthetic 100,000-row `tests/fixtures/generate.py` fixture, read-only,
+an isolated preferences directory and the existing painter icons. System captures
+use this workstation's GTK black/blue named palette and system fonts; the light
+capture uses the app's explicit Light override. No personal database was opened.
+
+- `v5/tiled-system.png`: Data, Structure and Map with contextual ribbon and right navigator.
+- `v5/expanded-map.png`: expanded map; right navigation remains visible.
+- `v5/tiled-light.png`: the same tiled workspace in Light.
+
+Capture support is opt-in for the existing native smoke runner: set
+`TURSOBENCH_CAPTURE_DIR` to an output directory and run `--smoke-test` against a
+fixture generated with 100,000 rows under Xvfb (1920 × 1080 screen). To reproduce a
+system palette, copy only GTK `gtk.css`/`settings.ini` into the smoke runner's
+isolated `XDG_CONFIG_HOME`; otherwise the semantic fallback applies. Normal smoke
+runs do not read the user's appearance files or save screenshots.

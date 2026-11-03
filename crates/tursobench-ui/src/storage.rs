@@ -156,6 +156,7 @@ pub struct Preferences {
     pub null_display: String,
     pub discovery: DiscoveryPreferences,
     pub map_layouts: Vec<MapLayout>,
+    pub(crate) workspace_layouts: Vec<crate::app::workspace::Snapshot>,
     pub inspector_visibility: std::collections::BTreeMap<String, bool>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -164,6 +165,8 @@ pub struct MapLayout {
     pub positions: std::collections::BTreeMap<String, [f32; 2]>,
     pub pan: [f32; 2],
     pub zoom: f32,
+    #[serde(default)]
+    pub pack_width: f32,
     pub all_columns: bool,
     pub selected: Option<String>,
 }
@@ -183,6 +186,7 @@ impl Default for Preferences {
             null_display: "NULL".into(),
             discovery: DiscoveryPreferences::default(),
             map_layouts: vec![],
+            workspace_layouts: vec![],
             inspector_visibility: Default::default(),
         }
     }
@@ -242,11 +246,27 @@ impl Preferences {
         while self.inspector_visibility.len() > 20 {
             self.inspector_visibility.pop_first();
         }
+        self.workspace_layouts.truncate(20);
+        let mut workspace_names = HashSet::new();
+        let mut workspace_bytes = 0;
+        self.workspace_layouts.retain(|layout| {
+            workspace_bytes += layout.database.len()
+                + layout
+                    .views
+                    .iter()
+                    .map(|v| v.object.as_ref().map_or(0, String::len) + 64)
+                    .sum::<usize>();
+            layout.valid()
+                && workspace_bytes <= 128 * 1024
+                && workspace_names.insert(layout.database.clone())
+        });
         self.map_layouts.truncate(20);
         let mut layout_bytes = 0;
         self.map_layouts.retain_mut(|layout| {
             if layout.database.len() > 4096
                 || !Path::new(&layout.database).is_absolute()
+                || !layout.pack_width.is_finite()
+                || !(0.0..=3600.0).contains(&layout.pack_width)
                 || !layout.zoom.is_finite()
                 || !(0.0001..=2.5).contains(&layout.zoom)
                 || layout
@@ -461,6 +481,7 @@ mod tests {
             positions: [("table".into(), [32.0, 64.0])].into(),
             pan: [10.0, 20.0],
             zoom: 0.75,
+            pack_width: 1200.0,
             all_columns: true,
             selected: Some("table".into()),
         };

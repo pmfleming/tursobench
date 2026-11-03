@@ -188,6 +188,14 @@ impl App {
         {
             self.document.result.columns = columns;
             self.document.result.rows = vec![values];
+            self.document.result.completion = Some(tursobench_core::Completion {
+                elapsed_ms: 0,
+                delivery: tursobench_core::Delivery::Complete,
+                rows_seen: 1,
+                changed: 0,
+                transaction: self.transaction,
+                error: None,
+            });
             self.document.inspect = Some((0, column));
             self.document.tools.detail = Some(0);
             self.document.ui.inspector = DetailMode::Record;
@@ -305,6 +313,7 @@ impl App {
         ui.strong("Windows");
         egui::ScrollArea::vertical()
             .id_salt("workspace-window-list")
+            .auto_shrink([false, false])
             .show(ui, |ui| {
                 for id in self.window_ids() {
                     let Some(d) = self.document_ref(id) else {
@@ -564,5 +573,215 @@ impl App {
             );
         }
         self.switch_document(self.workspace.focused);
+    }
+}
+
+/// Persist geometry and reopenable view identities only: never row buffers,
+/// staged edits, SQL drafts or parameter values. Results/records remain session-only.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub(crate) struct Snapshot {
+    pub database: String,
+    tree: Node,
+    pub views: Vec<SavedView>,
+    focused: u64,
+    expanded: Option<u64>,
+}
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub(crate) struct SavedView {
+    id: u64,
+    kind: Kind,
+    pub object: Option<String>,
+}
+impl Snapshot {
+    pub fn valid(&self) -> bool {
+        fn valid_tree(node: &Node, depth: usize) -> bool {
+            if depth > MAX_VIEWS {
+                return false;
+            }
+            match node {
+                Node::Tabs { ids, selected } => {
+                    !ids.is_empty() && ids.len() <= MAX_VIEWS && ids.contains(selected)
+                }
+                Node::Split { ratio, a, b, .. } => {
+                    ratio.is_finite()
+                        && (0.01..=0.99).contains(ratio)
+                        && valid_tree(a, depth + 1)
+                        && valid_tree(b, depth + 1)
+                }
+            }
+        }
+        if self.database.len() > 4096
+            || !std::path::Path::new(&self.database).is_absolute()
+            || self.views.is_empty()
+            || self.views.len() > MAX_VIEWS
+            || !valid_tree(&self.tree, 0)
+        {
+            return false;
+        }
+        let ids = self.tree.ids();
+        let unique: std::collections::BTreeSet<_> = ids.iter().copied().collect();
+        let descriptors: std::collections::BTreeSet<_> = self.views.iter().map(|v| v.id).collect();
+        ids.len() == unique.len()
+            && self.views.len() == descriptors.len()
+            && unique == descriptors
+            && unique.contains(&self.focused)
+            && self.expanded.is_none_or(|id| unique.contains(&id))
+            && self.views.iter().filter(|v| v.kind == Kind::Map).count() <= 1
+            && self.views.iter().all(|v| {
+                v.id < u64::MAX - 1024
+                    && match v.kind {
+                        Kind::Map | Kind::Sql => v.object.is_none(),
+                        Kind::Data | Kind::Structure => v
+                            .object
+                            .as_ref()
+                            .is_some_and(|s| !s.is_empty() && s.len() <= 4096),
+                        Kind::Result | Kind::Record => false,
+                    }
+            })
+    }
+}
+impl App {
+    pub(super) fn workspace_snapshot(&self) -> Option<Snapshot> {
+        let mut tree = self.workspace.tree.clone()?;
+        let mut views = Vec::new();
+        for id in tree.ids() {
+            let doc = self.document_ref(id)?;
+            if matches!(doc.kind, Kind::Result | Kind::Record) {
+                tree = tree.remove(id)?;
+            } else {
+                views.push(SavedView {
+                    id,
+                    kind: doc.kind,
+                    object: doc.object.clone(),
+                });
+            }
+        }
+        let ids = tree.ids();
+        let focused = if ids.contains(&self.workspace.focused) {
+            self.workspace.focused
+        } else {
+            ids[0]
+        };
+        let saved = Snapshot {
+            database: self.tools.database_scope.clone(),
+            tree,
+            views,
+            focused,
+            expanded: self.workspace.expanded.filter(|id| ids.contains(id)),
+        };
+        saved.valid().then_some(saved)
+    }
+    pub(super) fn save_workspace(&mut self) {
+        if !self.workspace.enabled {
+            return;
+        }
+        self.preferences
+            .workspace_layouts
+            .retain(|s| s.database != self.tools.database_scope);
+        if let Some(snapshot) = self.workspace_snapshot() {
+            self.preferences.workspace_layouts.insert(0, snapshot);
+        }
+        self.preferences.normalize();
+        self.store.save(&self.preferences);
+    }
+    pub(super) fn restore_workspace(&mut self) {
+        let Some(saved) = self
+            .preferences
+            .workspace_layouts
+            .iter()
+            .find(|s| s.database == self.tools.database_scope && s.valid())
+            .cloned()
+        else {
+            return;
+        };
+        self.documents.clear();
+        for view in saved.views {
+            let mut document = Document {
+                id: view.id,
+                kind: view.kind,
+                object: view.object,
+                needs_load: matches!(view.kind, Kind::Data | Kind::Structure),
+                ..Default::default()
+            };
+            document.ui.nav = match view.kind {
+                Kind::Map => Nav::Overview,
+                Kind::Sql => Nav::Result,
+                _ => Nav::Table,
+            };
+            document.ui.table_view = if view.kind == Kind::Structure {
+                TableView::Structure
+            } else {
+                TableView::Data
+            };
+            document.ui.sql_open = view.kind == Kind::Sql;
+            if view.kind == Kind::Sql {
+                document.sql.clear();
+            }
+            self.documents.insert(view.id, document);
+        }
+        self.document = self.documents.remove(&saved.focused).unwrap();
+        self.workspace.tree = Some(saved.tree);
+        self.workspace.focused = saved.focused;
+        self.workspace.expanded = saved.expanded;
+        self.workspace.next_id = self.window_ids().into_iter().max().unwrap() + 1;
+        self.status =
+            "Workspace layout restored. SQL drafts, results and records are session-only.".into();
+    }
+    pub(super) fn load_restored_view(&mut self, ctx: &egui::Context) {
+        if !self.ready
+            || self.closing
+            || self.has_drafts()
+            || self.commit_ticket.is_some()
+            || self.executing()
+            || self.catalog_ticket.is_some()
+            || self.ui.diagram.ticket.is_some()
+            || self.document.tools.inspection_ticket.is_some()
+            || self
+                .documents
+                .values()
+                .any(|d| d.tools.inspection_ticket.is_some())
+        {
+            return;
+        }
+        let Some(id) = self
+            .window_ids()
+            .into_iter()
+            .find(|id| self.document_ref(*id).is_some_and(|d| d.needs_load))
+        else {
+            return;
+        };
+        let focused = self.document.id;
+        self.switch_document(id);
+        let name = self.document.object.clone().unwrap();
+        // Metadata has arrived before restoring table views. Missing objects stay visible with a clear explanation.
+        if let Some(object) = self.schema.iter().find(|o| o.name == name) {
+            if self.document.kind == Kind::Data && matches!(object.kind.as_str(), "table" | "view")
+            {
+                let browse = tursobench_core::Browse {
+                    table: name,
+                    offset: 0,
+                    sort: None,
+                    descending: false,
+                    filters: vec![],
+                };
+                self.document.browse = Some(browse.clone());
+                self.document.view = View::Browse;
+                self.document.needs_load = self
+                    .submit(tursobench_db::Operation::Browse(browse), View::Browse)
+                    .is_none();
+            } else if matches!(object.kind.as_str(), "index" | "trigger") {
+                self.document.tools.ddl = Some(object.clone());
+                self.document.needs_load = false;
+            } else {
+                self.request_inspection(name);
+                self.document.needs_load = self.document.tools.inspection_ticket.is_none();
+            }
+        } else {
+            self.document.needs_load = false;
+            self.document.tools.inspection_error =
+                format!("{name} is no longer in the database catalog");
+        }
+        self.switch_document(focused);
+        ctx.request_repaint_after(std::time::Duration::from_millis(50));
     }
 }

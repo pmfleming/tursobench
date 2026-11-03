@@ -1,4 +1,57 @@
-# TursoBench v4 controls and workspace
+# TursoBench tiled workspace
+
+The v5 redesign keeps the native egui controls and painter icons. The
+[HTML design plan](redesign-v5-tiling.html) records the approved proposal.
+
+## Appearance and windows
+
+Follow system is the default for new preferences. Linux reads the desktop portal's
+scheme, accent and contrast and supported named colors in GTK 3/4 configuration,
+off the UI thread, with live updates. System fonts are reused. Explicit Light and
+Dark remain available; legacy saved dark/light choices are preserved until changed
+in Settings. Unsupported GTK color expressions use the neutral semantic fallback.
+
+Every Data, Structure, Map, SQL, Result and pinned Record view is a window. The
+right navigator remains visible when a window expands. Click a window or its
+navigator entry to focus it; Ctrl Tab cycles, Ctrl Alt Enter expands/restores and
+Escape restores after dismissing any active edit/dialog. Ctrl J opens SQL;
+Ctrl 1/2 opens Data/Structure. Ctrl Enter runs SQL; Ctrl Shift Enter runs selection.
+SQL execution opens a linked result without overwriting its editor. History and
+bookmarks load into a new editor. Space from the grid opens a pinned record.
+
+Windows split recursively with minimum sizes and data-width preferences. If a
+split would make views unreadable, it becomes a tab group. Resizing back restores
+the split tree. Drag a divider to resize; Retile recomputes an arrangement from
+current content. Expanded view state never changes the saved split proportions.
+The session retains at most 16 views. Closing an SQL draft, staged edit or active
+request asks before discarding that view; SQL execution continues in the worker.
+
+The top ribbon targets the focused window. Large labelled commands group Open
+view, contextual actions and Workspace. On narrow windows secondary commands move
+to More. Active transaction and staged-review controls remain visible regardless
+of focus. All views share one session and transaction. Result cancellation targets
+only that view's delivery; it never interrupts execution or rolls back writes.
+
+Columns measure headers and up to 200 retained rows, bounded to 56–300 points;
+spare viewport width no longer stretches a text identifier. Manual widths survive
+resizing. Structure uses two columns only when its own tile has at least 720 points.
+The map packs disconnected components compactly, fits occupied bounds, and keeps
+manual pan/zoom and node positions. It never invents relationships.
+
+Layouts save on managed close for up to 20 databases: split ratios, tab selection,
+focused/expanded view and reopenable Map/Data/Structure/SQL identities. Data and
+metadata reload sequentially after opening; no SQL executes on restoration.
+SQL buffers, bindings, filters, row buffers and pinned records are session-only.
+Use Saved queries for SQL that should survive restart. Invalid saved geometry is
+rejected. Legacy preferences continue to load.
+
+Native captures using synthetic fixture data: [system theme](assets/ui/v5/tiled-system.png),
+[expanded map](assets/ui/v5/expanded-map.png), [light override](assets/ui/v5/tiled-light.png).
+
+## Earlier v4 behavior (historical)
+
+The following documents the earlier layout and unchanged grid mechanics. The v5
+window, ribbon, theme and sizing behavior above supersedes its dock/overlay rules.
 
 The v4 implementation moves actions to their scope and adds direct grid
 interaction. Automatic background counts remain deferred: Turso 0.8.3's public

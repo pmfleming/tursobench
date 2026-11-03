@@ -15,7 +15,7 @@ Absolute database path spellings **are persisted** for scoping (relative input i
 resolved against the working directory); aliases can have separate histories. Legacy statement lists migrate to visibly unscoped entries. SQL literals
 and paths may be sensitive. Parameter values, query results, editor buffers and
 drafts are not persisted. Loading history/bookmarks clears bindings. Clear history
-or delete bookmarks from the sidebar. Dark/light theme, NULL marker and slow-query
+or delete bookmarks from the sidebar. System/Light/Dark appearance, NULL marker and slow-query
 threshold are also stored. Preferences use a private temporary file, flush/sync,
 then atomic replacement in the application directory. Saves run on a background
 worker with coalescing. This is best-effort convenience storage, not durable draft
@@ -35,6 +35,15 @@ rediscover it. Excluded folders disappear from the chooser and cached candidates
 Successful opens are recorded only after the engine reports Opened, never on
 selection or failed open. See [database discovery](database-discovery.md).
 
+## Workspace layouts
+
+Layouts save on managed close in workspace_layouts, bounded to 20 absolute database
+paths and 128 KiB of descriptor payload. They contain reopenable view kinds/object
+names, split ratios, selected tabs and focused/expanded identities. Invalid IDs,
+oversized trees, unsupported view kinds and nonfinite geometry are rejected.
+Results, pinned records, SQL drafts and bindings are not stored. Restoring table
+views performs bounded reads; restoring SQL creates an empty editor without execution.
+
 ## Typed JSONL v1
 
 Export streams the **already retained engine result**, not local staged overlays,
@@ -50,6 +59,7 @@ column names/declared types, expected row count and an explicit scope:
 - `table-window`: only the currently retained bounded browse window, not the table;
 - `table-page`: legacy scope in older exports;
 - `related-row-lookup`: a bounded related-row lookup (up to 100), not the table;
+- `pinned-record`: one independently retained record snapshot;
 - `single-retained-row`: one retained row copied to the clipboard;
 - `limited-query-result`: a budget-limited retained prefix;
 - `failed-query-partial-result` / `discarded-query-partial-result`: not complete.

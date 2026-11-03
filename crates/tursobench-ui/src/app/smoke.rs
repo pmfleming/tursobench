@@ -5,6 +5,9 @@ use tursobench_core::{ErrorKind, Value, quote_identifier};
 use std::time::{Duration, Instant};
 pub(super) struct Smoke {
     stage: u8,
+    capture_dir: Option<std::path::PathBuf>,
+    capture_pending: Option<String>,
+    capture_frames: u8,
     start: Instant,
     table: String,
     project_fixture: bool,
@@ -14,6 +17,9 @@ impl Smoke {
         let table = std::env::args().nth(3);
         Self {
             stage: 0,
+            capture_dir: std::env::var_os("TURSOBENCH_CAPTURE_DIR").map(Into::into),
+            capture_pending: None,
+            capture_frames: 0,
             start: Instant::now(),
             project_fixture: table.is_some(),
             table: table.unwrap_or_else(|| "items".into()),
@@ -25,6 +31,29 @@ impl App {
         let Some(mut smoke) = self.smoke.take() else {
             return;
         };
+        if let (Some(dir), Some(name)) = (&smoke.capture_dir, &smoke.capture_pending) {
+            let screenshot = ctx.input(|i| {
+                i.events.iter().find_map(|e| match e {
+                    egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                    _ => None,
+                })
+            });
+            if let Some(image) = screenshot {
+                use eframe::icon_data::IconDataExt;
+                let icon = egui::IconData {
+                    rgba: image.pixels.iter().flat_map(|c| c.to_array()).collect(),
+                    width: image.size[0] as u32,
+                    height: image.size[1] as u32,
+                };
+                std::fs::create_dir_all(dir).expect("capture directory");
+                std::fs::write(
+                    dir.join(name),
+                    icon.to_png_bytes().expect("encode screenshot"),
+                )
+                .expect("write screenshot");
+                smoke.capture_pending = None;
+            }
+        }
         if smoke.start.elapsed() > Duration::from_secs(20) {
             eprintln!(
                 "DESKTOP SMOKE FAILED at stage {}: {}",
@@ -107,6 +136,46 @@ impl App {
                 assert!(graph.tables.iter().any(|t| t.name == smoke.table));
                 assert!(graph.tables.iter().all(|t| t.error.is_none()));
                 self.ui.diagram.selected = Some(smoke.table.clone());
+                if smoke.capture_dir.is_some() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+                        1800.0, 1000.0,
+                    )));
+                    self.browse_table(smoke.table.clone());
+                    self.retile();
+                    smoke.stage = 20;
+                } else {
+                    smoke.stage = 8;
+                }
+            }
+            20 | 22 | 24 => {
+                smoke.capture_frames += 1;
+                if smoke.capture_frames >= 15 {
+                    smoke.capture_pending = Some(
+                        match smoke.stage {
+                            20 => "tiled-system.png",
+                            22 => "expanded-map.png",
+                            _ => "tiled-light.png",
+                        }
+                        .into(),
+                    );
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+                    smoke.capture_frames = 0;
+                    smoke.stage += 1;
+                }
+            }
+            21 if smoke.capture_pending.is_none() => {
+                self.overview();
+                self.expand_window(self.document.id);
+                smoke.stage = 22;
+            }
+            23 if smoke.capture_pending.is_none() => {
+                self.expand_window(self.document.id);
+                self.browse_table(smoke.table.clone());
+                self.preferences.appearance = Some(crate::appearance::Mode::Light);
+                smoke.stage = 24;
+            }
+            25 if smoke.capture_pending.is_none() => {
+                self.preferences.appearance = Some(crate::appearance::Mode::System);
                 smoke.stage = 8;
             }
             8 => {

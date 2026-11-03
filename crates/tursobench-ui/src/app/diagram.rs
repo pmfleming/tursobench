@@ -26,6 +26,7 @@ pub(super) struct DiagramState {
     auto_fit: bool,
     last_canvas_size: egui::Vec2,
     reset_zoom: bool,
+    pack_width: f32,
     #[cfg(test)]
     pub table_rects: Vec<(String, egui::Rect)>,
     positions: BTreeMap<String, egui::Pos2>,
@@ -33,6 +34,7 @@ pub(super) struct DiagramState {
 impl DiagramState {
     pub fn arrange_nodes(&mut self) {
         self.positions.clear();
+        self.pack_width = 0.0;
         self.fit = true;
     }
     pub fn toggle_columns(&mut self) {
@@ -63,6 +65,7 @@ impl DiagramState {
                 .collect(),
             pan: [self.pan.x, self.pan.y],
             zoom: self.zoom,
+            pack_width: self.pack_width,
             all_columns: self.all_columns,
             selected: self.selected.clone(),
         })
@@ -79,6 +82,7 @@ impl DiagramState {
             .collect();
         self.pan = egui::vec2(layout.pan[0], layout.pan[1]);
         self.zoom = layout.zoom;
+        self.pack_width = layout.pack_width;
         self.all_columns = layout.all_columns;
         self.selected = layout
             .selected
@@ -149,7 +153,7 @@ fn key_rows(info: &Inspection, all: bool) -> Vec<usize> {
 }
 // Stable breadth-first layers within each connected component. Parent hubs
 // start each component; cycles and self references cannot recurse indefinitely.
-fn cards(graph: &SchemaDiagram, all: bool) -> Vec<(egui::Rect, Vec<usize>)> {
+fn cards(graph: &SchemaDiagram, all: bool, pack_width: f32) -> Vec<(egui::Rect, Vec<usize>)> {
     use std::collections::{BTreeSet, VecDeque};
     let count = graph.tables.len();
     let names: BTreeMap<_, _> = graph
@@ -209,24 +213,24 @@ fn cards(graph: &SchemaDiagram, all: bool) -> Vec<(egui::Rect, Vec<usize>)> {
                 }
             }
         }
-        let component_width = levels.len() as f32 * (WIDTH + 90.0);
-        if shelf.x > 0.0 && shelf.x + component_width > 1800.0 {
+        let component_width = levels.len() as f32 * (WIDTH + 40.0);
+        if shelf.x > 0.0 && shelf.x + component_width > pack_width {
             shelf.x = 0.0;
-            shelf.y += shelf_height + 110.0;
+            shelf.y += shelf_height + 30.0;
             shelf_height = 0.0;
         }
         for (depth, level) in levels.iter().enumerate() {
             let mut y = shelf.y;
             for &i in level {
                 result[i].0 = egui::Rect::from_min_size(
-                    egui::pos2(shelf.x + depth as f32 * (WIDTH + 90.0), y),
+                    egui::pos2(shelf.x + depth as f32 * (WIDTH + 40.0), y),
                     result[i].0.size(),
                 );
                 y += result[i].0.height() + 45.0;
             }
             shelf_height = shelf_height.max(y - shelf.y);
         }
-        shelf.x += component_width + 60.0;
+        shelf.x += component_width;
     }
     result
 }
@@ -557,7 +561,29 @@ impl App {
                 );
             }
         });
-        let mut layout = cards(graph, self.ui.diagram.all_columns);
+        if self.ui.diagram.pack_width <= 0.0
+            || (self.ui.diagram.auto_fit && self.ui.diagram.last_canvas_size != ui.available_size())
+        {
+            let aspect = (ui.available_width() / ui.available_height().max(1.0)).clamp(0.5, 4.0);
+            let area: f32 = graph
+                .tables
+                .iter()
+                .map(|node| {
+                    let rows = node
+                        .inspection
+                        .as_ref()
+                        .map_or(1, |i| key_rows(i, self.ui.diagram.all_columns).len().max(1));
+                    (WIDTH + 40.0) * (100.0 + rows as f32 * LINE)
+                })
+                .sum();
+            let columns = ((area * aspect).sqrt() / (WIDTH + 40.0)).ceil().max(1.0);
+            self.ui.diagram.pack_width = (columns * (WIDTH + 40.0)).clamp(WIDTH, 3600.0);
+        }
+        let mut layout = cards(
+            graph,
+            self.ui.diagram.all_columns,
+            self.ui.diagram.pack_width,
+        );
         for (node, (rect, _)) in graph.tables.iter().zip(&mut layout) {
             if let Some(pos) = self.ui.diagram.positions.get(&node.name) {
                 *rect = egui::Rect::from_min_size(*pos, rect.size());
@@ -580,7 +606,7 @@ impl App {
             self.ui.diagram.zoom = 1.0;
         }
         if self.ui.diagram.fit && bounds.is_finite() {
-            let target = bounds.expand(60.0);
+            let target = bounds.expand(16.0);
             self.ui.diagram.zoom = ((canvas.width() - 40.0) / target.width())
                 .min((canvas.height() - 40.0) / target.height())
                 .clamp(0.0001, 1.25);
@@ -843,10 +869,10 @@ mod tests {
             inspection: None,
             error: Some("unavailable".into()),
         }));
-        assert!(cards(&SchemaDiagram::default(), false).is_empty());
-        let layout = cards(&graph, false);
+        assert!(cards(&SchemaDiagram::default(), false, 1200.0).is_empty());
+        let layout = cards(&graph, false, 1200.0);
         assert_eq!(layout.len(), 512);
-        assert_eq!(layout, cards(&graph, false));
+        assert_eq!(layout, cards(&graph, false, 1200.0));
         assert!(layout[3].0.left() < layout[0].0.left());
         assert_eq!(layout[3].0.top(), layout[0].0.top());
         for (i, (a, _)) in layout.iter().enumerate() {

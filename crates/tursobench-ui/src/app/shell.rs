@@ -175,7 +175,7 @@ impl App {
                     if self.session.is_some() {
                         if self.workspace.enabled {
                             egui::Panel::bottom("window-navigation")
-                                .default_size(150.0)
+                                .default_size(180.0)
                                 .resizable(true)
                                 .size_range(70.0..=240.0)
                                 .show(ui, |ui| self.window_navigation(ui));

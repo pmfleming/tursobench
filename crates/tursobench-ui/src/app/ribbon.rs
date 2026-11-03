@@ -62,13 +62,27 @@ impl App {
                     && !self.executing()
                     && (!matches!(action, Commit) || self.transaction == TransactionState::Active)
             }
-            Refresh | Count => {
+            Count => {
+                self.ready
+                    && !self.closing
+                    && !self.has_drafts()
+                    && self.commit_ticket.is_none()
+                    && self.document.kind == Kind::Data
+                    && self.document.object.is_some()
+            }
+            Refresh => {
                 self.ready && !self.closing && !self.has_drafts() && self.commit_ticket.is_none()
             }
             Insert => self.can_edit(),
             Inspect | CopyValue => self.document.inspect.is_some(),
             CopyRows | Export => !self.document.result.columns.is_empty(),
-            Discard => self.executing(),
+            Discard => {
+                self.document.active.is_some()
+                    || self
+                        .documents
+                        .values()
+                        .any(|d| d.source == Some(self.document.id) && d.active.is_some())
+            }
             Structure | Data => {
                 self.document.object.is_some() || self.ui.diagram.selected.is_some()
             }

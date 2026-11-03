@@ -706,6 +706,8 @@ fn overview_and_table_views_preserve_camera_and_rejects_navigation_with_drafts()
     assert_eq!(app.document.ui.nav, shell::Nav::Overview);
     assert_eq!(app.ui.diagram.data.as_ref().unwrap().tables.len(), 2);
     frame(&mut app, &ctx, vec![]);
+    // Explicit user camera choices survive opening/resizing other views.
+    app.ui.diagram.freeze_camera();
     let camera = (app.ui.diagram.zoom, app.ui.diagram.pan);
     app.browse_table("a".into());
     wait(&mut app, &ctx);
@@ -1539,7 +1541,7 @@ fn clipboard_grid_and_record_use_independent_tiles_without_overlays() {
         "columns {width} > grid {}",
         app.ui.grid_rect.width()
     );
-    assert!(app.ui.visible_rows >= 34, "{} rows", app.ui.visible_rows);
+    assert!(app.ui.visible_rows >= 33, "{} rows", app.ui.visible_rows);
     let data_id = app.document.id;
     app.open_record_window(0, 0);
     assert_eq!(app.document.kind, tiling::Kind::Record);
@@ -1724,5 +1726,130 @@ fn cancelling_a_recent_database_switch_clears_the_pending_path() {
     assert!(!app.closing);
     assert_eq!(app.session.as_ref().unwrap().id, session);
     assert_eq!(app.path, path.to_string_lossy());
+    app.close();
+}
+
+#[test]
+fn workspace_geometry_roundtrips_without_query_data_or_bindings() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("layout.db");
+    crate::test_support::create(
+        &path,
+        &[
+            "CREATE TABLE chunks(id TEXT PRIMARY KEY, part INTEGER, body BLOB)",
+            "INSERT INTO chunks VALUES('buffer-1780913432386559807-118',0,x'001122')",
+        ],
+    );
+    let (ctx, mut app) = connected(&path, false);
+    app.browse_table("chunks".into());
+    wait(&mut app, &ctx);
+    let data_id = app.document.id;
+    app.expand_window(data_id);
+    frame_at(&mut app, &ctx, egui::vec2(3440.0, 1440.0), vec![]);
+    assert!(
+        app.document
+            .tools
+            .columns
+            .widths
+            .iter()
+            .all(|w| *w <= 300.0)
+    );
+    assert!(app.document.tools.columns.widths[1] < 100.0);
+    let widths = app.document.tools.columns.widths.clone();
+    frame_at(&mut app, &ctx, egui::vec2(1280.0, 720.0), vec![]);
+    assert_eq!(widths, app.document.tools.columns.widths);
+    app.open_record_window(0, 0);
+    assert_eq!(app.export_scope(), "pinned-record");
+    assert!(
+        app.document.result.current.is_none(),
+        "pinned records never own a worker ticket"
+    );
+    app.focus_window(data_id);
+    app.open_structure_window();
+    wait(&mut app, &ctx);
+    app.open_sql_window(false);
+    let editor = app.document.id;
+    app.document.sql = "SELECT 'private-literal'".into();
+    app.document.params = "[\"private-binding\"]".into();
+    app.retile();
+    app.expand_window(editor);
+    let snapshot = app.workspace_snapshot().unwrap();
+    let encoded = serde_json::to_string(&snapshot).unwrap();
+    assert!(!encoded.contains("private") && !encoded.contains("buffer-"));
+    app.preferences.workspace_layouts = vec![serde_json::from_str(&encoded).unwrap()];
+    app.restore_workspace();
+    assert_eq!(app.workspace_snapshot(), Some(snapshot));
+    assert_eq!(app.document.id, editor);
+    assert!(app.document.sql.is_empty());
+    assert_eq!(app.document.params, "[]");
+    assert_eq!(app.workspace.expanded, Some(editor));
+    let start = Instant::now();
+    loop {
+        app.poll(&ctx);
+        if !app.executing()
+            && app
+                .documents
+                .values()
+                .all(|d| !d.needs_load && d.tools.inspection_ticket.is_none())
+        {
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(5));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(app.document.id, editor, "background reload preserves focus");
+    assert_eq!(app.document_ref(data_id).unwrap().result.rows.len(), 1);
+    let mut invalid: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+    invalid["focused"] = serde_json::json!(9999);
+    let invalid: workspace::Snapshot = serde_json::from_value(invalid).unwrap();
+    assert!(!invalid.valid());
+    app.preferences.workspace_layouts.push(invalid);
+    app.preferences.normalize();
+    assert_eq!(app.preferences.workspace_layouts.len(), 1);
+    app.close();
+}
+
+#[test]
+fn automatic_map_fit_keeps_every_node_inside_its_resized_tile() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("map-fit.db");
+    crate::test_support::create(
+        &path,
+        &[
+            "CREATE TABLE a(id INTEGER PRIMARY KEY)",
+            "CREATE TABLE b(id INTEGER PRIMARY KEY)",
+            "CREATE TABLE c(id INTEGER PRIMARY KEY)",
+        ],
+    );
+    let (ctx, mut app) = connected(&path, false);
+    let map = app.document.id;
+    frame(&mut app, &ctx, vec![]);
+    app.browse_table("a".into());
+    wait(&mut app, &ctx);
+    app.open_structure_window();
+    wait(&mut app, &ctx);
+    app.retile();
+    for expanded in [false, true, false] {
+        if expanded != app.workspace.expanded.is_some() {
+            app.expand_window(map);
+        }
+        for _ in 0..2 {
+            frame_at(&mut app, &ctx, egui::vec2(1800.0, 1000.0), vec![]);
+        }
+        let tile = app
+            .workspace
+            .tiles
+            .iter()
+            .find(|(id, _)| *id == map)
+            .unwrap()
+            .1;
+        assert_eq!(app.ui.diagram.table_rects.len(), 3);
+        for (_, rect) in &app.ui.diagram.table_rects {
+            assert!(
+                tile.contains_rect(*rect),
+                "node {rect:?} outside tile {tile:?}"
+            );
+        }
+    }
     app.close();
 }

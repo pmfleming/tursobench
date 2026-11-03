@@ -86,10 +86,10 @@ fn highlighted(ui: &egui::Ui, text: &str, width: f32) -> std::sync::Arc<egui::Ga
     } else {
         for token in sql::tokens(text) {
             let color = match token.style {
-                TokenStyle::Keyword => egui::Color32::from_rgb(120, 140, 230),
-                TokenStyle::String => egui::Color32::from_rgb(65, 160, 95),
-                TokenStyle::Number | TokenStyle::Parameter => egui::Color32::from_rgb(190, 120, 50),
-                TokenStyle::Comment => egui::Color32::GRAY,
+                TokenStyle::Keyword => ui.visuals().hyperlink_color,
+                TokenStyle::String => plain,
+                TokenStyle::Number | TokenStyle::Parameter => ui.visuals().warn_fg_color,
+                TokenStyle::Comment => ui.visuals().weak_text_color(),
                 _ => plain,
             };
             job.append(

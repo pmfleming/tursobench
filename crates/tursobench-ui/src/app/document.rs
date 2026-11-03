@@ -4,6 +4,7 @@ use tursobench_core::{Browse, DraftBatch, ResultSet, Table, Ticket};
 
 pub(super) struct Document {
     pub id: u64,
+    pub needs_load: bool,
     pub kind: super::tiling::Kind,
     pub object: Option<String>,
     pub source: Option<u64>,
@@ -31,6 +32,7 @@ impl Default for Document {
     fn default() -> Self {
         Self {
             id: 0,
+            needs_load: false,
             kind: Default::default(),
             object: None,
             source: None,
@@ -60,6 +62,13 @@ impl Default for Document {
     }
 }
 impl Document {
+    pub fn disconnect(&mut self) {
+        self.active = None;
+        self.tools.inspection_ticket = None;
+        self.tools.context.pending = None;
+        self.tools.pages.pending = None;
+        self.needs_load = false;
+    }
     pub fn title(&self) -> String {
         match self.kind {
             super::tiling::Kind::Map => "Database · Map".into(),

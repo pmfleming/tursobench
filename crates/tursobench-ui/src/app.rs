@@ -25,10 +25,10 @@ mod selection;
 mod shell;
 mod sidebar;
 mod smoke;
-mod tiling;
+pub(crate) mod tiling;
 mod tools;
 mod usability;
-mod workspace;
+pub(crate) mod workspace;
 use eframe::egui;
 
 use tursobench_db::{Operation, Request, Session};
@@ -102,7 +102,10 @@ impl App {
             ui: shell::UiState::new(ctx),
             smoke: smoke.then(smoke::Smoke::new),
             databases: databases::Chooser::new(&preferences.discovery),
-            appearance: crate::appearance::Appearance::new(ctx, !cfg!(test) && !smoke),
+            appearance: crate::appearance::Appearance::new(
+                ctx,
+                !cfg!(test) && (!smoke || std::env::var_os("TURSOBENCH_CAPTURE_DIR").is_some()),
+            ),
             preferences,
             store,
             export_job: None,
@@ -356,7 +359,9 @@ impl App {
             self.document.ui.sql_open = false;
             self.ui.unfolded = Some(name.clone());
             self.ui.diagram.selected = Some(name);
-            self.ui.diagram.freeze_camera();
+            if !self.workspace.enabled {
+                self.ui.diagram.freeze_camera();
+            }
         }
     }
     fn reload(&mut self) {
@@ -454,6 +459,16 @@ impl App {
             self.status =
                 "Worker disconnected unexpectedly; execution and rollback outcome UNKNOWN".into();
         }
+        if self.session.is_none() {
+            for document in self
+                .documents
+                .values_mut()
+                .chain(std::iter::once(&mut self.document))
+            {
+                document.disconnect();
+            }
+        }
+        self.load_restored_view(ctx);
     }
     fn handle_event(&mut self, ctx: &egui::Context, event: Event) {
         let previous = self.document.id;
@@ -577,6 +592,7 @@ impl App {
                 self.refresh_catalog();
                 self.document.ui.nav = shell::Nav::Overview;
                 self.load_diagram();
+                self.restore_workspace();
             }
             EventKind::Closed { rollback } => {
                 let reopen = if rollback.is_ok() && !self.uncertain_edit && !self.quit {
@@ -735,6 +751,7 @@ impl App {
         }
     }
     fn close(&mut self) {
+        self.save_workspace();
         if let Some(layout) = self.ui.diagram.snapshot(&self.tools.database_scope) {
             self.preferences
                 .map_layouts

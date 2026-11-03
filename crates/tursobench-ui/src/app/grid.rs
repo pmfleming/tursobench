@@ -56,7 +56,8 @@ impl App {
         if !ui.input(|i| i.pointer.primary_down()) {
             self.document.tools.dragging_selection = false;
         }
-        let remaining = (ui.available_height() - 38.0).max(0.0);
+        let remaining =
+            (ui.available_height() - if self.workspace.enabled { 58.0 } else { 38.0 }).max(0.0);
         self.document.tools.grid_height = remaining;
         #[cfg(test)]
         {
@@ -143,6 +144,19 @@ impl App {
             }
             None => {}
         }
+        if self.workspace.enabled {
+            let start = self.document.browse.as_ref().map_or(0, |b| b.offset);
+            let count = self.document.result.rows.len();
+            let range = if count == 0 {
+                "0 rows".into()
+            } else {
+                format!("{}–{} · {} retained", start + 1, start + count, count)
+            };
+            ui.small(format!("{range} · {}", self.export_scope()))
+                .on_hover_text(
+                    "Only retained rows are exported. Scroll to load another table page.",
+                );
+        }
         self.hover_context(ui.ctx());
         if self.document.ui.nav == shell::Nav::Table
             && self.document.ui.table_view == shell::TableView::Data
@@ -168,7 +182,8 @@ impl App {
                 }
             }
         }
-        if self.writable
+        if !self.workspace.enabled
+            && self.writable
             && self.document.view == View::Browse
             && self
                 .document
@@ -183,6 +198,14 @@ impl App {
                 .clicked()
         {
             self.begin_insert();
+        }
+        if !self.document.tools.inspection_error.is_empty()
+            && self.document.result.columns.is_empty()
+        {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                &self.document.tools.inspection_error,
+            );
         }
         if self.document.result.columns.is_empty() && self.document.active.is_none() {
             ui.label(
