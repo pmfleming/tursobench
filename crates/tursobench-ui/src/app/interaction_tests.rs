@@ -906,7 +906,8 @@ fn sql_tile_keeps_result_identity_and_read_transactions_visible() {
     app.overview();
     frame(&mut app, &ctx, vec![]);
     assert_eq!(app.ui.transaction_rects.len(), 2);
-    app.run_text("ROLLBACK".into(), None);
+    let rollback = app.ui.transaction_rects[1].center();
+    click(&mut app, &ctx, rollback);
     wait(&mut app, &ctx);
     assert_eq!(app.transaction, TransactionState::Autocommit);
     app.open_palette();

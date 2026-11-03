@@ -51,7 +51,7 @@ impl App {
     pub(super) fn executing(&self) -> bool {
         self.document.active.is_some() || self.documents.values().any(|d| d.active.is_some())
     }
-    fn action_enabled(&self, action: Action) -> bool {
+    pub(super) fn action_enabled(&self, action: Action) -> bool {
         use Action::*;
         match action {
             ZoomOut => self.ui.diagram.camera.zoom() > super::diagram::MIN_ZOOM,

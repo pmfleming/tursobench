@@ -1,3 +1,23 @@
+# Incremental quality improvements — 2026-11-03
+
+The initial review/refactor was committed as `0051473`. The next priorities,
+ranked using RQLens hotspots and inspection of allocation/ownership costs, are:
+status-bar policy, record-field presentation, grid-cell painting, selection
+statistics, and contextual relationship reads. Icons' large match is mostly
+vector geometry; splitting those drawing constants would have less value than
+simplifying stateful code and repeated work on UI paths.
+
+1. **Status bar and shared command policy.** Connection, transaction and result
+   status rendering have focused handlers. Transaction buttons and the tile
+   ribbon now use the same enablement and dispatch rules. Removed the obsolete
+   pre-workspace delivery control: execution starts after workspace initialization,
+   and the active ribbon already owns discard. The existing read-only transaction
+   scenario now clicks the actual rollback control instead of calling SQL directly.
+   UI tests (111), workspace/all-target Clippy, formatting and RQLens hotspots pass.
+   `status_bar` cognitive/cyclomatic complexity fell from 73/30 to 10/5.
+
+---
+
 # Quality review — 2026-11-03
 
 Follow-up review and refactor using the local `Projects/rust-quality-lens`
