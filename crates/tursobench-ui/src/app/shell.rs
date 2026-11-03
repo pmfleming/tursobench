@@ -137,6 +137,7 @@ impl App {
         let ctx = ui.ctx().clone();
         if self.workspace.enabled {
             self.switch_document(self.workspace.focused);
+            self.movement_shortcuts(&ctx);
             if ctx.input_mut(|i| {
                 i.consume_key(
                     egui::Modifiers::CTRL | egui::Modifiers::ALT,

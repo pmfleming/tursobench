@@ -34,6 +34,11 @@ capture uses the app's explicit Light override. No personal database was opened.
 - `v5/tiled-system.png`: Data, Structure and Map with contextual ribbon and left navigator.
 - `v5/expanded-map.png`: expanded map; left navigation remains visible.
 - `v5/tiled-light.png`: the same tiled workspace in Light.
+- `v5/wide-table-below.png`: an 11-column table opens across the bottom of the
+  existing group, keeping all columns visible. The capture fixture adds a
+  synthetic `wide_records` table with 100 rows: integer ID, eight text fields,
+  real amount and integer active flag. The optional smoke capture recognizes
+  this table and records the extra layout. All four captures use this fixture.
 
 Capture support is opt-in for the existing native smoke runner: set
 `TURSOBENCH_CAPTURE_DIR` to an output directory and run `--smoke-test` against a

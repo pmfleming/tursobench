@@ -50,7 +50,7 @@ pub(crate) enum Node {
         b: Box<Node>,
     },
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct Tile {
     pub ids: Vec<u64>,
     pub selected: u64,
@@ -64,7 +64,102 @@ pub(super) struct Divider {
     pub ratio: f32,
     pub range: std::ops::RangeInclusive<f32>,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Placement {
+    Left,
+    Right,
+    Above,
+    Below,
+    Tab,
+    Swap,
+}
+impl Placement {
+    pub const EDGES: [Self; 4] = [Self::Left, Self::Right, Self::Above, Self::Below];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Left => "Left",
+            Self::Right => "Right",
+            Self::Above => "Above",
+            Self::Below => "Below",
+            Self::Tab => "Group as tab",
+            Self::Swap => "Swap positions",
+        }
+    }
+}
 impl Node {
+    /// Move identities only; row buffers, requests and user edits stay in their documents.
+    pub(super) fn relocated(
+        &self,
+        source: u64,
+        target: Option<u64>,
+        placement: Placement,
+    ) -> Option<Self> {
+        if !self.ids().contains(&source)
+            || target == Some(source)
+            || target.is_some_and(|id| !self.ids().contains(&id))
+        {
+            return None;
+        }
+        if placement == Placement::Swap {
+            let target = target?;
+            let mut tree = self.clone();
+            tree.swap_ids(source, target);
+            tree.select(source);
+            return Some(tree);
+        }
+        let mut tree = self.clone().remove(source)?;
+        if placement == Placement::Tab {
+            tree.group(target?, source);
+        } else {
+            let path = if let Some(target) = target {
+                tree.path_to(target)?
+            } else {
+                vec![]
+            };
+            let horizontal = matches!(placement, Placement::Left | Placement::Right);
+            let before = matches!(placement, Placement::Left | Placement::Above);
+            tree.split_at(&path, source, horizontal, 0.5, before);
+        }
+        tree.select(source);
+        Some(tree)
+    }
+    fn path_to(&self, id: u64) -> Option<Vec<bool>> {
+        match self {
+            Self::Tabs { ids, .. } => ids.contains(&id).then(Vec::new),
+            Self::Split { a, b, .. } => {
+                if let Some(mut path) = a.path_to(id) {
+                    path.insert(0, false);
+                    Some(path)
+                } else {
+                    let mut path = b.path_to(id)?;
+                    path.insert(0, true);
+                    Some(path)
+                }
+            }
+        }
+    }
+    fn swap_ids(&mut self, source: u64, target: u64) {
+        let swap = |id: &mut u64| {
+            if *id == source {
+                *id = target;
+            } else if *id == target {
+                *id = source;
+            }
+        };
+        match self {
+            Self::Tabs { ids, selected } => {
+                for id in ids {
+                    swap(id);
+                }
+                swap(selected);
+            }
+            Self::Split { a, b, .. } => {
+                a.swap_ids(source, target);
+                b.swap_ids(source, target);
+            }
+        }
+    }
+
     pub fn leaf(id: u64) -> Self {
         Self::Tabs {
             ids: vec![id],
@@ -283,27 +378,36 @@ impl Node {
                     let old_width = subtree.preferred_width(preferred_width);
                     old_width / (old_width + preferred_width(id))
                 } else {
-                    (subtree.ids().len() as f32 / (subtree.ids().len() + 1) as f32).clamp(0.4, 0.7)
+                    // Give the new row useful height; the existing subtree's
+                    // minimum will reserve more space only when it needs it.
+                    0.5
                 };
                 let lower = old[axis] / available;
                 let ratio = wanted.clamp(lower, (1.0 - fresh[axis] / available).max(lower));
                 let mut trial = self.clone();
                 trial.split_at(&path, id, horizontal, ratio, false);
                 let (tiles, _) = trial.layout(area, id, profile);
-                let mut score: f32 = tiles
+                let quality = |tile: &Tile| {
+                    let coverage =
+                        (tile.rect.width() / preferred_width(tile.selected).max(1.0)).min(1.0);
+                    let rows = ((tile.rect.height() - 44.0).max(1.0)
+                        / (area.height() - 44.0).max(1.0))
+                    .min(1.0);
+                    coverage.powi(3) * rows.powf(0.35)
+                };
+                let incoming = tiles
                     .iter()
-                    .map(|tile| {
-                        let coverage =
-                            (tile.rect.width() / preferred_width(tile.selected).max(1.0)).min(1.0);
-                        let rows = ((tile.rect.height() - 44.0).max(1.0)
-                            / (area.height() - 44.0).max(1.0))
-                        .min(1.0);
-                        // Losing columns costs more than losing some rows. When both
-                        // layouts fit columns, prefer more vertical room for data.
-                        coverage.powi(3) * rows.powf(0.35)
-                    })
+                    .find(|t| t.selected == id)
+                    .map_or(0.0, &quality);
+                let retained = tiles
+                    .iter()
+                    .filter(|t| t.selected != id)
+                    .map(quality)
                     .sum::<f32>()
-                    / (self.ids().len() + 1) as f32;
+                    / self.ids().len() as f32;
+                // Judge the newcomer against the existing group, so adding a
+                // fourth window cannot starve it to preserve three narrow panes.
+                let mut score = incoming * 0.55 + retained * 0.45;
                 if matches!(subtree, Self::Tabs { ids, .. } if ids.contains(&focused)) {
                     score += 0.02;
                 }
@@ -423,6 +527,77 @@ impl Node {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn wide_fourth_view_is_not_starved_by_three_existing_panes() {
+        let area = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1450.0, 880.0));
+        let mut tree = Node::Split {
+            horizontal: true,
+            ratio: 0.65,
+            a: Box::new(Node::Split {
+                horizontal: false,
+                ratio: 0.5,
+                a: Box::new(Node::leaf(1)),
+                b: Box::new(Node::leaf(2)),
+            }),
+            b: Box::new(Node::leaf(3)),
+        };
+        let minimum = |id| match id {
+            2 => Kind::Map.minimum(),
+            3 => Kind::Structure.minimum(),
+            _ => Kind::Data.minimum(),
+        };
+        let width = |id| match id {
+            1 => 480.0,
+            2 => 320.0,
+            3 => 260.0,
+            _ => 1800.0,
+        };
+        tree.insert(4, 1, area, &minimum, &width);
+        let tiles = tree.layout(area, 4, &minimum).0;
+        let wide = tiles.iter().find(|t| t.selected == 4).unwrap();
+        assert_eq!(wide.rect.width(), area.width());
+        assert_eq!(tiles.len(), 4);
+    }
+    #[test]
+    fn moving_swapping_and_grouping_preserve_ids_and_saved_geometry() {
+        let original = Node::Split {
+            horizontal: true,
+            ratio: 0.4,
+            a: Box::new(Node::leaf(1)),
+            b: Box::new(Node::Split {
+                horizontal: false,
+                ratio: 0.6,
+                a: Box::new(Node::leaf(2)),
+                b: Box::new(Node::leaf(3)),
+            }),
+        };
+        for placement in Placement::EDGES
+            .into_iter()
+            .chain([Placement::Tab, Placement::Swap])
+        {
+            let moved = original.relocated(1, Some(3), placement).unwrap();
+            let mut ids = moved.ids();
+            ids.sort();
+            assert_eq!(ids, vec![1, 2, 3]);
+            let saved = serde_json::to_string(&moved).unwrap();
+            assert_eq!(moved, serde_json::from_str::<Node>(&saved).unwrap());
+            for size in [egui::vec2(1500.0, 800.0), egui::vec2(420.0, 220.0)] {
+                let area = Rect::from_min_size(egui::Pos2::ZERO, size);
+                let tiles = moved.layout(area, 1, &|_| Kind::Data.minimum()).0;
+                assert!(tiles.iter().all(|t| area.contains_rect(t.rect)));
+                let mut ids: Vec<_> = tiles.iter().flat_map(|t| t.ids.clone()).collect();
+                ids.sort();
+                assert_eq!(ids, vec![1, 2, 3]);
+            }
+        }
+        let moved = original.relocated(1, None, Placement::Below).unwrap();
+        assert!(matches!(moved, Node::Split { horizontal: false, b, .. } if *b == Node::leaf(1)));
+        let swapped = original.relocated(1, Some(2), Placement::Swap).unwrap();
+        assert!(matches!(swapped, Node::Split { ratio, .. } if ratio == 0.4));
+        assert!(original.relocated(1, Some(1), Placement::Tab).is_none());
+        assert!(original.relocated(1, Some(99), Placement::Below).is_none());
+        assert!(Node::leaf(1).relocated(1, None, Placement::Below).is_none());
+    }
     #[test]
     fn incoming_content_selects_rows_or_columns_and_can_wrap_a_group() {
         let area = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1500.0, 800.0));

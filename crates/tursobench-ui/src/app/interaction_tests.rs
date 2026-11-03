@@ -1886,3 +1886,187 @@ fn automatic_map_fit_keeps_every_node_inside_its_resized_tile() {
     }
     app.close();
 }
+
+#[test]
+fn wide_tables_open_below_and_header_moves_keep_drafts_and_results() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("moving.db");
+    let columns = (0..12)
+        .map(|n| format!("field{n} TEXT"))
+        .collect::<Vec<_>>()
+        .join(",");
+    crate::test_support::create(
+        &path,
+        &[
+            "CREATE TABLE narrow(id INTEGER PRIMARY KEY)",
+            &format!("CREATE TABLE wide(id INTEGER PRIMARY KEY, {columns})"),
+            "INSERT INTO wide(id,field0) VALUES(1,'kept')",
+        ],
+    );
+    let (ctx, mut app) = connected(&path, true);
+    let size = egui::vec2(1800.0, 1000.0);
+    let map = app.document.id;
+    frame_at(&mut app, &ctx, size, vec![]);
+    app.browse_table("narrow".into());
+    wait(&mut app, &ctx);
+    frame_at(&mut app, &ctx, size, vec![]);
+    app.browse_table("wide".into());
+    let wide = app.document.id;
+    let tree = app.workspace.tree.clone();
+    frame_at(&mut app, &ctx, size, vec![]);
+    let rect = app
+        .workspace
+        .tiles
+        .iter()
+        .find(|(id, _)| *id == wide)
+        .unwrap()
+        .1;
+    assert_eq!(
+        rect.width(),
+        app.workspace.area.width(),
+        "schema width should place the table below the whole group before receiving rows"
+    );
+    wait(&mut app, &ctx);
+    assert_eq!(
+        app.workspace.tree, tree,
+        "streaming data never rearranges windows"
+    );
+    app.stage_cell(0, 1, Value::Text("unsaved".into()));
+    app.document.filter = "field0 = 'unfinished'".into();
+    let ticket = app.document.result.current;
+    let rows = app.document.result.rows.clone();
+    for _ in 0..2 {
+        frame_at(&mut app, &ctx, size, vec![]);
+    }
+    let header = app
+        .workspace
+        .headers
+        .iter()
+        .find(|(id, _)| *id == wide)
+        .unwrap()
+        .1
+        .center();
+    let target = app
+        .workspace
+        .tiles
+        .iter()
+        .find(|(id, _)| *id == map)
+        .unwrap()
+        .1
+        .center();
+    let pointer_button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    frame_at(
+        &mut app,
+        &ctx,
+        size,
+        vec![
+            egui::Event::PointerMoved(header),
+            pointer_button(header, true),
+        ],
+    );
+    frame_at(
+        &mut app,
+        &ctx,
+        size,
+        vec![egui::Event::PointerMoved(header + egui::vec2(20.0, 0.0))],
+    );
+    assert_eq!(app.workspace.dragging, Some(wide));
+    frame_at(
+        &mut app,
+        &ctx,
+        size,
+        vec![egui::Event::PointerMoved(target)],
+    );
+    assert_eq!(app.workspace.tree, tree, "preview cannot mutate the tree");
+    frame_at(&mut app, &ctx, size, vec![pointer_button(target, false)]);
+    assert_eq!(app.workspace.dragging, None);
+    assert_ne!(app.workspace.tree, tree);
+    assert_eq!(app.workspace.focused, wide);
+    assert!(app.document.has_drafts());
+    assert_eq!(app.document.result.current, ticket);
+    assert_eq!(app.document.result.rows, rows);
+    assert_eq!(app.document.filter, "field0 = 'unfinished'");
+    frame_at(
+        &mut app,
+        &ctx,
+        size,
+        vec![egui::Event::Key {
+            key: egui::Key::ArrowDown,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::CTRL | egui::Modifiers::ALT | egui::Modifiers::SHIFT,
+        }],
+    );
+    assert!(matches!(
+        app.workspace.tree,
+        Some(tiling::Node::Split {
+            horizontal: false,
+            ..
+        })
+    ));
+    let rect = app
+        .workspace
+        .tiles
+        .iter()
+        .find(|(id, _)| *id == wide)
+        .unwrap()
+        .1;
+    assert_eq!(rect.width(), app.workspace.area.width());
+    // Escape cancels another drag and restores its original expanded state.
+    app.expand_window(wide);
+    for _ in 0..2 {
+        frame_at(&mut app, &ctx, size, vec![]);
+    }
+    let tree = app.workspace.tree.clone();
+    let header = app
+        .workspace
+        .headers
+        .iter()
+        .find(|(id, _)| *id == wide)
+        .unwrap()
+        .1
+        .center();
+    frame_at(
+        &mut app,
+        &ctx,
+        size,
+        vec![
+            egui::Event::PointerMoved(header),
+            pointer_button(header, true),
+        ],
+    );
+    frame_at(
+        &mut app,
+        &ctx,
+        size,
+        vec![egui::Event::PointerMoved(header + egui::vec2(20.0, 0.0))],
+    );
+    assert_eq!(app.workspace.dragging, Some(wide));
+    frame_at(
+        &mut app,
+        &ctx,
+        size,
+        vec![egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+    frame_at(&mut app, &ctx, size, vec![pointer_button(target, false)]);
+    assert_eq!(app.workspace.tree, tree);
+    assert_eq!(app.workspace.expanded, Some(wide));
+    assert!(app.document.has_drafts());
+    let saved = app.workspace_snapshot().unwrap();
+    let saved: workspace::Snapshot =
+        serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+    assert!(saved.valid());
+    app.close();
+}

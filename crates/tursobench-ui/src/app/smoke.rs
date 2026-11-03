@@ -147,14 +147,22 @@ impl App {
                     smoke.stage = 8;
                 }
             }
-            20 | 22 | 24 => {
+            26 if self.document.active.is_some()
+                || self.document.tools.inspection_ticket.is_some() => {}
+            20 | 22 | 24 | 26 => {
+                if smoke.capture_frames == 0 {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::CursorPosition(egui::pos2(
+                        1795.0, 995.0,
+                    )));
+                }
                 smoke.capture_frames += 1;
                 if smoke.capture_frames >= 15 {
                     smoke.capture_pending = Some(
                         match smoke.stage {
                             20 => "tiled-system.png",
                             22 => "expanded-map.png",
-                            _ => "tiled-light.png",
+                            24 => "tiled-light.png",
+                            _ => "wide-table-below.png",
                         }
                         .into(),
                     );
@@ -176,6 +184,14 @@ impl App {
             }
             25 if smoke.capture_pending.is_none() => {
                 self.preferences.appearance = Some(crate::appearance::Mode::System);
+                if self.schema.iter().any(|o| o.name == "wide_records") {
+                    self.browse_table("wide_records".into());
+                    smoke.stage = 26;
+                } else {
+                    smoke.stage = 8;
+                }
+            }
+            27 if smoke.capture_pending.is_none() => {
                 smoke.stage = 8;
             }
             8 => {

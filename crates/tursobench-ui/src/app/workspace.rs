@@ -19,6 +19,10 @@ pub(super) struct Workspace {
     pub next_id: u64,
     pub area: egui::Rect,
     pub close_pending: Option<u64>,
+    pub dragging: Option<u64>,
+    pub drag_expanded: Option<u64>,
+    #[cfg(test)]
+    pub headers: Vec<(u64, egui::Rect)>,
     #[cfg(test)]
     pub tiles: Vec<(u64, egui::Rect)>,
 }
@@ -32,6 +36,10 @@ impl Default for Workspace {
             next_id: 1,
             area: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 600.0)),
             close_pending: None,
+            dragging: None,
+            drag_expanded: None,
+            #[cfg(test)]
+            headers: vec![],
             #[cfg(test)]
             tiles: vec![],
         }
@@ -75,7 +83,7 @@ impl App {
             self.workspace.expanded = Some(id);
         }
     }
-    fn profiles(&self) -> BTreeMap<u64, (egui::Vec2, f32)> {
+    pub(super) fn profiles(&self) -> BTreeMap<u64, (egui::Vec2, f32)> {
         self.documents
             .values()
             .chain(std::iter::once(&self.document))
@@ -408,6 +416,7 @@ impl App {
         #[cfg(test)]
         {
             self.workspace.tiles.clear();
+            self.workspace.headers.clear();
         }
         let Some(tree) = &self.workspace.tree else {
             ui.label("Open a table, Map or SQL from the left navigator.");
@@ -428,6 +437,7 @@ impl App {
                 profiles[&id].0
             })
         };
+        let drop_tiles = tiles.clone();
         for divider in dividers {
             let response = ui
                 .interact(
@@ -526,7 +536,13 @@ impl App {
                                         let label = self
                                             .document_ref(tab)
                                             .map_or_else(String::new, Document::title);
-                                        if ui.selectable_label(tab == id, label).clicked() {
+                                        let tab_response = ui.add(
+                                            egui::Button::new(label)
+                                                .selected(tab == id)
+                                                .sense(egui::Sense::click_and_drag()),
+                                        );
+                                        self.window_handle(tab, &tab_response);
+                                        if tab_response.clicked() {
                                             self.focus_window(tab);
                                         }
                                     }
@@ -536,11 +552,14 @@ impl App {
                         self.switch_document(id);
                     }
                     let header = ui.horizontal(|ui| {
-                        ui.add_sized(
+                        let title = ui.add_sized(
                             [(ui.available_width() - 78.0).max(20.0), 28.0],
-                            egui::Label::new(egui::RichText::new(self.document.title()).strong())
-                                .truncate(),
+                            egui::Button::new(egui::RichText::new(self.document.title()).strong())
+                                .frame(false)
+                                .truncate()
+                                .sense(egui::Sense::click_and_drag()),
                         );
+                        self.window_handle(id, &title);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if icons::button(ui, Icon::Close, "Close view", "").clicked() {
                                 self.request_close_window(id);
@@ -567,13 +586,8 @@ impl App {
                             self.ui.view_header = header.response.rect;
                         }
                     }
-                    if header
-                        .response
-                        .interact(egui::Sense::click())
-                        .double_clicked()
-                    {
-                        self.expand_window(id);
-                    }
+                    #[cfg(not(test))]
+                    let _ = header;
                     ui.separator();
                     // A close action may already have removed this document.
                     if self.document.id != id {
@@ -637,6 +651,7 @@ impl App {
             );
         }
         self.switch_document(self.workspace.focused);
+        self.window_drop_preview(ui, &drop_tiles);
     }
 }
 

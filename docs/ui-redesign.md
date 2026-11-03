@@ -20,8 +20,28 @@ Ctrl 1/2 opens Data/Structure. Ctrl Enter runs SQL; Ctrl Shift Enter runs select
 SQL execution opens a linked result without overwriting its editor. History and
 bookmarks load into a new editor. Space from the grid opens a pinned record.
 
-Windows split recursively with minimum sizes and data-width preferences. If a
-split would make views unreadable, it becomes a tab group. Resizing back restores
+Windows split recursively with minimum sizes and data-width preferences. Like
+[Hyprland's dwindle layout](https://wiki.hypr.land/configuring/layouts/dwindle-layout/),
+they form a binary split tree. The native app scores horizontal and vertical splits
+using **both** views' width needs and available row space. Table column names/types
+supply an estimate before rows arrive; Retile uses measured visible columns. Wide
+tables can open below an entire group to use its full width, while narrow tables
+prefer side-by-side space. New rows never trigger automatic rearrangement.
+
+Drag a window title or grouped tab to move it. The preview shows the final area:
+
+- Drop near another tile's edge to place left, right, above or below it.
+- Drop in its center to swap; hold Shift there to group as tabs.
+- Drop at the outer workspace edge to span that whole side, including a full-width bottom row.
+- Escape or dropping outside the workspace cancels. Dragging from expanded mode
+  reveals the other windows; cancelling restores expansion.
+
+Right-click a title, or use ribbon More, for the same placement options.
+**Ctrl Alt Shift + arrow** moves the focused window to that workspace edge.
+Moves preserve buffers, filters, selections, SQL drafts, pending requests and staged
+edits. The revised tree is saved with the layout on managed close.
+
+If a split would make views unreadable, it becomes a tab group. Resizing back restores
 the split tree. Drag a divider to resize; Retile recomputes an arrangement from
 current content. Expanded view state never changes the saved split proportions.
 The session retains at most 16 views. Closing an SQL draft, staged edit or active
@@ -47,7 +67,8 @@ Use Saved queries for SQL that should survive restart. Invalid saved geometry is
 rejected. Legacy preferences continue to load.
 
 Native captures using synthetic fixture data: [system theme](assets/ui/v5/tiled-system.png),
-[expanded map](assets/ui/v5/expanded-map.png), [light override](assets/ui/v5/tiled-light.png).
+[expanded map](assets/ui/v5/expanded-map.png), [light override](assets/ui/v5/tiled-light.png),
+[wide table below a group](assets/ui/v5/wide-table-below.png).
 
 ## Earlier v4 behavior (historical)
 

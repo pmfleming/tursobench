@@ -423,6 +423,7 @@ impl App {
                                     }
                                     _ => {}
                                 }
+                                self.window_move_menu(ui, self.workspace.focused);
                                 if compact {
                                     ui.separator();
                                     self.ribbon_menu_action(ui, Retile, "Retile windows");
