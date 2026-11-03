@@ -1,6 +1,36 @@
 # UI screenshots
 
-## Current interface (v8)
+## Current README — real session database
+
+The `sessions/` images were captured on 2026-11-03 from the native TursoBench
+application on this NixOS laptop. The captured binary is the v8 build from
+`9a89c23`. The images use the current GTK palette and system fonts. Every image is 1600 × 1000. Both dark and light workspaces are shown
+explicitly in the README.
+
+The data comes from the local Scratchpad `session.db`, not a synthetic fixture.
+The active database and its WAL were copied after consecutive byte-identical
+reads. A backup of that offline copy supplied a self-contained capture database.
+TursoBench opened the capture database read-only. No source application was
+stopped, and no source database write was issued. Database files are not committed.
+
+The captured session contains 10 tables, 6 explicit indexes, 130 buffer identifiers,
+130 document-history pointers, 198 history entries, 130 snapshots and 139 blob rows.
+The snapshot-size sum is 2,307,840 bytes. Its largest snapshot is 611,668 bytes.
+Screens show actual identifiers, integer metadata and blob previews. The SQL example
+reads size and digest metadata; it does not decode application payloads.
+
+- `workspace-dark.png`, `workspace-light.png`: all five native tiles.
+- `table-data.png`: expanded session metadata browsing.
+- `relationships.png`: all ten tables and their declared FK edges.
+- `structure.png`: original session DDL, columns, indexes and FK actions.
+- `sql-results.png`: the README's history/snapshot join and its twelve result rows.
+
+Captures use the normal desktop UI. Search, expansion, theme switching and SQL
+execution were driven with native input events under Xvfb/OpenGL. The application
+used isolated preferences and copied desktop theme inputs. The images were not
+redrawn, composited or retouched.
+
+## v8 interface reference captures
 
 The `v8/` images are native egui captures from 2026-11-03, using this laptop's
 Home Manager GTK palette and system fonts. The four interface roles use the
