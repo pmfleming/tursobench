@@ -148,6 +148,7 @@ pub struct Preferences {
     pub query_history: Vec<HistoryEntry>,
     pub saved_queries: Vec<Bookmark>,
     pub dark_mode: bool,
+    pub font_size: u16,
     #[serde(default)]
     pub appearance: Option<crate::appearance::Mode>,
     #[serde(skip)]
@@ -180,6 +181,7 @@ impl Default for Preferences {
             query_history: vec![],
             saved_queries: vec![],
             dark_mode: true,
+            font_size: 14,
             appearance: Some(crate::appearance::Mode::System),
             legacy_appearance: false,
             slow_query_ms: 500,
@@ -293,6 +295,7 @@ impl Preferences {
         });
         self.row_limit = self.row_limit.clamp(1, 10_000);
         self.busy_timeout_ms = self.busy_timeout_ms.min(5000);
+        self.font_size = self.font_size.clamp(10, 20);
         self.slow_query_ms = self.slow_query_ms.clamp(1, 60_000);
         self.null_display = self.null_display.chars().take(32).collect();
         self.query_history
@@ -413,6 +416,22 @@ fn save(path: &Path, prefs: &Preferences) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn font_size_migrates_clamps_and_roundtrips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prefs.json");
+        fs_write(&path, "{}");
+        let mut prefs = load(&path).unwrap();
+        assert_eq!(prefs.font_size, 14);
+        prefs.font_size = 18;
+        save(&path, &prefs).unwrap();
+        assert_eq!(load(&path).unwrap().font_size, 18);
+        for (value, expected) in [(0, 10), (100, 20)] {
+            fs_write(&path, &format!("{{\"font_size\":{value}}}"));
+            assert_eq!(load(&path).unwrap().font_size, expected);
+        }
+    }
+
     #[test]
     fn appearance_defaults_to_system_and_migrates_explicit_legacy_choices() {
         use crate::appearance::Mode;

@@ -1,5 +1,9 @@
 mod presentation;
-use super::{App, View, shell, tools};
+use super::{
+    App, View,
+    icons::{self, Icon},
+    shell, tools,
+};
 use eframe::egui;
 use tursobench_core::{Event, EventKind, SchemaObject};
 use tursobench_core::{ForeignKey, Value};
@@ -124,7 +128,11 @@ impl App {
             .or(self.document.object.as_deref())
             .or(self.ui.diagram.selected.as_deref());
         let Some(name) = name else {
-            ui.label("Choose a table to inspect its structure.");
+            icons::empty_state(
+                ui,
+                Icon::Structure,
+                "Select a table to inspect its structure",
+            );
             return;
         };
         let info = self.loaded_inspection(name);

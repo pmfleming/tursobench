@@ -26,7 +26,7 @@ colors. Screenshot capture is opt-in: set `TURSOBENCH_CAPTURE_DIR`, isolate
 `XDG_CONFIG_HOME`, and run `--smoke-test` against a disposable 100,000-row fixture
 under Xvfb with a 3440 × 1440 screen. Normal smoke runs do not save screenshots.
 
-The README banner contains the current [app logo](../../../packaging/tursobench.png).
+The README header embeds the current transparent [app logo](../../../packaging/tursobench.png).
 Its source and generation provenance are recorded in
 [packaging/icon-source.txt](../../../packaging/icon-source.txt).
 

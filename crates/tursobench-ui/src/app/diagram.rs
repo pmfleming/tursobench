@@ -10,6 +10,8 @@ use std::collections::BTreeMap;
 const WIDTH: f32 = 320.0;
 const LINE: f32 = 22.0;
 const KEY_LABEL_ZOOM: f32 = 0.5;
+pub(super) const MIN_ZOOM: f32 = 0.0001;
+pub(super) const MAX_ZOOM: f32 = 2.5;
 #[derive(Default)]
 pub(super) struct DiagramState {
     pub ticket: Option<Ticket>,
@@ -25,7 +27,7 @@ pub(super) struct DiagramState {
     pub fit: bool,
     auto_fit: bool,
     last_canvas_size: egui::Vec2,
-    reset_zoom: bool,
+    requested_zoom: Option<f32>,
     pack_width: f32,
     #[cfg(test)]
     pub table_rects: Vec<(String, egui::Rect)>,
@@ -48,8 +50,36 @@ impl DiagramState {
         self.fit = true;
     }
     pub fn reset_camera_zoom(&mut self) {
-        self.reset_zoom = true;
+        self.request_camera_zoom(1.0);
+    }
+    pub fn camera_zoom(&self) -> f32 {
+        self.requested_zoom
+            .unwrap_or(if self.zoom > 0.0 { self.zoom } else { 1.0 })
+    }
+    pub fn step_camera_zoom(&mut self, factor: f32) {
+        self.request_camera_zoom(self.camera_zoom() * factor);
+    }
+    fn request_camera_zoom(&mut self, zoom: f32) {
+        self.requested_zoom = Some(zoom.clamp(MIN_ZOOM, MAX_ZOOM));
+        self.fit = false;
         self.auto_fit = false;
+    }
+    fn apply_camera_zoom(
+        current_zoom: &mut f32,
+        pan: &mut egui::Vec2,
+        requested_zoom: &mut Option<f32>,
+        canvas_size: egui::Vec2,
+    ) {
+        if let Some(zoom) = requested_zoom.take() {
+            let center = canvas_size * 0.5;
+            let old = if *current_zoom > 0.0 {
+                *current_zoom
+            } else {
+                1.0
+            };
+            *pan = center - (center - *pan) * (zoom / old);
+            *current_zoom = zoom;
+        }
     }
     pub fn snapshot(&self, database: &str) -> Option<crate::storage::MapLayout> {
         self.data.as_ref()?;
@@ -374,7 +404,7 @@ impl DiagramDrawing<'_> {
                         short(&col.name, 24),
                         short(&col.declared_type, 12)
                     ),
-                    egui::FontId::monospace((12.0 * zoom).max(9.0)),
+                    crate::appearance::monospace(ui.ctx(), (12.0 * zoom).max(9.0)),
                     ui.visuals().text_color(),
                 );
             }
@@ -395,11 +425,14 @@ impl DiagramDrawing<'_> {
                         info.foreign_keys.len()
                     )
                 },
-                egui::FontId::proportional(if zoom >= 0.35 {
-                    (12.0 * zoom).max(9.0)
-                } else {
-                    12.0 * zoom
-                }),
+                crate::appearance::proportional(
+                    ui.ctx(),
+                    if zoom >= 0.35 {
+                        (12.0 * zoom).max(9.0)
+                    } else {
+                        12.0 * zoom
+                    },
+                ),
                 ui.visuals().weak_text_color(),
             );
         } else {
@@ -407,7 +440,7 @@ impl DiagramDrawing<'_> {
                 self.point(world.min + egui::vec2(10.0, 50.0)),
                 egui::Align2::LEFT_CENTER,
                 "Metadata unavailable — inspect error",
-                egui::FontId::proportional(12.0 * zoom),
+                crate::appearance::proportional(ui.ctx(), 12.0 * zoom),
                 ui.visuals().error_fg_color,
             );
         }
@@ -531,7 +564,9 @@ impl App {
             .as_ref()
             .or(self.ui.diagram.data.as_ref())
         else {
-            ui.label("Open a database and choose Refresh all tables. No row scans or inferred relationships.");
+            if self.ui.diagram.ticket.is_none() && self.ui.diagram.error.is_empty() {
+                icons::empty_state(ui, Icon::Map, "No relationships to display");
+            }
             return;
         };
         let relationships: usize = graph
@@ -561,6 +596,12 @@ impl App {
                 );
             }
         });
+        if graph.tables.is_empty() {
+            if self.ui.diagram.ticket.is_none() && self.ui.diagram.error.is_empty() {
+                icons::empty_state(ui, Icon::Map, "No relationships to display");
+            }
+            return;
+        }
         if self.ui.diagram.pack_width <= 0.0
             || (self.ui.diagram.auto_fit && self.ui.diagram.last_canvas_size != ui.available_size())
         {
@@ -609,17 +650,17 @@ impl App {
             let target = bounds.expand(16.0);
             self.ui.diagram.zoom = ((canvas.width() - 40.0) / target.width())
                 .min((canvas.height() - 40.0) / target.height())
-                .clamp(0.0001, 1.25);
+                .clamp(MIN_ZOOM, 1.25);
             self.ui.diagram.pan =
                 canvas.size() * 0.5 - target.center().to_vec2() * self.ui.diagram.zoom;
             self.ui.diagram.fit = false;
         }
-        if self.ui.diagram.reset_zoom {
-            let center = canvas.size() * 0.5;
-            self.ui.diagram.pan = center - (center - self.ui.diagram.pan) / self.ui.diagram.zoom;
-            self.ui.diagram.zoom = 1.0;
-            self.ui.diagram.reset_zoom = false;
-        }
+        DiagramState::apply_camera_zoom(
+            &mut self.ui.diagram.zoom,
+            &mut self.ui.diagram.pan,
+            &mut self.ui.diagram.requested_zoom,
+            canvas.size(),
+        );
         if response.dragged() {
             self.ui.diagram.pan += response.drag_delta();
             self.ui.diagram.auto_fit = false;
@@ -629,7 +670,7 @@ impl App {
             if scroll != 0.0 {
                 self.ui.diagram.auto_fit = false;
                 let old = self.ui.diagram.zoom;
-                let new = (old * (scroll * 0.002).exp()).clamp(0.0001, 2.5);
+                let new = (old * (scroll * 0.002).exp()).clamp(MIN_ZOOM, MAX_ZOOM);
                 let pointer = ui
                     .input(|i| i.pointer.hover_pos())
                     .unwrap_or(canvas.center())
@@ -693,11 +734,14 @@ impl App {
                 point(world.min + egui::vec2(10.0, 17.0)),
                 egui::Align2::LEFT_CENTER,
                 short(&node.name, 36),
-                egui::FontId::proportional(if zoom >= 0.35 {
-                    (15.0 * zoom).max(11.0)
-                } else {
-                    15.0 * zoom
-                }),
+                crate::appearance::proportional(
+                    ui.ctx(),
+                    if zoom >= 0.35 {
+                        (15.0 * zoom).max(11.0)
+                    } else {
+                        15.0 * zoom
+                    },
+                ),
                 ui.visuals().text_color(),
             );
             let response = ui.interact(
@@ -744,11 +788,11 @@ impl App {
                     ""
                 }
             ),
-            egui::FontId::proportional(12.0),
+            crate::appearance::proportional(ui.ctx(), 12.0),
             ui.visuals().weak_text_color(),
         );
         if unresolved > 0 {
-            painter.text(canvas.left_bottom()+egui::vec2(10.0,-10.0),egui::Align2::LEFT_BOTTOM,format!("{unresolved} unresolved relationship endpoints — inspect Structure; no targets invented"),egui::FontId::proportional(12.0),ui.visuals().warn_fg_color);
+            painter.text(canvas.left_bottom()+egui::vec2(10.0,-10.0),egui::Align2::LEFT_BOTTOM,format!("{unresolved} unresolved relationship endpoints — inspect Structure; no targets invented"),crate::appearance::proportional(ui.ctx(), 12.0),ui.visuals().warn_fg_color);
         }
         if !self.workspace.enabled {
             ui.scope_builder(
@@ -810,8 +854,7 @@ impl App {
                                     .on_hover_text("Reset zoom")
                                     .clicked()
                                 {
-                                    self.ui.diagram.reset_zoom = true;
-                                    self.ui.diagram.auto_fit = false;
+                                    self.ui.diagram.reset_camera_zoom();
                                 }
                             });
                         });
@@ -828,6 +871,40 @@ mod tests {
     use super::{Inspection, SchemaDiagram, WIDTH, cards, route};
     use eframe::egui;
     use tursobench_core::DiagramTable;
+    #[test]
+    fn button_zoom_preserves_the_canvas_center_and_respects_limits() {
+        let mut camera = super::DiagramState {
+            zoom: 0.5,
+            pan: egui::vec2(30.0, -40.0),
+            auto_fit: true,
+            fit: true,
+            ..Default::default()
+        };
+        let size = egui::vec2(800.0, 400.0);
+        let world_center = (size * 0.5 - camera.pan) / camera.zoom;
+        for factor in [1.25, 1.0 / 1.25, 1000.0, 0.0000001] {
+            camera.step_camera_zoom(factor);
+            super::DiagramState::apply_camera_zoom(
+                &mut camera.zoom,
+                &mut camera.pan,
+                &mut camera.requested_zoom,
+                size,
+            );
+            assert!((super::MIN_ZOOM..=super::MAX_ZOOM).contains(&camera.zoom));
+            assert!(((size * 0.5 - camera.pan) / camera.zoom - world_center).length() < 0.1);
+            assert!(!camera.auto_fit && !camera.fit);
+        }
+        camera.reset_camera_zoom();
+        super::DiagramState::apply_camera_zoom(
+            &mut camera.zoom,
+            &mut camera.pan,
+            &mut camera.requested_zoom,
+            size,
+        );
+        assert_eq!(camera.zoom, 1.0);
+        assert!(((size * 0.5 - camera.pan) / camera.zoom - world_center).length() < 0.1);
+    }
+
     #[test]
     fn layouts_keep_relationships_deterministic_and_all_cards_separate() {
         use tursobench_core::{ForeignKey, Table};

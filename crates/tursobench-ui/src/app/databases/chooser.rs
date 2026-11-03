@@ -235,7 +235,7 @@ impl App {
                     egui::TextEdit::singleline(&mut self.databases.filter)
                         .id(id)
                         .frame(egui::Frame::NONE)
-                        .font(egui::FontId::proportional(16.0))
+                        .font(crate::appearance::proportional(ui.ctx(), 16.0))
                         .margin(egui::Margin::ZERO)
                         .event_filter(egui::EventFilter {
                             vertical_arrows: true,
@@ -429,12 +429,19 @@ impl Entry {
             .file_name()
             .unwrap_or(self.path.as_os_str())
             .to_string_lossy();
-        let title = egui::WidgetText::from(egui::RichText::new(name).size(15.0));
-        let subtitle =
-            egui::WidgetText::from(egui::RichText::new(folder_label(&self.path)).size(12.0));
+        let title = egui::WidgetText::from(
+            egui::RichText::new(name).size(crate::appearance::text_size(ui.ctx(), 15.0)),
+        );
+        let subtitle = egui::WidgetText::from(
+            egui::RichText::new(folder_label(&self.path))
+                .size(crate::appearance::text_size(ui.ctx(), 12.0)),
+        );
         let width = (rect.width() - 76.0).max(0.0);
         let title_width = if let Some(badge) = self.badge() {
-            let badge = egui::WidgetText::from(egui::RichText::new(badge).size(12.0)).into_galley(
+            let badge = egui::WidgetText::from(
+                egui::RichText::new(badge).size(crate::appearance::text_size(ui.ctx(), 12.0)),
+            )
+            .into_galley(
                 ui,
                 Some(egui::TextWrapMode::Truncate),
                 width * 0.45,

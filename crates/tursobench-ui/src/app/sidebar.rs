@@ -366,7 +366,7 @@ fn tree_row(
     );
     let right = painter.layout_no_wrap(
         detail.to_owned(),
-        egui::FontId::monospace(10.0),
+        crate::appearance::monospace(ui.ctx(), 10.0),
         ui.visuals().weak_text_color(),
     );
     let clip = egui::Rect::from_min_max(
@@ -377,7 +377,7 @@ fn tree_row(
         rect.left_center() + egui::vec2(indent + 22.0, 0.0),
         egui::Align2::LEFT_CENTER,
         name,
-        egui::FontId::proportional(12.0),
+        crate::appearance::proportional(ui.ctx(), 12.0),
         color,
     );
     painter.galley(

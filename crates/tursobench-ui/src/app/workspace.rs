@@ -320,7 +320,16 @@ impl App {
                                             .max(0.0),
                                         icons::RIBBON_BUTTON_SIZE,
                                     ],
-                                    egui::Button::new(kind.label()).frame(false),
+                                    egui::Button::new(
+                                        egui::RichText::new(kind.label())
+                                            .size(crate::appearance::text_size(
+                                                ui.ctx(),
+                                                icons::RIBBON_TEXT_SIZE,
+                                            ))
+                                            .strong(),
+                                    )
+                                    .frame(false)
+                                    .truncate(),
                                 )
                                 .clicked()
                             {
@@ -338,6 +347,13 @@ impl App {
                     if self.workspace.minimized.contains(&kind) {
                         return;
                     }
+                    let divider_y = ui.cursor().top().min(content.bottom());
+                    ui.painter().hline(
+                        content.x_range(),
+                        divider_y,
+                        egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+                    );
+                    ui.add_space(5.0);
                     let body = egui::Rect::from_min_max(
                         egui::pos2(content.left(), ui.cursor().top().min(content.bottom())),
                         content.max,
@@ -347,14 +363,20 @@ impl App {
                         |ui| {
                             ui.set_clip_rect(body.intersect(ui.clip_rect()));
                             ui.set_max_size(body.size());
-                            if let Some(id) = owner {
+                            if let Some(id) = self.pane_document(kind) {
                                 self.switch_document(id);
                                 self.pane_content(ui, kind);
                             } else {
-                                ui.weak(match kind {
-                                    Kind::Record => "Select a table row to inspect and edit it.",
-                                    _ => "Choose a table from the database navigator.",
-                                });
+                                let (icon, description) = match kind {
+                                    Kind::Record => (Icon::Selection, "Select a row to inspect"),
+                                    Kind::Structure => {
+                                        (Icon::Structure, "Select a table to inspect its structure")
+                                    }
+                                    Kind::Map => (Icon::Map, "No relationships to display"),
+                                    Kind::Sql => (Icon::Sql, "Empty SQL editor"),
+                                    Kind::Data | Kind::Result => (Icon::Data, "No rows to display"),
+                                };
+                                icons::empty_state(ui, icon, description);
                             }
                         },
                     );
@@ -394,7 +416,7 @@ impl App {
                                 self.wide_related(ui);
                             }
                         } else {
-                            ui.weak("Select a row to inspect its values.");
+                            icons::empty_state(ui, Icon::Selection, "Select a row to inspect");
                         }
                     });
             }
@@ -441,7 +463,9 @@ impl App {
             {
                 self.focus_window(result);
             }
-            ui.small(format!("{} retained rows", self.document.result.rows.len()));
+            if !self.document.result.rows.is_empty() {
+                ui.small(format!("{} retained rows", self.document.result.rows.len()));
+            }
             self.grid_contents(ui);
             self.switch_document(editor);
         } else {

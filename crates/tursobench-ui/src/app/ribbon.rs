@@ -25,6 +25,8 @@ pub(super) enum Action {
     SystemTables,
     Find,
     Zoom100,
+    ZoomOut,
+    ZoomIn,
     Run,
     RunSelection,
     Explain,
@@ -52,6 +54,8 @@ impl App {
     fn action_enabled(&self, action: Action) -> bool {
         use Action::*;
         match action {
+            ZoomOut => self.ui.diagram.camera_zoom() > super::diagram::MIN_ZOOM,
+            ZoomIn => self.ui.diagram.camera_zoom() < super::diagram::MAX_ZOOM,
             Run | RunSelection | Explain | Bytecode | Begin | Commit | Rollback => {
                 self.ready
                     && !self.closing
@@ -137,6 +141,8 @@ impl App {
             SystemTables => self.ui.diagram.toggle_system(),
             Find => self.open_palette(),
             Zoom100 => self.ui.diagram.reset_camera_zoom(),
+            ZoomOut => self.ui.diagram.step_camera_zoom(1.0 / 1.25),
+            ZoomIn => self.ui.diagram.step_camera_zoom(1.25),
             Run => self.run_sql(),
             RunSelection => self.run_selection(),
             Explain => self.run_text(self.document.sql.clone(), Some(false)),
@@ -245,7 +251,29 @@ impl App {
         };
         let response = ui
             .add_enabled_ui(self.action_enabled(action), |ui| {
-                icons::ribbon_button(ui, icon, label, action.shortcut(), selected)
+                if action == Action::Zoom100 {
+                    let percent = self.ui.diagram.camera_zoom() * 100.0;
+                    let text = if percent < 1.0 {
+                        format!("{percent:.2}%")
+                    } else {
+                        format!("{percent:.0}%")
+                    };
+                    let response = ui.add(
+                        egui::Button::new(egui::RichText::new(text).size(
+                            crate::appearance::text_size(ui.ctx(), icons::RIBBON_TEXT_SIZE),
+                        ))
+                        .min_size(egui::vec2(
+                            icons::RIBBON_BUTTON_SIZE,
+                            icons::RIBBON_BUTTON_SIZE,
+                        )),
+                    );
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label)
+                    });
+                    response.on_hover_text("Current zoom · click to reset to 100%")
+                } else {
+                    icons::ribbon_button(ui, icon, label, action.shortcut(), selected)
+                }
             })
             .inner;
         #[cfg(test)]
@@ -332,33 +360,46 @@ impl App {
         }
         // Keep tile identity and window controls fixed while the action ribbon scrolls.
         // Never drop actions based on width or replace them with an overflow menu.
-        let stacked_title = ui.available_width() < 480.0;
-        if stacked_title {
-            ui.horizontal(|ui| self.ribbon_title(ui, kind, available));
-        }
-        ui.horizontal(|ui| {
+        ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
-            if !stacked_title {
-                ui.allocate_ui_with_layout(
-                    egui::vec2(110.0, icons::RIBBON_BUTTON_SIZE),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| self.ribbon_title(ui, kind, available),
-                );
+            ui.style_mut().override_font_id = Some(crate::appearance::proportional(ui.ctx(), icons::RIBBON_TEXT_SIZE));
+            ui.spacing_mut().interact_size.y = icons::RIBBON_BUTTON_SIZE;
+            let controls_width = 2.0 * icons::RIBBON_BUTTON_SIZE + 9.0;
+            let remaining = (ui.available_width() - controls_width).max(0.0);
+            let title_size = ui.painter().layout_no_wrap(
+                kind.label().into(),
+                crate::appearance::proportional(ui.ctx(), icons::RIBBON_TEXT_SIZE),
+                ui.visuals().text_color(),
+            ).size();
+            let mut title_width = (remaining * 0.3)
+                .max(title_size.x + 4.0)
+                .min(240.0)
+                .min((remaining - 32.0).max(0.0));
+            if matches!(kind, Kind::Data | Kind::Record) {
+                title_width = title_width.max(48.0).min((remaining - 6.0).max(0.0));
             }
-            let controls_width = 2.0 * icons::RIBBON_BUTTON_SIZE + 6.0;
+            ui.allocate_ui_with_layout(
+                egui::vec2(title_width, icons::RIBBON_BUTTON_SIZE),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| self.ribbon_title(ui, kind, available),
+            );
             let ribbon_width = (ui.available_width() - controls_width).max(1.0);
             ui.allocate_ui_with_layout(
                 egui::vec2(ribbon_width, icons::RIBBON_BUTTON_SIZE + 12.0),
-                egui::Layout::left_to_right(egui::Align::Center),
+                egui::Layout::left_to_right(egui::Align::Min),
                 |ui| {
                     ui.style_mut().spacing.scroll = egui::style::ScrollStyle::solid();
                     egui::ScrollArea::horizontal()
                         .id_salt(("pane-actions", kind))
                         .max_width(ribbon_width)
+                        .min_scrolled_width(0.0)
                         .auto_shrink([false, true])
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.add_enabled_ui(available, |ui| {
+                                    if kind == Kind::Record {
+                                        self.ribbon_record_slider(ui);
+                                    }
                                     for &(action, icon, label) in kind.ribbon_actions() {
                                         self.ribbon_action(ui, action, icon, label);
                                     }
@@ -435,12 +476,140 @@ impl App {
         });
     }
 
-    fn ribbon_title(&self, ui: &mut egui::Ui, kind: Kind, available: bool) {
-        ui.add(egui::Label::new(egui::RichText::new(kind.label()).strong()).truncate())
-            .on_hover_text(kind.label());
-        if available && let Some(name) = &self.document.object {
-            ui.add(egui::Label::new(egui::RichText::new(name).small()).truncate())
-                .on_hover_text(name);
+    fn ribbon_title(&mut self, ui: &mut egui::Ui, kind: Kind, available: bool) {
+        if kind == Kind::Data {
+            self.ribbon_table_selector(ui, available);
+            return;
+        }
+        if kind == Kind::Record {
+            self.ribbon_field_selector(ui, available);
+            return;
+        }
+        let title = if available && let Some(name) = &self.document.object {
+            format!("{} · {name}", kind.label())
+        } else {
+            kind.label().to_owned()
+        };
+        let name_width = ui
+            .painter()
+            .layout_no_wrap(
+                kind.label().into(),
+                crate::appearance::proportional(ui.ctx(), icons::RIBBON_TEXT_SIZE),
+                ui.visuals().text_color(),
+            )
+            .size()
+            .x;
+        let visible = if ui.available_width() >= name_width + 64.0 {
+            title.as_str()
+        } else {
+            kind.label()
+        };
+        ui.add(egui::Label::new(egui::RichText::new(visible).strong()).truncate())
+            .on_hover_text(title);
+    }
+
+    fn ribbon_record_slider(&mut self, ui: &mut egui::Ui) {
+        let count = self.document.result.rows.len();
+        let (row, column) = self.document.inspect.unwrap_or((0, 0));
+        let mut position = if count == 0 { 0 } else { (row + 1).min(count) };
+        let response = ui
+            .scope(|ui| {
+                ui.spacing_mut().slider_width = 140.0;
+                ui.add_enabled(
+                    count > 1,
+                    egui::Slider::new(&mut position, usize::from(count > 0)..=count)
+                        .step_by(1.0)
+                        .suffix(format!(" / {count}")),
+                )
+            })
+            .inner;
+        response.widget_info(|| {
+            egui::WidgetInfo::slider(
+                count > 1 && ui.is_enabled(),
+                position as f64,
+                "Record position",
+            )
+        });
+        let changed = response.changed();
+        response.on_hover_text("Move through loaded records while keeping the selected field. Drag the slider or enter a record number.");
+        if changed && count > 0 {
+            self.select_cell(position - 1, column, false);
+            self.document.tools.record_scroll_to = Some(column);
+        }
+    }
+
+    fn ribbon_field_selector(&mut self, ui: &mut egui::Ui, available: bool) {
+        let current = self.document.inspect.filter(|(row, col)| {
+            available
+                && self.document.result.rows.get(*row).is_some()
+                && self.document.result.columns.get(*col).is_some()
+        });
+        let mut selected = current.map(|(_, col)| col);
+        let mut chosen = false;
+        let name = selected
+            .and_then(|col| self.document.result.columns.get(col))
+            .map_or("Choose field", |column| column.name.as_str());
+        let response = ui
+            .add_enabled_ui(current.is_some(), |ui| {
+                egui::ComboBox::from_id_salt("record-field-selector")
+                    .selected_text(name)
+                    .width(ui.available_width())
+                    .truncate()
+                    .show_ui(ui, |ui| {
+                        ui.style_mut().override_font_id = None;
+                        ui.spacing_mut().interact_size.y = 28.0;
+                        for (col, column) in self.document.result.columns.iter().enumerate() {
+                            ui.push_id(col, |ui| {
+                                chosen |= ui
+                                    .selectable_value(&mut selected, Some(col), &column.name)
+                                    .clicked();
+                            });
+                        }
+                    })
+                    .response
+            })
+            .inner;
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::Role::ComboBox, current.is_some(), "Choose field")
+        });
+        response.on_hover_text(name);
+        if let (Some((row, _)), Some(col)) = (current, selected)
+            && chosen
+        {
+            self.open_cell(row, col);
+            self.document.tools.record_scroll_to = Some(col);
+        }
+    }
+
+    fn ribbon_table_selector(&mut self, ui: &mut egui::Ui, available: bool) {
+        let current = available.then(|| self.document.object.clone()).flatten();
+        let mut selected = current.clone();
+        let response = egui::ComboBox::from_id_salt("table-selector")
+            .selected_text(current.as_deref().unwrap_or("Choose table"))
+            .width(ui.available_width())
+            .truncate()
+            .show_ui(ui, |ui| {
+                ui.style_mut().override_font_id = None;
+                ui.spacing_mut().interact_size.y = 28.0;
+                let mut tables: Vec<_> = self
+                    .schema
+                    .iter()
+                    .filter(|object| matches!(object.kind.as_str(), "table" | "view"))
+                    .collect();
+                tables.sort_by(|a, b| a.name.cmp(&b.name));
+                for table in tables {
+                    ui.selectable_value(&mut selected, Some(table.name.clone()), &table.name)
+                        .on_hover_text(format!("{} · {}", table.name, table.kind));
+                }
+            })
+            .response;
+        response
+            .widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, true, "Choose table"));
+        response.on_hover_text(current.as_deref().unwrap_or("Choose a table to browse"));
+        if selected != current
+            && let Some(name) = selected
+        {
+            self.browse_table(name);
         }
     }
 }
@@ -497,7 +666,9 @@ impl Kind {
                 (Find, Icon::Search, "Find"),
                 (Refresh, Icon::Refresh, "Refresh schema"),
                 (SystemTables, Icon::System, "Toggle system tables"),
-                (Zoom100, Icon::Zoom100, "Reset zoom to 100%"),
+                (ZoomOut, Icon::Minimize, "Zoom out"),
+                (Zoom100, Icon::Fit, "Reset zoom to 100%"),
+                (ZoomIn, Icon::Plus, "Zoom in"),
             ],
             Kind::Sql => &[
                 (Run, Icon::Sql, "Run"),
@@ -557,7 +728,7 @@ mod tests {
         render(&mut app, vec![]);
         render(&mut app, vec![]);
         let (_, minimize, expand) = app.workspace.controls[0];
-        let pointer = egui::pos2(100.0, 50.0);
+        let pointer = egui::pos2(minimize.left() - 30.0, minimize.center().y);
         render(
             &mut app,
             vec![

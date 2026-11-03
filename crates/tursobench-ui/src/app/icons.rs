@@ -45,7 +45,6 @@ pub(super) enum Icon {
     Up,
     Down,
     Minimize,
-    Zoom100,
 }
 
 pub(super) fn button(ui: &mut egui::Ui, icon: Icon, name: &str, shortcut: &str) -> egui::Response {
@@ -53,6 +52,30 @@ pub(super) fn button(ui: &mut egui::Ui, icon: Icon, name: &str, shortcut: &str) 
 }
 
 pub(super) const RIBBON_BUTTON_SIZE: f32 = 56.0;
+pub(super) const RIBBON_TEXT_SIZE: f32 = 24.0;
+
+/// A quiet, accessible placeholder that stays centered in the visible tile body.
+pub(super) fn empty_state(ui: &mut egui::Ui, icon: Icon, description: &str) {
+    let rect = ui.available_rect_before_wrap().intersect(ui.clip_rect());
+    empty_state_at(ui, rect, icon, description);
+    ui.allocate_space(rect.size().max(egui::Vec2::ZERO));
+}
+
+pub(super) fn empty_state_at(ui: &mut egui::Ui, rect: egui::Rect, icon: Icon, description: &str) {
+    let size = (rect.width().min(rect.height()) - 16.0).clamp(0.0, 64.0);
+    if size <= 0.0 {
+        return;
+    }
+    let glyph = egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(size));
+    paint(ui.painter(), glyph, icon, ui.visuals().weak_text_color());
+    let response = ui.interact(
+        glyph,
+        ui.scope_id().with("empty-state"),
+        egui::Sense::hover(),
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, description));
+    response.on_hover_text(description);
+}
 
 /// Tile ribbons use twice the normal glyph, padding, and hit-target size.
 pub(super) fn ribbon_button(
@@ -154,15 +177,6 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
         }
         Up => line(&[(6., 15.), (12., 9.), (18., 15.)]),
         Minimize => line(&[(5., 12.), (19., 12.)]),
-        Zoom100 => {
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "100%",
-                egui::FontId::proportional(rect.height() * 0.45),
-                color,
-            );
-        }
         Down => line(&[(6., 9.), (12., 15.), (18., 9.)]),
         Search => {
             circle(10., 10., 7.);

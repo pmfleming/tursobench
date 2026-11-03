@@ -17,7 +17,9 @@ separate open-tile title bar, window dragging or divider resizing.
 - Ctrl Alt Enter expands/restores the focused tile. Ctrl Tab cycles the five tiles.
   Escape dismisses an active edit, popup or dialog before restoring expansion.
 - Tile ribbons expose actions directly with 32-point icons and 56-point buttons,
-  twice their previous size. Narrow ribbons scroll horizontally; actions never
+  twice their previous size. Titles, object names and text controls use a consistent
+  24-point base size on the same horizontal line as the icons. A subtle divider separates
+  each header from its contents. Narrow ribbons scroll horizontally; actions never
   collapse into a More menu. Column visibility and open SQL editors have dedicated
   selectors. Tile navigation is not repeated in each ribbon. Restore all tiles
   appears only when a tile is minimized or expanded; review appears in Data and
@@ -28,6 +30,17 @@ separate open-tile title bar, window dragging or divider resizing.
 - The SQL ribbon includes a Results group for copying, exporting, fitting and
   selecting result columns, and inspecting the selected result record. These
   controls act on that editor's result buffer, not on the table-data tile.
+- The Table data header shows the current table name in a dropdown. Choosing a
+  table or view browses it directly using the same navigation and draft protections
+  as the database navigator.
+- The Record header selects any field, including columns hidden in the table grid.
+  It scrolls to and highlights the chosen value while keeping the current row and drafts.
+  Its position slider moves through loaded records while retaining that field, with a
+  current/total readout that also accepts a record number. Empty and single-row results
+  disable the slider; navigating does not discard staged edits or fetch extra rows.
+- Relationships has zoom out and zoom in controls around the live zoom percentage.
+  Each click changes the scale by a factor of 1.25 while keeping the map's center
+  fixed. Click the percentage to reset to 100%; Fit relationships still fits all nodes.
 - The navigator footer opens Tables, History, Saved queries, Checks and Settings
   in the left panel. Query cards use icon actions; checks and preferences use
   compact groups. F1 opens Help. The database name opens recent databases and
@@ -106,6 +119,11 @@ Native captures use synthetic data: [laptop dark](assets/ui/v6/laptop-dark.png),
 [laptop light](assets/ui/v6/laptop-light.png), [minimized tiles](assets/ui/v6/minimized-tiles.png),
 [expanded relationships](assets/ui/v6/expanded-map.png) and
 [widescreen](assets/ui/v6/widescreen.png).
+
+Settings sections, including Discovery, stay expanded. Appearance provides direct
+font-size decrease/increase buttons, a numeric input (10–20 pt, default 14), and
+reset. Changes apply immediately and persist, scaling text in native controls, tile titles,
+table text, SQL and diagram labels together; measured column widths refresh as needed.
 
 ## Validation
 

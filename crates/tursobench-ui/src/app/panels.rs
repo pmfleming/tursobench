@@ -38,6 +38,54 @@ impl App {
                 }
                 ui.weak("Aa").on_hover_text(&self.ui.font_label);
             });
+            let before = self.preferences.font_size;
+            ui.horizontal(|ui| {
+                ui.label("Font size");
+                if icons::button(ui, Icon::Undo, "Reset font size", "").clicked() {
+                    self.preferences.font_size = 14;
+                }
+            });
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled_ui(self.preferences.font_size > 10, |ui| {
+                        icons::button(ui, Icon::Minimize, "Decrease font size", "")
+                    })
+                    .inner
+                    .clicked()
+                {
+                    self.preferences.font_size -= 1;
+                }
+                let size = ui.add(
+                    egui::DragValue::new(&mut self.preferences.font_size)
+                        .range(10..=20)
+                        .suffix(" pt"),
+                );
+                size.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::Role::SpinButton, true, "Font size")
+                });
+                size.on_hover_text("Type or drag to change text size");
+                if ui
+                    .add_enabled_ui(self.preferences.font_size < 20, |ui| {
+                        icons::button(ui, Icon::Plus, "Increase font size", "")
+                    })
+                    .inner
+                    .clicked()
+                {
+                    self.preferences.font_size += 1;
+                }
+            });
+            if before != self.preferences.font_size {
+                self.apply_theme(ui.ctx());
+                for document in
+                    std::iter::once(&mut self.document).chain(self.documents.values_mut())
+                {
+                    document.tools.columns.refit = true;
+                    for columns in document.tools.column_layouts.values_mut() {
+                        columns.refit = true;
+                    }
+                }
+                self.store.save(&self.preferences);
+            }
         });
         section(ui, "Queries", |ui| {
             setting(ui, "Rows", "Maximum retained query rows", |ui| {
@@ -77,7 +125,7 @@ impl App {
                 },
             );
         });
-        egui::CollapsingHeader::new("Discovery").show(ui, |ui| {
+        section(ui, "Discovery", |ui| {
             self.discovery_settings_ui(ui);
             if let Some(message) = &self.databases.message {
                 ui.label(message);
@@ -518,6 +566,45 @@ mod tests {
                 ],
             );
         }
+    }
+
+    #[test]
+    fn settings_expose_discovery_and_font_controls_and_apply_size_without_drift() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut app = App::new(&ctx);
+        let output = frame(&mut app, &ctx, ToolPanel::Settings, 240.0, vec![]);
+        for name in [
+            "Search folder path",
+            "Excluded folder path",
+            "Refresh databases",
+            "Decrease font size",
+            "Increase font size",
+            "Reset font size",
+        ] {
+            button(&output, name);
+        }
+        click(&mut app, &ctx, ToolPanel::Settings, "Increase font size");
+        assert_eq!(app.preferences.font_size, 15);
+        assert_eq!(
+            ctx.global_style().text_styles[&egui::TextStyle::Body].size,
+            15.0
+        );
+        assert!(app.document.tools.columns.refit);
+        let larger = crate::appearance::monospace(&ctx, 12.0).size;
+        assert!(larger > 12.0);
+        for mode in [Mode::Light, Mode::Dark, Mode::System] {
+            app.preferences.appearance = Some(mode);
+            app.apply_theme(&ctx);
+            app.apply_theme(&ctx);
+            assert_eq!(crate::appearance::monospace(&ctx, 12.0).size, larger);
+        }
+        click(&mut app, &ctx, ToolPanel::Settings, "Decrease font size");
+        assert_eq!(app.preferences.font_size, 14);
+        click(&mut app, &ctx, ToolPanel::Settings, "Increase font size");
+        click(&mut app, &ctx, ToolPanel::Settings, "Reset font size");
+        assert_eq!(app.preferences.font_size, 14);
+        assert_eq!(crate::appearance::monospace(&ctx, 12.0).size, 12.0);
     }
 
     #[test]

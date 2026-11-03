@@ -90,8 +90,11 @@ impl App {
         self.apply_theme(ctx);
     }
     pub(super) fn apply_theme(&mut self, ctx: &egui::Context) {
-        self.appearance
-            .update(ctx, self.preferences.appearance.unwrap_or_default());
+        self.appearance.update(
+            ctx,
+            self.preferences.appearance.unwrap_or_default(),
+            self.preferences.font_size,
+        );
     }
     pub fn new(ctx: &egui::Context) -> Self {
         let wake = ctx.clone();

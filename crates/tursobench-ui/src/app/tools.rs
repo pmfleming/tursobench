@@ -85,6 +85,7 @@ pub(super) struct ViewTools {
     pub grid_focus: Option<eframe::egui::Id>,
     pub dragging_selection: bool,
     pub scroll_to_cell: bool,
+    pub record_scroll_to: Option<usize>,
     pub inline: Option<super::selection::InlineEdit>,
     pub columns: super::columns::Columns,
     pub column_scope: String,

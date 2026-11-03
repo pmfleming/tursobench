@@ -1,22 +1,12 @@
 TursoBench app icon
 
-Canonical runtime asset: tursobench.png (512 × 512).
+Canonical runtime asset: tursobench.png (512 × 512, transparent PNG).
 tursobench.svg embeds the same PNG for icon-theme compatibility; it is not a vector tracing.
-The README banner embeds this mark as well.
+The README header embeds the canonical PNG in docs/assets/tursobench-banner-v6.svg.
 
-Approved design: icon-options/12-taller-database.png (1254 × 1254).
-An emerald Muirdris with a wider neck, a taller database body, a slightly overlapping head, and a curled tail.
-Generated with the built-in image generation tool, then resized with Inkscape.
-
-Final edit prompt: icon-options/12-taller-database-prompt.txt
-
-Created with the built-in image generation tool.
-Reference: packaging/icon-options/11-flat-neck.png
-
-Use case: precise-object-edit.
-Edit this approved flat green Muirdris/database icon with ONLY these three proportional adjustments:
-1. Widen the short neck beneath the jaw by approximately 25 percent. Keep the clear connection underneath the jaw, and keep the dark indentation separating the back of the skull from the neck. The body must NOT join the eyebrow or forehead.
-2. Increase the HEIGHT of the cylindrical database/body stack approximately 20 percent by raising its top ellipse upward while keeping its bottom and curled tail approximately in their current positions. Keep the database WIDTH unchanged. Stretch the existing three broad cylindrical tiers proportionately; retain the two dark horizontal separators. Do not add extra tiers or coils.
-3. Have the existing head overlap the raised database's upper-right edge slightly. The head is IN FRONT of the top-right rim, obscuring a small portion of it. Keep the head approximately the same size and position; move it a little inward only if needed. This should form a compact connected silhouette, not a head floating above the storage icon. Keep facial features unobstructed.
-
-Preserve the face, eyes, ridged muzzle, two crest fins, large curled tail below the cylinder, rounded-square dark-green tile, palette and clean relatively flat style. Smooth coherent contours with one unbranched body. Keep evergreen background, emerald tiers and pale mint face/neck/tail. No glow, gloss, gradients, textures, shadows, added decorations or text. ONE finished PNG icon.
+Approved project icon going forward: icon-options/13-transparent.png (1254 × 1254).
+Earlier design reference: icon-options/12-taller-database.png.
+Background removed with the built-in image generation tool; resized with Inkscape.
+The surrounding background and open oval/tail spaces are transparent.
+Dark facial marks and database tier separators remain opaque design details.
+Background-removal prompt: icon-options/13-transparent-prompt.txt.

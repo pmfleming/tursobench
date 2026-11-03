@@ -178,6 +178,7 @@ impl App {
         }
         let mut inspect = None;
         let mut edit = None;
+        let scroll_to = self.document.tools.record_scroll_to.take();
         if let Some(values) = self.document.result.rows.get(row) {
             egui::Grid::new("compact-record")
                 .num_columns(2)
@@ -185,10 +186,13 @@ impl App {
                 .show(ui, |ui| {
                     for (col, value) in values.iter().enumerate() {
                         let name = &self.document.result.columns[col].name;
-                        ui.add_sized(
+                        let label = ui.add_sized(
                             [100.0, 25.0],
                             egui::Label::new(egui::RichText::new(name).monospace()).truncate(),
                         );
+                        if scroll_to == Some(col) {
+                            label.scroll_to_me(Some(egui::Align::Center));
+                        }
                         let shown = self
                             .document
                             .drafts
@@ -217,6 +221,7 @@ impl App {
                                     egui::Button::new(
                                         egui::RichText::new(shown.preview()).monospace(),
                                     )
+                                    .selected(self.document.inspect == Some((row, col)))
                                     .frame_when_inactive(false)
                                     .truncate(),
                                 )

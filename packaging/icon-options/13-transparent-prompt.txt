@@ -1,0 +1,6 @@
+Created with the built-in image generation tool.
+Source: packaging/icon-options/12-taller-database.png
+
+Extract ONLY the mint-and-emerald mascot from the reference onto a transparent background. Keep its shape and face exactly the same.
+CRITICAL MATTING: the input has a dark green background; do NOT preserve or sample any of that background. Rebuild every background region as clean neutral WHITE in the working matte, then make that white background fully transparent in the final PNG. This is a white-matted transparent cutout, never a green-screen or cyan-screen cutout. No cyan pixels, no green spill, no colored noise. Fully transparent holes in the ellipse at the top and the tail curl. The two horizontal dark separators between database tiers may remain solid dark evergreen as intentional logo details. Keep the eyes and other dark facial details fully opaque. Preserve all the actual mint/emerald artwork, short broad neck and original size, pose and exact proportions.
+Deliver a production-quality transparent PNG with smooth antialiased edges and NO visible backdrop, rounded tile, glow, colored fringe, speckle, texture or cast shadow.

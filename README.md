@@ -1,6 +1,6 @@
 <p align="center">
   <a href="packaging/tursobench.png">
-    <img src="docs/assets/tursobench-banner-v6.png" alt="TursoBench with the current Muirdris app logo" width="960">
+    <img src="docs/assets/tursobench-banner-v6.png" alt="TursoBench — Muirdris app icon. ‘Shut your eyes and see.’ — James Joyce, Ulysses." width="960">
   </a>
 </p>
 

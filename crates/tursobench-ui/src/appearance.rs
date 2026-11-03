@@ -26,7 +26,7 @@ pub struct Palette {
 pub struct Appearance {
     pub palette: Palette,
     rx: Option<Receiver<Palette>>,
-    applied: Option<(Mode, bool, Palette)>,
+    applied: Option<(Mode, bool, Palette, u16)>,
 }
 impl Appearance {
     pub fn new(ctx: &egui::Context, observe: bool) -> Self {
@@ -36,7 +36,7 @@ impl Appearance {
             applied: None,
         }
     }
-    pub fn update(&mut self, ctx: &egui::Context, mode: Mode) {
+    pub fn update(&mut self, ctx: &egui::Context, mode: Mode, font_size: u16) {
         if let Some(rx) = &self.rx {
             while let Ok(palette) = rx.try_recv() {
                 self.palette = palette;
@@ -49,9 +49,21 @@ impl Appearance {
             Mode::Dark => true,
             Mode::Light => false,
         };
-        let next = (mode, dark, self.palette.clone());
+        let next = (mode, dark, self.palette.clone(), font_size);
         if self.applied.as_ref() != Some(&next) {
             apply(ctx, dark, &self.palette);
+            ctx.style_mut_of(
+                if dark {
+                    egui::Theme::Dark
+                } else {
+                    egui::Theme::Light
+                },
+                |style| {
+                    for font in style.text_styles.values_mut() {
+                        font.size *= f32::from(font_size.clamp(10, 20)) / 14.0;
+                    }
+                },
+            );
             self.applied = Some(next);
         }
     }
@@ -150,6 +162,7 @@ fn apply(ctx: &egui::Context, dark: bool, palette: &Palette) {
     ctx.set_theme(theme);
     ctx.set_visuals(visuals);
     ctx.style_mut_of(theme, |s| {
+        s.text_styles = egui::Style::default().text_styles;
         s.spacing.item_spacing = egui::vec2(7.0, 6.0);
         s.spacing.button_padding = egui::vec2(9.0, 5.0);
         s.text_styles
@@ -159,6 +172,19 @@ fn apply(ctx: &egui::Context, dark: bool, palette: &Palette) {
         s.text_styles
             .insert(egui::TextStyle::Small, egui::FontId::proportional(12.0));
     });
+}
+
+/// Custom-painted text follows the same size preference as native egui widgets.
+pub fn text_size(ctx: &egui::Context, base: f32) -> f32 {
+    base * ctx.global_style().text_styles[&egui::TextStyle::Body].size / 14.0
+}
+
+pub fn proportional(ctx: &egui::Context, base: f32) -> egui::FontId {
+    egui::FontId::proportional(text_size(ctx, base))
+}
+
+pub fn monospace(ctx: &egui::Context, base: f32) -> egui::FontId {
+    egui::FontId::monospace(text_size(ctx, base))
 }
 #[cfg(test)]
 pub fn theme(ctx: &egui::Context, dark: bool) {

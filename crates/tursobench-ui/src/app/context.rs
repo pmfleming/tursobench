@@ -1,4 +1,7 @@
-use super::{App, View};
+use super::{
+    App, View,
+    icons::{self, Icon},
+};
 use eframe::egui;
 use std::collections::VecDeque;
 use tursobench_core::{Delivery, Event, EventKind, ForeignKey, ResultSet, Ticket, Value};
@@ -283,7 +286,9 @@ impl App {
         }
         let keys = self.incoming_keys();
         if keys.is_empty() {
-            ui.weak("No declared incoming relationships");
+            let (rect, _) = ui
+                .allocate_exact_size(egui::vec2(ui.available_width(), 56.0), egui::Sense::hover());
+            icons::empty_state_at(ui, rect, Icon::Link, "No declared incoming relationships");
         }
         for (child, key) in keys {
             let spec = self.relationship_read(row, &child, &key, ReadKind::Count);

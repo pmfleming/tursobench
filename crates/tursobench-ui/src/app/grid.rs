@@ -81,7 +81,9 @@ impl App {
             .horizontal_scroll_offset(restore.map_or(self.document.tools.grid_scroll.x, |s| s.x))
             .id_salt("result-columns")
             .show(ui, |ui| {
-                self.grid_header(ui);
+                if !self.document.result.columns.is_empty() {
+                    self.grid_header(ui);
+                }
                 let vertical = egui::ScrollArea::vertical()
                     .vertical_scroll_offset(
                         restore.map_or(self.document.tools.grid_scroll.y, |s| s.y),
@@ -144,7 +146,7 @@ impl App {
             }
             None => {}
         }
-        if self.workspace.enabled {
+        if self.workspace.enabled && !self.document.result.rows.is_empty() {
             let start = self.document.browse.as_ref().map_or(0, |b| b.offset);
             let count = self.document.result.rows.len();
             let range = if count == 0 {
@@ -207,12 +209,8 @@ impl App {
                 &self.document.tools.inspection_error,
             );
         }
-        if self.document.result.columns.is_empty() && self.document.active.is_none() {
-            ui.label(
-                "No retained row result. Browse a table, run SQL, or choose a read-only check.",
-            );
-        } else if self.document.result.rows.is_empty() && self.document.active.is_none() {
-            ui.label("No rows in this page or lookup.");
+        if self.document.result.rows.is_empty() && self.document.active.is_none() {
+            icons::empty_state(ui, Icon::Data, "No rows to display");
         }
     }
     fn grid_header(&mut self, ui: &mut egui::Ui) {
@@ -236,7 +234,7 @@ impl App {
                     for (show,icon) in [(pk>0,Icon::Key),(foreign,Icon::Link)] {
                         if show { icons::paint(&painter,egui::Rect::from_min_size(egui::pos2(left,rect.center().y-6.0),egui::vec2(12.0,12.0)),icon,if foreign{ui.visuals().hyperlink_color}else{ui.visuals().warn_fg_color});left+=15.0; }
                     }
-                    painter.with_clip_rect(egui::Rect::from_min_max(rect.min,egui::pos2(rect.right()-if sorted.is_empty(){28.0}else{44.0},rect.bottom())).intersect(ui.clip_rect())).text(egui::pos2(left,rect.center().y),egui::Align2::LEFT_CENTER,&column.name,egui::FontId::proportional(12.0),ui.visuals().text_color());
+                    painter.with_clip_rect(egui::Rect::from_min_max(rect.min,egui::pos2(rect.right()-if sorted.is_empty(){28.0}else{44.0},rect.bottom())).intersect(ui.clip_rect())).text(egui::pos2(left,rect.center().y),egui::Align2::LEFT_CENTER,&column.name,crate::appearance::proportional(ui.ctx(), 12.0),ui.visuals().text_color());
                     if !sorted.is_empty(){icons::paint(&painter,egui::Rect::from_min_size(rect.right_top()+egui::vec2(-47.0,8.0),egui::vec2(12.0,12.0)),if self.document.browse.as_ref().is_some_and(|b|b.descending){Icon::Down}else{Icon::Up},ui.visuals().selection.stroke.color);}
                     let response=response.on_hover_text(format!("{} · {}\nPK = key position; IX = declared leading index; FK = foreign key. Index method/partial predicate may not apply. Drag the right edge or right-click to resize.",column.name,column.declared_type.as_deref().unwrap_or("runtime type")));
                     response.context_menu(|ui|{
@@ -426,8 +424,11 @@ impl App {
         } else {
             ui.visuals().text_color()
         };
-        let mut job =
-            egui::text::LayoutJob::simple_singleline(text, egui::FontId::monospace(12.0), color);
+        let mut job = egui::text::LayoutJob::simple_singleline(
+            text,
+            crate::appearance::monospace(ui.ctx(), 12.0),
+            color,
+        );
         job.wrap.max_width = (rect.width() - 14.0).max(1.0);
         job.wrap.max_rows = 1;
         job.wrap.break_anywhere = true;

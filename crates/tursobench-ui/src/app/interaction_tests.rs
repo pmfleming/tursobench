@@ -395,13 +395,26 @@ fn diagram_preserves_drafts_and_result_ownership_and_chrome_fits_both_themes() {
                 );
             }
             for (_, minimize, expand) in &app.workspace.controls {
+                assert!((minimize.center().y - expand.center().y).abs() < 1.0);
                 assert!(
                     app.workspace
                         .pane_rects
                         .iter()
                         .any(|(_, tile)| tile.contains_rect(*minimize)
-                            && tile.contains_rect(*expand))
+                            && tile.contains_rect(*expand)),
+                    "controls outside tile at {width}x{height}: {minimize:?}, {expand:?}; {:?}",
+                    app.workspace.pane_rects
                 );
+                for action in &app.ui.ribbon_actions {
+                    if app.workspace.pane_rects.iter().any(|(_, tile)| {
+                        tile.contains_rect(*minimize) && tile.contains_rect(*action)
+                    }) {
+                        assert!(
+                            (action.center().y - minimize.center().y).abs() < 1.0,
+                            "header controls must share one horizontal line: {action:?}, {minimize:?}"
+                        );
+                    }
+                }
             }
             for (_, rect) in &app.workspace.tiles {
                 assert!(app.workspace.area.contains_rect(*rect));
@@ -1952,6 +1965,175 @@ fn automatic_map_fit_keeps_every_node_inside_its_resized_tile() {
 }
 
 #[test]
+fn record_slider_moves_between_loaded_rows_and_keeps_field_and_drafts() {
+    let (_dir, ctx, mut app) = fixture(
+        &[
+            "CREATE TABLE sample(id INTEGER PRIMARY KEY, body TEXT)",
+            "INSERT INTO sample VALUES(1,'first'),(2,'second'),(3,'third')",
+        ],
+        true,
+    );
+    ctx.enable_accesskit();
+    app.browse_table("sample".into());
+    wait(&mut app, &ctx);
+    app.open_record_window(0, 1);
+    app.stage_cell(0, 1, Value::Text("unsaved".into()));
+    app.expand_pane(tiling::Kind::Record);
+    let sequence = app.sequence;
+    let ticket = app.document.result.current;
+    for (x_offset, row, value) in [(139.0, 2, "third"), (1.0, 0, "first")] {
+        frame(&mut app, &ctx, vec![]);
+        let output = frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
+        let tree = output.platform_output.accesskit_update.unwrap();
+        let bounds = tree
+            .nodes
+            .iter()
+            .find_map(|(_, node)| {
+                (node.label() == Some("Record position"))
+                    .then(|| node.bounds())
+                    .flatten()
+            })
+            .expect("record slider");
+        click(
+            &mut app,
+            &ctx,
+            egui::pos2(
+                bounds.x0 as f32 + x_offset,
+                (bounds.y0 + bounds.y1) as f32 / 2.0,
+            ),
+        );
+        assert_eq!(app.document.inspect, Some((row, 1)));
+        assert_eq!(app.document.tools.detail, Some(row));
+        assert_eq!(app.document.tools.cell_editor.input, value);
+        assert!(app.document.has_drafts());
+        assert_eq!(app.document.result.current, ticket);
+        assert_eq!(app.sequence, sequence, "slider must not fetch more rows");
+    }
+    app.close();
+}
+
+#[test]
+fn record_header_selects_hidden_fields_without_changing_row_or_drafts() {
+    let columns = (0..12)
+        .map(|i| format!("field_{i} INTEGER"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let values = (0..12).map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+    let (_dir, ctx, mut app) = fixture(
+        &[
+            &format!("CREATE TABLE sample(id INTEGER PRIMARY KEY,{columns})"),
+            &format!("INSERT INTO sample VALUES(1,{values}),(2,{values})"),
+        ],
+        true,
+    );
+    ctx.enable_accesskit();
+    app.browse_table("sample".into());
+    wait(&mut app, &ctx);
+    app.open_record_window(1, 0);
+    frame(&mut app, &ctx, vec![]);
+    app.stage_cell(1, 2, Value::Integer(999));
+    app.document.tools.columns.hidden.insert(5);
+    let ticket = app.document.result.current;
+    for label in ["Choose field", "field_4"] {
+        frame(&mut app, &ctx, vec![]);
+        let output = frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
+        let left = app
+            .workspace
+            .pane_rects
+            .iter()
+            .find(|(kind, _)| *kind == tiling::Kind::Record)
+            .unwrap()
+            .1
+            .left();
+        let tree = output.platform_output.accesskit_update.unwrap();
+        let bounds = tree
+            .nodes
+            .iter()
+            .rev()
+            .find_map(|(_, node)| {
+                node.bounds()
+                    .filter(|bounds| node.label() == Some(label) && bounds.x0 >= f64::from(left))
+            })
+            .unwrap_or_else(|| panic!("Missing field selector control: {label}"));
+        click(
+            &mut app,
+            &ctx,
+            egui::pos2(
+                (bounds.x0 + bounds.x1) as f32 / 2.0,
+                (bounds.y0 + bounds.y1) as f32 / 2.0,
+            ),
+        );
+    }
+    assert_eq!(app.document.inspect, Some((1, 5)));
+    assert_eq!(app.document.result.current, ticket);
+    assert!(app.document.has_drafts());
+    assert!(app.document.tools.columns.hidden.contains(&5));
+    assert_eq!(app.document.tools.cell_editor.input, "4");
+    assert!(
+        app.document.tools.record_scroll_to.is_none(),
+        "record consumed the scroll request"
+    );
+    app.close();
+}
+
+#[test]
+fn table_header_selector_browses_tables_and_views_and_protects_drafts() {
+    let (_dir, ctx, mut app) = fixture(
+        &[
+            "CREATE TABLE first_table(id INTEGER PRIMARY KEY, body TEXT)",
+            "INSERT INTO first_table VALUES(1, 'first')",
+            "CREATE TABLE second_table(id INTEGER PRIMARY KEY, body TEXT)",
+            "INSERT INTO second_table VALUES(2, 'second')",
+            "CREATE VIEW table_view AS SELECT * FROM second_table",
+        ],
+        true,
+    );
+    ctx.enable_accesskit();
+    app.browse_table("first_table".into());
+    wait(&mut app, &ctx);
+    let first_id = app.document.id;
+    let choose = |app: &mut App, name: &str| {
+        for label in ["Choose table", name] {
+            frame(app, &ctx, vec![]);
+            let output = frame_at(app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
+            let tree = output.platform_output.accesskit_update.unwrap();
+            let bounds = tree
+                .nodes
+                .iter()
+                .find_map(|(_, node)| {
+                    node.bounds().filter(|bounds| {
+                        node.label() == Some(label)
+                            && bounds.x0 >= f64::from(app.workspace.area.left())
+                    })
+                })
+                .unwrap_or_else(|| panic!("Missing table selector control: {label}"));
+            click(
+                app,
+                &ctx,
+                egui::pos2(
+                    (bounds.x0 + bounds.x1) as f32 / 2.0,
+                    (bounds.y0 + bounds.y1) as f32 / 2.0,
+                ),
+            );
+        }
+        wait(app, &ctx);
+    };
+    for name in ["second_table", "table_view", "first_table"] {
+        choose(&mut app, name);
+        assert_eq!(app.document.object.as_deref(), Some(name));
+        assert_eq!(app.document.result.rows.len(), 1);
+        assert_eq!(app.pane_document(tiling::Kind::Data), Some(app.document.id));
+    }
+    assert_eq!(app.document.id, first_id);
+    app.stage_cell(0, 1, Value::Text("unsaved".into()));
+    choose(&mut app, "second_table");
+    assert_eq!(app.document.id, first_id);
+    assert!(app.document.has_drafts());
+    assert!(app.status.contains("Commit or discard drafts"));
+    app.close();
+}
+
+#[test]
 fn fixed_panes_preserve_drafts_selection_and_results_through_layout_changes() {
     let (_dir, ctx, mut app) = fixture(
         &[
@@ -2057,6 +2239,8 @@ fn every_tile_exposes_its_actions_without_an_overflow_menu() {
                 "Refresh schema",
                 "Toggle system tables",
                 "Reset zoom to 100%",
+                "Zoom out",
+                "Zoom in",
             ],
         ),
         (
@@ -2240,5 +2424,48 @@ fn sql_result_ribbon_actions_use_the_linked_result_not_the_editor_or_table() {
         app.document_ref(editor).unwrap().sql,
         "SELECT 42 AS answer, 'retained' AS text"
     );
+    app.close();
+}
+
+#[test]
+fn relationship_zoom_buttons_change_scale_and_percentage_resets_it() {
+    let (_dir, ctx, mut app) = fixture(&["CREATE TABLE sample(id INTEGER PRIMARY KEY)"], false);
+    app.expand_pane(tiling::Kind::Map);
+    ctx.enable_accesskit();
+    let press = |app: &mut App, label: &str| {
+        frame(app, &ctx, vec![]);
+        let output = frame_at(app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
+        let tree = output.platform_output.accesskit_update.unwrap();
+        let bounds = tree
+            .nodes
+            .iter()
+            .find_map(|(_, node)| {
+                (node.label() == Some(label))
+                    .then(|| node.bounds())
+                    .flatten()
+            })
+            .unwrap_or_else(|| panic!("missing zoom control: {label}"));
+        click(
+            app,
+            &ctx,
+            egui::pos2(
+                (bounds.x0 + bounds.x1) as f32 / 2.0,
+                (bounds.y0 + bounds.y1) as f32 / 2.0,
+            ),
+        );
+    };
+    press(&mut app, "Reset zoom to 100%");
+    assert_eq!(app.ui.diagram.zoom, 1.0);
+    press(&mut app, "Zoom in");
+    assert_eq!(app.ui.diagram.zoom, 1.25);
+    let output = frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
+    assert!(output.shapes.iter().any(|s| matches!(&s.shape,
+        egui::Shape::Text(t) if t.galley.job.text == "125%")));
+    press(&mut app, "Zoom out");
+    assert_eq!(app.ui.diagram.zoom, 1.0);
+    press(&mut app, "Zoom out");
+    assert_eq!(app.ui.diagram.zoom, 0.8);
+    press(&mut app, "Reset zoom to 100%");
+    assert_eq!(app.ui.diagram.zoom, 1.0);
     app.close();
 }

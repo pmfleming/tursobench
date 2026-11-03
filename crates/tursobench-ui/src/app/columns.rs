@@ -113,7 +113,7 @@ impl App {
                         .painter()
                         .layout_no_wrap(
                             col.name.clone(),
-                            egui::FontId::proportional(12.0),
+                            crate::appearance::proportional(ui.ctx(), 12.0),
                             ui.visuals().text_color(),
                         )
                         .size()
@@ -141,7 +141,7 @@ impl App {
                             ui.painter()
                                 .layout_no_wrap(
                                     v.preview(),
-                                    egui::FontId::monospace(12.0),
+                                    crate::appearance::monospace(ui.ctx(), 12.0),
                                     ui.visuals().text_color(),
                                 )
                                 .size()

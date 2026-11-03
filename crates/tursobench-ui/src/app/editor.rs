@@ -78,7 +78,7 @@ fn highlighted(ui: &egui::Ui, text: &str, width: f32) -> std::sync::Arc<egui::Ga
             text,
             0.0,
             egui::TextFormat {
-                font_id: egui::FontId::monospace(14.0),
+                font_id: crate::appearance::monospace(ui.ctx(), 14.0),
                 color: plain,
                 ..Default::default()
             },
@@ -96,7 +96,7 @@ fn highlighted(ui: &egui::Ui, text: &str, width: f32) -> std::sync::Arc<egui::Ga
                 &text[token.range],
                 0.0,
                 egui::TextFormat {
-                    font_id: egui::FontId::monospace(14.0),
+                    font_id: crate::appearance::monospace(ui.ctx(), 14.0),
                     color,
                     ..Default::default()
                 },
@@ -275,16 +275,31 @@ impl App {
                 (ui.ctx().content_rect().height() * 0.35).clamp(100.0, 400.0)
             })
             .show(ui, |ui| {
+                let empty_size = if self.workspace.enabled && self.document.sql.is_empty() {
+                    ui.available_rect_before_wrap()
+                        .intersect(ui.clip_rect())
+                        .size()
+                } else {
+                    egui::Vec2::ZERO
+                };
                 egui::TextEdit::multiline(&mut self.document.sql)
                     .id_salt("sql-editor")
                     .code_editor()
-                    .hint_text("Write SQL…  Ctrl Enter to run")
+                    .min_size(empty_size)
                     .desired_rows(5)
                     .desired_width(f32::INFINITY)
                     .layouter(&mut layouter)
                     .show(ui)
             })
             .inner;
+        if self.document.sql.is_empty() && !output.response.has_focus() {
+            icons::empty_state_at(
+                ui,
+                output.response.rect.intersect(ui.clip_rect()),
+                Icon::Sql,
+                "Write SQL · Ctrl Enter to run",
+            );
+        }
         self.document.tools.sql_focus = Some(output.response.id);
         if let Some(cursor) = output.cursor_range {
             let range = cursor.as_sorted_char_range();
