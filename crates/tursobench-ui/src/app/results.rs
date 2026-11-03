@@ -52,6 +52,58 @@ impl CellKind {
         })
     }
 }
+#[derive(Default)]
+pub(super) struct CellEditor {
+    pub kind: CellKind,
+    pub input: String,
+}
+impl CellEditor {
+    pub fn new(value: &Value) -> Self {
+        Self {
+            kind: match value {
+                Value::Null => CellKind::Null,
+                Value::Integer(_) => CellKind::Integer,
+                Value::Real(_) => CellKind::Real,
+                Value::Text(_) => CellKind::Text,
+                Value::Blob(_) => CellKind::Blob,
+            },
+            input: match value {
+                Value::Null => String::new(),
+                Value::Blob(b) => export::hex(b),
+                _ => export::cell_text(value),
+            },
+        }
+    }
+    pub fn inline(value: &Value) -> Option<Self> {
+        (!matches!(value, Value::Blob(_)) && value.bytes() <= 4096).then(|| Self::new(value))
+    }
+    pub fn parse(&self) -> Result<Value, String> {
+        self.kind.parse(&self.input)
+    }
+    pub fn type_picker(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: impl std::hash::Hash + std::fmt::Debug,
+        blobs: bool,
+    ) {
+        egui::ComboBox::from_id_salt(id)
+            .selected_text(self.kind.label())
+            .show_ui(ui, |ui| {
+                for kind in [
+                    CellKind::Null,
+                    CellKind::Integer,
+                    CellKind::Real,
+                    CellKind::Text,
+                    CellKind::Blob,
+                ]
+                .into_iter()
+                .filter(|k| blobs || *k != CellKind::Blob)
+                {
+                    ui.selectable_value(&mut self.kind, kind, kind.label());
+                }
+            });
+    }
+}
 pub(super) fn code_view(ui: &mut egui::Ui, mut text: &str, rows: usize) {
     ui.add(
         egui::TextEdit::multiline(&mut text)
@@ -185,24 +237,13 @@ impl App {
             self.document.inspect = Some((row, column));
             self.document.ui.inspector = shell::DetailMode::Cell;
             self.document.ui.inspector_open = true;
-            self.document.tools.cell_kind = match value {
-                Value::Null => CellKind::Null,
-                Value::Integer(_) => CellKind::Integer,
-                Value::Real(_) => CellKind::Real,
-                Value::Text(_) => CellKind::Text,
-                Value::Blob(_) => CellKind::Blob,
-            };
-            self.document.tools.cell_input = match value {
-                Value::Null => String::new(),
-                Value::Blob(b) => export::hex(b),
-                _ => export::cell_text(value),
-            };
+            self.document.tools.cell_editor = CellEditor::new(value);
         }
     }
 }
 #[cfg(test)]
 mod tests {
-    use super::{CellKind, Value, detail_text, export};
+    use super::{CellEditor, CellKind, Value, detail_text, export};
     #[test]
     fn json_detail_preserves_raw_numbers_duplicate_keys_and_string_tokens() {
         let raw = r#"{"n":123456789012345678901,"n":1,"s":"a\\\"b","empty":[]}"#;
@@ -215,16 +256,42 @@ mod tests {
     }
     #[test]
     fn cell_form_keeps_explicit_types() {
-        assert_eq!(
-            CellKind::Text.parse("001").unwrap(),
-            Value::Text("001".into())
-        );
-        assert_eq!(
-            CellKind::Blob.parse("00 ff").unwrap(),
-            Value::Blob(vec![0, 255])
-        );
-        assert!(CellKind::Blob.parse("λ").is_err());
-        assert!(CellKind::Integer.parse("9223372036854775808").is_err());
-        assert!(CellKind::Real.parse("NaN").is_err());
+        for value in [
+            Value::Null,
+            Value::Integer(i64::MIN),
+            Value::Real(-1.25),
+            Value::Text("001λ".into()),
+            Value::Blob(vec![0, 255]),
+        ] {
+            let editor = CellEditor::new(&value);
+            assert_eq!(editor.parse().unwrap(), value);
+            assert_eq!(
+                CellEditor::inline(&value).is_some(),
+                !matches!(value, Value::Blob(_))
+            );
+        }
+        let overhead = Value::Text(String::new()).bytes();
+        for (len, allowed) in [(4096 - overhead, true), (4097 - overhead, false)] {
+            assert_eq!(
+                CellEditor::inline(&Value::Text("a".repeat(len))).is_some(),
+                allowed
+            );
+        }
+        for (kind, input, expected) in [
+            (CellKind::Text, "001", Value::Text("001".into())),
+            (CellKind::Blob, "00 ff", Value::Blob(vec![0, 255])),
+            (CellKind::Null, "ignored", Value::Null),
+        ] {
+            assert_eq!(kind.parse(input).unwrap(), expected);
+        }
+        for (kind, input) in [
+            (CellKind::Blob, "λ"),
+            (CellKind::Blob, "0"),
+            (CellKind::Integer, "9223372036854775808"),
+            (CellKind::Real, "NaN"),
+            (CellKind::Real, "inf"),
+        ] {
+            assert!(kind.parse(input).is_err(), "{input}");
+        }
     }
 }

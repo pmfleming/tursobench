@@ -376,32 +376,12 @@ impl App {
             .as_mut()
             .filter(|e| e.row == row && e.column == col)
         {
-            let response = ui.put(rect, egui::TextEdit::singleline(&mut edit.input));
-            if edit.focus {
-                response.request_focus();
-                edit.focus = false;
-            }
-            response.context_menu(|ui| {
-                egui::ComboBox::from_id_salt("inline-type")
-                    .selected_text(edit.kind.label())
-                    .show_ui(ui, |ui| {
-                        for k in [
-                            super::results::CellKind::Null,
-                            super::results::CellKind::Integer,
-                            super::results::CellKind::Real,
-                            super::results::CellKind::Text,
-                        ] {
-                            ui.selectable_value(&mut edit.kind, k, k.label());
-                        }
-                    });
-            });
-            if (response.has_focus() || response.lost_focus())
-                && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
-            {
-                match edit.kind.parse(&edit.input) {
-                    Ok(v) => action = Some(GridAction::Stage(row, col, v)),
-                    Err(e) => self.status = e,
-                }
+            let response = ui.put(rect, egui::TextEdit::singleline(&mut edit.editor.input));
+            response.context_menu(|ui| edit.editor.type_picker(ui, "inline-type", false));
+            match edit.submitted(ui, &response) {
+                Some(Ok(value)) => action = Some(GridAction::Stage(row, col, value)),
+                Some(Err(error)) => self.status = error,
+                None => {}
             }
             return action;
         }

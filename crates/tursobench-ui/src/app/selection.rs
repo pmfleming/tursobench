@@ -1,4 +1,4 @@
-use super::{App, results::CellKind, shell};
+use super::{App, results::CellEditor, shell};
 use eframe::egui;
 use tursobench_core::{Ticket, Value};
 
@@ -17,9 +17,22 @@ pub(super) struct SummaryCache {
 pub(super) struct InlineEdit {
     pub row: usize,
     pub column: usize,
-    pub kind: CellKind,
-    pub input: String,
+    pub editor: CellEditor,
     pub focus: bool,
+}
+impl InlineEdit {
+    pub fn submitted(
+        &mut self,
+        ui: &mut egui::Ui,
+        response: &egui::Response,
+    ) -> Option<Result<Value, String>> {
+        if std::mem::take(&mut self.focus) {
+            response.request_focus();
+        }
+        ((response.has_focus() || response.lost_focus())
+            && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)))
+        .then(|| self.editor.parse())
+    }
 }
 impl App {
     pub(super) fn select_cell(&mut self, row: usize, column: usize, extend: bool) {
@@ -230,28 +243,18 @@ impl App {
         else {
             return;
         };
-        if matches!(value, Value::Blob(_)) || value.bytes() > 4096 {
+        let Some(editor) = CellEditor::inline(value) else {
             self.open_cell(row, column);
             return;
-        }
-        let kind = match value {
-            Value::Null => CellKind::Null,
-            Value::Integer(_) => CellKind::Integer,
-            Value::Real(_) => CellKind::Real,
-            _ => CellKind::Text,
         };
         self.document.tools.inline = Some(InlineEdit {
             row,
             column,
-            kind,
-            input: if *value == Value::Null {
-                String::new()
-            } else {
-                crate::export::cell_text(value)
-            },
+            editor,
             focus: true,
         });
     }
+
     pub(super) fn grid_keys(&mut self, ctx: &egui::Context) {
         if self.document.tools.inline.is_some()
             || !matches!(self.document.ui.nav, shell::Nav::Table | shell::Nav::Result)

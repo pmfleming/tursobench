@@ -69,33 +69,19 @@ impl App {
         if self.can_edit() {
             ui.separator();
             ui.strong("Change value · staged locally");
-            egui::ComboBox::from_id_salt("cell-kind")
-                .selected_text(self.document.tools.cell_kind.label())
-                .show_ui(ui, |ui| {
-                    for kind in [
-                        CellKind::Null,
-                        CellKind::Integer,
-                        CellKind::Real,
-                        CellKind::Text,
-                        CellKind::Blob,
-                    ] {
-                        ui.selectable_value(&mut self.document.tools.cell_kind, kind, kind.label());
-                    }
-                });
-            if self.document.tools.cell_kind != CellKind::Null {
+            self.document
+                .tools
+                .cell_editor
+                .type_picker(ui, "cell-kind", true);
+            if self.document.tools.cell_editor.kind != CellKind::Null {
                 ui.add(
-                    egui::TextEdit::multiline(&mut self.document.tools.cell_input)
+                    egui::TextEdit::multiline(&mut self.document.tools.cell_editor.input)
                         .desired_width(ui.available_width())
                         .desired_rows(3),
                 );
             }
             if ui.button("Stage cell change").clicked() {
-                match self
-                    .document
-                    .tools
-                    .cell_kind
-                    .parse(&self.document.tools.cell_input)
-                {
+                match self.document.tools.cell_editor.parse() {
                     Ok(value) => self.stage_cell(row, col, value),
                     Err(e) => self.status = e,
                 }
@@ -222,21 +208,12 @@ impl App {
                         {
                             let response = ui.add_sized(
                                 [ui.available_width().min(240.0), 25.0],
-                                egui::TextEdit::singleline(&mut inline.input),
+                                egui::TextEdit::singleline(&mut inline.editor.input),
                             );
-                            if inline.focus {
-                                response.request_focus();
-                                inline.focus = false;
-                            }
-                            if (response.has_focus() || response.lost_focus())
-                                && ui.input_mut(|i| {
-                                    i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
-                                })
-                            {
-                                match inline.kind.parse(&inline.input) {
-                                    Ok(v) => edit = Some((col, v)),
-                                    Err(e) => self.status = e,
-                                }
+                            match inline.submitted(ui, &response) {
+                                Some(Ok(value)) => edit = Some((col, value)),
+                                Some(Err(error)) => self.status = error,
+                                None => {}
                             }
                         } else {
                             let response = ui

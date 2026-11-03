@@ -1168,7 +1168,7 @@ fn column_presentation_preserves_schema_indices_and_manual_widths() {
     assert_eq!(app.visible_columns(), vec![2, 0]);
     assert_eq!(app.document.tools.columns.widths[2], 217.0);
     app.open_cell(0, 2);
-    assert_eq!(app.document.tools.cell_input, "42");
+    assert_eq!(app.document.tools.cell_editor.input, "42");
     app.stage_cell(0, 2, Value::Integer(55));
     let draft = app.document.drafts.as_ref().unwrap();
     assert_eq!(
@@ -1203,8 +1203,8 @@ fn range_selection_uses_visible_order_and_exact_numeric_values_and_inline_stages
     app.start_inline(0, 1);
     assert!(app.document.tools.inline.is_some());
     let edit = app.document.tools.inline.as_mut().unwrap();
-    edit.input = "123".into();
-    let value = edit.kind.parse(&edit.input).unwrap();
+    edit.editor.input = "123".into();
+    let value = edit.editor.parse().unwrap();
     app.stage_cell(0, 1, value);
     app.document.tools.inline = None;
     assert_eq!(
@@ -1411,6 +1411,37 @@ fn actual_grid_keys_extend_copy_and_stage_inline_without_writing() {
     assert!(app.document.tools.inline.is_none());
     assert!(app.has_drafts());
     assert_eq!(app.document.result.rows[0][2], Value::Text(String::new()));
+    // The editable record inspector uses the same focus/submission policy as the grid.
+    app.start_inline(0, 1);
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.record_inspector(ui, 0));
+    output.textures_delta.clear();
+    for (input, accepted) in [("invalid", false), ("123", true)] {
+        app.document.tools.inline.as_mut().unwrap().editor.input = input.into();
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                events: vec![key_event(egui::Key::Enter, egui::Modifiers::NONE)],
+                ..Default::default()
+            },
+            |ui| app.record_inspector(ui, 0),
+        );
+        output.textures_delta.clear();
+        assert_eq!(app.document.tools.inline.is_none(), accepted);
+    }
+    assert_eq!(
+        app.document
+            .drafts
+            .as_ref()
+            .unwrap()
+            .displayed(&app.document.result.rows[0], 1),
+        Some(&Value::Integer(123))
+    );
+    assert_eq!(
+        app.document.result.rows[0][1],
+        Value::Integer(9007199254740993)
+    );
+    app.start_inline(0, 1);
+    press_key(&mut app, &ctx, egui::Key::Escape, egui::Modifiers::NONE);
+    assert!(app.document.tools.inline.is_none());
     app.close();
 }
 

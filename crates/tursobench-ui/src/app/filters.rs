@@ -1,4 +1,7 @@
-use super::{App, View, results::CellKind};
+use super::{
+    App, View,
+    results::{CellEditor, CellKind},
+};
 use eframe::egui;
 use tursobench_core::{Browse, Filter, FilterOp, Table, Value};
 use tursobench_db::Operation;
@@ -110,19 +113,14 @@ pub(super) fn parse_filter(input: &str, table: &Table) -> Result<Filter, String>
 pub(super) struct FilterEditor {
     index: usize,
     op: FilterOp,
-    kind: CellKind,
-    input: String,
+    value: CellEditor,
 }
 impl FilterEditor {
     fn new(index: usize, filter: &Filter) -> Self {
         Self {
             index,
             op: filter.op,
-            kind: kind(&filter.value),
-            input: match &filter.value {
-                Value::Blob(b) => crate::export::hex(b),
-                v => crate::export::cell_text(v),
-            },
+            value: CellEditor::new(&filter.value),
         }
     }
     fn filter(&self, column: usize) -> Result<Filter, String> {
@@ -132,7 +130,7 @@ impl FilterEditor {
             value: if self.op.unary() {
                 Value::Null
             } else {
-                self.kind.parse(&self.input)?
+                self.value.parse()?
             },
         })
     }
@@ -144,20 +142,8 @@ impl FilterEditor {
                     ui.selectable_value(&mut self.op, op, op.label());
                 }
             });
-        egui::ComboBox::from_id_salt(("chip-type", self.index))
-            .selected_text(self.kind.label())
-            .show_ui(ui, |ui| {
-                for kind in [
-                    CellKind::Text,
-                    CellKind::Integer,
-                    CellKind::Real,
-                    CellKind::Null,
-                    CellKind::Blob,
-                ] {
-                    ui.selectable_value(&mut self.kind, kind, kind.label());
-                }
-            });
-        ui.text_edit_singleline(&mut self.input);
+        self.value.type_picker(ui, ("chip-type", self.index), true);
+        ui.text_edit_singleline(&mut self.value.input);
         ui.button("Apply").clicked().then(|| {
             self.filter(column)
                 .map(|f| FilterChange::Replace(self.index, f))
@@ -383,16 +369,6 @@ impl App {
         }
     }
 }
-fn kind(value: &Value) -> CellKind {
-    match value {
-        Value::Null => CellKind::Null,
-        Value::Integer(_) => CellKind::Integer,
-        Value::Real(_) => CellKind::Real,
-        Value::Blob(_) => CellKind::Blob,
-        Value::Text(_) => CellKind::Text,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{FilterChange, FilterEditor, parse_filter};
@@ -452,7 +428,7 @@ mod tests {
             let mut editor = FilterEditor::new(0, &f);
             assert_eq!(editor.filter(column).unwrap().value, value);
             editor.op = FilterOp::IsNull;
-            editor.input = "invalid numeric/blob input".into();
+            editor.value.input = "invalid numeric/blob input".into();
             assert_eq!(editor.filter(column).unwrap().value, Value::Null);
         }
         for input in [
