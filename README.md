@@ -37,8 +37,6 @@ Minimize tiles without discarding filters, selections or drafts.
 
 ![Native dark workspace.](docs/assets/ui/sessions/workspace-dark.png)
 
-![Native light workspace.](docs/assets/ui/sessions/workspace-light.png)
-
 Screenshots use a read-only snapshot of a local session database.
 [Capture provenance](docs/assets/ui/README.md#current-readme--real-session-database).
 
