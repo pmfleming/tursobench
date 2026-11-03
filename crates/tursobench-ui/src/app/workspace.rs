@@ -81,9 +81,73 @@ impl App {
             .chain(std::iter::once(&self.document))
             .map(|d| {
                 let minimum = d.kind.minimum();
-                let columns = d.tools.columns.widths.iter().sum::<f32>() + 60.0;
+                let columns = if !d.tools.columns.widths.is_empty() {
+                    d.tools
+                        .columns
+                        .widths
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| !d.tools.columns.hidden.contains(i))
+                        .map(|(_, w)| w + 7.0)
+                        .sum::<f32>()
+                        + 60.0
+                } else {
+                    // Committed schema is available before the first page arrives.
+                    // Use it once on opening; streamed rows never reshuffle windows.
+                    let table = d
+                        .table
+                        .as_ref()
+                        .or_else(|| d.tools.inspection.as_ref().map(|i| &i.table))
+                        .or_else(|| {
+                            self.ui
+                                .diagram
+                                .data
+                                .as_ref()?
+                                .tables
+                                .iter()
+                                .find(|node| Some(node.name.as_str()) == d.object.as_deref())?
+                                .inspection
+                                .as_ref()
+                                .map(|i| &i.table)
+                        });
+                    let estimate = |name: &str, kind: &str| {
+                        let kind = kind.to_ascii_uppercase();
+                        let content: f32 = if kind.contains("INT")
+                            || kind.contains("REAL")
+                            || kind.contains("NUM")
+                        {
+                            80.0
+                        } else if kind.contains("BLOB") {
+                            140.0
+                        } else {
+                            180.0
+                        };
+                        (name.chars().count() as f32 * 7.0 + 36.0)
+                            .max(content)
+                            .min(300.0)
+                            + 7.0
+                    };
+                    60.0 + table.map_or_else(
+                        || {
+                            d.result
+                                .columns
+                                .iter()
+                                .map(|c| {
+                                    estimate(&c.name, c.declared_type.as_deref().unwrap_or(""))
+                                })
+                                .sum::<f32>()
+                        },
+                        |table| {
+                            table
+                                .columns
+                                .iter()
+                                .map(|c| estimate(&c.name, &c.declared_type))
+                                .sum()
+                        },
+                    )
+                };
                 let preferred = match d.kind {
-                    Kind::Data | Kind::Result => columns.clamp(480.0, 1000.0),
+                    Kind::Data | Kind::Result => columns.clamp(480.0, 3200.0),
                     Kind::Sql => 600.0,
                     _ => minimum.x,
                 };

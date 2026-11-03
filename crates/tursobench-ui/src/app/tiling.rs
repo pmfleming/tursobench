@@ -260,81 +260,149 @@ impl Node {
         profile: &impl Fn(u64) -> Vec2,
         preferred_width: &impl Fn(u64) -> f32,
     ) {
-        let (tiles, _) = self.layout(area, focused, profile);
+        // Score both existing and incoming content, including wrapping a whole
+        // subtree. A wide incoming table must not inherit a narrow empty profile.
+        let mut paths = vec![];
+        self.paths(&mut vec![], &mut paths);
         let fresh = profile(id);
-        let mut candidate: Option<(f32, u64, bool, f32)> = None;
-        for tile in tiles {
-            // A projected group may cover several branches. Group instead of damaging the saved splits.
-            if self.leaf_ids(tile.selected) != Some(tile.ids.as_slice()) {
+        let mut candidate: Option<(f32, Self)> = None;
+        for path in paths {
+            let Some((subtree, rect)) = self.region(&path, area, profile) else {
                 continue;
-            }
-            let old = tile
-                .ids
-                .iter()
-                .map(|id| profile(*id))
-                .fold(Vec2::ZERO, |a, b| a.max(b));
+            };
+            let old = subtree.minimum(profile);
             for horizontal in [true, false] {
                 let axis = usize::from(!horizontal);
-                let available = tile.rect.size()[axis] - GAP;
+                let available = rect.size()[axis] - GAP;
                 if available < old[axis] + fresh[axis]
-                    || tile.rect.size()[1 - axis] < old[1 - axis].max(fresh[1 - axis])
+                    || rect.size()[1 - axis] < old[1 - axis].max(fresh[1 - axis])
                 {
                     continue;
                 }
                 let wanted = if horizontal {
-                    preferred_width(tile.selected) / available
+                    let old_width = subtree.preferred_width(preferred_width);
+                    old_width / (old_width + preferred_width(id))
                 } else {
-                    0.55
+                    (subtree.ids().len() as f32 / (subtree.ids().len() + 1) as f32).clamp(0.4, 0.7)
                 };
-                let ratio = wanted.clamp(
-                    old[axis] / available,
-                    (1.0 - fresh[axis] / available).max(old[axis] / available),
-                );
-                let width = if horizontal {
-                    available * ratio
-                } else {
-                    tile.rect.width()
-                };
-                let score = tile.rect.area()
-                    + if tile.ids.contains(&focused) {
-                        area.area() * 0.45
-                    } else {
-                        0.0
-                    }
-                    - (preferred_width(tile.selected) - width).max(0.0) * 400.0;
+                let lower = old[axis] / available;
+                let ratio = wanted.clamp(lower, (1.0 - fresh[axis] / available).max(lower));
+                let mut trial = self.clone();
+                trial.split_at(&path, id, horizontal, ratio, false);
+                let (tiles, _) = trial.layout(area, id, profile);
+                let mut score: f32 = tiles
+                    .iter()
+                    .map(|tile| {
+                        let coverage =
+                            (tile.rect.width() / preferred_width(tile.selected).max(1.0)).min(1.0);
+                        let rows = ((tile.rect.height() - 44.0).max(1.0)
+                            / (area.height() - 44.0).max(1.0))
+                        .min(1.0);
+                        // Losing columns costs more than losing some rows. When both
+                        // layouts fit columns, prefer more vertical room for data.
+                        coverage.powi(3) * rows.powf(0.35)
+                    })
+                    .sum::<f32>()
+                    / (self.ids().len() + 1) as f32;
+                if matches!(subtree, Self::Tabs { ids, .. } if ids.contains(&focused)) {
+                    score += 0.02;
+                }
+                if horizontal == (rect.width() > rect.height()) {
+                    score += 0.005;
+                }
                 if candidate.as_ref().is_none_or(|c| score > c.0) {
-                    candidate = Some((score, tile.selected, horizontal, ratio));
+                    candidate = Some((score, trial));
                 }
             }
         }
-        if let Some((_, target, horizontal, ratio)) = candidate {
-            self.split_leaf(target, id, horizontal, ratio);
+        if let Some((_, tree)) = candidate {
+            *self = tree;
         } else {
             self.group(focused, id);
         }
     }
-    fn leaf_ids(&self, id: u64) -> Option<&[u64]> {
-        match self {
-            Self::Tabs { ids, .. } => ids.contains(&id).then_some(ids.as_slice()),
-            Self::Split { a, b, .. } => a.leaf_ids(id).or_else(|| b.leaf_ids(id)),
+    fn paths(&self, path: &mut Vec<bool>, paths: &mut Vec<Vec<bool>>) {
+        paths.push(path.clone());
+        if let Self::Split { a, b, .. } = self {
+            path.push(false);
+            a.paths(path, paths);
+            path.pop();
+            path.push(true);
+            b.paths(path, paths);
+            path.pop();
         }
     }
-    fn split_leaf(&mut self, target: u64, id: u64, horizontal: bool, ratio: f32) {
+    fn region<'a>(
+        &'a self,
+        path: &[bool],
+        area: Rect,
+        profile: &impl Fn(u64) -> Vec2,
+    ) -> Option<(&'a Self, Rect)> {
+        let Some((right, rest)) = path.split_first() else {
+            return Some((self, area));
+        };
+        let Self::Split {
+            horizontal,
+            ratio,
+            a,
+            b,
+        } = self
+        else {
+            return None;
+        };
+        let minimum = self.minimum(profile);
+        if minimum.x > area.width() || minimum.y > area.height() {
+            return None;
+        }
+        let axis = usize::from(!horizontal);
+        let available = area.size()[axis] - GAP;
+        let lower = a.minimum(profile)[axis] / available;
+        let ratio = ratio.clamp(
+            lower,
+            (1.0 - b.minimum(profile)[axis] / available).max(lower),
+        );
+        let mut rect = area;
+        if *right {
+            rect.min[axis] += available * ratio + GAP;
+            b.region(rest, rect, profile)
+        } else {
+            rect.max[axis] = area.min[axis] + available * ratio;
+            a.region(rest, rect, profile)
+        }
+    }
+    fn preferred_width(&self, width: &impl Fn(u64) -> f32) -> f32 {
         match self {
-            Self::Tabs { ids, .. } if ids.contains(&target) => {
-                let a = std::mem::replace(self, Self::leaf(id));
-                *self = Self::Split {
-                    horizontal,
-                    ratio,
-                    a: Box::new(a),
-                    b: Box::new(Self::leaf(id)),
-                };
+            Self::Tabs { ids, .. } => ids.iter().map(|id| width(*id)).fold(0.0, f32::max),
+            Self::Split {
+                horizontal, a, b, ..
+            } => {
+                let (a, b) = (a.preferred_width(width), b.preferred_width(width));
+                if *horizontal { a + b + GAP } else { a.max(b) }
             }
-            Self::Split { a, b, .. } => {
-                a.split_leaf(target, id, horizontal, ratio);
-                b.split_leaf(target, id, horizontal, ratio);
+        }
+    }
+    fn split_at(&mut self, path: &[bool], id: u64, horizontal: bool, ratio: f32, before: bool) {
+        if let Some((right, rest)) = path.split_first() {
+            if let Self::Split { a, b, .. } = self {
+                if *right {
+                    b.split_at(rest, id, horizontal, ratio, before);
+                } else {
+                    a.split_at(rest, id, horizontal, ratio, before);
+                }
             }
-            _ => {}
+        } else {
+            let old = std::mem::replace(self, Self::leaf(id));
+            let (a, b) = if before {
+                (Self::leaf(id), old)
+            } else {
+                (old, Self::leaf(id))
+            };
+            *self = Self::Split {
+                horizontal,
+                ratio,
+                a: Box::new(a),
+                b: Box::new(b),
+            };
         }
     }
     fn group(&mut self, target: u64, id: u64) {
@@ -355,6 +423,54 @@ impl Node {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn incoming_content_selects_rows_or_columns_and_can_wrap_a_group() {
+        let area = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1500.0, 800.0));
+        let minimum = |_| Kind::Data.minimum();
+        let mut narrow = Node::leaf(1);
+        narrow.insert(2, 1, area, &minimum, &|_| 500.0);
+        assert!(matches!(
+            narrow,
+            Node::Split {
+                horizontal: true,
+                ..
+            }
+        ));
+        let mut wide = Node::leaf(1);
+        wide.insert(2, 1, area, &minimum, &|id| {
+            if id == 2 { 1400.0 } else { 500.0 }
+        });
+        assert!(matches!(
+            wide,
+            Node::Split {
+                horizontal: false,
+                ..
+            }
+        ));
+        narrow.insert(3, 2, area, &minimum, &|id| {
+            if id == 3 { 1400.0 } else { 500.0 }
+        });
+        let tiles = narrow.layout(area, 3, &minimum).0;
+        let incoming = tiles.iter().find(|t| t.selected == 3).unwrap();
+        assert_eq!(
+            incoming.rect.width(),
+            area.width(),
+            "wide view should span below the whole group"
+        );
+        for tile in tiles.iter().filter(|t| t.selected != 3) {
+            assert!(tile.rect.bottom() < incoming.rect.top());
+        }
+        let short = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1500.0, 350.0));
+        let mut constrained = Node::leaf(1);
+        constrained.insert(2, 1, short, &minimum, &|_| 1400.0);
+        assert!(matches!(
+            constrained,
+            Node::Split {
+                horizontal: true,
+                ..
+            }
+        ));
+    }
     #[test]
     fn split_resize_close_and_projected_groups_preserve_every_view() {
         let area = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1500.0, 800.0));
