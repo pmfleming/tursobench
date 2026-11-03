@@ -53,7 +53,7 @@ are unsupported. The exclusive-use checkbox is an acknowledgement, not an OS loc
 ## Features
 
 - Startup database discovery across application data/state and development folders, with recent files, Turso/SQLite/unknown type icons, a per-file SQLite override, and search-folder controls. See [discovery behavior and limits](database-discovery.md).
-- Persistent left navigator, independent Data/Structure/Map/SQL/Result/Record tiles, and a contextual ribbon.
+- Persistent database navigator and five fixed tiles with compact local ribbons, minimize-to-header and workspace expansion.
 - Engine-enforced read-only opening by default; read/write is explicit opt-in.
 - Searchable schema/DDL, native index/FK details, related-row navigation and read-only diagnostics.
 - Relationship-arranged schema home: tables, keys, composite/self/cyclic FKs, Map/List fallback and saved map layout.
@@ -65,16 +65,16 @@ are unsupported. The exclusive-use checkbox is an acknowledgement, not an OS loc
   databases, create `USING fts(...)` indexes and query with `fts_match(...)`.
   See [FTS support and validation](fts.md).
 - Persistent SQL-editor transactions, explicit commit/rollback, managed close.
-- Local staged inserts/updates/deletes, SQL/binding preview and atomic commits
+- Local staged inserts/updates/deletes, direct explicit commit, optional SQL/binding review and atomic commits
   with optimistic conflicts. Only suitable non-engine-managed primary-key base tables are editable.
 - Typed cell editing, row cloning, draft overlays and per-cell/row/operation undo.
 - Timed searchable history, named database-scoped bookmarks, themes and keyboard help.
 - Retained-result exports: typed JSONL/JSON, annotated CSV/TSV and SQL INSERTs.
 
 See the [UI guide and capability map](ui-redesign.md) for workspace navigation,
-responsive behavior, diagram limits and validation. Each tile owns its retained data, filters,
-selection and scroll position. SQL editors keep their drafts while execution opens a linked result
-tile. All views share one database session and transaction; they are not independent transaction tabs.
+responsive behavior, diagram limits and validation. Relationships sits above Table data;
+Record and Structure follow the selected table. SQL editors keep drafts and linked results
+inside the SQL tile. All views share one database session and transaction; they are not independent transaction tabs.
 Back restores typed filters, sorting, the retained browse window and matching row selection. Explicit
 table/related counts preserve the grid and drafts; automatic counts remain deferred. Painter icons include accessible names;
 native AccessKit integration is enabled. At 1280×720, the default table view shows

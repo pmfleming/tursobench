@@ -275,7 +275,7 @@ impl App {
                     } else {
                         8.0
                     })
-                .max(80.0)
+                .max(24.0)
             } else {
                 (ui.ctx().content_rect().height() * 0.35).clamp(100.0, 400.0)
             })
@@ -283,6 +283,7 @@ impl App {
                 egui::TextEdit::multiline(&mut self.document.sql)
                     .id_salt("sql-editor")
                     .code_editor()
+                    .hint_text("Write SQL…  Ctrl Enter to run")
                     .desired_rows(5)
                     .desired_width(f32::INFINITY)
                     .layouter(&mut layouter)

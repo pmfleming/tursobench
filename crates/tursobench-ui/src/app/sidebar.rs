@@ -345,61 +345,24 @@ impl App {
         }
     }
 
-    pub(super) fn activity_rail(&mut self, ui: &mut egui::Ui) {
-        for (icon, name, panel) in [
-            (Icon::Data, "Tables", ToolPanel::Schema),
-            (Icon::History, "History", ToolPanel::History),
-            (Icon::Saved, "Saved queries", ToolPanel::Saved),
-            (Icon::Checks, "Database checks", ToolPanel::Diagnostics),
-        ] {
-            let selected = self.ui.sidebar == panel && self.document.ui.nav != Nav::Settings;
-            if icons::control(ui, icon, name, "", selected, false).clicked() {
-                self.select_tool(panel);
-            }
-            if panel == ToolPanel::Schema {
-                if icons::control(
-                    ui,
-                    Icon::Map,
-                    "Map",
-                    "",
-                    self.document.ui.nav == Nav::Overview,
-                    false,
-                )
-                .clicked()
-                {
-                    self.ui.sidebar = ToolPanel::Schema;
-                    self.overview();
-                }
-                if icons::control(
-                    ui,
-                    Icon::Sql,
-                    "SQL editor",
-                    "Ctrl J",
-                    self.document.ui.sql_open,
-                    false,
-                )
-                .clicked()
-                {
-                    self.toggle_sql();
+    pub(super) fn navigator_utilities(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            for (icon, name, panel) in [
+                (Icon::Data, "Tables", ToolPanel::Schema),
+                (Icon::History, "History", ToolPanel::History),
+                (Icon::Saved, "Saved queries", ToolPanel::Saved),
+                (Icon::Checks, "Database checks", ToolPanel::Diagnostics),
+                (Icon::Settings, "Settings", ToolPanel::Settings),
+            ] {
+                if icons::control(ui, icon, name, "", self.ui.sidebar == panel, false).clicked() {
+                    self.select_tool(panel);
                 }
             }
-        }
-        ui.add_space((ui.available_height() - 72.0).max(0.0));
-        if icons::control(
-            ui,
-            Icon::Settings,
-            "Settings",
-            "Ctrl ,",
-            self.document.ui.nav == Nav::Settings,
-            false,
-        )
-        .clicked()
-        {
-            self.select_tool(ToolPanel::Settings);
-        }
-        if icons::button(ui, Icon::Help, "Help", "F1").clicked() {
-            self.tools.help = true;
-        }
+            if icons::button(ui, Icon::Help, "Help", "F1").clicked() {
+                self.tools.help = true;
+            }
+        });
     }
 }
 

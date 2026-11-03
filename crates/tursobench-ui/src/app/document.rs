@@ -63,20 +63,6 @@ impl Document {
         self.tools.pages.pending = None;
         self.needs_load = false;
     }
-    pub fn title(&self) -> String {
-        match self.kind {
-            super::tiling::Kind::Map => "Database · Map".into(),
-            super::tiling::Kind::Sql => format!("Query {} · SQL", self.id),
-            super::tiling::Kind::Result => {
-                format!("Query {} · Result", self.source.unwrap_or(self.id))
-            }
-            kind => format!(
-                "{} · {}",
-                self.object.as_deref().unwrap_or("Retained"),
-                kind.label()
-            ),
-        }
-    }
     pub fn has_drafts(&self) -> bool {
         self.drafts.as_ref().is_some_and(|d| !d.edits.is_empty())
     }

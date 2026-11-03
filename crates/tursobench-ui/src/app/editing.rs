@@ -144,6 +144,7 @@ impl App {
                                             ui.strong(format!("Operation {}",i+1));
                                             if ui.add_enabled(self.commit_ticket.is_none(),egui::Button::new("Remove operation")).clicked() { remove = Some(i); }
                                         });
+                                        edit_diff(ui,&draft.table,&draft.edits[i]);
                                         let mut sql = statement.sql.as_str();
                                         ui.add(egui::TextEdit::multiline(&mut sql).code_editor().interactive(false).desired_width(ui.available_width()).desired_rows(2));
                                         ui.small("Exact typed bindings (including original-value predicates):");
@@ -165,6 +166,39 @@ impl App {
             self.document.show_preview = open;
         }
     }
+    pub(super) fn staged_edit_dock(&mut self, ui: &mut egui::Ui) {
+        let count = self.document.drafts.as_ref().map_or(0, |d| d.edits.len());
+        ui.horizontal_wrapped(|ui| {
+            ui.strong(format!("{count} staged"));
+            if ui
+                .add_enabled(self.can_edit() && count > 0, egui::Button::new("Commit"))
+                .clicked()
+            {
+                self.commit_drafts();
+            }
+            if ui.button("Diff / SQL").clicked() {
+                self.document.show_preview = true;
+            }
+            if ui
+                .add_enabled(
+                    self.commit_ticket.is_none() && !self.uncertain_edit,
+                    egui::Button::new("Discard"),
+                )
+                .clicked()
+            {
+                self.document.drafts = None;
+            }
+            if self.commit_ticket.is_some() {
+                ui.small("Committing…");
+            }
+            if self.uncertain_edit {
+                ui.colored_label(
+                    ui.visuals().error_fg_color,
+                    "Outcome unknown — inspect before retrying",
+                );
+            }
+        });
+    }
     pub(super) fn commit_drafts(&mut self) {
         if !self.can_edit() || !self.has_drafts() {
             return;
@@ -184,6 +218,46 @@ impl App {
                 self.status = "Committing staged edits… do not retry until outcome is known".into();
             }
             Err(e) => self.status = e.to_string(),
+        }
+    }
+}
+
+fn edit_diff(ui: &mut egui::Ui, table: &tursobench_core::Table, edit: &Edit) {
+    let mut field = |column: usize, before: Option<&Value>, after: Option<&Value>| {
+        let Some(column) = table.columns.get(column) else {
+            return;
+        };
+        ui.horizontal_wrapped(|ui| {
+            ui.strong(&column.name);
+            if let Some(value) = before {
+                ui.label(
+                    egui::RichText::new(value.preview())
+                        .strikethrough()
+                        .color(ui.visuals().error_fg_color),
+                );
+            }
+            ui.label("->");
+            ui.colored_label(
+                ui.visuals().hyperlink_color,
+                after.map_or_else(|| "DEFAULT / removed".into(), Value::preview),
+            );
+        });
+    };
+    match edit {
+        Edit::Update { original, changes } => {
+            for (column, value) in changes {
+                field(*column, original.get(*column), Some(value));
+            }
+        }
+        Edit::Insert { values } => {
+            for (column, value) in values.iter().enumerate() {
+                field(column, None, value.as_ref());
+            }
+        }
+        Edit::Delete { original } => {
+            for (column, value) in original.iter().enumerate() {
+                field(column, Some(value), None);
+            }
         }
     }
 }

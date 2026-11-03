@@ -108,7 +108,34 @@ are not replaced by Xvfb tests. Record platform results in release notes.
   focus, and no result or draft should change. A read-only BEGIN remains visible
   with SQL hidden and still offers ROLLBACK.
 
-## v4 acceptance additions
+## Fixed workspace acceptance
+
+- Relationships is above Table data; Record, Structure and SQL occupy the right
+  column. All five tiles appear without a global ribbon or activity rail.
+- Minimize every tile in turn, restore through its header, expand each tile and
+  restore. Other minimized states persist; the database navigator stays visible.
+  Dragging a ribbon must not move a tile. Repeat at 1366×768 and 3440×1440, in
+  light and dark modes and with desktop scaling.
+- Click between tiles, then immediately use their icon actions. Tooltips and
+  accessible names identify each action; narrow ribbons move actions into More.
+- Select different table rows and edit in Record. Data shows the same draft.
+  Commit directly without opening review; separately inspect Diff / SQL. A failed
+  commit retains edits. Minimized Data and expanded Record keep commit reachable.
+- Query, select a result, rerun with Ctrl Enter and switch editors through More.
+  Background results must never overwrite another table, editor or draft.
+- Apply a filter matching a row outside the retained page. It must return that
+  row from the whole table. Sampled facet counts remain labelled as samples.
+- Override automatic status/priority styling in a column's context menu. Raw
+  clipboard/export values and filter semantics must be unchanged.
+- Exercise navigator footer tools and database switching. Return without losing
+  drafts, SQL or camera position; cancellation must clear pending database paths.
+- Close/reopen with minimized and expanded tiles. Visibility is restored while
+  SQL text, bindings and row data are absent from saved layout preferences.
+
+## Earlier acceptance checks (historical layout)
+
+The following checks retain useful data and keyboard cases. Fixed workspace
+behavior above supersedes the old rail, overlay and movable-window assumptions.
 
 - Exercise each rail item. History/Saved/Checks replace sidebar content; Settings
   replaces main content. Return without replacing rows, drafts, SQL or map camera.

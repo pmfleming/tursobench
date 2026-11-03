@@ -1,5 +1,5 @@
 //! Classify ticket ownership once before dispatching to a focused handler.
-use super::{App, View, document::Document, shell, tiling};
+use super::{App, View, document::Document, shell};
 use eframe::egui;
 use tursobench_core::{
     CommitOutcome, Completion, Event, EventKind, Failure, Ticket, TransactionState,
@@ -169,10 +169,7 @@ impl App {
         }
     }
     fn opened(&mut self) {
-        self.workspace.enabled = true;
-        self.workspace.tree = Some(tiling::Node::leaf(self.document.id));
-        self.workspace.focused = self.document.id;
-        self.document.kind = tiling::Kind::Map;
+        self.initialize_workspace();
         self.ready = true;
         self.record_database_open();
         self.refresh_catalog();

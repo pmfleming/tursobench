@@ -28,7 +28,6 @@ mod smoke;
 pub(crate) mod tiling;
 mod tools;
 mod usability;
-mod window_movement;
 pub(crate) mod workspace;
 use eframe::egui;
 

@@ -240,6 +240,10 @@ impl App {
                     if !sorted.is_empty(){icons::paint(&painter,egui::Rect::from_min_size(rect.right_top()+egui::vec2(-47.0,8.0),egui::vec2(12.0,12.0)),if self.document.browse.as_ref().is_some_and(|b|b.descending){Icon::Down}else{Icon::Up},ui.visuals().selection.stroke.color);}
                     let response=response.on_hover_text(format!("{} · {}\nPK = key position; IX = declared leading index; FK = foreign key. Index method/partial predicate may not apply. Drag the right edge or right-click to resize.",column.name,column.declared_type.as_deref().unwrap_or("runtime type")));
                     response.context_menu(|ui|{
+                        ui.menu_button("Cell appearance", |ui| {
+                            let style=self.document.tools.columns.visuals.entry(i).or_default();
+                            for (value,label) in super::columns::CellStyle::ALL {ui.selectable_value(style,value,label);}
+                        });
                         if ui.button("Fit contents").clicked(){self.document.tools.columns.manual.remove(&i);self.document.tools.columns.refit=true;ui.close();}
                         if ui.button("Move left").clicked(){self.document.tools.columns.shift(i,-1);ui.close();}
                         if ui.button("Move right").clicked(){self.document.tools.columns.shift(i,1);ui.close();}
@@ -369,13 +373,11 @@ impl App {
                 ),
             )
         });
-        if let Some(edit) = self
-            .document
-            .tools
-            .inline
-            .as_mut()
-            .filter(|e| e.row == row && e.column == col)
-        {
+        if let Some(edit) = self.document.tools.inline.as_mut().filter(|e| {
+            e.row == row
+                && e.column == col
+                && (!self.workspace.enabled || self.workspace.active != super::tiling::Kind::Record)
+        }) {
             let response = ui.put(rect, egui::TextEdit::singleline(&mut edit.editor.input));
             response.context_menu(|ui| edit.editor.type_picker(ui, "inline-type", false));
             match edit.submitted(ui, &response) {
@@ -408,6 +410,14 @@ impl App {
                 egui::StrokeKind::Inside,
             );
         }
+        self.document
+            .tools
+            .columns
+            .visuals
+            .get(&col)
+            .copied()
+            .unwrap_or_default()
+            .paint(ui, rect, &self.document.result.columns[col].name, displayed);
         let numeric = matches!(displayed, Value::Integer(_) | Value::Real(_));
         let color = if !references.is_empty() {
             ui.visuals().hyperlink_color

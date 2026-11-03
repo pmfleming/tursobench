@@ -1,7 +1,7 @@
 use super::{
     App, View,
     icons::{self, Icon},
-    shell::{Nav, ToolPanel},
+    shell::ToolPanel,
     tiling::Kind,
 };
 use eframe::egui;
@@ -38,6 +38,9 @@ pub(super) enum Action {
     SaveSql,
     CopyDdl,
     CopyValue,
+    CopyRecord,
+    CloneRecord,
+    DeleteRecord,
     Expand,
     Retile,
     Insert,
@@ -74,6 +77,8 @@ impl App {
                 self.ready && !self.closing && !self.has_drafts() && self.commit_ticket.is_none()
             }
             Insert => self.can_edit(),
+            CloneRecord | DeleteRecord => self.can_edit() && self.document.inspect.is_some(),
+            CopyRecord => self.document.inspect.is_some(),
             Inspect | CopyValue => self.document.inspect.is_some(),
             CopyRows | Export => !self.document.result.columns.is_empty(),
             Discard => {
@@ -109,7 +114,11 @@ impl App {
             Map => self.overview(),
             Sql => self.open_sql_window(false),
             NewSql => self.open_sql_window(true),
-            Refresh => match self.document.kind {
+            Refresh => match if self.workspace.active == Kind::Structure {
+                Kind::Structure
+            } else {
+                self.document.kind
+            } {
                 Kind::Map => {
                     self.refresh_catalog();
                     self.load_diagram();
@@ -171,6 +180,15 @@ impl App {
                     .and_then(|o| o.ddl.clone())
                 {
                     ctx.copy_text(ddl);
+                }
+            }
+            CopyRecord | CloneRecord | DeleteRecord => {
+                if let Some((row, _)) = self.document.inspect {
+                    match action {
+                        CopyRecord => self.copy_row(ctx, row),
+                        CloneRecord => self.clone_row(row),
+                        _ => self.stage_delete(row),
+                    }
                 }
             }
             CopyValue => {
@@ -241,7 +259,7 @@ impl App {
     fn ribbon_action(&mut self, ui: &mut egui::Ui, action: Action, icon: Icon, label: &str) {
         let response = ui
             .add_enabled_ui(self.action_enabled(action), |ui| {
-                icons::action(ui, icon, label)
+                icons::button(ui, icon, label, "")
             })
             .inner;
         #[cfg(test)]
@@ -259,13 +277,25 @@ impl App {
             ui.close();
         }
     }
-    fn ribbon_more(&mut self, ui: &mut egui::Ui, actions: &[(Action, Icon, &str)], compact: bool) {
+    fn ribbon_more(&mut self, ui: &mut egui::Ui, kind: Kind, actions: &[(Action, Icon, &str)]) {
         use Action::*;
         for &(a, _, label) in actions {
             self.ribbon_menu_action(ui, a, label);
         }
         ui.separator();
-        match self.document.kind {
+        ui.menu_button("Workspace", |ui| {
+            for (a, label) in [
+                (Data, "Table data"),
+                (Structure, "Structure"),
+                (Map, "Relationships"),
+                (Sql, "SQL"),
+                (Expand, "Expand / restore"),
+                (Review, "Review staged edits"),
+            ] {
+                self.ribbon_menu_action(ui, a, label);
+            }
+        });
+        match kind {
             Kind::Data | Kind::Result => {
                 for (a, l) in [
                     (Inspect, "Inspect selected record · Space"),
@@ -300,6 +330,19 @@ impl App {
                 }
             }
             Kind::Sql => {
+                ui.menu_button("Open editors", |ui| {
+                    let editors: Vec<_> = self
+                        .window_ids()
+                        .into_iter()
+                        .filter(|id| self.document_ref(*id).is_some_and(|d| d.kind == Kind::Sql))
+                        .collect();
+                    for id in editors {
+                        if ui.button(format!("Query {id}")).clicked() {
+                            self.focus_window(id);
+                            ui.close();
+                        }
+                    }
+                });
                 for (a, l) in [
                     (RunSelection, "Run selection · Ctrl Shift Enter"),
                     (Bytecode, "Explain bytecode"),
@@ -307,158 +350,78 @@ impl App {
                     (SaveSql, "Save query · Ctrl S"),
                     (NewSql, "New SQL editor"),
                     (Begin, "Begin editor transaction"),
+                    (Commit, "Commit transaction"),
+                    (Rollback, "Roll back transaction"),
                 ] {
                     self.ribbon_menu_action(ui, a, l);
                 }
             }
             _ => {}
         }
-        self.window_move_menu(ui, self.workspace.focused);
-        if compact {
-            ui.separator();
-            self.ribbon_menu_action(ui, Retile, "Retile windows");
-        }
+
+        ui.separator();
+        self.ribbon_menu_action(ui, Retile, "Show all tiles");
         if self.executing() {
             ui.separator();
             self.ribbon_menu_action(ui, Discard, "Discard result delivery (execution continues)");
         }
     }
-    pub(super) fn command_ribbon(&mut self, ui: &mut egui::Ui) {
-        use Action::*;
-        egui::Panel::top("command-ribbon")
-            .frame(
-                egui::Frame::new()
-                    .fill(ui.visuals().panel_fill)
-                    .inner_margin(6.0),
-            )
-            .show(ui, |ui| {
-                let wide = ui.available_width() >= 1120.0;
-                let narrow = ui.available_width() < 850.0;
-                let compact = ui.available_width() < 650.0;
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    ui.vertical(|ui| {
-                        ui.small(if self.writable {
-                            "OPEN VIEW · EDITING"
-                        } else {
-                            "OPEN VIEW · READ ONLY"
-                        });
-                        ui.horizontal(|ui| {
-                            if wide {
-                                for (a, i, l) in [
-                                    (Data, Icon::Data, "Data"),
-                                    (Structure, Icon::Structure, "Structure"),
-                                    (Map, Icon::Map, "Map"),
-                                    (Sql, Icon::Sql, "SQL"),
-                                ] {
-                                    self.ribbon_action(ui, a, i, l);
-                                }
-                            } else {
-                                let open = icons::action(ui, Icon::Plus, "Open view");
-                                egui::Popup::menu(&open).show(|ui| {
-                                    for (a, l) in [
-                                        (Data, "Table data"),
-                                        (Structure, "Table structure"),
-                                        (Map, "Schema map"),
-                                        (Sql, "SQL editor"),
-                                        (NewSql, "New SQL editor"),
-                                        (Inspect, "Selected record"),
-                                    ] {
-                                        self.ribbon_menu_action(ui, a, l);
-                                    }
-                                });
-                            }
-                        });
-                    });
-                    ui.separator();
-                    ui.vertical(|ui| {
-                        ui.add_sized(
-                            [if narrow { 170.0 } else { 260.0 }, 16.0],
-                            egui::Label::new(egui::RichText::new(self.document.title()).small())
-                                .truncate(),
-                        );
-                        ui.horizontal(|ui| {
-                            let actions = self.document.kind.ribbon_actions();
-                            for (a, i, l) in actions.iter().take(if wide {
-                                actions.len()
-                            } else if narrow {
-                                1
-                            } else {
-                                2
-                            }) {
-                                self.ribbon_action(ui, *a, *i, l);
-                            }
-                            let more = icons::action(ui, Icon::More, "More");
-                            egui::Popup::menu(&more)
-                                .show(|ui| self.ribbon_more(ui, actions, compact));
-                        });
-                    });
-                    ui.separator();
-                    ui.vertical(|ui| {
-                        ui.small("WORKSPACE");
-                        ui.horizontal(|ui| {
-                            self.ribbon_action(
-                                ui,
-                                Expand,
-                                Icon::Fit,
-                                if self.workspace.expanded.is_some() {
-                                    "Restore"
-                                } else {
-                                    "Expand"
-                                },
-                            );
-                            if !compact {
-                                self.ribbon_action(ui, Retile, Icon::Arrange, "Retile");
-                            }
-                        });
-                    });
-                });
-                if self.has_drafts()
-                    || self.transaction != TransactionState::Autocommit
-                    || self.commit_ticket.is_some()
-                {
-                    ui.separator();
-                    ui.horizontal_wrapped(|ui| {
-                        ui.strong(format!("Database session · {:?}", self.transaction));
-                        if self.has_drafts() {
-                            let count = self
-                                .documents
-                                .values()
-                                .chain(std::iter::once(&self.document))
-                                .filter_map(|d| d.drafts.as_ref())
-                                .map(|d| d.edits.len())
-                                .sum::<usize>();
-                            self.ribbon_action(
-                                ui,
-                                Review,
-                                Icon::Checks,
-                                &format!("Review {count} edits"),
-                            );
-                        }
-                        if self.transaction != TransactionState::Autocommit {
-                            for (a, label) in [(Commit, "Commit"), (Rollback, "Roll back")] {
-                                let response = ui
-                                    .add_enabled_ui(self.action_enabled(a), |ui| {
-                                        icons::action(ui, Icon::Checks, label)
-                                    })
-                                    .inner;
-                                #[cfg(test)]
-                                self.ui.transaction_rects.push(response.rect);
-                                if response.clicked() {
-                                    self.dispatch_action(a, ui.ctx());
-                                }
-                            }
-                        }
-                        if self.commit_ticket.is_some() {
-                            ui.label("Committing staged edits…");
-                        }
-                    });
+    pub(super) fn pane_ribbon(&mut self, ui: &mut egui::Ui, kind: Kind, available: bool) {
+        let actions = kind.ribbon_actions();
+        if kind == Kind::Record
+            && self.document.inspect.is_none()
+            && !self.document.result.rows.is_empty()
+        {
+            self.document.inspect = Some((0, 0));
+        }
+        let title_width = (if kind == Kind::Map {
+            110.0_f32
+        } else {
+            86.0_f32
+        })
+        .min((ui.available_width() - 124.0).max(40.0));
+        let slots = ((ui.available_width() - title_width - 124.0).max(0.0) / 32.0) as usize;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            ui.add_sized(
+                [title_width, 28.0],
+                egui::Label::new(egui::RichText::new(kind.label()).strong()).truncate(),
+            );
+            ui.separator();
+            ui.add_enabled_ui(available, |ui| {
+                for &(action, icon, label) in actions.iter().take(slots) {
+                    self.ribbon_action(ui, action, icon, label);
+                }
+                let more = icons::button(ui, Icon::More, "More actions", "");
+                egui::Popup::menu(&more).show(|ui| self.ribbon_more(ui, kind, actions));
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let expand = icons::button(
+                    ui,
+                    Icon::Fit,
+                    if self.workspace.expanded == Some(kind) {
+                        "Restore workspace"
+                    } else {
+                        "Expand to workspace"
+                    },
+                    "Ctrl Alt Enter",
+                );
+                if expand.clicked() {
+                    self.expand_pane(kind);
+                }
+                let minimize = icons::button(ui, Icon::Minimize, "Minimize to header", "");
+                #[cfg(test)]
+                self.workspace
+                    .controls
+                    .push((kind, minimize.rect, expand.rect));
+                if minimize.clicked() {
+                    self.minimize_pane(kind);
+                }
+                if available && let Some(name) = &self.document.object {
+                    ui.add(egui::Label::new(egui::RichText::new(name).small()).truncate());
                 }
             });
-        // Settings is a temporary route; the ribbon remains bound to the retained view.
-        if self.document.ui.nav == Nav::Settings {
-            self.ui.settings_return.get_or_insert(Nav::Overview);
-        }
+        });
     }
 }
 
@@ -482,7 +445,7 @@ impl Kind {
                 (Refresh, Icon::Refresh, "Refresh"),
             ],
             Kind::Map => &[
-                (FitMap, Icon::Fit, "Fit map"),
+                (FitMap, Icon::Map, "Fit relationships"),
                 (ArrangeMap, Icon::Arrange, "Arrange nodes"),
                 (MapColumns, Icon::Columns, "Columns"),
                 (Find, Icon::Search, "Find"),
@@ -493,8 +456,10 @@ impl Kind {
                 (Parameters, Icon::Parameters, "Parameters"),
             ],
             Kind::Record => &[
-                (CopyValue, Icon::Copy, "Copy value"),
-                (Export, Icon::Export, "Export record"),
+                (CopyRecord, Icon::Copy, "Copy record"),
+                (CloneRecord, Icon::Plus, "Clone record"),
+                (DeleteRecord, Icon::Trash, "Stage deletion"),
+                (CopyValue, Icon::Selection, "Copy selected value"),
             ],
         }
     }

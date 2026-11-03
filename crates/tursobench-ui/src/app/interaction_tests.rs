@@ -120,24 +120,24 @@ fn sql_selection_shortcut_and_window_expansion_have_distinct_targets() {
     assert_eq!(app.document.kind, tiling::Kind::Result);
     assert_eq!(app.workspace.expanded, None);
     assert_eq!(app.document_ref(editor).unwrap().sql, "SELECT 73 AS answer");
+    let ticket = app.document.result.current;
+    press_key(&mut app, &ctx, egui::Key::Enter, egui::Modifiers::CTRL);
+    wait(&mut app, &ctx);
+    assert_ne!(app.document.result.current, ticket);
+    assert_eq!(app.document.result.rows, vec![vec![Value::Integer(73)]]);
     press_key(
         &mut app,
         &ctx,
         egui::Key::Enter,
         egui::Modifiers::CTRL | egui::Modifiers::ALT,
     );
-    assert_eq!(app.workspace.expanded, Some(app.document.id));
+    assert_eq!(app.workspace.expanded, Some(tiling::Kind::Sql));
     assert!(app.ui.sidebar_rect.right() <= app.workspace.area.left());
     app.focus_window(editor);
-    app.request_close_window(editor);
-    assert_eq!(
-        app.workspace.close_pending,
-        Some(editor),
-        "closing an SQL draft requires an in-app choice"
-    );
-    press_key(&mut app, &ctx, egui::Key::Escape, egui::Modifiers::NONE);
-    assert_eq!(app.workspace.close_pending, None);
-    assert!(app.document_ref(editor).is_some());
+    app.minimize_pane(tiling::Kind::Sql);
+    assert!(app.workspace.minimized.contains(&tiling::Kind::Sql));
+    app.focus_pane(tiling::Kind::Sql);
+    assert_eq!(app.document.sql, "SELECT 73 AS answer");
     app.close();
 }
 
@@ -354,7 +354,7 @@ fn diagram_preserves_drafts_and_result_ownership_and_chrome_fits_both_themes() {
     app.stage_cell(0, 0, Value::Text("pending diagram edit".into()));
     app.show_structure();
     wait(&mut app, &ctx);
-    assert_eq!(app.document.kind, tiling::Kind::Structure);
+    assert_eq!(app.workspace.active, tiling::Kind::Structure);
     assert_eq!(app.document_ref(data).unwrap().result.current, ticket);
     assert_eq!(app.document_ref(data).unwrap().result.rows, retained);
     app.overview();
@@ -378,29 +378,42 @@ fn diagram_preserves_drafts_and_result_ownership_and_chrome_fits_both_themes() {
             assert!(app.ui.sidebar_rect.right() <= app.workspace.area.left());
             let viewport = ctx.content_rect();
             assert_eq!(app.ui.sidebar_rect.left(), viewport.left());
-            for rect in [app.ui.sidebar_rect, app.ui.rail_rect] {
-                assert_eq!(rect.top(), viewport.top());
-                assert_eq!(rect.bottom(), viewport.bottom());
-            }
+            assert_eq!(app.ui.sidebar_rect.top(), viewport.top());
+            assert_eq!(app.ui.sidebar_rect.bottom(), viewport.bottom());
             for rect in &app.ui.ribbon_actions {
                 assert!(
                     viewport.contains_rect(*rect),
                     "ribbon action outside viewport: {rect:?}"
                 );
-                assert!(rect.left() >= app.ui.rail_rect.right());
-                assert!(rect.height() >= 40.0);
+                assert!(rect.left() >= app.ui.sidebar_rect.right());
+                assert!(rect.height() >= 24.0);
+                assert!(
+                    app.workspace
+                        .pane_rects
+                        .iter()
+                        .any(|(_, tile)| tile.contains_rect(*rect))
+                );
+            }
+            for (_, minimize, expand) in &app.workspace.controls {
+                assert!(
+                    app.workspace
+                        .pane_rects
+                        .iter()
+                        .any(|(_, tile)| tile.contains_rect(*minimize)
+                            && tile.contains_rect(*expand))
+                );
             }
             for (_, rect) in &app.workspace.tiles {
                 assert!(app.workspace.area.contains_rect(*rect));
             }
-            let saved = app.workspace.tree.clone();
+            let saved = app.workspace.minimized.clone();
             app.expand_window(map);
             frame_at(&mut app, &ctx, egui::vec2(width, height), vec![]);
             assert_eq!(app.workspace.tiles.len(), 1);
             assert_eq!(app.workspace.tiles[0].0, map);
             assert!(app.ui.sidebar_rect.right() <= app.workspace.tiles[0].1.left());
             app.expand_window(map);
-            assert_eq!(app.workspace.tree, saved);
+            assert_eq!(app.workspace.minimized, saved);
         }
     }
     assert!(app.document_ref(data).unwrap().has_drafts());
@@ -1143,12 +1156,7 @@ fn table_views_sidebar_and_transactions_fit_themes_and_scaled_viewports() {
                     );
                 }
                 assert!(app.ui.sidebar_rect.width() >= 180.0);
-                assert!(
-                    ctx.content_rect().contains_rect(app.ui.view_header),
-                    "{width}x{height}: {:?}",
-                    app.ui.view_header
-                );
-                assert!(app.ui.view_header.width() > 200.0);
+                assert_eq!(app.workspace.pane_rects.len(), 5);
                 if !structure {
                     assert!(
                         app.ui.workspace_rect.contains_rect(app.ui.grid_rect),
@@ -1160,7 +1168,7 @@ fn table_views_sidebar_and_transactions_fit_themes_and_scaled_viewports() {
                 }
                 if width == 1280.0 && !details && !sql && !structure {
                     assert!(
-                        app.ui.visible_rows >= 15,
+                        app.ui.visible_rows >= 10,
                         "{} fully visible rows",
                         app.ui.visible_rows
                     );
@@ -1395,6 +1403,18 @@ fn scroll_pages_append_evict_reload_and_reject_stale_or_draft_owned_fetches() {
     app.request_page(false);
     assert!(app.document.tools.pages.pending.is_none());
     assert_eq!(app.document.result.rows, rows);
+    assert!(app.add_filter(tursobench_core::Filter {
+        column: 0,
+        op: tursobench_core::FilterOp::Equal,
+        value: Value::Integer(1)
+    }));
+    wait(&mut app, &ctx);
+    assert_eq!(
+        app.document.result.rows,
+        vec![vec![Value::Integer(1), Value::Integer(1)]],
+        "filter queries the entire table, including evicted rows"
+    );
+    assert_eq!(app.document.browse.as_ref().unwrap().offset, 0);
     app.close();
 }
 
@@ -1514,6 +1534,7 @@ fn actual_grid_keys_extend_copy_and_stage_inline_without_writing() {
     assert!(app.has_drafts());
     assert_eq!(app.document.result.rows[0][2], Value::Text(String::new()));
     // The editable record inspector uses the same focus/submission policy as the grid.
+    app.focus_pane(tiling::Kind::Record);
     app.start_inline(0, 1);
     let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.record_inspector(ui, 0));
     output.textures_delta.clear();
@@ -1590,7 +1611,7 @@ fn token_entry_enter_retains_typed_filter_and_empty_clipboard_fields() {
 }
 
 #[test]
-fn clipboard_grid_and_record_use_independent_tiles_without_overlays() {
+fn clipboard_grid_and_record_share_live_rows_without_overlays() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("clipboard.db");
     crate::test_support::run(crate::local_project_fixtures::create(&path, "clipboard")).unwrap();
@@ -1622,8 +1643,8 @@ fn clipboard_grid_and_record_use_independent_tiles_without_overlays() {
     assert!(app.ui.visible_rows >= 33, "{} rows", app.ui.visible_rows);
     let data_id = app.document.id;
     app.open_record_window(0, 0);
-    assert_eq!(app.document.kind, tiling::Kind::Record);
-    assert_eq!(app.document.source, Some(data_id));
+    assert_eq!(app.workspace.active, tiling::Kind::Record);
+    assert_eq!(app.document.id, data_id);
     for _ in 0..2 {
         frame_at(&mut app, &ctx, egui::vec2(2560.0, 1440.0), vec![]);
     }
@@ -1652,7 +1673,8 @@ fn filtered_index_tree_opens_original_ddl_without_replacing_primary_rows() {
         .rev()
         .find_map(|s| {
             if let egui::Shape::Text(t) = &s.shape {
-                (t.galley.job.text == "sample_value").then_some(t.pos + egui::vec2(8.0, 6.0))
+                (t.galley.job.text == "sample_value" && app.ui.sidebar_rect.contains(t.pos))
+                    .then_some(t.pos + egui::vec2(8.0, 6.0))
             } else {
                 None
             }
@@ -1721,11 +1743,11 @@ fn workspace_geometry_roundtrips_without_query_data_or_bindings() {
     frame_at(&mut app, &ctx, egui::vec2(1280.0, 720.0), vec![]);
     assert_eq!(widths, app.document.tools.columns.widths);
     app.open_record_window(0, 0);
-    assert_eq!(app.export_scope(), "pinned-record");
-    assert!(
-        app.document.result.current.is_none(),
-        "pinned records never own a worker ticket"
+    assert_eq!(
+        app.document.id, data_id,
+        "record shares the live table buffer"
     );
+    assert!(app.document.result.current.is_some());
     app.focus_window(data_id);
     app.open_structure_window();
     wait(&mut app, &ctx);
@@ -1734,6 +1756,7 @@ fn workspace_geometry_roundtrips_without_query_data_or_bindings() {
     app.document.sql = "SELECT 'private-literal'".into();
     app.document.params = "[\"private-binding\"]".into();
     app.retile();
+    app.minimize_pane(tiling::Kind::Map);
     app.expand_window(editor);
     let snapshot = app.workspace_snapshot().unwrap();
     let encoded = serde_json::to_string(&snapshot).unwrap();
@@ -1744,7 +1767,7 @@ fn workspace_geometry_roundtrips_without_query_data_or_bindings() {
     assert_eq!(app.document.id, editor);
     assert!(app.document.sql.is_empty());
     assert_eq!(app.document.params, "[]");
-    assert_eq!(app.workspace.expanded, Some(editor));
+    assert_eq!(app.workspace.expanded, Some(tiling::Kind::Sql));
     let start = Instant::now();
     loop {
         app.poll(&ctx);
@@ -1786,7 +1809,7 @@ fn workspace_geometry_roundtrips_without_query_data_or_bindings() {
         app.document.id, editor,
         "Opened must keep the restored focus before the first UI frame"
     );
-    assert_eq!(app.workspace.expanded, Some(editor));
+    assert_eq!(app.workspace.expanded, Some(tiling::Kind::Sql));
     app.close();
 }
 
@@ -1833,170 +1856,84 @@ fn automatic_map_fit_keeps_every_node_inside_its_resized_tile() {
 }
 
 #[test]
-fn wide_tables_open_below_and_header_moves_keep_drafts_and_results() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("moving.db");
-    let columns = (0..12)
-        .map(|n| format!("field{n} TEXT"))
-        .collect::<Vec<_>>()
-        .join(",");
-    crate::test_support::create(
-        &path,
+fn fixed_panes_preserve_drafts_selection_and_results_through_layout_changes() {
+    let (_dir, ctx, mut app) = fixture(
         &[
-            "CREATE TABLE narrow(id INTEGER PRIMARY KEY)",
-            &format!("CREATE TABLE wide(id INTEGER PRIMARY KEY, {columns})"),
-            "INSERT INTO wide(id,field0) VALUES(1,'kept')",
+            "CREATE TABLE sample(id INTEGER PRIMARY KEY, body TEXT)",
+            "INSERT INTO sample VALUES(1,'kept')",
         ],
+        true,
     );
-    let (ctx, mut app) = connected(&path, true);
-    let size = egui::vec2(1800.0, 1000.0);
-    let map = app.document.id;
-    frame_at(&mut app, &ctx, size, vec![]);
-    app.browse_table("narrow".into());
+    app.browse_table("sample".into());
     wait(&mut app, &ctx);
-    frame_at(&mut app, &ctx, size, vec![]);
-    app.browse_table("wide".into());
-    let wide = app.document.id;
-    let tree = app.workspace.tree.clone();
-    frame_at(&mut app, &ctx, size, vec![]);
-    let rect = app
-        .workspace
-        .tiles
-        .iter()
-        .find(|(id, _)| *id == wide)
-        .unwrap()
-        .1;
-    assert_eq!(
-        rect.width(),
-        app.workspace.area.width(),
-        "schema width should place the table below the whole group before receiving rows"
-    );
-    wait(&mut app, &ctx);
-    assert_eq!(
-        app.workspace.tree, tree,
-        "streaming data never rearranges windows"
-    );
-    app.stage_cell(0, 1, Value::Text("unsaved".into()));
-    app.document.filter = "field0 = 'unfinished'".into();
+    let data = app.document.id;
     let ticket = app.document.result.current;
-    let rows = app.document.result.rows.clone();
-    for _ in 0..2 {
-        frame_at(&mut app, &ctx, size, vec![]);
-    }
-    let header = app
+    app.open_record_window(0, 1);
+    app.stage_cell(0, 1, Value::Text("unsaved".into()));
+    app.document.filter = "body = 'unfinished'".into();
+    frame(&mut app, &ctx, vec![]);
+    frame(&mut app, &ctx, vec![]);
+    let (_, minimize, _) = *app
         .workspace
-        .headers
+        .controls
         .iter()
-        .find(|(id, _)| *id == wide)
-        .unwrap()
-        .1
-        .center();
-    let target = app
+        .find(|(k, _, _)| *k == tiling::Kind::Map)
+        .unwrap();
+    click(&mut app, &ctx, minimize.center());
+    assert!(app.workspace.minimized.contains(&tiling::Kind::Map));
+    frame(&mut app, &ctx, vec![]);
+    let map = app
         .workspace
-        .tiles
+        .pane_rects
         .iter()
-        .find(|(id, _)| *id == map)
-        .unwrap()
-        .1
-        .center();
-    frame_at(
-        &mut app,
-        &ctx,
-        size,
-        vec![
-            egui::Event::PointerMoved(header),
-            pointer_button(header, true),
-        ],
-    );
-    frame_at(
-        &mut app,
-        &ctx,
-        size,
-        vec![egui::Event::PointerMoved(header + egui::vec2(20.0, 0.0))],
-    );
-    assert_eq!(app.workspace.dragging, Some(wide));
-    frame_at(
-        &mut app,
-        &ctx,
-        size,
-        vec![egui::Event::PointerMoved(target)],
-    );
-    assert_eq!(app.workspace.tree, tree, "preview cannot mutate the tree");
-    frame_at(&mut app, &ctx, size, vec![pointer_button(target, false)]);
-    assert_eq!(app.workspace.dragging, None);
-    assert_ne!(app.workspace.tree, tree);
-    assert_eq!(app.workspace.focused, wide);
-    assert!(app.document.has_drafts());
-    assert_eq!(app.document.result.current, ticket);
-    assert_eq!(app.document.result.rows, rows);
-    assert_eq!(app.document.filter, "field0 = 'unfinished'");
-    frame_at(
-        &mut app,
-        &ctx,
-        size,
-        vec![key_event(
-            egui::Key::ArrowDown,
-            egui::Modifiers::CTRL | egui::Modifiers::ALT | egui::Modifiers::SHIFT,
-        )],
-    );
-    assert!(matches!(
-        app.workspace.tree,
-        Some(tiling::Node::Split {
-            horizontal: false,
-            ..
-        })
-    ));
-    let rect = app
-        .workspace
-        .tiles
-        .iter()
-        .find(|(id, _)| *id == wide)
+        .find(|(k, _)| *k == tiling::Kind::Map)
         .unwrap()
         .1;
-    assert_eq!(rect.width(), app.workspace.area.width());
-    // Escape cancels another drag and restores its original expanded state.
-    app.expand_window(wide);
-    for _ in 0..2 {
-        frame_at(&mut app, &ctx, size, vec![]);
+    assert!((map.height() - tiling::BAR).abs() < 0.1);
+    click(&mut app, &ctx, map.left_center() + egui::vec2(70.0, 0.0));
+    assert!(!app.workspace.minimized.contains(&tiling::Kind::Map));
+    for kind in tiling::Kind::PANES {
+        app.minimize_pane(kind);
     }
-    let tree = app.workspace.tree.clone();
-    let header = app
-        .workspace
-        .headers
-        .iter()
-        .find(|(id, _)| *id == wide)
-        .unwrap()
-        .1
-        .center();
-    frame_at(
-        &mut app,
-        &ctx,
-        size,
-        vec![
-            egui::Event::PointerMoved(header),
-            pointer_button(header, true),
-        ],
-    );
-    frame_at(
-        &mut app,
-        &ctx,
-        size,
-        vec![egui::Event::PointerMoved(header + egui::vec2(20.0, 0.0))],
-    );
-    assert_eq!(app.workspace.dragging, Some(wide));
-    frame_at(
-        &mut app,
-        &ctx,
-        size,
-        vec![key_event(egui::Key::Escape, egui::Modifiers::NONE)],
-    );
-    frame_at(&mut app, &ctx, size, vec![pointer_button(target, false)]);
-    assert_eq!(app.workspace.tree, tree);
-    assert_eq!(app.workspace.expanded, Some(wide));
+    app.expand_pane(tiling::Kind::Record);
+    frame(&mut app, &ctx, vec![]);
+    assert_eq!(app.workspace.pane_rects.len(), 1);
+    assert_eq!(app.document.id, data);
     assert!(app.document.has_drafts());
-    let saved = app.workspace_snapshot().unwrap();
-    let saved: workspace::Snapshot =
-        serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
-    assert!(saved.valid());
+    app.expand_pane(tiling::Kind::Record);
+    assert_eq!(app.workspace.minimized.len(), 4);
+    app.retile();
+    frame(&mut app, &ctx, vec![]);
+    assert_eq!(app.workspace.pane_rects.len(), 5);
+    assert_eq!(app.document.result.current, ticket);
+    assert_eq!(app.document.result.rows[0][1], Value::Text("kept".into()));
+    assert_eq!(app.document.filter, "body = 'unfinished'");
+    assert_eq!(app.document.inspect, Some((0, 1)));
+    let output = frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
+    let data_rect = app
+        .workspace
+        .pane_rects
+        .iter()
+        .find(|(k, _)| *k == tiling::Kind::Data)
+        .unwrap()
+        .1;
+    let commit = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(t) if t.galley.job.text == "Commit" && data_rect.contains(t.pos) => {
+                Some(t.pos + egui::vec2(8.0, 6.0))
+            }
+            _ => None,
+        })
+        .expect("direct commit action in data dock");
+    assert!(!app.document.show_preview);
+    click(&mut app, &ctx, commit);
+    wait(&mut app, &ctx);
+    assert!(!app.has_drafts());
+    assert_eq!(
+        app.document.result.rows[0][1],
+        Value::Text("unsaved".into())
+    );
     app.close();
 }

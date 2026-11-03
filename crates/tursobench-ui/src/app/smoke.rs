@@ -143,6 +143,7 @@ impl App {
                     )));
                     self.browse_table(smoke.table.clone());
                     self.retile();
+                    self.preferences.appearance = Some(crate::appearance::Mode::Dark);
                     smoke.stage = 20;
                 } else {
                     smoke.stage = 8;
@@ -150,7 +151,7 @@ impl App {
             }
             26 if self.document.active.is_some()
                 || self.document.tools.inspection_ticket.is_some() => {}
-            20 | 22 | 24 | 26 => {
+            20 | 22 | 24 | 26 | 28 | 30 => {
                 if smoke.capture_frames == 0 {
                     ctx.send_viewport_cmd(egui::ViewportCommand::CursorPosition(egui::pos2(
                         1795.0, 995.0,
@@ -160,10 +161,12 @@ impl App {
                 if smoke.capture_frames >= 15 {
                     smoke.capture_pending = Some(
                         match smoke.stage {
-                            20 => "tiled-system.png",
+                            20 => "workspace-dark.png",
                             22 => "expanded-map.png",
-                            24 => "tiled-light.png",
-                            _ => "wide-table-below.png",
+                            24 => "laptop-light.png",
+                            26 => "laptop-dark.png",
+                            28 => "minimized-tiles.png",
+                            _ => "widescreen.png",
                         }
                         .into(),
                     );
@@ -187,18 +190,29 @@ impl App {
                 self.expand_window(self.document.id);
                 self.browse_table(smoke.table.clone());
                 self.preferences.appearance = Some(crate::appearance::Mode::Light);
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1366.0, 768.0)));
                 smoke.stage = 24;
             }
             25 if smoke.capture_pending.is_none() => {
-                self.preferences.appearance = Some(crate::appearance::Mode::System);
-                if self.schema.iter().any(|o| o.name == "wide_records") {
-                    self.browse_table("wide_records".into());
-                    smoke.stage = 26;
-                } else {
-                    smoke.stage = 8;
-                }
+                self.preferences.appearance = Some(crate::appearance::Mode::Dark);
+                smoke.stage = 26;
             }
             27 if smoke.capture_pending.is_none() => {
+                for kind in [
+                    super::tiling::Kind::Record,
+                    super::tiling::Kind::Structure,
+                    super::tiling::Kind::Sql,
+                ] {
+                    self.minimize_pane(kind);
+                }
+                smoke.stage = 28;
+            }
+            29 if smoke.capture_pending.is_none() => {
+                self.retile();
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(3440.0, 1440.0)));
+                smoke.stage = 30;
+            }
+            31 if smoke.capture_pending.is_none() => {
                 smoke.stage = 8;
             }
             8 => {

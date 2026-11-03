@@ -63,6 +63,17 @@ fn apply(ctx: &egui::Context, dark: bool, palette: &Palette) {
     } else {
         egui::Visuals::light()
     };
+    visuals.panel_fill = if dark {
+        egui::Color32::from_rgb(20, 27, 24)
+    } else {
+        egui::Color32::from_rgb(246, 248, 246)
+    };
+    visuals.window_fill = visuals.panel_fill;
+    visuals.extreme_bg_color = if dark {
+        egui::Color32::from_rgb(12, 18, 16)
+    } else {
+        egui::Color32::WHITE
+    };
     // A forced scheme must never combine light text with a desktop's dark surfaces.
     let colors = if palette.dark == Some(dark) {
         palette.colors.clone()
@@ -85,14 +96,21 @@ fn apply(ctx: &egui::Context, dark: bool, palette: &Palette) {
         &["card_bg_color", "insensitive_bg_color"],
         visuals.faint_bg_color,
     );
-    let text = color(&["window_fg_color", "theme_fg_color"], visuals.text_color());
+    let text = color(
+        &["window_fg_color", "theme_fg_color"],
+        if dark {
+            egui::Color32::from_rgb(226, 236, 230)
+        } else {
+            egui::Color32::from_rgb(37, 54, 45)
+        },
+    );
     visuals.override_text_color = Some(text);
     let accent = color(
         &["accent_color", "theme_selected_bg_color"],
         if dark {
-            egui::Color32::from_rgb(94, 167, 255)
+            egui::Color32::from_rgb(135, 211, 173)
         } else {
-            egui::Color32::from_rgb(20, 105, 202)
+            egui::Color32::from_rgb(28, 121, 82)
         },
     );
     visuals.selection.bg_fill = accent.gamma_multiply(if dark { 0.3 } else { 0.18 });

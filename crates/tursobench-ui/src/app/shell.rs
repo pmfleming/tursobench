@@ -69,8 +69,6 @@ pub(super) struct UiState {
     pub visible_rows: usize,
     #[cfg(test)]
     pub ribbon_actions: Vec<egui::Rect>,
-    #[cfg(test)]
-    pub rail_rect: egui::Rect,
 }
 impl UiState {
     pub fn new(ctx: &egui::Context) -> Self {
@@ -104,8 +102,6 @@ impl UiState {
             visible_rows: 0,
             #[cfg(test)]
             ribbon_actions: vec![],
-            #[cfg(test)]
-            rail_rect: egui::Rect::NOTHING,
         }
     }
 }
@@ -137,7 +133,6 @@ impl App {
         let ctx = ui.ctx().clone();
         if self.workspace.enabled {
             self.switch_document(self.workspace.focused);
-            self.movement_shortcuts(&ctx);
             if ctx.input_mut(|i| {
                 i.consume_key(
                     egui::Modifiers::CTRL | egui::Modifiers::ALT,
@@ -147,10 +142,12 @@ impl App {
                 self.expand_window(self.workspace.focused);
             }
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Tab)) {
-                let ids = self.window_ids();
-                if let Some(index) = ids.iter().position(|id| *id == self.workspace.focused) {
-                    self.focus_window(ids[(index + 1) % ids.len()]);
-                }
+                let panes = super::tiling::Kind::PANES;
+                let index = panes
+                    .iter()
+                    .position(|kind| *kind == self.workspace.active)
+                    .unwrap_or(0);
+                self.focus_pane(panes[(index + 1) % panes.len()]);
             }
         }
         self.shortcuts(&ctx);
@@ -174,13 +171,9 @@ impl App {
                 .size_range(180.0..=300.0)
                 .show(ui, |ui| {
                     if self.session.is_some() {
-                        if self.workspace.enabled {
-                            egui::Panel::bottom("window-navigation")
-                                .default_size(180.0)
-                                .resizable(true)
-                                .size_range(70.0..=240.0)
-                                .show(ui, |ui| self.window_navigation(ui));
-                        }
+                        egui::Panel::bottom("navigator-utilities")
+                            .resizable(false)
+                            .show(ui, |ui| self.navigator_utilities(ui));
                         self.navigation_sidebar(ui);
                     } else {
                         ui.heading("Databases");
@@ -194,22 +187,7 @@ impl App {
             #[cfg(not(test))]
             let _ = panel;
         }
-        if self.session.is_some() {
-            let rail = egui::Panel::left("activity-rail")
-                .exact_size(44.0)
-                .resizable(false)
-                .show(ui, |ui| self.activity_rail(ui));
-            #[cfg(test)]
-            {
-                self.ui.rail_rect = rail.response.rect;
-            }
-            #[cfg(not(test))]
-            let _ = rail;
-        }
         self.status_bar(ui);
-        if self.workspace.enabled {
-            self.command_ribbon(ui);
-        }
         if !self.workspace.enabled {
             if self.document.ui.nav == Nav::Table
                 && (!self.document.ui.inspector_initialized
@@ -280,7 +258,6 @@ impl App {
                 if ui.button("Keep open").clicked(){self.confirm_close=false;self.quit=false;self.pending_database=None;}
             });
         }
-        self.window_close_dialog(&ctx);
         self.edit_windows(&ctx);
         self.inspection_surfaces(&ctx);
         self.command_palette(&ctx);
@@ -371,18 +348,18 @@ impl App {
                 let warn = ui.visuals().warn_fg_color;
                 let (state, color) = self.connection_status(ui.visuals());
                 ui.colored_label(color, state).on_hover_text(&self.status);
-                if self.transaction != TransactionState::Autocommit && !self.workspace.enabled {
+                if self.transaction != TransactionState::Autocommit {
                     ui.colored_label(warn, format!("{:?}", self.transaction));
                     for (label, sql) in [("Commit", "COMMIT"), ("Roll back", "ROLLBACK")] {
-                        let enabled = self.ready && !self.closing && self.document.active.is_none() && self.commit_ticket.is_none() && !self.has_drafts() && (sql!="COMMIT" || self.transaction==TransactionState::Active);
+                        let enabled = self.ready && !self.closing && !self.executing() && self.commit_ticket.is_none() && !self.has_drafts() && (sql!="COMMIT" || self.transaction==TransactionState::Active);
                         let response = ui.add_enabled(enabled, egui::Button::new(label)).on_hover_text("Persistent editor connection. Transactions also apply to read-only sessions.");
                         #[cfg(test)] self.ui.transaction_rects.push(response.rect);
                         if response.clicked() { self.submit(Operation::Execute { sql: sql.into(), parameters: vec![], budget: Budget::default() }, View::Query); }
                     }
                 }
-                if self.has_drafts() && !self.workspace.enabled {
-                    let count = self.document.drafts.as_ref().map_or(0, |d| d.edits.len());
-                    if ui.button(format!("Review {count}")).clicked() { self.document.show_preview = true; }
+                if self.has_drafts() {
+                    let count:usize = self.documents.values().chain(std::iter::once(&self.document)).filter_map(|d| d.drafts.as_ref()).map(|d|d.edits.len()).sum();
+                    if ui.button(format!("Review {count}")).clicked() { self.focus_drafts(); self.document.show_preview = true; }
                 }
                 if !self.workspace.enabled && self.document.active.is_some() && ui.button("Discard results").on_hover_text("Suppresses delivery only; execution and writes continue. Does not roll back.").clicked() {
                     if let (Some(session), Some(ticket)) = (&self.session, self.document.active) { session.discard_results(ticket.request); }

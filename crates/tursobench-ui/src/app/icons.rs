@@ -42,27 +42,11 @@ pub(super) enum Icon {
     Link,
     Up,
     Down,
+    Minimize,
 }
 
 pub(super) fn button(ui: &mut egui::Ui, icon: Icon, name: &str, shortcut: &str) -> egui::Response {
     widget(ui, icon, name, shortcut, None, false)
-}
-
-/// Visible text and a 40-point hit target for the shared command ribbon.
-pub(super) fn action(ui: &mut egui::Ui, icon: Icon, name: &str) -> egui::Response {
-    let response =
-        ui.add(egui::Button::new(format!("      {name}")).min_size(egui::vec2(72.0, 40.0)));
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), name));
-    paint(
-        ui.painter(),
-        egui::Rect::from_center_size(
-            response.rect.left_center() + egui::vec2(16.0, 0.0),
-            egui::vec2(20.0, 20.0),
-        ),
-        icon,
-        ui.style().interact(&response).fg_stroke.color,
-    );
-    response
 }
 
 pub(super) fn control(
@@ -149,6 +133,7 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
             line(&[(13., 6.), (19., 12.), (13., 18.)]);
         }
         Up => line(&[(6., 15.), (12., 9.), (18., 15.)]),
+        Minimize => line(&[(5., 12.), (19., 12.)]),
         Down => line(&[(6., 9.), (12., 15.), (18., 9.)]),
         Search => {
             circle(10., 10., 7.);

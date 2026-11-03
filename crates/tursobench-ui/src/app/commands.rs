@@ -1,6 +1,7 @@
 use super::{
     App, View,
     shell::{Nav, TableView, ToolPanel},
+    tiling::Kind,
 };
 use eframe::egui;
 
@@ -43,9 +44,6 @@ fn fuzzy(label: &str, query: &str) -> bool {
 
 impl App {
     fn dismiss_surface(&mut self, ctx: &egui::Context) {
-        if self.workspace.close_pending.take().is_some() {
-            return;
-        }
         if self.document.tools.inline.take().is_some() {
             return;
         }
@@ -98,18 +96,30 @@ impl App {
         if self.ui.palette_open {
             return;
         }
-        if self.document.ui.sql_open
-            && (!self.workspace.enabled || self.document.kind == super::tiling::Kind::Sql)
+        if self.workspace.enabled && self.workspace.active == Kind::Sql
+            || !self.workspace.enabled && self.document.ui.sql_open
         {
             if consumed(Modifiers::CTRL | Modifiers::SHIFT, Key::Enter) {
+                if self.workspace.enabled {
+                    self.focus_pane(Kind::Sql);
+                }
                 self.run_selection();
             } else if consumed(Modifiers::CTRL, Key::Enter) {
+                if self.workspace.enabled {
+                    self.focus_pane(Kind::Sql);
+                }
                 self.run_sql();
             }
             if consumed(Modifiers::CTRL, Key::Space) {
+                if self.workspace.enabled {
+                    self.focus_pane(Kind::Sql);
+                }
                 self.document.tools.complete = true;
             }
             if consumed(Modifiers::CTRL, Key::S) {
+                if self.workspace.enabled {
+                    self.focus_pane(Kind::Sql);
+                }
                 self.ui.sidebar = ToolPanel::Saved;
             }
         }

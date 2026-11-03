@@ -143,31 +143,24 @@ impl App {
         }
     }
     pub(super) fn record_inspector(&mut self, ui: &mut egui::Ui, row: usize) {
-        ui.strong(format!("Record {} · retained engine values", row + 1));
-        if self.document.view == View::Browse
-            && let Some(table) = &self.document.table
-        {
-            ui.label(format!("Table: {}", table.name));
+        if !self.workspace.enabled {
+            ui.horizontal(|ui| {
+                ui.strong(format!("Record {}", row + 1));
+                if icons::button(ui, Icon::Copy, "Copy row as annotated TSV", "").clicked() {
+                    self.copy_row(ui.ctx(), row);
+                }
+            });
         }
-        if icons::button(ui, Icon::Copy, "Copy row as annotated TSV", "").clicked() {
-            self.copy_row(ui.ctx(), row);
-        }
-        if let Some(info) = self
-            .document
-            .tools
-            .inspection
-            .as_ref()
-            .filter(|i| {
-                self.document.view == View::Browse
-                    && self
-                        .document
-                        .table
-                        .as_ref()
-                        .is_some_and(|t| t.name == i.table.name)
-            })
-            .cloned()
-        {
-            for key in info.foreign_keys {
+        let mut follow = None;
+        if let Some(info) = self.document.tools.inspection.as_ref().filter(|i| {
+            self.document.view == View::Browse
+                && self
+                    .document
+                    .table
+                    .as_ref()
+                    .is_some_and(|t| t.name == i.table.name)
+        }) {
+            for key in &info.foreign_keys {
                 if ui
                     .add_enabled(
                         !self.has_drafts() && self.document.active.is_none(),
@@ -175,14 +168,17 @@ impl App {
                     )
                     .clicked()
                 {
-                    self.follow_key(row, key);
-                    return;
+                    follow = Some(key.clone());
                 }
             }
         }
+        if let Some(key) = follow {
+            self.follow_key(row, key);
+            return;
+        }
         let mut inspect = None;
         let mut edit = None;
-        if let Some(values) = self.document.result.rows.get(row).cloned() {
+        if let Some(values) = self.document.result.rows.get(row) {
             egui::Grid::new("compact-record")
                 .num_columns(2)
                 .spacing([8.0, 1.0])
@@ -197,15 +193,14 @@ impl App {
                             .document
                             .drafts
                             .as_ref()
-                            .and_then(|d| d.displayed(&values, col))
+                            .and_then(|d| d.displayed(values, col))
                             .unwrap_or(value);
-                        if let Some(inline) = self
-                            .document
-                            .tools
-                            .inline
-                            .as_mut()
-                            .filter(|e| e.row == row && e.column == col)
-                        {
+                        if let Some(inline) = self.document.tools.inline.as_mut().filter(|e| {
+                            e.row == row
+                                && e.column == col
+                                && (!self.workspace.enabled
+                                    || self.workspace.active == super::tiling::Kind::Record)
+                        }) {
                             let response = ui.add_sized(
                                 [ui.available_width().min(240.0), 25.0],
                                 egui::TextEdit::singleline(&mut inline.editor.input),
@@ -300,7 +295,7 @@ impl App {
             let mut open = true;
             egui::Window::new("Keyboard and safety reference").open(&mut open).default_width(560.0).show(ctx,|ui|{
                 egui::ScrollArea::vertical().max_height(500.0).show(ui,|ui|{
-                    for line in ["Rail: Tables / Map / History / Saved / Checks; Settings opens in the workspace","Ctrl+K: tables / columns / commands · Ctrl+J: SQL view · Ctrl+1 / Ctrl+2: Data / Structure","Ctrl+O: database chooser · Folder icon / Alt+Enter: file dialog · F1: help · Ctrl+T: theme","Database chooser: Down enters results; Up/Down browses; Enter selects; typing resumes search","In SQL editor: Ctrl+Enter / F5 runs one statement; Ctrl+Shift+Enter runs selection/current statement; Ctrl+Space completes","Ctrl+Shift+C: retained TSV · Ctrl+E: export · Alt+Left: Back / return to table","Grid: arrows move, Shift+arrows extend, Space opens record detail, Ctrl+C copies selection","Double-click / Enter: inline stage · Escape: cancel · right-click: typed detail / filter / copy","Headers: drag to move, edge drag to resize, double-click edge to fit; funnel shows sampled values","Drag title: edges split, center swaps, Shift+center groups tabs, Esc cancels; right-click for options","Ctrl+Alt+Shift+arrow: move focused window to workspace edge","Ctrl+Alt+Enter: expand/restore view · Ctrl+Tab: next view · left navigation remains visible","Scroll / PgDn: load bounded pages; Ctrl+F: typed tokens. Map camera is saved on close.","Exports/copies never rerun SQL and exclude staged overlays","Discard suppresses delivery; execution and writes continue until the worker reports completion","Closing waits for actual execution and rollback acknowledgement","Writable SQL autocommits unless you BEGIN; staged edits require review and explicit commit"]{ui.label(line);}
+                    for line in ["Navigator footer: Tables / History / Saved / Checks / Settings / Help","Ctrl+K: tables / columns / commands · Ctrl+J: SQL view · Ctrl+1 / Ctrl+2: Data / Structure","Ctrl+O: database chooser · Folder icon / Alt+Enter: file dialog · F1: help · Ctrl+T: theme","Database chooser: Down enters results; Up/Down browses; Enter selects; typing resumes search","In SQL editor: Ctrl+Enter / F5 runs one statement; Ctrl+Shift+Enter runs selection/current statement; Ctrl+Space completes","Ctrl+Shift+C: retained TSV · Ctrl+E: export · Alt+Left: Back / return to table","Grid: arrows move, Shift+arrows extend, Space opens record detail, Ctrl+C copies selection","Double-click / Enter: inline stage · Escape: cancel · right-click: typed detail / filter / copy","Headers: drag to move, edge drag to resize, double-click edge to fit; funnel shows sampled values","Tiles have fixed positions. Minimize to a header or expand to fill the workspace.","Ctrl+Alt+Enter: expand/restore view · Ctrl+Tab: next view · left navigation remains visible","Scroll / PgDn: load bounded pages; Ctrl+F: typed tokens. Map camera is saved on close.","Exports/copies never rerun SQL and exclude staged overlays","Discard suppresses delivery; execution and writes continue until the worker reports completion","Closing waits for actual execution and rollback acknowledgement","Writable SQL autocommits unless you BEGIN; staged edits require explicit commit; Diff / SQL review is optional"]{ui.label(line);}
                 });
             });
             self.tools.help = open;
