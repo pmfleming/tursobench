@@ -18,6 +18,8 @@ pub(super) struct Structure<'a> {
 }
 impl Structure<'_> {
     pub fn show(&self, ui: &mut egui::Ui) -> Option<Action> {
+        self.definition(ui);
+        ui.separator();
         let mut action = None;
         let count = if ui.available_width() >= 720.0 { 2 } else { 1 };
         ui.columns(count, |panes| {
@@ -36,9 +38,23 @@ impl Structure<'_> {
             {
                 action = Some(Action::Load);
             }
-            self.definitions(ui);
         });
+        self.definitions(ui);
         action
+    }
+    fn definition(&self, ui: &mut egui::Ui) {
+        let ddl = self.object.and_then(|o| o.ddl.as_deref());
+        ui.horizontal(|ui| {
+            ui.strong("CREATE statement");
+            if let Some(ddl) = ddl {
+                copy_definition(ui, ddl, "Copy original DDL");
+            }
+        });
+        if let Some(ddl) = ddl {
+            code_view(ui, ddl, 3);
+        } else {
+            ui.weak("DDL not retained; refresh the catalog.");
+        }
     }
     fn definitions(&self, ui: &mut egui::Ui) {
         let owner = self
@@ -56,26 +72,15 @@ impl Structure<'_> {
             ui.strong("Index and trigger definitions");
         }
         for object in definitions {
-            ui.collapsing(format!("{} {}", object.kind, object.name), |ui| {
+            ui.group(|ui| {
+                ui.strong(format!("{} {}", object.kind, object.name));
                 if let Some(ddl) = &object.ddl {
                     copy_definition(ui, ddl, "Copy definition");
-                    ui.monospace(ddl);
+                    code_view(ui, ddl, 2);
                 } else {
                     ui.weak("Engine-generated definition");
                 }
             });
-        }
-        ui.strong("Definition");
-        ui.weak(
-            "CHECK clauses, index expressions and FTS methods are preserved in the original DDL.",
-        );
-        if let Some(ddl) = self.object.and_then(|o| o.ddl.as_deref()) {
-            ui.collapsing("CREATE statement", |ui| {
-                copy_definition(ui, ddl, "Copy original DDL");
-                code_view(ui, ddl, 8);
-            });
-        } else {
-            ui.weak("DDL not retained; refresh the catalog.");
         }
     }
 }
