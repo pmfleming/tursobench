@@ -37,12 +37,23 @@ development folders (`Projects`, `projects`, `Code`, `code`, `Developer`,
 recursion limit, recent parents one, application data/state three,
 and home zero. Launching from home never makes all of home recursive.
 
-**Search settings…** opens a separate scrollable dialog with a startup toggle,
-folder picker, typed folder entry, exclusions, refresh/stop controls and scan
-statistics. These controls are also available as Database discovery in Settings.
-When a search reaches its budget, **Search a folder…** is available below the
-results to search a narrower location directly.
-**Save and search this folder** saves an absolute folder and searches that folder
+The **Search settings** icon beside the database count opens a compact scrollable
+dialog containing all search-folder controls and search feedback. **At startup** toggles
+automatic discovery. The refresh icon reruns the configured search and becomes a
+stop control while searching. Icon buttons have tooltips and accessible names.
+
+Under **Search folders**, use the folder icon to pick a location, or enter an
+absolute path and press **Enter** or **+** to save and search it. Under **Excluded**,
+enter a path and press **Enter** or **+** to exclude it. The **×** on each folder
+row removes that entry; it never deletes files. Refresh after removing an
+exclusion. Long paths show in full on hover. The footer shows header, folder,
+unavailable and skipped counts with labels on hover; **Limit reached** means
+only part of the configured locations was searched.
+
+These controls are also available as Database discovery in Settings.
+When a search reaches its budget, use the folder icon in **Search folders** to
+search a narrower location directly.
+**Add and search folder** saves an absolute folder and searches that folder
 immediately, including extensionless files, to five levels. This manual search
 also works when startup discovery is disabled. Use a narrower folder to look
 past an automatic depth or resource limit. **Refresh databases** reruns the configured
@@ -88,10 +99,21 @@ writes database/sidecar files. It first considers `.db`, `.sqlite`, `.sqlite3`,
 data, recent-file parents and added folders. Remembered paths are checked
 regardless of extension. WAL, SHM, journal and Turso `.db-log` sidecars are excluded.
 
-The SQLite-format header is shared by Turso and SQLite. Each checked file has a
-type icon: **T — Likely Turso**, **S — Likely SQLite**, or **? — Unknown engine**.
-Hover a row for the classification's evidence and limitations. Recent/cached
-files start with an unknown icon until checked; classifications are not cached.
+Each row shows the database name and its two nearest containing folders, such as
+`clip-daemon/history`. Hover shows only the full file path. The icons are:
+
+- **Turso logomark with a check:** successfully opened with Turso. This is restored
+  from successful-open history; it confirms past compatibility, not the creating
+  engine or the current state of a file that may have changed.
+- **Turso logomark:** likely Turso, based on the current header check.
+- **Generic database:** another or unidentified database, including likely SQLite.
+
+The marks use [Turso's official brand assets](https://turso.tech/brand), with aqua
+on dark themes and dark teal on light themes. Status is also available to screen
+readers. Missing/unreadable files retain a short status label. Right-click a row
+for classification evidence, file size and Forget. Header classifications are not
+cached; only successful-open history restores the checked Turso mark. The
+SQLite-format header is shared by Turso and SQLite.
 
 Classification uses the existing 100-byte header read. Turso 0.8.3 initializes
 the writer version and version-valid-for fields to 3047000, with a change counter

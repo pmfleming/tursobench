@@ -21,12 +21,14 @@ pub(super) enum Icon {
     Saved,
     Checks,
     Settings,
-    Help,
+    Desktop,
+    Sun,
+    Moon,
     Close,
+    Disconnect,
     Popout,
     Lock,
     Edit,
-    More,
     Fit,
     Arrange,
     Columns,
@@ -43,10 +45,24 @@ pub(super) enum Icon {
     Up,
     Down,
     Minimize,
+    Zoom100,
 }
 
 pub(super) fn button(ui: &mut egui::Ui, icon: Icon, name: &str, shortcut: &str) -> egui::Response {
-    widget(ui, icon, name, shortcut, None, false)
+    widget(ui, icon, name, shortcut, None, false, 1.0)
+}
+
+pub(super) const RIBBON_BUTTON_SIZE: f32 = 56.0;
+
+/// Tile ribbons use twice the normal glyph, padding, and hit-target size.
+pub(super) fn ribbon_button(
+    ui: &mut egui::Ui,
+    icon: Icon,
+    name: &str,
+    shortcut: &str,
+    selected: Option<bool>,
+) -> egui::Response {
+    widget(ui, icon, name, shortcut, selected, false, 2.0)
 }
 
 pub(super) fn control(
@@ -57,7 +73,7 @@ pub(super) fn control(
     selected: bool,
     label: bool,
 ) -> egui::Response {
-    widget(ui, icon, name, shortcut, Some(selected), label)
+    widget(ui, icon, name, shortcut, Some(selected), label, 1.0)
 }
 
 fn widget(
@@ -67,13 +83,14 @@ fn widget(
     shortcut: &str,
     selected: Option<bool>,
     label: bool,
+    scale: f32,
 ) -> egui::Response {
     let text = if label {
         format!("     {name}")
     } else {
         String::new()
     };
-    let mut native = egui::Button::new(text).min_size(egui::vec2(28.0, 28.0));
+    let mut native = egui::Button::new(text).min_size(egui::vec2(28.0, 28.0) * scale);
     if let Some(selected) = selected {
         native = native.selected(selected);
     }
@@ -85,8 +102,11 @@ fn widget(
         None => egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), name),
     });
     let rect = egui::Rect::from_center_size(
-        egui::pos2(response.rect.left() + 14.0, response.rect.center().y),
-        egui::vec2(16.0, 16.0),
+        egui::pos2(
+            response.rect.left() + 14.0 * scale,
+            response.rect.center().y,
+        ),
+        egui::vec2(16.0, 16.0) * scale,
     );
     paint(
         ui.painter(),
@@ -104,7 +124,7 @@ fn widget(
 pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color: egui::Color32) {
     let p =
         |x: f32, y: f32| rect.min + egui::vec2(x * rect.width() / 24.0, y * rect.height() / 24.0);
-    let stroke = Stroke::new(1.4, color);
+    let stroke = Stroke::new(1.4 * (rect.width() / 16.0).max(1.0), color);
     let line = |points: &[(f32, f32)]| {
         painter.add(egui::Shape::line(
             points.iter().map(|&(x, y)| p(x, y)).collect::<Vec<Pos2>>(),
@@ -134,6 +154,15 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
         }
         Up => line(&[(6., 15.), (12., 9.), (18., 15.)]),
         Minimize => line(&[(5., 12.), (19., 12.)]),
+        Zoom100 => {
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "100%",
+                egui::FontId::proportional(rect.height() * 0.45),
+                color,
+            );
+        }
         Down => line(&[(6., 9.), (12., 15.), (18., 9.)]),
         Search => {
             circle(10., 10., 7.);
@@ -243,21 +272,47 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
                 circle(x, y, 2.5);
             }
         }
-        Help => {
-            circle(12., 12., 9.);
-            line(&[
-                (8., 8.),
-                (10., 6.),
-                (14., 6.),
-                (16., 9.),
-                (12., 13.),
-                (12., 14.),
-            ]);
-            circle(12., 18., 0.6);
+        Desktop => {
+            box_(3., 4., 18., 13.);
+            line(&[(12., 17.), (12., 21.)]);
+            line(&[(8., 21.), (16., 21.)]);
+        }
+        Sun => {
+            circle(12., 12., 4.);
+            for index in 0..8 {
+                let angle = index as f32 * std::f32::consts::FRAC_PI_4;
+                line(&[
+                    (12. + 7. * angle.cos(), 12. + 7. * angle.sin()),
+                    (12. + 10. * angle.cos(), 12. + 10. * angle.sin()),
+                ]);
+            }
+        }
+        Moon => {
+            for points in [
+                [p(17., 3.), p(-1., 3.), p(-1., 21.), p(17., 21.)],
+                [p(17., 21.), p(5., 17.), p(5., 7.), p(17., 3.)],
+            ] {
+                painter.add(egui::epaint::CubicBezierShape::from_points_stroke(
+                    points,
+                    false,
+                    egui::Color32::TRANSPARENT,
+                    stroke,
+                ));
+            }
         }
         Close => {
             line(&[(6., 6.), (18., 18.)]);
             line(&[(6., 18.), (18., 6.)]);
+        }
+        Disconnect => {
+            let arc: Vec<_> = (0..=24)
+                .map(|step| {
+                    let angle = (-50.0 + step as f32 * 280.0 / 24.0).to_radians();
+                    (12.0 + 9.0 * angle.cos(), 12.0 + 9.0 * angle.sin())
+                })
+                .collect();
+            line(&arc);
+            line(&[(12., 2.), (12., 12.)]);
         }
         Popout => {
             line(&[(14., 3.), (21., 3.), (21., 10.)]);
@@ -283,11 +338,6 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
             (10., 18.),
             (4., 20.),
         ]),
-        More => {
-            for x in [5., 12., 19.] {
-                circle(x, 12., 1.);
-            }
-        }
         Fit => {
             for (x, y, dx, dy) in [
                 (3., 3., 5., 5.),
@@ -405,6 +455,30 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ribbon_buttons_double_the_icon_and_hit_target_without_losing_accessibility() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let normal = button(ui, Icon::Columns, "Normal columns", "");
+            let large = ribbon_button(ui, Icon::Columns, "Ribbon columns", "", Some(true));
+            assert_eq!(large.rect.size(), normal.rect.size() * 2.0);
+        });
+        output.textures_delta.clear();
+        let update = output.platform_output.accesskit_update.unwrap();
+        assert!(
+            update
+                .nodes
+                .iter()
+                .any(|(_, n)| n.label() == Some("Ribbon columns")
+                    && n.toggled() == Some(egui::accesskit::Toggled::True))
+        );
+        assert!(output.shapes.iter().any(|shape| match &shape.shape {
+            egui::Shape::Rect(rect) => (rect.stroke.width - 2.8).abs() < 0.01,
+            _ => false,
+        }));
+    }
+
     #[test]
     fn painter_buttons_expose_names_and_selected_state_to_accesskit() {
         let ctx = egui::Context::default();

@@ -1019,6 +1019,34 @@ fn navigation_restores_typed_browse_context_and_query_return_without_dropping_dr
 }
 
 #[test]
+fn settings_shortcut_uses_the_left_panel_before_a_database_is_open() {
+    let ctx = egui::Context::default();
+    let mut app = App::new(&ctx);
+    frame(&mut app, &ctx, vec![]);
+    press_key(&mut app, &ctx, egui::Key::Comma, egui::Modifiers::CTRL);
+    let output = frame_at(&mut app, &ctx, egui::vec2(1280.0, 720.0), vec![]);
+    assert_eq!(app.ui.sidebar, shell::ToolPanel::Settings);
+    assert_eq!(app.document.ui.nav, shell::Nav::Databases);
+    let heading = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.job.text == "Settings" => Some(text),
+            _ => None,
+        })
+        .expect("Settings is visible before opening a database");
+    assert!(
+        app.ui
+            .sidebar_rect
+            .contains_rect(heading.galley.rect.translate(heading.pos.to_vec2()))
+    );
+    app.select_tool(shell::ToolPanel::Schema);
+    frame(&mut app, &ctx, vec![]);
+    assert!(app.session.is_none());
+    assert_eq!(app.document.ui.nav, shell::Nav::Databases);
+}
+
+#[test]
 fn sidebar_catalog_includes_views_when_map_is_incomplete_and_tools_preserve_rows() {
     let (_dir, ctx, mut app) = fixture(
         &[
@@ -1042,7 +1070,10 @@ fn sidebar_catalog_includes_views_when_map_is_incomplete_and_tools_preserve_rows
         shell::ToolPanel::Diagnostics,
         shell::ToolPanel::Settings,
     ] {
+        let nav = app.document.ui.nav;
         app.select_tool(panel);
+        assert_eq!(app.ui.sidebar, panel);
+        assert_eq!(app.document.ui.nav, nav);
         let mut output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -1054,6 +1085,26 @@ fn sidebar_catalog_includes_views_when_map_is_incomplete_and_tools_preserve_rows
             |ui| app.render(ui),
         );
         assert!(output.shapes.len() > 10);
+        if panel == shell::ToolPanel::Settings {
+            let heading = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == "Settings" => Some(text),
+                    _ => None,
+                })
+                .expect("Settings is visible in the navigator");
+            assert!(
+                app.ui
+                    .sidebar_rect
+                    .contains_rect(heading.galley.rect.translate(heading.pos.to_vec2()))
+            );
+            assert!(app.ui.sidebar_rect.width() <= 300.0);
+            assert!(
+                app.ui.visible_rows > 0,
+                "Settings must keep the data workspace visible"
+            );
+        }
         app.select_tool(shell::ToolPanel::Schema);
         output.textures_delta.clear();
         assert_eq!(app.document.result.current, ticket);
@@ -1703,9 +1754,42 @@ fn cancelling_a_recent_database_switch_clears_the_pending_path() {
     let path = dir.path().join("active.db");
     crate::test_support::create(&path, &["CREATE TABLE sample(id INTEGER PRIMARY KEY)"]);
     let (ctx, mut app) = connected(&path, true);
+    ctx.enable_accesskit();
     let session = app.session.as_ref().unwrap().id;
-    app.pending_database = Some(dir.path().join("other.db"));
-    app.request_close();
+    let other = dir.path().join("other.db");
+    app.preferences.discovery.record_open(other.clone(), 1);
+    fn control(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
+        let bounds = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .find_map(|(_, node)| {
+                node.label()
+                    .filter(|name| name.starts_with(label))
+                    .and(node.bounds())
+            })
+            .unwrap_or_else(|| panic!("Missing switcher control: {label}"));
+        egui::pos2(
+            (bounds.x0 + bounds.x1) as f32 / 2.0,
+            (bounds.y0 + bounds.y1) as f32 / 2.0,
+        )
+    }
+    for target in [&path, &other] {
+        let output = frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
+        click(&mut app, &ctx, control(&output, "Switch database"));
+        frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
+        let output = frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
+        click(&mut app, &ctx, control(&output, target.to_str().unwrap()));
+        if target == &path {
+            assert!(!app.confirm_close && !app.closing);
+            assert!(app.pending_database.is_none());
+            assert_eq!(app.session.as_ref().unwrap().id, session);
+        }
+    }
+    assert_eq!(app.pending_database.as_ref(), Some(&other));
     assert!(app.confirm_close);
     press_key(&mut app, &ctx, egui::Key::Escape, egui::Modifiers::NONE);
     assert!(app.pending_database.is_none());
@@ -1713,6 +1797,18 @@ fn cancelling_a_recent_database_switch_clears_the_pending_path() {
     assert!(!app.closing);
     assert_eq!(app.session.as_ref().unwrap().id, session);
     assert_eq!(app.path, path.to_string_lossy());
+    for action in ["Choose database", "Close database"] {
+        let output = frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
+        click(&mut app, &ctx, control(&output, "Switch database"));
+        frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
+        let output = frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
+        click(&mut app, &ctx, control(&output, action));
+        assert!(app.confirm_close);
+        assert!(app.pending_database.is_none());
+        press_key(&mut app, &ctx, egui::Key::Escape, egui::Modifiers::NONE);
+        assert!(!app.closing && !app.confirm_close);
+        assert_eq!(app.session.as_ref().unwrap().id, session);
+    }
     app.close();
 }
 
@@ -1935,5 +2031,111 @@ fn fixed_panes_preserve_drafts_selection_and_results_through_layout_changes() {
         app.document.result.rows[0][1],
         Value::Text("unsaved".into())
     );
+    app.close();
+}
+
+#[test]
+fn every_tile_exposes_its_actions_without_an_overflow_menu() {
+    let (_dir, ctx, mut app) = fixture(
+        &[
+            "CREATE TABLE sample(id INTEGER PRIMARY KEY, body TEXT)",
+            "INSERT INTO sample VALUES(1,'kept')",
+        ],
+        false,
+    );
+    app.browse_table("sample".into());
+    wait(&mut app, &ctx);
+    ctx.enable_accesskit();
+    let cases: &[(tiling::Kind, &[&str])] = &[
+        (
+            tiling::Kind::Map,
+            &[
+                "Fit relationships",
+                "Arrange nodes",
+                "Columns",
+                "Find",
+                "Refresh schema",
+                "Toggle system tables",
+                "Reset zoom to 100%",
+            ],
+        ),
+        (
+            tiling::Kind::Data,
+            &[
+                "Refresh",
+                "Filter",
+                "Fit columns",
+                "Export",
+                "Inspect selected record",
+                "Show all columns",
+                "Copy retained rows",
+                "Count table rows (full scan)",
+                "New row (staged)",
+                "Visible columns",
+            ],
+        ),
+        (
+            tiling::Kind::Record,
+            &[
+                "Copy record",
+                "Clone record",
+                "Stage deletion",
+                "Copy selected value",
+            ],
+        ),
+        (tiling::Kind::Structure, &["Copy DDL", "Refresh"]),
+        (
+            tiling::Kind::Sql,
+            &[
+                "Run",
+                "Run selection / statement at cursor",
+                "Explain query plan",
+                "Explain bytecode",
+                "Typed parameters",
+                "Completions",
+                "Save query",
+                "New SQL editor",
+                "Begin editor transaction",
+                "Commit transaction",
+                "Roll back transaction",
+            ],
+        ),
+    ];
+    for &(kind, expected) in cases {
+        app.workspace.expanded = Some(kind);
+        app.focus_pane(kind);
+        // An expanded wide tile should show all commands without opening any popup.
+        frame_at(&mut app, &ctx, egui::vec2(3440.0, 1440.0), vec![]);
+        let output = frame_at(&mut app, &ctx, egui::vec2(3440.0, 1440.0), vec![]);
+        let tree = output.platform_output.accesskit_update.unwrap();
+        let controls = tree
+            .nodes
+            .iter()
+            .filter_map(|(_, node)| node.label())
+            .collect::<Vec<_>>();
+        for label in expected.iter().copied().chain([
+            "Table data",
+            "Structure",
+            "Relationships",
+            "SQL",
+            "Review staged edits",
+            "Show all tiles",
+            "Discard result delivery (execution continues)",
+            "Minimize to header",
+            "Restore workspace",
+        ]) {
+            assert!(
+                controls.contains(&label),
+                "{kind:?} missing direct control: {label}"
+            );
+        }
+        assert!(!controls.contains(&"More actions"));
+        assert!(!controls.contains(&"SQL actions"));
+        for &(pane, minimize, expand) in &app.workspace.controls {
+            assert_eq!(pane, kind);
+            assert_eq!(minimize.size(), egui::vec2(56.0, 56.0));
+            assert_eq!(expand.size(), egui::vec2(56.0, 56.0));
+        }
+    }
     app.close();
 }

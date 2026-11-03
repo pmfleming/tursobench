@@ -104,8 +104,7 @@ impl App {
             match result {
                 Ok(Some(path)) => self.add_search_folder(path),
                 Ok(None) => {
-                    self.databases.message =
-                        Some("No search folder selected. You can enter a folder path below.".into())
+                    self.databases.message = None;
                 }
                 Err(error) => {
                     self.databases.message =

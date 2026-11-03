@@ -313,14 +313,22 @@ impl App {
                         ui.horizontal(|ui| {
                             if ui
                                 .add_sized(
-                                    [ui.available_width() - 32.0, 26.0],
+                                    [
+                                        (ui.available_width()
+                                            - icons::RIBBON_BUTTON_SIZE
+                                            - ui.spacing().item_spacing.x)
+                                            .max(0.0),
+                                        icons::RIBBON_BUTTON_SIZE,
+                                    ],
                                     egui::Button::new(kind.label()).frame(false),
                                 )
                                 .clicked()
                             {
                                 self.focus_pane(kind);
                             }
-                            if icons::button(ui, Icon::Fit, "Expand to workspace", "").clicked() {
+                            if icons::ribbon_button(ui, Icon::Fit, "Expand to workspace", "", None)
+                                .clicked()
+                            {
                                 self.expand_pane(kind);
                             }
                         });

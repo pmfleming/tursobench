@@ -53,7 +53,8 @@ impl App {
             .id(egui::Id::unique("database-search-settings"))
             .open(&mut open)
             .collapsible(false)
-            .default_width(520.0)
+            .default_width(420.0)
+            .min_width(280.0)
             .max_height(480.0)
             .vscroll(true)
             .show(ui.ctx(), |ui| {
@@ -352,13 +353,37 @@ mod tests {
         app.set_database_path("/work/example.db".into());
         app.exclusive = true;
         app.writable = true;
+        app.databases.message = Some("Folder excluded.".into());
+        app.databases.summary = Some(crate::discovery::Summary {
+            limited: true,
+            error: Some("Search worker disconnected".into()),
+            ..Default::default()
+        });
         let texts = frame(&mut app, &ctx, vec![], egui::vec2(1280.0, 720.0));
-        assert!(!texts.iter().any(|text| text == "Refresh databases"));
+        for hidden in [
+            "Search folders",
+            "Search settings…",
+            "Search a folder…",
+            "Folder excluded.",
+            "Limit reached",
+            "Search worker disconnected",
+            "Searched part of the configured locations.",
+        ] {
+            assert!(!texts.iter().any(|text| text == hidden), "{hidden}");
+        }
+        assert!(app.databases.settings_rect.unwrap().width() <= 30.0);
         let settings = app.databases.settings_rect.unwrap().center();
         click(&mut app, &ctx, settings);
         let texts = frame(&mut app, &ctx, vec![], egui::vec2(1280.0, 720.0));
         assert!(app.databases.settings_open);
-        assert!(texts.iter().any(|text| text == "Refresh databases"));
+        for visible in [
+            "Search folders",
+            "Folder excluded.",
+            "Limit reached",
+            "Search worker disconnected",
+        ] {
+            assert!(texts.iter().any(|text| text == visible), "{visible}");
+        }
         assert_eq!(app.path, "/work/example.db");
         assert!(app.exclusive && app.writable);
         assert!(app.session.is_none());
@@ -404,7 +429,7 @@ mod tests {
                 );
                 assert!(app.databases.search_rect.unwrap().width() <= 800.0);
                 assert!(app.databases.row_rects.len() < 10);
-                assert!(texts.iter().any(|text| text == "Recent"));
+                assert!(texts.iter().any(|text| text == "recent.db"));
                 assert!(texts.iter().any(|text| text == "Missing"));
                 assert!(!app.databases.entries[1].selectable());
             }

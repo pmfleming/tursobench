@@ -75,6 +75,8 @@ See the [UI guide and capability map](ui-redesign.md) for workspace navigation,
 responsive behavior, diagram limits and validation. Relationships sits above Table data;
 Record and Structure follow the selected table. SQL editors keep drafts and linked results
 inside the SQL tile. All views share one database session and transaction; they are not independent transaction tabs.
+Settings opens in the left navigator, like History, Saved queries and Database checks,
+while the current workspace stays visible. The Settings command and Ctrl+, use the same panel.
 Back restores typed filters, sorting, the retained browse window and matching row selection. Explicit
 table/related counts preserve the grid and drafts; automatic counts remain deferred. Painter icons include accessible names;
 native AccessKit integration is enabled. At 1280×720, the default table view shows
@@ -82,6 +84,45 @@ at least 15 complete rows when expanded.
 
 See the [tursotui functionality review](tursotui-review.md) for changes,
 shortcuts, evidence and the remaining gaps—not a claim of complete parity.
+
+### Navigator tools
+
+The large footer icons switch between Tables, History, Saved queries, Checks and
+Settings in the left panel. Hover controls for their names; F1 opens keyboard help.
+
+The database card at the top opens a bounded, scrollable recent-database switcher.
+Each row shows its filename, two nearest folders and the same engine icon as the
+database chooser; hover shows only its full path. The active database is highlighted.
+Search matches full paths as well as filenames; Enter selects a single matching
+result. Selecting the active database simply dismisses the switcher. The folder
+icon returns to the database chooser, and the power icon closes the database.
+Switching or closing still follows the managed close/rollback flow, including
+confirmation for writable sessions and fresh access review for another database.
+
+- **Tables:** search names or columns, then use the refresh icon to reload schema.
+- **History:** the filter icon shows only slow queries; the down-arrow orders by
+  duration. Each card shows SQL, timing and any failed/slow status. Click its SQL
+  preview or editor icon to load it. Loading clears bindings and does not execute
+  SQL. History includes this database and legacy unscoped entries. Stored SQL can
+  contain sensitive values; bindings are never saved.
+- **Saved queries:** enter a name and use **+** to save the current editor SQL.
+  Names can be edited directly in each card. The editor icon loads SQL without
+  running it and clears bindings. Search matches both names and SQL. Legacy
+  entries remain visible alongside queries for the current database.
+- The trash icon on a query card removes that entry. The trash icon in the History
+  or Saved queries header clears stored entries **for all databases**, including
+  legacy entries; its tooltip identifies that scope.
+- **Checks:** Storage contains database files, journal mode, page count and free
+  pages; Validation contains integrity and foreign-key checks. All six actions
+  are read-only. They run on the browse worker and may take time; discarding result
+  delivery does not interrupt execution. There are no repair, VACUUM, checkpoint
+  or writable PRAGMA actions.
+- **Settings:** the monitor, sun and moon select system, light and dark appearance.
+  Appearance saves immediately; hover **Aa** for font information. Use the save
+  icon in the header after changing query limits, timeouts or the NULL marker.
+  Busy wait applies after reopening the database; Slow ≥ controls history's slow
+  filter and labels. The NULL marker changes display only. Expand Discovery for
+  the [search-folder controls](database-discovery.md).
 
 Parameters use tagged JSON (cell editing also has a typed form), for example:
 

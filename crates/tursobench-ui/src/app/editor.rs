@@ -183,7 +183,7 @@ impl App {
     }
     pub(super) fn editor_ui(&mut self, ui: &mut egui::Ui) {
         if !self.workspace.enabled {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 3.0;
                 if ui
                     .add_enabled(
@@ -250,17 +250,12 @@ impl App {
                 if icons::button(ui, Icon::Close, "Close SQL editor", "Ctrl J").clicked() {
                     self.document.ui.sql_open = false;
                 }
-                let more = icons::button(ui, Icon::More, "SQL actions", "");
-                egui::Popup::menu(&more).show(|ui| {
-                    if ui.button("Explain bytecode").clicked() {
-                        self.run_text(self.document.sql.clone(), Some(true));
-                        ui.close();
-                    }
-                    if ui.button("Bookmark editor SQL").clicked() {
-                        self.ui.sidebar = shell::ToolPanel::Saved;
-                        ui.close();
-                    }
-                });
+                if icons::button(ui, Icon::Structure, "Explain bytecode", "").clicked() {
+                    self.run_text(self.document.sql.clone(), Some(true));
+                }
+                if icons::button(ui, Icon::Saved, "Bookmark editor SQL", "Ctrl S").clicked() {
+                    self.ui.sidebar = shell::ToolPanel::Saved;
+                }
             });
         }
         let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, width: f32| {

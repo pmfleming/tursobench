@@ -114,25 +114,6 @@ impl App {
             }
         }
     }
-    pub(super) fn diagnostics_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Read-only checks");
-        for diagnostic in tursobench_db::Diagnostic::ALL {
-            if ui
-                .add_enabled(
-                    self.ready && !self.closing,
-                    egui::Button::new(diagnostic.label()),
-                )
-                .clicked()
-            {
-                self.submit(Operation::Diagnostic(diagnostic), View::Diagnostics);
-            }
-        }
-        ui.separator();
-        ui.label("No repair, VACUUM, checkpoint or writable PRAGMA shortcuts.");
-        ui.small(
-            "Checks run on the browse worker and may be slow. Discard does not interrupt them.",
-        );
-    }
     pub(super) fn structure_inspector(&mut self, ui: &mut egui::Ui) {
         let name = self
             .document

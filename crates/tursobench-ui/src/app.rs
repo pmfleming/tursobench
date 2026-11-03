@@ -18,6 +18,7 @@ mod inspector;
 #[cfg(test)]
 mod interaction_tests;
 mod paging;
+mod panels;
 mod results;
 mod ribbon;
 mod schema;

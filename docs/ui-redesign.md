@@ -16,10 +16,15 @@ separate open-tile title bar, window dragging or divider resizing.
   returns to the fixed arrangement and preserves the other minimized tiles.
 - Ctrl Alt Enter expands/restores the focused tile. Ctrl Tab cycles the five tiles.
   Escape dismisses an active edit, popup or dialog before restoring expansion.
-- More contains overflow actions; Show all tiles restores the complete workspace.
-  Labels, tooltips and accessible names remain available for icon buttons.
-- The navigator footer opens Tables, History, Saved queries, Checks, Settings and
-  Help. The database name opens recent databases and managed open/close actions.
+- Tile ribbons expose actions directly with 32-point icons and 56-point buttons,
+  twice their previous size. Narrow ribbons scroll horizontally; actions never
+  collapse into a More menu. Column visibility and open SQL editors have dedicated
+  selectors. Show all tiles restores the complete workspace. Tooltips, shortcuts
+  and accessible names remain available for every icon button.
+- The navigator footer opens Tables, History, Saved queries, Checks and Settings
+  in the left panel. Query cards use icon actions; checks and preferences use
+  compact groups. F1 opens Help. The database name opens recent databases and
+  managed open/close actions. See the [navigator controls](guide.md#navigator-tools).
 
 Table browsing selects the data shown in Record and Structure. Space opens the
 selected record. Record uses the same live rows and staged edits as Table data;
@@ -81,8 +86,8 @@ values, optimistic conflict checks and atomic batch semantics remain unchanged.
 Follow system is the default. Linux observes the desktop portal and supported GTK
 named colors off the UI thread, including live scheme, accent and contrast changes.
 Explicit Light and Dark overrides remain available. Native fonts are reused; the
-fallback palette adopts the mockup's green accent. Compact ribbons move actions
-to More as the window narrows; expanding any tile gives its contents the full
+fallback palette adopts the mockup's green accent. Ribbons scroll as the window
+narrows while minimize and expand stay fixed; expanding any tile gives its contents the full
 workspace. Record and Structure scroll independently.
 
 Managed close saves visibility, focus, expansion and reopenable view identities

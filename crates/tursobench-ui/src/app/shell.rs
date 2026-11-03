@@ -23,7 +23,6 @@ pub(super) enum Nav {
     Overview,
     Table,
     Result,
-    Settings,
 }
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub(super) enum DetailMode {
@@ -43,7 +42,6 @@ pub(super) struct UiState {
     pub sidebar: ToolPanel,
     pub unfolded: Option<String>,
     pub hover_table: Option<String>,
-    pub settings_return: Option<Nav>,
     pub outcomes: bool,
     pub diagram: diagram::DiagramState,
     pub palette_open: bool,
@@ -76,7 +74,6 @@ impl UiState {
             sidebar: ToolPanel::Schema,
             unfolded: None,
             hover_table: None,
-            settings_return: None,
             outcomes: false,
             diagram: Default::default(),
             palette_open: false,
@@ -175,8 +172,14 @@ impl App {
                             .resizable(false)
                             .show(ui, |ui| self.navigator_utilities(ui));
                         self.navigation_sidebar(ui);
+                    } else if self.ui.sidebar == ToolPanel::Settings {
+                        if icons::button(ui, Icon::Back, "Databases", "").clicked() {
+                            self.select_tool(ToolPanel::Schema);
+                        }
+                        egui::ScrollArea::vertical()
+                            .id_salt("sidebar-tool")
+                            .show(ui, |ui| self.settings_ui(ui));
                     } else {
-                        ui.heading("Databases");
                         self.database_chooser_ui(ui);
                     }
                 });
@@ -401,10 +404,6 @@ impl App {
                     .on_hover_text(&self.tools.database_scope);
             });
         }
-        if self.document.ui.nav == Nav::Settings {
-            egui::ScrollArea::vertical().show(ui, |ui| self.settings_ui(ui));
-            return;
-        }
         if self.workspace.enabled {
             self.tiled_workspace(ui);
             return;
@@ -437,37 +436,30 @@ impl App {
             self.grid_contents(ui);
         }
     }
-    fn workspace_menu(&mut self, ui: &mut egui::Ui) {
-        if icons::control(
+    fn workspace_actions(&mut self, ui: &mut egui::Ui) {
+        if icons::button(ui, Icon::Export, "Export retained result", "Ctrl E").clicked() {
+            self.ui.export_open = true;
+        }
+        if icons::button(
             ui,
-            Icon::Export,
-            "Export retained result…",
-            "Ctrl E",
-            false,
-            true,
+            Icon::Copy,
+            "Copy all retained rows as TSV",
+            "Ctrl Shift C",
         )
         .clicked()
         {
-            self.ui.export_open = true;
-            ui.close();
-        }
-        if ui.button("Copy all retained rows as TSV").clicked() {
             self.copy_results(ui.ctx(), crate::export::Format::Tsv);
-            ui.close();
         }
-        if ui.button("Show hidden columns").clicked() {
+        if icons::button(ui, Icon::Columns, "Show hidden columns", "").clicked() {
             self.document.tools.columns.hidden.clear();
-            ui.close();
         }
-        if ui.button("Fit all column widths").clicked() {
+        if icons::button(ui, Icon::Fit, "Fit all column widths", "").clicked() {
             self.document.tools.columns.manual.clear();
             self.document.tools.columns.refit = true;
-            ui.close();
         }
-        if self.has_drafts() && ui.button("Show staged data").clicked() {
+        if self.has_drafts() && icons::button(ui, Icon::Edit, "Show staged data", "").clicked() {
             self.document.ui.nav = Nav::Table;
             self.document.ui.table_view = TableView::Data;
-            ui.close();
         }
     }
     fn workspace_header(&mut self, ui: &mut egui::Ui) {
@@ -513,8 +505,7 @@ impl App {
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let more = icons::button(ui, Icon::More, "More actions", "");
-                egui::Popup::menu(&more).show(|ui| self.workspace_menu(ui));
+                self.workspace_actions(ui);
                 if icons::control(
                     ui,
                     Icon::Columns,

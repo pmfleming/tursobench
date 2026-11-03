@@ -4,6 +4,9 @@ use eframe::egui;
 mod chooser;
 mod connection;
 mod inspection;
+mod presentation;
+mod settings;
+mod switcher;
 use crate::{
     discovery::{self, Availability, DatabaseKind, Event, Job, Request, Root, Summary},
     storage::{CachedDatabase, DiscoveryPreferences, normalized_absolute},
@@ -30,17 +33,15 @@ struct Entry {
     kind: DatabaseKind,
 }
 impl Entry {
-    fn badge(&self) -> &'static str {
+    fn badge(&self) -> Option<&'static str> {
         match self.state {
-            State::Checked(Availability::Missing) => "Missing",
-            State::Checked(Availability::Unavailable) => "Unreadable",
-            State::Checked(Availability::NotDatabase) => "Not a database",
-            State::Checked(Availability::Skipped) => "Outside search scope",
-            State::Checked(Availability::ExcludedApplication) => "Use Browse",
-            _ if self.path.to_str().is_none() => "Unsupported path",
-            _ if self.last_opened.is_some() => "Recent",
-            State::Remembered => "Unchecked",
-            State::Found => self.kind.label(),
+            State::Checked(Availability::Missing) => Some("Missing"),
+            State::Checked(Availability::Unavailable) => Some("Unreadable"),
+            State::Checked(Availability::NotDatabase) => Some("Not a database"),
+            State::Checked(Availability::Skipped) => Some("Outside search scope"),
+            State::Checked(Availability::ExcludedApplication) => Some("Use Browse"),
+            _ if self.path.to_str().is_none() => Some("Unsupported path"),
+            _ => None,
         }
     }
 
@@ -77,6 +78,7 @@ pub(super) struct Chooser {
     pub job: Option<Job>,
     entries: Vec<Entry>,
     filter: String,
+    switcher_filter: String,
     highlighted: Option<PathBuf>,
     navigating: bool,
     reveal_highlight: bool,
@@ -424,6 +426,7 @@ impl App {
         self.databases.cancel();
         self.databases.pending_folder = Some(path);
         self.databases.folder_input.clear();
+        self.databases.message = None;
     }
 
     fn add_exclusion(&mut self, path: PathBuf) {
@@ -446,8 +449,7 @@ impl App {
         self.databases.pending_folder = None;
         self.databases.exclude_input.clear();
         self.store.save(&self.preferences);
-        self.databases.message =
-            Some("Folder excluded. Refresh to search with the updated settings.".into());
+        self.databases.message = Some("Folder excluded.".into());
     }
 
     fn forget_database(&mut self, path: &Path) {
@@ -456,128 +458,6 @@ impl App {
         self.preferences.discovery.cached.retain(|e| e.path != path);
         self.preferences.discovery.recent.retain(|e| e.path != path);
         self.store.save(&self.preferences);
-    }
-
-    pub(super) fn discovery_settings_ui(&mut self, ui: &mut egui::Ui) {
-        if self.databases.job.is_some() {
-            if ui
-                .add_enabled(!self.databases.cancelling, egui::Button::new("Stop search"))
-                .clicked()
-            {
-                self.databases.cancel();
-            }
-        } else if ui
-            .add_enabled(
-                self.picker.is_none(),
-                egui::Button::new("Refresh databases"),
-            )
-            .clicked()
-        {
-            self.start_discovery(ui.ctx(), None);
-        }
-        if ui
-            .checkbox(
-                &mut self.preferences.discovery.enabled,
-                "Search for databases on startup",
-            )
-            .changed()
-        {
-            if !self.preferences.discovery.enabled {
-                self.databases.cancel();
-            }
-            self.store.save(&self.preferences);
-        }
-        ui.small("Searches likely folders with a 2-second budget. Reads headers only. Added folders also allow locations skipped by automatic discovery; symlink directories and nested mounts are never followed.");
-        ui.horizontal_wrapped(|ui| {
-            if ui
-                .add_enabled(
-                    self.picker.is_none() && self.databases.job.is_none(),
-                    egui::Button::new("Add search folder…"),
-                )
-                .clicked()
-            {
-                self.browse_search_folder(ui.ctx());
-            }
-        });
-        ui.add(
-            egui::TextEdit::singleline(&mut self.databases.folder_input)
-                .hint_text("/absolute/search/folder")
-                .char_limit(4096)
-                .desired_width(ui.available_width()),
-        );
-        if ui
-            .add_enabled(
-                !self.databases.folder_input.is_empty(),
-                egui::Button::new("Save and search this folder"),
-            )
-            .clicked()
-        {
-            self.add_search_folder(PathBuf::from(&self.databases.folder_input));
-        }
-        let mut remove = None;
-        for (index, path) in self.preferences.discovery.roots.iter().enumerate() {
-            ui.push_id(("search-root", index), |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    if ui.small_button("Remove").clicked() {
-                        remove = Some(index);
-                    }
-                    ui.add(egui::Label::new(path.to_string_lossy()).truncate())
-                        .on_hover_text(path.to_string_lossy());
-                })
-            });
-        }
-        if let Some(index) = remove {
-            self.preferences.discovery.roots.remove(index);
-            self.databases.cancel();
-            self.databases.pending_folder = None;
-            self.store.save(&self.preferences);
-        }
-        ui.separator();
-        ui.label("Excluded folders");
-        ui.add(
-            egui::TextEdit::singleline(&mut self.databases.exclude_input)
-                .hint_text("/absolute/folder/to/skip")
-                .char_limit(4096)
-                .desired_width(ui.available_width()),
-        );
-        if ui
-            .add_enabled(
-                !self.databases.exclude_input.is_empty(),
-                egui::Button::new("Exclude folder"),
-            )
-            .clicked()
-        {
-            self.add_exclusion(PathBuf::from(&self.databases.exclude_input));
-        }
-        let mut remove = None;
-        for (index, path) in self.preferences.discovery.excluded.iter().enumerate() {
-            ui.push_id(("excluded-root", index), |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    if ui.small_button("Remove").clicked() {
-                        remove = Some(index);
-                    }
-                    ui.add(egui::Label::new(path.to_string_lossy()).truncate())
-                        .on_hover_text(path.to_string_lossy());
-                })
-            });
-        }
-        if let Some(index) = remove {
-            self.preferences.discovery.excluded.remove(index);
-            self.store.save(&self.preferences);
-            self.databases.message =
-                Some("Exclusion removed. Refresh to search that location.".into());
-        }
-        ui.separator();
-        if let Some(summary) = &self.databases.summary {
-            ui.small(format!(
-                "{} headers checked · {} folders · {} locations unavailable · {} skipped",
-                summary.probes, summary.directories, summary.unavailable, summary.skipped
-            ));
-            if summary.limited {
-                ui.small("Search budget reached. Search a narrower folder to look further.");
-            }
-        }
-        ui.small("Discovery finds SQLite-format candidates; Turso compatibility is checked when opening.");
     }
 }
 
@@ -905,8 +785,8 @@ mod tests {
         let row = app.databases.row_rects[0].1;
         let browse = app.databases.browse_rect.unwrap();
         let search = app.databases.search_rect.unwrap();
-        assert!(browse.left() > search.right());
-        assert_eq!(browse.top(), search.top());
+        assert!(search.contains_rect(browse));
+        assert_eq!(browse.center().y, search.center().y);
         assert!(row.top() > search.bottom());
         click(&mut app, &ctx, row.center());
         assert_eq!(app.path, "/work/agenda.db");
@@ -917,10 +797,16 @@ mod tests {
         for i in 0..500 {
             app.discovery_event(found(&format!("/bulk/{i}.db")));
         }
-        for width in [720.0, 900.0, 1920.0] {
+        for width in [180.0, 300.0, 720.0, 900.0, 1920.0] {
             frame(&mut app, &ctx, vec![], width);
             assert!(app.databases.row_rects.len() < 10);
             assert!(app.databases.browse_rect.unwrap().right() <= width);
+            assert!(
+                app.databases
+                    .search_rect
+                    .unwrap()
+                    .contains_rect(app.databases.browse_rect.unwrap())
+            );
         }
     }
 

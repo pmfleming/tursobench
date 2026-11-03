@@ -77,38 +77,7 @@ impl App {
     }
 
     pub(super) fn navigation_sidebar(&mut self, ui: &mut egui::Ui) {
-        let name = std::path::Path::new(&self.path)
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
-        ui.menu_button(format!("{name} ▾"), |ui| {
-            ui.label("Recent databases");
-            let recent: Vec<_> = self
-                .preferences
-                .discovery
-                .recent
-                .iter()
-                .take(10)
-                .map(|r| r.path.clone())
-                .collect();
-            for path in recent {
-                if ui.button(path.display().to_string()).clicked() {
-                    // Never transfer access consent or open another file before Closed.
-                    self.pending_database = Some(path);
-                    self.request_close();
-                    ui.close();
-                }
-            }
-            if ui.button("Open file… · Ctrl O").clicked() {
-                self.request_close();
-                ui.close();
-            }
-            if ui.button("Close database").clicked() {
-                self.request_close();
-                ui.close();
-            }
-        });
+        self.database_switcher_ui(ui);
         if self.ui.sidebar != ToolPanel::Schema {
             egui::ScrollArea::vertical()
                 .id_salt("sidebar-tool")
@@ -121,21 +90,24 @@ impl App {
                 });
             return;
         }
-        let find = ui.add(
-            egui::TextEdit::singleline(&mut self.tools.schema_filter)
-                .hint_text("Find tables or columns…")
-                .desired_width(ui.available_width()),
-        );
+        let find = ui
+            .horizontal(|ui| {
+                let width = (ui.available_width() - 28.0 - ui.spacing().item_spacing.x).max(40.0);
+                let find = ui.add_sized(
+                    [width, 28.0],
+                    egui::TextEdit::singleline(&mut self.tools.schema_filter)
+                        .hint_text("Find tables or columns…"),
+                );
+                if icons::button(ui, Icon::Refresh, "Refresh schema", "F5").clicked() {
+                    self.refresh_catalog();
+                    self.load_diagram();
+                }
+                find
+            })
+            .inner;
         if find.has_focus() {
             self.tools.tree_focus = Some(find.id);
         }
-        ui.menu_button("Tables ⋯", |ui| {
-            if ui.button("Refresh schema · F5").clicked() {
-                self.refresh_catalog();
-                self.load_diagram();
-                ui.close();
-            }
-        });
         egui::ScrollArea::vertical().id_salt("navigation-tree").show(ui,|ui| {
             if self.catalog_ticket.is_some(){ui.spinner();}
             if !self.catalog_error.is_empty(){ui.colored_label(ui.visuals().error_fg_color,&self.catalog_error);}
@@ -326,28 +298,12 @@ impl App {
     }
 
     pub(super) fn select_tool(&mut self, panel: ToolPanel) {
-        if panel == ToolPanel::Settings {
-            if self.document.ui.nav != Nav::Settings {
-                self.ui.settings_return = Some(self.document.ui.nav);
-            }
-            self.document.ui.nav = Nav::Settings;
-        } else {
-            self.ui.sidebar = panel;
-            if self.document.ui.nav == Nav::Settings {
-                self.document.ui.nav = self.ui.settings_return.take().unwrap_or(
-                    if self.document.view == View::Browse {
-                        Nav::Table
-                    } else {
-                        Nav::Result
-                    },
-                );
-            }
-        }
+        self.ui.sidebar = panel;
     }
 
     pub(super) fn navigator_utilities(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
+            ui.spacing_mut().item_spacing.x = 4.0;
             for (icon, name, panel) in [
                 (Icon::Data, "Tables", ToolPanel::Schema),
                 (Icon::History, "History", ToolPanel::History),
@@ -355,12 +311,11 @@ impl App {
                 (Icon::Checks, "Database checks", ToolPanel::Diagnostics),
                 (Icon::Settings, "Settings", ToolPanel::Settings),
             ] {
-                if icons::control(ui, icon, name, "", self.ui.sidebar == panel, false).clicked() {
+                if icons::ribbon_button(ui, icon, name, "", Some(self.ui.sidebar == panel))
+                    .clicked()
+                {
                     self.select_tool(panel);
                 }
-            }
-            if icons::button(ui, Icon::Help, "Help", "F1").clicked() {
-                self.tools.help = true;
             }
         });
     }
