@@ -46,6 +46,7 @@ pub(super) enum Icon {
     Down,
     Minimize,
     Run,
+    RunAll,
     CloneRecord,
     BeginTransaction,
     CommitTransaction,
@@ -276,6 +277,7 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
     use Icon::*;
     let asset = match icon {
         Run => Some(include_str!("../../assets/icons/run.svg")),
+        RunAll => Some(include_str!("../../assets/icons/run-all.svg")),
         CloneRecord => Some(include_str!("../../assets/icons/clone-record.svg")),
         BeginTransaction => Some(include_str!("../../assets/icons/begin-transaction.svg")),
         CommitTransaction => Some(include_str!("../../assets/icons/commit-transaction.svg")),
@@ -581,8 +583,8 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
             line(&[(11., 12.), (21., 2.)]);
             line(&[(16., 7.), (20., 11.)]);
         }
-        Run | CloneRecord | BeginTransaction | CommitTransaction | Bytecode | ReviewEdits
-        | CopyValue | FitColumns => unreachable!("asset rendered above"),
+        Run | RunAll | CloneRecord | BeginTransaction | CommitTransaction | Bytecode
+        | ReviewEdits | CopyValue | FitColumns => unreachable!("asset rendered above"),
         Link => {
             line(&[
                 (10., 15.),

@@ -191,7 +191,10 @@ impl App {
         sql::selection_or_statement(&self.document.sql, start..end)
     }
 
-    fn run_all(&mut self, atomic: bool) {
+    pub(super) fn run_all(&mut self, atomic: bool) {
+        if !self.action_enabled(super::ribbon::Action::RunAll) {
+            return;
+        }
         match Bindings::parse_json(&self.document.params) {
             Ok(parameters) => {
                 let text = self.document.sql.clone();
@@ -213,22 +216,36 @@ impl App {
             Err(e) => self.status = e.to_string(),
         }
     }
+    pub(super) fn run_all_menu(&mut self, ui: &mut egui::Ui, ribbon: bool) -> egui::Response {
+        let enabled = self.action_enabled(super::ribbon::Action::RunAll);
+        let response = ui
+            .add_enabled_ui(enabled, |ui| {
+                if ribbon {
+                    icons::ribbon_button(ui, Icon::RunAll, "Run all", "", None)
+                } else {
+                    icons::button(ui, Icon::RunAll, "Run all", "")
+                }
+            })
+            .inner;
+        egui::Popup::menu(&response).show(|ui| {
+            if ui
+                .add_enabled(enabled, egui::Button::new("Run statements · stop on error"))
+                .clicked()
+            {
+                self.run_all(false);
+                ui.close();
+            }
+            if ui
+                .add_enabled(enabled, egui::Button::new("Run as one atomic transaction"))
+                .clicked()
+            {
+                self.run_all(true);
+                ui.close();
+            }
+        });
+        response
+    }
     pub(super) fn editor_ui(&mut self, ui: &mut egui::Ui) {
-        ui.add_enabled_ui(
-            self.ready && !self.closing && !self.has_drafts() && self.commit_ticket.is_none(),
-            |ui| {
-                ui.menu_button("Run all…", |ui| {
-                    if ui.button("Run statements · stop on error").clicked() {
-                        self.run_all(false);
-                        ui.close();
-                    }
-                    if ui.button("Run as one atomic transaction").clicked() {
-                        self.run_all(true);
-                        ui.close();
-                    }
-                });
-            },
-        );
         if !self.workspace.enabled {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 3.0;
@@ -245,16 +262,7 @@ impl App {
                 {
                     self.run_sql();
                 }
-                if icons::button(
-                    ui,
-                    Icon::Selection,
-                    "Run selection / statement at cursor",
-                    "Ctrl Shift Enter",
-                )
-                .clicked()
-                {
-                    self.run_selection();
-                }
+                self.run_all_menu(ui, false);
                 if icons::button(ui, Icon::Explain, "Explain query plan", "").clicked() {
                     self.run_current(Some(false));
                 }

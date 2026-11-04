@@ -2666,6 +2666,69 @@ fn fixed_panes_preserve_drafts_selection_and_results_through_layout_changes() {
 }
 
 #[test]
+fn run_all_command_bar_icon_preserves_sequential_and_atomic_script_policies() {
+    for (atomic, policy, expected) in [
+        (false, "Run statements · stop on error", 1),
+        (true, "Run as one atomic transaction", 0),
+    ] {
+        let (_dir, ctx, mut app) =
+            fixture(&["CREATE TABLE script_test(id INTEGER PRIMARY KEY)"], true);
+        app.open_sql_window(false);
+        let editor = app.document.id;
+        let script = "INSERT INTO script_test VALUES(1); INSERT INTO script_test VALUES(1); INSERT INTO script_test VALUES(2);";
+        app.document.sql = script.into();
+        // Run all ignores a selection; Run retains the selection/cursor behavior.
+        app.document.tools.selection = 0.."INSERT INTO script_test VALUES(1);".len();
+        app.workspace.expanded = Some(tiling::Kind::Sql);
+        ctx.enable_accesskit();
+        frame(&mut app, &ctx, vec![]);
+        let output = frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
+        let nodes = &output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes;
+        assert!(
+            !nodes
+                .iter()
+                .any(|(_, n)| n.label() == Some("Run selection / statement at cursor"))
+        );
+        let before = app.sequence;
+        click(&mut app, &ctx, control(&output, "Run all").center());
+        assert_eq!(
+            app.sequence, before,
+            "choosing a policy must precede execution"
+        );
+        let output = frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
+        click(&mut app, &ctx, control(&output, policy).center());
+        wait(&mut app, &ctx);
+        assert_eq!(app.document.script_results.len(), 2);
+        assert!(
+            app.document
+                .result
+                .completion
+                .as_ref()
+                .unwrap()
+                .error
+                .is_some()
+        );
+        if atomic {
+            assert!(app.document.script_message.contains("rolled back"));
+        }
+        assert_eq!(app.document_ref(editor).unwrap().sql, script);
+        app.run_text("SELECT count(*) FROM script_test".into(), None);
+        wait(&mut app, &ctx);
+        assert_eq!(
+            app.document.result.rows,
+            vec![vec![Value::Integer(expected)]]
+        );
+        app.close();
+        wait_closed(&mut app, &ctx);
+    }
+}
+
+#[test]
 fn every_tile_exposes_its_actions_without_an_overflow_menu() {
     let (_dir, ctx, mut app) = fixture(
         &[
@@ -2721,7 +2784,7 @@ fn every_tile_exposes_its_actions_without_an_overflow_menu() {
             tiling::Kind::Sql,
             &[
                 "Run",
-                "Run selection / statement at cursor",
+                "Run all",
                 "Explain query plan",
                 "Explain bytecode",
                 "Typed parameters",

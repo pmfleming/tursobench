@@ -172,8 +172,10 @@ Keyset paging requires a suitable non-null PK; other queries use OFFSET. Paging
 is not a snapshot, and deep OFFSET fallback can be slow. Committed writes mark
 other retained views stale; refresh before paging or staging again.
 
-Run and Ctrl+Enter use the selection/current statement; EXPLAIN uses the same
-selection. Run all offers sequential stop-on-error or atomic policy, up to 100
+The SQL command bar has two execution icons: **Run** uses the selection/current
+statement (also Ctrl+Enter), and **Run all** opens the sequential/atomic script
+choices for the whole buffer. EXPLAIN uses the same selection as Run.
+Run all offers sequential stop-on-error or atomic policy, up to 100
 statements / 1 MiB. Atomic scripts cannot contain transaction controls or join an
 existing editor transaction. See each step's outcome for prior committed effects.
 

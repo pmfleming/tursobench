@@ -28,7 +28,7 @@ pub(super) enum Action {
     ZoomOut,
     ZoomIn,
     Run,
-    RunSelection,
+    RunAll,
     Explain,
     Bytecode,
     Parameters,
@@ -56,7 +56,7 @@ impl App {
         match action {
             ZoomOut => self.ui.diagram.camera.zoom() > super::diagram::MIN_ZOOM,
             ZoomIn => self.ui.diagram.camera.zoom() < super::diagram::MAX_ZOOM,
-            Run | RunSelection | Explain | Bytecode | Begin | Commit | Rollback => {
+            Run | RunAll | Explain | Bytecode | Begin | Commit | Rollback => {
                 self.ready
                     && !self.closing
                     && !self.has_drafts()
@@ -144,7 +144,7 @@ impl App {
             ZoomOut => self.ui.diagram.camera.step_zoom(1.0 / 1.25),
             ZoomIn => self.ui.diagram.camera.step_zoom(1.25),
             Run => self.run_sql(),
-            RunSelection => self.run_selection(),
+            RunAll => self.run_all(false),
             Explain => self.run_current(Some(false)),
             Bytecode => self.run_current(Some(true)),
             Parameters => self.document.ui.params_open = !self.document.ui.params_open,
@@ -251,7 +251,9 @@ impl App {
         };
         let response = ui
             .add_enabled_ui(self.action_enabled(action), |ui| {
-                if action == Action::Zoom100 {
+                if action == Action::RunAll {
+                    self.run_all_menu(ui, true)
+                } else if action == Action::Zoom100 {
                     let percent = self.ui.diagram.camera.zoom() * 100.0;
                     let text = if percent < 1.0 {
                         format!("{percent:.2}%")
@@ -280,7 +282,7 @@ impl App {
         if ui.clip_rect().contains_rect(response.rect) {
             self.ui.ribbon_actions.push(response.rect);
         }
-        if response.clicked() {
+        if response.clicked() && action != Action::RunAll {
             // Export and the detached record inspector read the focused document later.
             if self.document.kind == Kind::Result {
                 self.focus_window(self.document.id);
@@ -634,7 +636,7 @@ impl Action {
     fn group(self) -> u8 {
         use Action::*;
         match self {
-            Refresh | Count | FitMap | ArrangeMap | Run | RunSelection | Explain | Bytecode => 0,
+            Refresh | Count | FitMap | ArrangeMap | Run | RunAll | Explain | Bytecode => 0,
             Filter | FitColumns | ShowColumns | Inspect | MapColumns | SystemTables | Find
             | Parameters | Completion => 1,
             Export | CopyRows | CopyDdl | CopyValue | CopyRecord | SaveSql | NewSql => 2,
@@ -652,7 +654,6 @@ impl Action {
             Inspect => "Space",
             Find => "Ctrl K",
             Run => "Ctrl Enter",
-            RunSelection => "Ctrl Shift Enter",
             Completion => "Ctrl Space",
             SaveSql => "Ctrl S",
             _ => "",
@@ -699,11 +700,7 @@ impl Kind {
             ],
             Kind::Sql => &[
                 (Run, Icon::Run, "Run"),
-                (
-                    RunSelection,
-                    Icon::Selection,
-                    "Run selection / statement at cursor",
-                ),
+                (RunAll, Icon::RunAll, "Run all"),
                 (Explain, Icon::Explain, "Explain query plan"),
                 (Bytecode, Icon::Bytecode, "Explain bytecode"),
                 (Parameters, Icon::Parameters, "Typed parameters"),

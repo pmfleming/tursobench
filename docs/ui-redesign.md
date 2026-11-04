@@ -57,8 +57,11 @@ select their original DDL in Structure. FK links use declared metadata, includin
 composite keys and parent collation/affinity; no relationships are inferred.
 
 SQL keeps its editor and linked results inside one tile. Ctrl J focuses the current
-editor; Ctrl Enter runs SQL and Ctrl Shift Enter runs the selection/current
-statement. More provides parameters, EXPLAIN, completion, new editors and an
+editor. Its command bar has Run for the selection/current statement and a Run all
+icon for whole-buffer scripts, with sequential or atomic transaction policy.
+The separate Run selection button is removed; keyboard selection execution remains.
+Ctrl Enter runs the selection/current statement, as does Ctrl Shift Enter.
+The command bar also provides parameters, EXPLAIN, completion, new editors and an
 Open editors selector. History and bookmarks load into a new editor. SQL drafts
 remain session-only; use Saved queries to keep them across restarts.
 
