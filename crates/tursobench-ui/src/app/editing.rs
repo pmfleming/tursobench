@@ -4,6 +4,68 @@ use eframe::egui;
 use tursobench_core::{Delivery, DraftBatch, Edit, Table, TransactionState, Value};
 use tursobench_db::{Operation, Request};
 
+#[derive(Clone, Copy, PartialEq)]
+enum InsertMode {
+    Default,
+    Null,
+    Value,
+}
+pub(super) struct InsertField {
+    mode: InsertMode,
+    editor: super::results::CellEditor,
+}
+impl InsertField {
+    fn new(column: &tursobench_core::TableColumn, value: Option<Value>) -> Self {
+        let mode = match value {
+            None => InsertMode::Default,
+            Some(Value::Null) => InsertMode::Null,
+            _ => InsertMode::Value,
+        };
+        let initial = value.unwrap_or_else(|| {
+            let ty = column.declared_type.to_uppercase();
+            if ty.contains("INT") {
+                Value::Integer(0)
+            } else if ty.contains("REAL") {
+                Value::Real(0.0)
+            } else if ty.contains("BLOB") {
+                Value::Blob(vec![])
+            } else {
+                Value::Text(String::new())
+            }
+        });
+        Self {
+            mode,
+            editor: super::results::CellEditor::new(&initial),
+        }
+    }
+    fn value(&self) -> Result<Option<Value>, String> {
+        match self.mode {
+            InsertMode::Default => Ok(None),
+            InsertMode::Null => Ok(Some(Value::Null)),
+            InsertMode::Value => self.editor.parse().map(Some),
+        }
+    }
+    fn show(&mut self, ui: &mut egui::Ui, index: usize, column: &tursobench_core::TableColumn) {
+        ui.group(|ui| {
+            ui.label(format!("{} · {}", column.name, column.declared_type));
+            egui::ComboBox::from_id_salt(("insert-mode", index))
+                .selected_text(match self.mode {
+                    InsertMode::Default => "Default / omit",
+                    InsertMode::Null => "NULL",
+                    InsertMode::Value => "Value",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.mode, InsertMode::Default, "Default / omit");
+                    ui.selectable_value(&mut self.mode, InsertMode::Null, "NULL");
+                    ui.selectable_value(&mut self.mode, InsertMode::Value, "Value");
+                });
+            if self.mode == InsertMode::Value {
+                self.editor.type_picker(ui, ("insert-type", index), true);
+                ui.text_edit_singleline(&mut self.editor.input);
+            }
+        });
+    }
+}
 impl App {
     pub(super) fn has_drafts(&self) -> bool {
         self.document.has_drafts() || self.documents.values().any(|d| d.has_drafts())
@@ -74,6 +136,21 @@ impl App {
             self.stage(|d| d.stage_cell(original, column, value));
         }
     }
+    pub(super) fn stage_selected_deletions(&mut self) {
+        let rows = self
+            .selected_cells()
+            .map(|(r, _)| r)
+            .collect::<std::collections::BTreeSet<_>>();
+        let originals = rows
+            .into_iter()
+            .filter_map(|r| self.document.result.rows.get(r).cloned())
+            .collect::<Vec<_>>();
+        self.stage(|d| {
+            for original in originals {
+                d.stage_delete(original);
+            }
+        });
+    }
     pub(super) fn stage_delete(&mut self, row: usize) {
         if let Some(original) = self.document.result.rows.get(row).cloned() {
             self.stage(|d| d.stage_delete(original));
@@ -101,6 +178,17 @@ impl App {
     fn prepare_insert(&mut self, json: Result<String, serde_json::Error>) {
         match json {
             Ok(json) => {
+                let values: Vec<Option<Value>> = serde_json::from_str(&json).unwrap_or_default();
+                self.document.insert_fields =
+                    self.document.table.as_ref().map_or_else(Vec::new, |table| {
+                        table
+                            .columns
+                            .iter()
+                            .enumerate()
+                            .map(|(i, c)| InsertField::new(c, values.get(i).cloned().flatten()))
+                            .collect()
+                    });
+                self.document.insert_use_json = false;
                 self.document.insert_json = json;
                 self.document.show_insert = true;
             }
@@ -118,16 +206,71 @@ impl App {
     pub(super) fn edit_windows(&mut self, ctx: &egui::Context) {
         if self.document.show_insert {
             let mut open = true;
-            egui::Window::new("Stage insert — typed column values").frame(crate::app::presentation::window_frame(ctx)).default_pos(ctx.content_rect().center()-egui::vec2(280.0,180.0))
-                .open(&mut open).default_width(580.0).max_width((ctx.content_rect().width()-40.0).max(280.0))
+            egui::Window::new("Stage insert — typed column values")
+                .frame(crate::app::presentation::window_frame(ctx))
+                .default_pos(ctx.content_rect().center() - egui::vec2(280.0, 180.0))
+                .open(&mut open)
+                .default_width(580.0)
+                .max_width((ctx.content_rect().width() - 40.0).max(280.0))
                 .show(ctx, |ui| {
-                    presentation::notice(ui,super::icons::Icon::Plus,Intent::Pending,"One entry per column. JSON null = omit/use DEFAULT; {\"type\":\"Null\"} = SQL NULL.");
-                    egui::ScrollArea::vertical().max_height((ctx.content_rect().height()-230.0).clamp(120.0,400.0)).show(ui,|ui| {
-                        if let Some(t) = &self.document.table { ui.label(t.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", ")); }
-                        ui.add(egui::TextEdit::multiline(&mut self.document.insert_json).code_editor().desired_width(ui.available_width()).desired_rows(8));
-                    });
-                    if presentation::footer(ui, |ui| ui.add_enabled(self.can_edit(),presentation::action(ui,"Stage insert (no database write)",Intent::Pending))).inner.clicked() {
-                        match serde_json::from_str::<Vec<Option<Value>>>(&self.document.insert_json) {
+                    ui.checkbox(&mut self.document.insert_use_json, "Advanced JSON input");
+                    egui::ScrollArea::vertical()
+                        .max_height((ctx.content_rect().height() - 230.0).clamp(120.0, 400.0))
+                        .show(ui, |ui| {
+                            if let Some(t) = &self.document.table {
+                                ui.label(
+                                    t.columns
+                                        .iter()
+                                        .map(|c| c.name.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(", "),
+                                );
+                            }
+                            if self.document.insert_use_json {
+                                ui.add(
+                                    egui::TextEdit::multiline(&mut self.document.insert_json)
+                                        .code_editor()
+                                        .desired_width(ui.available_width())
+                                        .desired_rows(8),
+                                );
+                            } else if let Some(table) = &self.document.table {
+                                for (i, (field, column)) in self
+                                    .document
+                                    .insert_fields
+                                    .iter_mut()
+                                    .zip(&table.columns)
+                                    .enumerate()
+                                {
+                                    ui.add_enabled_ui(column.hidden == 0, |ui| {
+                                        field.show(ui, i, column)
+                                    });
+                                }
+                            }
+                        });
+                    if presentation::footer(ui, |ui| {
+                        ui.add_enabled(
+                            self.can_edit(),
+                            presentation::action(
+                                ui,
+                                "Stage insert (no database write)",
+                                Intent::Pending,
+                            ),
+                        )
+                    })
+                    .inner
+                    .clicked()
+                    {
+                        let values = if self.document.insert_use_json {
+                            serde_json::from_str::<Vec<Option<Value>>>(&self.document.insert_json)
+                                .map_err(|e| e.to_string())
+                        } else {
+                            self.document
+                                .insert_fields
+                                .iter()
+                                .map(InsertField::value)
+                                .collect::<Result<Vec<_>, _>>()
+                        };
+                        match values {
                             Ok(values) => self.stage(|d| d.edits.push(Edit::Insert { values })),
                             Err(e) => self.status = e.to_string(),
                         }

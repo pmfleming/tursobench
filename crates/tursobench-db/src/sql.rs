@@ -129,18 +129,7 @@ pub fn selection_or_statement(sql: &str, selection: Range<usize>) -> Result<Stri
         validate_single(selected)?;
         return Ok(selected.to_owned());
     }
-    let mut parser = Parser::new(sql.as_bytes());
-    let mut ranges = Vec::new();
-    let mut start = 0;
-    while parser
-        .next_cmd()
-        .map_err(|e| Failure::input(e.to_string()))?
-        .is_some()
-    {
-        let end = parser.offset();
-        ranges.push(start..end);
-        start = end;
-    }
+    let ranges = statement_ranges(sql);
     let range = ranges
         .iter()
         .find(|r| r.contains(&selection.start))
@@ -150,6 +139,90 @@ pub fn selection_or_statement(sql: &str, selection: Range<usize>) -> Result<Stri
     validate_single(&statement)?;
     Ok(statement)
 }
+/// Lexer boundaries retain trigger bodies and quoted/comment semicolons even if another statement is malformed.
+fn statement_ranges(sql: &str) -> Vec<Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    let mut create = false;
+    let mut trigger = false;
+    let mut body = 0;
+    let mut cases = 0;
+    for token in tokens(sql) {
+        let text = sql[token.range.clone()].trim();
+        if token.style == TokenStyle::Keyword {
+            if text.eq_ignore_ascii_case("CREATE") {
+                create = true;
+            }
+            if create && text.eq_ignore_ascii_case("TRIGGER") {
+                trigger = true;
+            }
+            if trigger {
+                if text.eq_ignore_ascii_case("BEGIN") {
+                    body += 1;
+                } else if text.eq_ignore_ascii_case("CASE") {
+                    cases += 1;
+                } else if text.eq_ignore_ascii_case("END") {
+                    if cases > 0 {
+                        cases -= 1;
+                    } else if body > 0 {
+                        body -= 1;
+                        if body == 0 {
+                            trigger = false;
+                        }
+                    }
+                }
+            }
+        }
+        if text == ";" && !trigger {
+            ranges.push(start..token.range.end);
+            start = token.range.end;
+            create = false;
+        }
+    }
+    if !sql[start..].trim().is_empty() {
+        ranges.push(start..sql.len());
+    }
+    ranges
+}
+pub fn script_statements(sql: &str) -> Result<Vec<String>, Failure> {
+    if sql.len() > 1024 * 1024 {
+        return Err(Failure::input("Script exceeds 1 MiB"));
+    }
+    let mut statements = Vec::new();
+    for range in statement_ranges(sql) {
+        let text = &sql[range];
+        if Parser::new(text.as_bytes())
+            .next_cmd()
+            .map_err(|e| Failure::input(e.to_string()))?
+            .is_none()
+        {
+            continue;
+        }
+        validate_single(text)?;
+        statements.push(text.to_owned());
+        if statements.len() > 100 {
+            return Err(Failure::input("Scripts are limited to 100 statements"));
+        }
+    }
+    if statements.is_empty() {
+        return Err(Failure::input("Enter at least one statement"));
+    }
+    Ok(statements)
+}
+pub(crate) fn transaction_control(sql: &str) -> bool {
+    use turso_parser::ast::{Cmd, Stmt};
+    matches!(
+        Parser::new(sql.as_bytes()).next_cmd(),
+        Ok(Some(Cmd::Stmt(
+            Stmt::Begin { .. }
+                | Stmt::Commit { .. }
+                | Stmt::Rollback { .. }
+                | Stmt::Release { .. }
+                | Stmt::Savepoint { .. }
+        )))
+    )
+}
+
 pub fn explain_sql(sql: &str, bytecode: bool) -> Result<String, Failure> {
     validate_single(sql)?;
     use turso_parser::ast::{Cmd, Stmt};
@@ -355,5 +428,16 @@ mod tests {
         ));
         assert!(!super::has_rowid("CREATE VIEW t AS SELECT 1"));
         assert!(!super::has_rowid("invalid schema"));
+    }
+    #[test]
+    fn cursor_statements_survive_unrelated_errors_and_scripts_keep_triggers() {
+        let text = "BAD SYNTAX; SELECT 42; INVALID AGAIN";
+        let cursor = text.find("42").unwrap();
+        assert_eq!(
+            selection_or_statement(text, cursor..cursor).unwrap().trim(),
+            "SELECT 42;"
+        );
+        assert!(super::script_statements("SELECT 1; BAD SYNTAX").is_err());
+        assert_eq!(super::script_statements("CREATE TRIGGER t AFTER INSERT ON x BEGIN UPDATE x SET v=CASE WHEN v=1 THEN 2 ELSE 3 END; DELETE FROM x; END; SELECT ';';").unwrap().len(),2);
     }
 }

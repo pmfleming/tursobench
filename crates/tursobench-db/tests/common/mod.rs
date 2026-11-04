@@ -26,6 +26,8 @@ pub fn opened(path: &Path, access: Access) -> Session {
 }
 #[derive(Default)]
 pub struct Reply {
+    pub script: Vec<tursobench_core::ScriptResult>,
+    pub rolled_back: bool,
     pub chunk: Option<(u64, Vec<u8>)>,
     pub saved: Option<String>,
     pub result: ResultSet,
@@ -47,6 +49,16 @@ pub fn run(session: &Session, sequence: u64, operation: Operation) -> Reply {
         }
         assert_eq!(event.ticket, ticket);
         match event.kind {
+            EventKind::ScriptResult(result) => {
+                reply.result.columns = result.columns.clone();
+                reply.result.rows = result.rows.clone();
+                reply.script.push(result);
+                continue;
+            }
+            EventKind::ScriptOutcome { rolled_back, .. } => {
+                reply.rolled_back = rolled_back;
+                continue;
+            }
             EventKind::ValueChunk { offset, bytes, .. } => reply.chunk = Some((offset, bytes)),
             EventKind::ValueSaved(path) => reply.saved = Some(path),
             EventKind::Table(table) => {

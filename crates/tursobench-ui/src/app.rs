@@ -288,6 +288,8 @@ impl App {
                 self.document.tools.pages = Default::default();
                 self.document.tools.grid_selection = None;
                 self.document.tools.inline = None;
+                self.document.script_results.clear();
+                self.document.script_message.clear();
                 self.document.stale = false;
                 self.document.result.start(ticket);
                 self.document.active = Some(ticket);
@@ -317,7 +319,7 @@ impl App {
         }
     }
     fn run_sql(&mut self) {
-        self.run_text(self.document.sql.clone(), None);
+        self.run_current(None);
     }
     fn browse_table(&mut self, name: String) {
         if self.workspace.enabled

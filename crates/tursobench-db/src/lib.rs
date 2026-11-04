@@ -64,6 +64,12 @@ impl DeliveryControl {
 }
 
 pub enum Operation {
+    Script {
+        sql: String,
+        parameters: Bindings,
+        atomic: bool,
+        budget: Budget,
+    },
     ReadValue {
         handle: u64,
         offset: u64,
@@ -126,7 +132,10 @@ impl Operation {
                 Self::Execute {
                     sql, parameters, ..
                 } => sql.len() + values(parameters),
-                Self::ExecuteBound {
+                Self::Script {
+                    sql, parameters, ..
+                }
+                | Self::ExecuteBound {
                     sql, parameters, ..
                 }
                 | Self::Explain {
@@ -300,6 +309,7 @@ impl Session {
         let discard = Arc::new(DeliveryControl::default());
         let closing = Arc::new(AtomicBool::new(false));
         let output = Output {
+            capture: None,
             tx,
             wake: Arc::new(wake),
             discard: discard.clone(),

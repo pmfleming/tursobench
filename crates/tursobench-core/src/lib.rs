@@ -223,6 +223,14 @@ pub struct Completion {
     pub transaction: TransactionState,
     pub error: Option<Failure>,
 }
+#[derive(Debug, Clone)]
+pub struct ScriptResult {
+    pub index: usize,
+    pub sql: String,
+    pub columns: Vec<Column>,
+    pub rows: Vec<Vec<Value>>,
+    pub completion: Completion,
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableColumn {
     pub name: String,
@@ -407,6 +415,11 @@ pub struct SchemaDiagram {
 
 #[derive(Debug)]
 pub enum EventKind {
+    ScriptResult(ScriptResult),
+    ScriptOutcome {
+        atomic: bool,
+        rolled_back: bool,
+    },
     ValueChunk {
         handle: u64,
         offset: u64,
@@ -497,5 +510,24 @@ mod tests {
             serde_json::from_str::<Value>(&serde_json::to_string(&value).unwrap()).unwrap(),
             value
         );
+    }
+    #[test]
+    fn convenient_bindings_keep_integer_text_null_and_blob_types() {
+        let super::Bindings::Positional(values) =
+            super::Bindings::parse_json(r#"[1,"a",null,{"type":"Blob","value":[0,255]}]"#).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(
+            values,
+            vec![
+                Value::Integer(1),
+                Value::Text("a".into()),
+                Value::Null,
+                Value::Blob(vec![0, 255])
+            ]
+        );
+        assert!(super::Bindings::parse_json("[9223372036854775808]").is_err());
+        assert!(super::Bindings::parse_json("[[1,2]]").is_err());
     }
 }

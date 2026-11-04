@@ -114,7 +114,7 @@ impl App {
             self.status = "Commit or discard drafts first".into();
             return;
         }
-        match serde_json::from_str::<Bindings>(&self.document.params) {
+        match Bindings::parse_json(&self.document.params) {
             Ok(parameters) => {
                 let operation = match explain {
                     Some(bytecode) => Operation::Explain {
@@ -177,14 +177,54 @@ impl App {
         }
     }
     pub(super) fn run_selection(&mut self) {
+        self.run_current(None);
+    }
+    pub(super) fn run_current(&mut self, explain: Option<bool>) {
         let start = byte_index(&self.document.sql, self.document.tools.selection.start);
         let end = byte_index(&self.document.sql, self.document.tools.selection.end);
         match sql::selection_or_statement(&self.document.sql, start..end) {
-            Ok(text) => self.run_text(text, None),
+            Ok(text) => self.run_text(text, explain),
+            Err(e) => self.status = e.to_string(),
+        }
+    }
+    fn run_all(&mut self, atomic: bool) {
+        match Bindings::parse_json(&self.document.params) {
+            Ok(parameters) => {
+                let text = self.document.sql.clone();
+                let operation = Operation::Script {
+                    sql: text.clone(),
+                    parameters,
+                    atomic,
+                    budget: Budget {
+                        rows: self.preferences.row_limit,
+                        ..Default::default()
+                    },
+                };
+                if let Some(ticket) = self.submit(operation, View::Query) {
+                    self.tools
+                        .pending_history
+                        .insert(ticket.request, (self.tools.database_scope.clone(), text));
+                }
+            }
             Err(e) => self.status = e.to_string(),
         }
     }
     pub(super) fn editor_ui(&mut self, ui: &mut egui::Ui) {
+        ui.add_enabled_ui(
+            self.ready && !self.closing && !self.has_drafts() && self.commit_ticket.is_none(),
+            |ui| {
+                ui.menu_button("Run all…", |ui| {
+                    if ui.button("Run statements · stop on error").clicked() {
+                        self.run_all(false);
+                        ui.close();
+                    }
+                    if ui.button("Run as one atomic transaction").clicked() {
+                        self.run_all(true);
+                        ui.close();
+                    }
+                });
+            },
+        );
         if !self.workspace.enabled {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 3.0;
@@ -212,7 +252,7 @@ impl App {
                     self.run_selection();
                 }
                 if icons::button(ui, Icon::Explain, "Explain query plan", "").clicked() {
-                    self.run_text(self.document.sql.clone(), Some(false));
+                    self.run_current(Some(false));
                 }
                 if icons::control(
                     ui,
@@ -254,7 +294,7 @@ impl App {
                     self.document.ui.sql_open = false;
                 }
                 if icons::button(ui, Icon::Structure, "Explain bytecode", "").clicked() {
-                    self.run_text(self.document.sql.clone(), Some(true));
+                    self.run_current(Some(true));
                 }
                 if icons::button(ui, Icon::Saved, "Bookmark editor SQL", "Ctrl S").clicked() {
                     self.ui.sidebar = shell::ToolPanel::Saved;

@@ -174,6 +174,35 @@ fn byte_limited_pages_continue_and_reverse_without_a_false_end() {
 }
 
 #[test]
+fn bulk_selection_deletion_is_staged_until_an_explicit_commit() {
+    let (_dir, ctx, mut app) = fixture(
+        &[
+            "CREATE TABLE t(id INTEGER PRIMARY KEY,value TEXT DEFAULT 'default')",
+            "INSERT INTO t VALUES(1,'one'),(2,'two'),(3,'three')",
+        ],
+        true,
+    );
+    app.browse_table("t".into());
+    wait(&mut app, &ctx);
+    frame(&mut app, &ctx, vec![]);
+    app.document.tools.grid_selection = Some(super::selection::Selection {
+        ticket: app.document.result.current,
+        anchor: (0, 0),
+        cursor: (1, 1),
+    });
+    app.stage_selected_deletions();
+    assert_eq!(app.document.drafts.as_ref().unwrap().edits.len(), 2);
+    assert_eq!(app.document.result.rows.len(), 3);
+    app.document.drafts = None;
+    app.begin_insert();
+    assert_eq!(app.document.insert_fields.len(), 2);
+    assert!(!app.document.insert_use_json);
+    app.document.show_insert = false;
+    app.close();
+    wait_closed(&mut app, &ctx);
+}
+
+#[test]
 fn sql_selection_shortcut_and_window_expansion_have_distinct_targets() {
     let (_dir, ctx, mut app) = fixture(&["CREATE TABLE sample(id INTEGER PRIMARY KEY)"], false);
     app.open_sql_window(false);

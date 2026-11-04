@@ -13,6 +13,7 @@ enum GridAction {
     Record(usize),
     Copy(usize),
     Delete(usize),
+    BulkDelete,
     Follow(usize, ForeignKey),
     Filter(tursobench_core::Filter),
     Inspect(usize, usize),
@@ -163,6 +164,36 @@ impl CellAppearance<'_> {
 }
 impl App {
     pub(super) fn grid_contents(&mut self, ui: &mut egui::Ui) {
+        if !self.document.script_results.is_empty() {
+            let mut selected = None;
+            ui.collapsing("Script results and outcomes", |ui| {
+                ui.label(&self.document.script_message);
+                for (i, result) in self.document.script_results.iter().enumerate() {
+                    if ui
+                        .button(format!(
+                            "Statement {} · {} retained rows · {} changes · {}",
+                            result.index + 1,
+                            result.rows.len(),
+                            result.completion.changed,
+                            if result.completion.error.is_some() {
+                                "ERROR"
+                            } else {
+                                "finished"
+                            }
+                        ))
+                        .clicked()
+                    {
+                        selected = Some(i);
+                    }
+                }
+            });
+            if let Some(i) = selected {
+                let result = &self.document.script_results[i];
+                self.document.result.columns = result.columns.clone();
+                self.document.result.rows = result.rows.clone();
+                self.document.result.completion = Some(result.completion.clone());
+            }
+        }
         if self.document.stale {
             ui.colored_label(
                 ui.visuals().warn_fg_color,
@@ -296,6 +327,7 @@ impl App {
             }
             Some(GridAction::Copy(r)) => self.copy_row(ui.ctx(), r),
             Some(GridAction::Delete(r)) => self.stage_delete(r),
+            Some(GridAction::BulkDelete) => self.stage_selected_deletions(),
             Some(GridAction::Follow(r, key)) => self.follow_key(r, key),
             Some(GridAction::Filter(filter)) => {
                 self.add_filter(filter);
@@ -765,6 +797,9 @@ impl App {
                     ui.close();
                 }
             }
+        }
+        if editable && ui.button("Stage selected row deletions").clicked() {
+            return Some(GridAction::BulkDelete);
         }
         for key in references {
             if ui

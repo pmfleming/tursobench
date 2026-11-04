@@ -111,6 +111,15 @@ impl DraftBatch {
     }
 }
 fn generate(table: &Table, edit: &Edit) -> Result<BoundEdit, Failure> {
+    let invalid = |v: &Value| matches!(v,Value::Real(n) if !n.is_finite());
+    if match edit {
+        Edit::Insert { values } => values.iter().flatten().any(invalid),
+        Edit::Update { changes, .. } => changes.iter().any(|(_, v)| invalid(v)),
+        Edit::Delete { .. } => false,
+    } {
+        return Err(Failure::input("New edit values must be finite"));
+    }
+
     let name = quote_identifier(&table.name);
     let column = |i: usize| {
         table
@@ -123,7 +132,7 @@ fn generate(table: &Table, edit: &Edit) -> Result<BoundEdit, Failure> {
     let mut bind = |value: Value| -> Result<String, Failure> {
         if matches!(value, Value::Deferred(_))
             || value.bytes() > 64 * 1024
-            || matches!(&value, Value::Real(n) if !n.is_finite())
+            || matches!(&value, Value::Real(n) if n.is_nan())
         {
             return Err(Failure::input("Edit value is oversized or non-finite"));
         }

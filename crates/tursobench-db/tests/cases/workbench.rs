@@ -268,6 +268,48 @@ fn wide_rows_signal_page_continuation_instead_of_stalling() {
 }
 
 #[test]
+fn scripts_report_partial_success_and_atomic_rollback() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("scripts.db");
+    common::create(&path, &["CREATE TABLE t(id INTEGER PRIMARY KEY)"]);
+    let mut c = Client::open(&path, Access::ReadWrite);
+    for atomic in [false, true] {
+        c.sql("DELETE FROM t");
+        let reply = c.run(Operation::Script {
+            sql: "INSERT INTO t VALUES(:id); INSERT INTO t VALUES(:id); INSERT INTO t VALUES(2)"
+                .into(),
+            parameters: Bindings::Named(BTreeMap::from([(":id".into(), Value::Integer(1))])),
+            atomic,
+            budget: Budget::default(),
+        });
+        assert_eq!(reply.script.len(), 2);
+        assert!(reply.script[0].completion.error.is_none());
+        assert!(reply.script[1].completion.error.is_some());
+        assert_eq!(reply.rolled_back, atomic);
+        assert_eq!(
+            c.sql("SELECT count(*) FROM t").rows,
+            vec![vec![Value::Integer(if atomic { 0 } else { 1 })]]
+        );
+    }
+    let reply = c.run(Operation::Script {
+        sql: "INSERT INTO t VALUES(7); SELECT id FROM t".into(),
+        parameters: vec![].into(),
+        atomic: true,
+        budget: Budget::default(),
+    });
+    assert!(reply.result.completion.unwrap().error.is_none());
+    assert_eq!(reply.script[1].rows, vec![vec![Value::Integer(7)]]);
+    let rejected = c.run(Operation::Script {
+        sql: "BEGIN; INSERT INTO t VALUES(8)".into(),
+        parameters: vec![].into(),
+        atomic: true,
+        budget: Budget::default(),
+    });
+    assert!(rejected.failure.is_some());
+    c.close();
+}
+
+#[test]
 fn native_metadata_related_lookup_and_diagnostics_preserve_readonly_bytes() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("workbench.db");

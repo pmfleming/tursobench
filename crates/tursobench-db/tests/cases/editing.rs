@@ -89,6 +89,36 @@ fn composite_changed_keys_null_blob_and_defaults() {
         vec![vec![Value::Integer(2)]]
     );
 }
+
+#[test]
+fn infinite_original_values_can_be_matched_for_updates_and_deletes() {
+    let (_dir, mut c) = fixture();
+    c.sql("CREATE TABLE extremes(id INTEGER PRIMARY KEY, value REAL)");
+    c.sql("INSERT INTO extremes VALUES(1,1e999),(2,-1e999)");
+    let (table, page) = c.browse("extremes", 0);
+    assert!(matches!(page.rows[0][1],Value::Real(n) if n.is_infinite()));
+    let outcome = c.commit(
+        table,
+        vec![
+            Edit::Update {
+                original: page.rows[0].clone(),
+                changes: vec![(1, Value::Real(1.0))],
+            },
+            Edit::Delete {
+                original: page.rows[1].clone(),
+            },
+        ],
+    );
+    assert!(
+        matches!(outcome, CommitOutcome::Committed { operations: 2 }),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        c.sql("SELECT id,value FROM extremes").rows,
+        vec![vec![Value::Integer(1), Value::Real(1.0)]]
+    );
+    c.close();
+}
 #[test]
 fn rejected_batches_preserve_rows_across_conflicts_constraints_and_transactions() {
     for (setup, kind, duplicate) in [

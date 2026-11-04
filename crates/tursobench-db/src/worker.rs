@@ -19,7 +19,9 @@ use tursobench_core::{
     Access, Bindings, Budget, Column, Completion, ConnectionSettings, Delivery, ErrorKind, Event,
     EventKind, Failure, Ticket, Value, quote_identifier,
 };
+#[derive(Clone)]
 pub(super) struct Output {
+    pub(super) capture: Option<Arc<std::sync::Mutex<Vec<Event>>>>,
     pub(super) tx: SyncSender<Event>,
     pub(super) wake: Arc<dyn Fn() + Send + Sync>,
     pub(super) discard: Arc<crate::DeliveryControl>,
@@ -31,6 +33,13 @@ impl Output {
     }
     fn send(&self, ticket: Ticket, kind: EventKind) -> bool {
         let discardable = matches!(kind, EventKind::Rows(_) | EventKind::Columns(_));
+        if discardable && self.discarded(ticket) {
+            return true;
+        }
+        if let Some(events) = &self.capture {
+            events.lock().unwrap().push(Event { ticket, kind });
+            return true;
+        }
         let mut event = Event { ticket, kind };
         loop {
             if discardable && self.discarded(ticket) {
@@ -194,6 +203,224 @@ struct Worker<'a> {
     dirty_schema: bool,
 }
 impl Worker<'_> {
+    fn note_completion(&mut self, ticket: Ticket, effect: sql::Effect, completion: &Completion) {
+        if completion.error.is_none() {
+            match effect {
+                sql::Effect::Rollback => {
+                    self.dirty_data = false;
+                    self.dirty_schema = false;
+                }
+                sql::Effect::Data => self.dirty_data = true,
+                sql::Effect::Schema => {
+                    self.dirty_data = true;
+                    self.dirty_schema = true;
+                }
+                sql::Effect::Read => {}
+            }
+        }
+        if completion.transaction == tursobench_core::TransactionState::Autocommit
+            && self.dirty_data
+        {
+            self.output.send(
+                Ticket {
+                    request: 0,
+                    ..ticket
+                },
+                EventKind::Invalidated {
+                    schema: self.dirty_schema,
+                    source_request: ticket.request,
+                },
+            );
+            self.dirty_data = false;
+            self.dirty_schema = false;
+        }
+    }
+    async fn script(
+        &mut self,
+        ticket: Ticket,
+        text: String,
+        parameters: Bindings,
+        atomic: bool,
+        budget: Budget,
+    ) -> Result<EventKind, Failure> {
+        let statements = sql::script_statements(&text)?;
+        if atomic
+            && (state(self.editor) != tursobench_core::TransactionState::Autocommit
+                || statements.iter().any(|s| sql::transaction_control(s)))
+        {
+            return Err(Failure::input(
+                "Atomic scripts require autocommit and cannot contain transaction commands",
+            ));
+        }
+        if matches!(&parameters,Bindings::Positional(v) if !v.is_empty()) {
+            return Err(Failure::input(
+                "Use named bindings for parameterized scripts",
+            ));
+        }
+        sql::validate_bindings(&text, &parameters)?;
+        if self.access == Access::ReadOnly {
+            for s in &statements {
+                sql::validate_readonly(s)?;
+            }
+        }
+        let started = std::time::Instant::now();
+        let mut summary = Completion {
+            elapsed_ms: 0,
+            delivery: Delivery::Complete,
+            rows_seen: 0,
+            page_has_more: None,
+            changed: 0,
+            transaction: state(self.editor),
+            error: None,
+        };
+        if self.output.discarded(ticket) {
+            summary.delivery = Delivery::Discarded;
+            return Ok(EventKind::Finished(summary));
+        }
+        if atomic {
+            self.editor
+                .execute(
+                    if self.access == Access::ReadOnly {
+                        "BEGIN"
+                    } else {
+                        "BEGIN IMMEDIATE"
+                    },
+                    (),
+                )
+                .await
+                .map_err(failure)?;
+        }
+        let mut retained_rows = 0usize;
+        let mut retained_bytes = 0usize;
+        for (index, statement) in statements.iter().enumerate() {
+            let bindings = match &parameters {
+                Bindings::Positional(_) => Bindings::Positional(vec![]),
+                Bindings::Named(values) => Bindings::Named(
+                    sql::parameter_names(statement)
+                        .into_iter()
+                        .map(|name| {
+                            let value = values[&name].clone();
+                            (name, value)
+                        })
+                        .collect(),
+                ),
+            };
+            let capture = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let output = Output {
+                capture: Some(capture.clone()),
+                ..self.output.clone()
+            };
+            let mut completion = execute(
+                self.editor,
+                ticket,
+                statement,
+                bindings,
+                Budget {
+                    rows: budget.rows.min(10_000).saturating_sub(retained_rows),
+                    bytes: budget
+                        .bytes
+                        .min(8 * 1024 * 1024)
+                        .saturating_sub(retained_bytes),
+                    page: false,
+                    ..budget
+                },
+                ExecutionContext {
+                    out: &output,
+                    access: self.access,
+                    depot: &mut self.depot,
+                },
+            )
+            .await;
+            self.note_completion(ticket, sql::effect(statement), &completion);
+            let mut columns = Vec::new();
+            let mut rows = Vec::new();
+            for event in capture.lock().unwrap().drain(..) {
+                match event.kind {
+                    EventKind::Columns(c) => columns = c,
+                    EventKind::Rows(r) => rows.extend(r),
+                    _ => {}
+                }
+            }
+            let payload = columns
+                .iter()
+                .map(|c| c.name.len() + c.declared_type.as_ref().map_or(0, String::len))
+                .sum::<usize>()
+                + rows.iter().flatten().map(Value::bytes).sum::<usize>()
+                + statement.len();
+            if retained_bytes.saturating_add(payload) > 8 * 1024 * 1024 {
+                rows.clear();
+                columns.clear();
+                completion.delivery = Delivery::Limited;
+            }
+            retained_bytes = retained_bytes.saturating_add(payload).min(8 * 1024 * 1024);
+            retained_rows += rows.len();
+            summary.rows_seen = summary.rows_seen.saturating_add(completion.rows_seen);
+            summary.changed = summary.changed.saturating_add(completion.changed);
+            summary.transaction = completion.transaction;
+            if completion.delivery != Delivery::Complete {
+                summary.delivery = completion.delivery;
+            }
+            summary.error = completion.error.clone();
+            self.output.send(
+                ticket,
+                EventKind::ScriptResult(tursobench_core::ScriptResult {
+                    index,
+                    sql: statement.clone(),
+                    columns,
+                    rows,
+                    completion,
+                }),
+            );
+            if summary.error.is_some() || self.output.discarded(ticket) {
+                break;
+            }
+        }
+        let discarded = self.output.discarded(ticket);
+        let mut rolled_back = false;
+        if atomic {
+            if summary.error.is_some() || discarded {
+                match rollback(self.editor).await {
+                    Ok(()) => {
+                        rolled_back = true;
+                        summary.changed = 0;
+                        self.dirty_data = false;
+                        self.dirty_schema = false;
+                        summary.transaction = state(self.editor);
+                    }
+                    Err(e) => {
+                        summary.transaction = tursobench_core::TransactionState::Unknown;
+                        summary.error = Some(Failure {
+                            kind: ErrorKind::Unknown,
+                            message: format!("Atomic rollback outcome UNKNOWN: {e}"),
+                        });
+                    }
+                }
+            } else if let Err(e) = self.editor.execute("COMMIT", ()).await {
+                summary.transaction = tursobench_core::TransactionState::Unknown;
+                summary.error = Some(Failure {
+                    kind: ErrorKind::Unknown,
+                    message: format!(
+                        "Atomic COMMIT outcome UNKNOWN; reopen and inspect before retry: {e}"
+                    ),
+                });
+            } else {
+                summary.transaction = state(self.editor);
+                self.note_completion(ticket, sql::Effect::Read, &summary);
+            }
+        }
+        if discarded {
+            summary.delivery = Delivery::Discarded;
+        }
+        summary.elapsed_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+        self.output.send(
+            ticket,
+            EventKind::ScriptOutcome {
+                atomic,
+                rolled_back,
+            },
+        );
+        Ok(EventKind::Finished(summary))
+    }
     async fn dispatch(
         &mut self,
         ticket: Ticket,
@@ -217,6 +444,7 @@ impl Worker<'_> {
                 return Ok(Some(EventKind::ValueSaved(path.display().to_string())));
             }
             Operation::Definition(name) => (self.browse,"SELECT sql FROM sqlite_schema WHERE name=?1".into(),vec![Value::Text(name)].into(),default),
+            Operation::Script{sql,parameters,atomic,budget} => return self.script(ticket,sql,parameters,atomic,budget).await.map(Some),
             Operation::Close => return Ok(None),
             Operation::Diagram => return diagram::load(self.browse).await.map(EventKind::Diagram).map(Some),
             Operation::Inspect(name) => return inspection::inspect(self.browse, &name).await.map(EventKind::Inspection).map(Some),
@@ -282,36 +510,7 @@ impl Worker<'_> {
         .await;
         // Every result reports the persistent editor's state, including browse/diagnostics.
         completion.transaction = state(self.editor);
-        if completion.error.is_none() {
-            match effect {
-                sql::Effect::Rollback => {
-                    self.dirty_data = false;
-                    self.dirty_schema = false;
-                }
-                sql::Effect::Data => self.dirty_data = true,
-                sql::Effect::Schema => {
-                    self.dirty_data = true;
-                    self.dirty_schema = true;
-                }
-                sql::Effect::Read => {}
-            }
-        }
-        if completion.transaction == tursobench_core::TransactionState::Autocommit
-            && self.dirty_data
-        {
-            self.output.send(
-                Ticket {
-                    request: 0,
-                    ..ticket
-                },
-                EventKind::Invalidated {
-                    schema: self.dirty_schema,
-                    source_request: ticket.request,
-                },
-            );
-            self.dirty_data = false;
-            self.dirty_schema = false;
-        }
+        self.note_completion(ticket, effect, &completion);
         Ok(Some(EventKind::Finished(completion)))
     }
 }

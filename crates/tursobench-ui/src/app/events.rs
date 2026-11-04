@@ -318,6 +318,9 @@ impl App {
         }
     }
     fn record_completion(&mut self, ticket: Ticket, c: &Completion) {
+        if c.transaction == TransactionState::Unknown {
+            self.uncertain_edit = true;
+        }
         self.record_history(ticket, Some(c.elapsed_ms), c.error.is_some());
         self.log_outcome(format!(
             "Request {}: {}",
@@ -333,6 +336,23 @@ impl App {
             return;
         }
         match event.kind {
+            EventKind::ScriptResult(result) => {
+                self.document.result.columns = result.columns.clone();
+                self.document.result.rows = result.rows.clone();
+                self.document.result.completion = Some(result.completion.clone());
+                self.document.script_results.push(result);
+            }
+            EventKind::ScriptOutcome {
+                atomic,
+                rolled_back,
+            } => self.document.script_message = if rolled_back {
+                "Atomic script rolled back; displayed results are from that attempt"
+            } else if atomic {
+                "Atomic script finished; inspect the final completion status"
+            } else {
+                "Statements ran sequentially; earlier successful writes may already be committed"
+            }
+            .into(),
             EventKind::Table(table) => {
                 self.document.tools.export_table = table.name.clone();
                 self.request_inspection(table.name.clone());

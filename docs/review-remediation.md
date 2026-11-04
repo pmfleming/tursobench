@@ -114,3 +114,26 @@ length. Deferred rows require complete originals before staging edits.
 Stage 5 verification: all 157 workspace tests, formatting and all-target Clippy
 pass. New tests preserve a 100 KB cell at row 50, read/save its original bytes,
 refuse overwrite, continue 50 KB-wide rows, and reverse a short byte-limited page.
+
+## Stage 6 — SQL and editing
+
+Run, selection and EXPLAIN share cursor/selection semantics. Lexer boundaries
+preserve comments, strings and trigger/CASE bodies while allowing a valid statement
+past an unrelated malformed one. Run-all prevalidates up to 100 statements/1 MiB,
+then executes sequentially with stop-on-error or in an explicit application-owned
+atomic transaction. Atomic mode rejects embedded transaction controls and an active
+editor transaction. Named script parameters are scoped per statement. Per-step
+results/outcomes are retained within an aggregate 8 MiB budget; the selected result
+can use another bounded 8 MiB display copy. Commit/rollback uncertainty is reported
+as UNKNOWN, never successful rollback.
+
+Bindings accept ordinary positional/named JSON alongside tagged values, rejecting
+out-of-range integers and ambiguous nested arrays. Inserts have a typed form with
+separate Default/Omit, NULL and Value choices plus optional tagged JSON. A grid
+selection can stage unique-row deletions through the existing atomic review/commit
+path. Original positive/negative infinity values can be matched for updates and
+deletes; newly supplied non-finite values remain rejected.
+
+Stage 6 verification: all 162 workspace tests, formatting and all-target Clippy
+pass, including sequential partial success versus atomic rollback, trigger/script
+boundaries, convenient bindings, staged bulk deletion and infinity row matching.
