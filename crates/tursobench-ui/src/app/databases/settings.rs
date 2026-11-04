@@ -312,7 +312,7 @@ mod tests {
                 .collect();
         app.preferences.discovery.excluded.clear();
         app.path = "/work/selected.db".into();
-        app.exclusive = true;
+
         app.writable = true;
 
         for (input, path) in [
@@ -361,7 +361,7 @@ mod tests {
         assert!(app.preferences.discovery.roots.is_empty());
         assert!(app.preferences.discovery.excluded.is_empty());
         assert_eq!(app.path, "/work/selected.db");
-        assert!(app.exclusive && app.writable);
+        assert!(app.writable);
         assert!(app.session.is_none());
     }
 

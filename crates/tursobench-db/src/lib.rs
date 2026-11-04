@@ -3,7 +3,9 @@ use tursobench_core::{
     Access, Bindings, Browse, Budget, ConnectionSettings, DraftBatch, ErrorKind, Event, Failure,
     Ticket, Value,
 };
+mod access;
 mod browse;
+pub use access::{ProcessUsage, processes_using};
 mod connection;
 mod diagram;
 mod edits;
@@ -327,21 +329,13 @@ impl Session {
     pub fn open(
         path: PathBuf,
         access: Access,
-        exclusive_use_confirmed: bool,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Result<Self, Failure> {
-        Self::open_with_settings(
-            path,
-            access,
-            exclusive_use_confirmed,
-            ConnectionSettings::default(),
-            wake,
-        )
+        Self::open_with_settings(path, access, ConnectionSettings::default(), wake)
     }
     pub fn open_with_settings(
         path: PathBuf,
         access: Access,
-        exclusive_use_confirmed: bool,
         settings: ConnectionSettings,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Result<Self, Failure> {
@@ -350,11 +344,6 @@ impl Session {
         }
         if settings.busy_timeout_ms > 5000 {
             return Err(Failure::input("Busy timeout must be 0–5000 ms"));
-        }
-        if !exclusive_use_confirmed {
-            return Err(Failure::input(
-                "Only databases not in use by other applications are supported",
-            ));
         }
         let id = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
         let (commands, rx) = mpsc::sync_channel(COMMAND_CAPACITY);

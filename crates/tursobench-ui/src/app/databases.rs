@@ -107,8 +107,6 @@ pub(super) struct Chooser {
     #[cfg(test)]
     pub open_enabled: bool,
     #[cfg(test)]
-    pub acknowledgement_rect: Option<egui::Rect>,
-    #[cfg(test)]
     pub settings_rect: Option<egui::Rect>,
     #[cfg(test)]
     pub override_rect: Option<egui::Rect>,
@@ -424,8 +422,7 @@ impl App {
         }
         if let Some(path) = path.to_str() {
             self.set_database_path(path.into());
-            self.status =
-                "Database selected. Review access and exclusive use before opening.".into();
+            self.status = "Database selected. Review access before opening.".into();
         } else {
             self.status = "Only UTF-8 database paths are supported by the Turso engine".into();
         }
@@ -604,7 +601,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut app = App::new(&ctx);
         app.path = "/explicit/database.db".into();
-        app.exclusive = true;
+
         app.writable = true;
         for path in ["/work/a.db", "/work/missing.db", "/work/b.db"] {
             app.discovery_event(found(path));
@@ -628,10 +625,10 @@ mod tests {
             Some(Path::new("/work/b.db"))
         );
         assert_eq!(app.path, "/explicit/database.db");
-        assert!(app.exclusive && app.writable);
+        assert!(app.writable);
         key(&mut app, &ctx, egui::Key::Enter);
         assert_eq!(app.path, "/work/b.db");
-        assert!(!app.exclusive && !app.writable);
+        assert!(!app.writable);
         assert!(app.session.is_none() && app.picker.is_none());
         key(&mut app, &ctx, egui::Key::ArrowUp);
         assert!(app.databases.navigating);
@@ -758,25 +755,25 @@ mod tests {
         let mut app = App::new(&ctx);
         assert!(app.databases.job.is_none());
         app.path = "/explicit/command-line.db".into();
-        app.exclusive = true;
+
         app.writable = true;
         app.discovery_event(found("/work/z-last.db"));
         app.discovery_event(found("/work/a-first.db"));
         app.discovery_event(found("/work/z-last.db"));
         assert_eq!(app.path, "/explicit/command-line.db");
-        assert!(app.exclusive && app.writable);
+        assert!(app.writable);
         assert_eq!(app.databases.entries.len(), 2);
         assert_eq!(app.databases.entries[0].path, Path::new("/work/z-last.db"));
         app.select_database(Path::new("/work/a-first.db"));
         assert_eq!(app.path, "/work/a-first.db");
-        assert!(!app.exclusive && !app.writable);
+        assert!(!app.writable);
         assert!(app.session.is_none());
-        app.exclusive = true;
+        app.writable = true;
         let (tx, rx) = mpsc::sync_channel(1);
         app.picker = Some(rx);
         app.select_database(Path::new("/work/z-last.db"));
         assert_eq!(app.path, "/work/a-first.db");
-        assert!(app.exclusive);
+        assert!(app.writable);
         drop(tx);
     }
 
@@ -859,7 +856,7 @@ mod tests {
         assert!(row.top() > search.bottom());
         click(&mut app, &ctx, row.center());
         assert_eq!(app.path, "/work/agenda.db");
-        assert!(!app.exclusive && !app.writable);
+        assert!(!app.writable);
         assert!(app.session.is_none() && app.picker.is_none());
         // Large candidate lists render only the visible rows.
         app.databases.filter.clear();
@@ -889,7 +886,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut app = App::new(&ctx);
         app.path = "selected.db".into();
-        app.exclusive = true;
+
         app.writable = true;
         app.databases.picking_folder = true;
         let (tx, rx) = mpsc::sync_channel(1);
@@ -897,7 +894,7 @@ mod tests {
         tx.send(Ok(Some(temp.path().into()))).unwrap();
         app.poll_picker();
         assert_eq!(app.path, "selected.db");
-        assert!(app.exclusive && app.writable);
+        assert!(app.writable);
         assert!(
             app.preferences
                 .discovery

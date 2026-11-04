@@ -29,7 +29,7 @@ impl App {
     pub(super) fn set_database_path(&mut self, path: String) {
         if self.path != path {
             self.path = path;
-            self.exclusive = false;
+
             self.writable = false;
             self.databases.inspection.override_sqlite = false;
         }
@@ -119,8 +119,7 @@ impl App {
                 if let Some(path) = path.to_str() {
                     self.set_database_path(path.to_owned());
                     self.document.ui.nav = shell::Nav::Databases;
-                    self.status =
-                        "File selected. Review access and exclusive use before opening.".into();
+                    self.status = "File selected. Review access before opening.".into();
                 } else {
                     self.status =
                         "Only UTF-8 database paths are supported; no lossy path substitution"
@@ -171,7 +170,7 @@ mod tests {
         for (result, message) in cases {
             let mut app = App::new(&ctx);
             app.path = "previous.db".into();
-            app.exclusive = true;
+
             app.writable = true;
             let (tx, rx) = mpsc::sync_channel(1);
             app.picker = Some(rx);
@@ -185,14 +184,14 @@ mod tests {
             assert!(app.picker.is_none());
             assert!(app.status.contains(message), "{}", app.status);
             assert_eq!(app.path, "previous.db");
-            assert!(app.exclusive && app.writable);
+            assert!(app.writable);
             app.document.ui.nav = shell::Nav::Result;
             let (tx, rx) = mpsc::sync_channel(1);
             app.picker = Some(rx);
             tx.send(Ok(Some("retry.db".into()))).unwrap();
             app.poll_picker();
             assert_eq!(app.path, "retry.db");
-            assert!(!app.exclusive && !app.writable);
+            assert!(!app.writable);
             assert_eq!(app.document.ui.nav, shell::Nav::Databases);
         }
     }
@@ -222,7 +221,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut app = App::new(&ctx);
         app.path = "previous.db".into();
-        app.exclusive = true;
+
         let (tx, rx) = mpsc::sync_channel(1);
         app.picker = Some(rx);
         app.open(&ctx);

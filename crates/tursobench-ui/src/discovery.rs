@@ -337,7 +337,7 @@ fn candidate_name(path: &Path, extensionless: bool) -> bool {
     // Lossy text is used only for matching, never to construct or open a path.
     let name = name.to_string_lossy().to_ascii_lowercase();
     if [
-        "-wal", "-shm", "-journal", "-log", ".wal", ".shm", ".journal",
+        "-wal", "-shm", "-tshm", "-journal", "-log", ".wal", ".shm", ".tshm", ".journal",
     ]
     .iter()
     .any(|suffix| name.ends_with(suffix))

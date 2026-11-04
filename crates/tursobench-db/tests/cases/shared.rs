@@ -14,6 +14,11 @@ struct Peer {
 }
 impl Peer {
     fn start(path: &Path, mode: &str) -> (Self, String) {
+        let p = Self::spawn(path, mode);
+        let ready = p.reply();
+        (p, ready)
+    }
+    fn spawn(path: &Path, mode: &str) -> Self {
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "shared::peer", "--nocapture"])
             .env("TURSOBENCH_PEER_PATH", path)
@@ -28,16 +33,14 @@ impl Peer {
         std::thread::spawn(move || {
             for line in std::io::BufReader::new(stdout).lines() {
                 let Ok(line) = line else { break };
-                if let Some(reply) = line.strip_prefix("PEER|") {
-                    if tx.send(reply.to_owned()).is_err() {
-                        break;
-                    }
+                if let Some(reply) = line.strip_prefix("PEER|")
+                    && tx.send(reply.to_owned()).is_err()
+                {
+                    break;
                 }
             }
         });
-        let p = Self { child, replies };
-        let ready = p.reply();
-        (p, ready)
+        Self { child, replies }
     }
     fn reply(&self) -> String {
         self.replies
@@ -183,6 +186,74 @@ fn readonly_flag_is_not_proof_of_coordination() {
     let (_dir, path) = fixture();
     let (_reader, ready) = Peer::start(&path, "reader");
     assert_eq!(ready, "READY|false");
+}
+
+#[test]
+fn application_admission_blocks_legacy_writers_and_reserves_readonly_fallback() {
+    use tursobench_core::{Access, Coordination, ErrorKind, EventKind};
+    let (_dir, path) = fixture();
+    {
+        let (_legacy, _) = Peer::start(&path, "legacy");
+        let usage = tursobench_db::processes_using(&path);
+        assert!(!usage.applications.is_empty());
+        for access in [Access::ReadOnly, Access::ReadWrite] {
+            let s = tursobench_db::Session::open(path.clone(), access, || {}).unwrap();
+            assert!(
+                matches!(common::event(&s).kind, EventKind::Failed(e) if e.kind == ErrorKind::Busy)
+            );
+        }
+    }
+    let s = tursobench_db::Session::open(path.clone(), Access::ReadOnly, || {}).unwrap();
+    assert!(matches!(
+        common::event(&s).kind,
+        EventKind::Opened(Coordination::ProtectedReadOnly)
+    ));
+    let (_legacy, ready) = Peer::start(&path, "legacy");
+    assert!(ready.starts_with("ERROR|"), "{ready}");
+    let blocked = Peer::spawn(&path, "writer");
+    assert!(
+        blocked
+            .replies
+            .recv_timeout(Duration::from_millis(100))
+            .is_err()
+    );
+    let denied = tursobench_db::Session::open(path.clone(), Access::ReadWrite, || {}).unwrap();
+    assert!(
+        matches!(common::event(&denied).kind, EventKind::Failed(e) if e.kind == ErrorKind::Busy)
+    );
+    s.close();
+    assert!(matches!(
+        common::event(&s).kind,
+        EventKind::Closed { rollback: Ok(()) }
+    ));
+    assert!(blocked.reply().starts_with("ERROR|"));
+    drop(blocked);
+    let (mut writer, ready) = Peer::start(&path, "writer");
+    assert_eq!(ready, "READY|true");
+    let s = tursobench_db::Session::open(path.clone(), Access::ReadOnly, || {}).unwrap();
+    assert!(matches!(
+        common::event(&s).kind,
+        EventKind::Opened(Coordination::SharedWal)
+    ));
+    writer.ok("UPDATE items SET value='visible'");
+    let result = common::run(
+        &s,
+        1,
+        tursobench_db::Operation::Execute {
+            sql: "SELECT value FROM items".into(),
+            parameters: vec![],
+            budget: Default::default(),
+        },
+    );
+    assert_eq!(
+        result.result.rows,
+        vec![vec![tursobench_core::Value::Text("visible".into())]]
+    );
+    s.close();
+    assert!(matches!(
+        common::event(&s).kind,
+        EventKind::Closed { rollback: Ok(()) }
+    ));
 }
 
 #[test]

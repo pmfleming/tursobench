@@ -60,7 +60,7 @@ fn connected(path: &std::path::Path, writable: bool) -> (egui::Context, App) {
     let ctx = egui::Context::default();
     let mut app = App::new(&ctx);
     app.path = path.to_string_lossy().into_owned();
-    app.exclusive = true;
+
     app.writable = writable;
     inspect_selected(&mut app, &ctx);
     app.open(&ctx);
@@ -235,7 +235,6 @@ fn worker_termination_preserves_drafts_and_reports_unknown_cleanup() {
     let session = tursobench_db::Session::open(
         app.path.clone().into(),
         tursobench_core::Access::ReadWrite,
-        true,
         || panic!("injected worker termination"),
     )
     .unwrap();
@@ -245,7 +244,7 @@ fn worker_termination_preserves_drafts_and_reports_unknown_cleanup() {
             .recv_timeout(Duration::from_secs(5))
             .unwrap()
             .kind,
-        EventKind::Opened
+        EventKind::Opened(_)
     ));
     app.commit_ticket = Some(session.ticket(1, 0));
     app.commit_owner = Some(app.document.id);
@@ -583,7 +582,7 @@ fn failed_open_after_close_can_retry_a_valid_database() {
     let ctx = egui::Context::default();
     let mut app = App::new(&ctx);
     app.set_database_path(dir.path().join("missing.db").to_str().unwrap().into());
-    app.exclusive = true;
+
     inspect_selected(&mut app, &ctx);
     app.open(&ctx);
     assert!(app.session.is_some());
@@ -598,7 +597,7 @@ fn failed_open_after_close_can_retry_a_valid_database() {
     );
 
     app.set_database_path(path.to_str().unwrap().into());
-    app.exclusive = true;
+
     inspect_selected(&mut app, &ctx);
     app.open(&ctx);
     wait(&mut app, &ctx);
@@ -626,7 +625,7 @@ fn failed_open_completes_pending_exit_after_any_export() {
         let ctx = egui::Context::default();
         let mut app = App::new(&ctx);
         app.set_database_path(dir.path().join("missing.db").to_str().unwrap().into());
-        app.exclusive = true;
+
         app.writable = true;
         inspect_selected(&mut app, &ctx);
         app.open(&ctx);

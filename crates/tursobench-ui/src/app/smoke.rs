@@ -68,7 +68,6 @@ impl App {
         }
         match smoke.stage {
             0 => {
-                self.exclusive = true;
                 self.writable = false;
                 // The desktop smoke runner intentionally uses a closed SQLite
                 // compatibility fixture and opts into opening it with Turso.
@@ -207,7 +206,7 @@ impl App {
                     // Capture-only pass uses the disposable fixture with real writable
                     // access. Stage locally to exercise edit surfaces; never commit.
                     self.writable = true;
-                    self.exclusive = true;
+
                     self.open(ctx);
                     smoke.stage = 40;
                 } else {

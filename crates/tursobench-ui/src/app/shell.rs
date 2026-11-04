@@ -422,7 +422,12 @@ impl App {
                     tokens.muted
                 },
             )
-            .on_hover_text("Turso 0.8.3 · FTS · click to close cleanly and change access")
+            .on_hover_text(format!(
+                "Turso 0.8.3 · {} · click to close cleanly and change access",
+                self.coordination
+                    .filter(|_| self.ready)
+                    .map_or("Connecting", |c| c.label())
+            ))
             .clicked()
         {
             self.ui.access_dialog = true;

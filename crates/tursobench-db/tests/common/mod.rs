@@ -16,9 +16,9 @@ pub fn event(session: &Session) -> Event {
         .expect("session event before timeout")
 }
 pub fn opened(path: &Path, access: Access) -> Session {
-    let session = Session::open(path.into(), access, true, || {}).unwrap();
+    let session = Session::open(path.into(), access, || {}).unwrap();
     assert!(
-        matches!(event(&session).kind, EventKind::Opened),
+        matches!(event(&session).kind, EventKind::Opened(_)),
         "open {}",
         path.display()
     );

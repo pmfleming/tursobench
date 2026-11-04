@@ -155,6 +155,21 @@ pub enum Access {
     ReadWrite,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Coordination {
+    /// Native multiprocess WAL mapping is active.
+    SharedWal,
+    /// Main-file reader lock and exclusive coordination reservation are held.
+    ProtectedReadOnly,
+}
+impl Coordination {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::SharedWal => "Shared WAL",
+            Self::ProtectedReadOnly => "Read only · writers blocked",
+        }
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransactionState {
     Autocommit,
     Active,
@@ -490,7 +505,7 @@ pub enum EventKind {
     Inspection(Inspection),
     Table(Table),
     EditsCommitted(CommitOutcome),
-    Opened,
+    Opened(Coordination),
     Columns(Vec<Column>),
     Rows(Vec<Vec<Value>>),
     Finished(Completion),

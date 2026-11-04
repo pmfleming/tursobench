@@ -30,6 +30,14 @@ pub fn snapshot(root: &Path) -> std::collections::BTreeMap<std::path::PathBuf, V
     ) {
         for entry in std::fs::read_dir(path).unwrap() {
             let path = entry.unwrap().path();
+            // Native/legacy admission coordination is volatile, not database
+            // content. Read-only sessions may create/reserve this sidecar.
+            if path
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().ends_with("-tshm"))
+            {
+                continue;
+            }
             if path.is_dir() {
                 walk(root, &path, files);
             } else {

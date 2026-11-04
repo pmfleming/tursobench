@@ -12,6 +12,9 @@ pub(in crate::app) struct Inspection {
     result: Option<Result<DatabaseKind, String>>,
     worker: Option<Receiver<Result<DatabaseKind, String>>>,
     pub override_sqlite: bool,
+    pub usage: tursobench_db::ProcessUsage,
+    usage_path: String,
+    usage_worker: Option<(String, Receiver<tursobench_db::ProcessUsage>)>,
 }
 
 impl Inspection {
@@ -46,6 +49,37 @@ impl Inspection {
 impl App {
     pub(in crate::app) fn poll_database_inspection(&mut self, ctx: &egui::Context) {
         let inspection = &mut self.databases.inspection;
+        if let Some((path, rx)) = &inspection.usage_worker {
+            match rx.try_recv() {
+                Ok(usage) => {
+                    if *path == self.path {
+                        inspection.usage = usage;
+                    }
+                    inspection.usage_worker = None;
+                }
+                Err(TryRecvError::Disconnected) => inspection.usage_worker = None,
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+        if inspection.usage_worker.is_none() && inspection.usage_path != self.path {
+            inspection.usage_path.clone_from(&self.path);
+            inspection.usage = Default::default();
+            if !self.path.is_empty() {
+                let path = PathBuf::from(&self.path);
+                let wake = ctx.clone();
+                let (tx, rx) = mpsc::sync_channel(1);
+                if std::thread::Builder::new()
+                    .name("database-applications".into())
+                    .spawn(move || {
+                        let _ = tx.send(tursobench_db::processes_using(&path));
+                        wake.request_repaint();
+                    })
+                    .is_ok()
+                {
+                    inspection.usage_worker = Some((self.path.clone(), rx));
+                }
+            }
+        }
         if let Some(rx) = &inspection.worker {
             let result = match rx.try_recv() {
                 Ok(result) => Some(result),
@@ -104,6 +138,7 @@ mod tests {
             result: None,
             worker: Some(rx),
             override_sqlite: true,
+            ..Default::default()
         };
         app.set_database_path(path.to_str().unwrap().into());
         app.poll_database_inspection(&ctx);

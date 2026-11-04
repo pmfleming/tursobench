@@ -289,7 +289,11 @@ impl App {
                 schema,
                 source_request,
             } => self.invalidate_views(schema, source_request),
-            EventKind::Opened if event.ticket.request == 0 => self.opened(),
+            EventKind::Opened(coordination) if event.ticket.request == 0 => {
+                self.coordination = Some(coordination);
+                self.opened();
+                self.status = format!("Connected · {}", coordination.label());
+            }
             EventKind::Closed { rollback } if event.ticket.request == 0 => {
                 self.closed(ctx, rollback)
             }

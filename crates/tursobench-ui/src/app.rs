@@ -60,8 +60,8 @@ pub struct App {
     export_job: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     picker: Option<std::sync::mpsc::Receiver<files::PickResult>>,
     databases: databases::Chooser,
-    exclusive: bool,
     writable: bool,
+    coordination: Option<tursobench_core::Coordination>,
     confirm_close: bool,
     pending_access: Option<bool>,
     session: Option<Session>,
@@ -131,8 +131,8 @@ impl App {
                 .cloned()
                 .unwrap_or_default(),
             picker: None,
-            exclusive: false,
             writable: false,
+            coordination: None,
             confirm_close: false,
             pending_access: None,
             session: None,
@@ -148,7 +148,8 @@ impl App {
             catalog_refresh_pending: false,
             activity: std::collections::VecDeque::new(),
             status: load_error.unwrap_or_else(|| {
-                "Open a trusted local Turso database. Linux preview; exclusive use only.".into()
+                "Open a trusted local Turso database. Linux preview; coordinated local access."
+                    .into()
             }),
             transaction: TransactionState::Autocommit,
             commit_ticket: None,
@@ -197,7 +198,6 @@ impl App {
             } else {
                 Access::ReadOnly
             },
-            self.exclusive,
             ConnectionSettings {
                 busy_timeout_ms: self.preferences.busy_timeout_ms,
                 query_timeout_ms: self.preferences.query_timeout_ms,

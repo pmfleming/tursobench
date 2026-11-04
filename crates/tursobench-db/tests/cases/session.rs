@@ -22,7 +22,6 @@ fn deadlines_interrupt_cpu_queries_and_writes_and_connections_recover() {
     let s = Session::open_with_settings(
         path,
         Access::ReadWrite,
-        true,
         ConnectionSettings {
             query_timeout_ms: 10,
             ..ConnectionSettings::default()
@@ -30,7 +29,7 @@ fn deadlines_interrupt_cpu_queries_and_writes_and_connections_recover() {
         || {},
     )
     .unwrap();
-    assert!(matches!(common::event(&s).kind, EventKind::Opened));
+    assert!(matches!(common::event(&s).kind, EventKind::Opened(_)));
     let long = "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<100000000) SELECT sum(x) FROM n";
     let started = std::time::Instant::now();
     let result = run(&s, 1, long, Budget::default());
@@ -311,7 +310,7 @@ fn real_readonly_bounded_results_and_cleanup() {
     let gate = Arc::new(Barrier::new(2));
     let armed = Arc::new(AtomicBool::new(false));
     let (woke, wake_done) = mpsc::channel();
-    let s = Session::open(path, Access::ReadOnly, true, {
+    let s = Session::open(path, Access::ReadOnly, {
         let gate = gate.clone();
         let armed = armed.clone();
         move || {
@@ -322,7 +321,7 @@ fn real_readonly_bounded_results_and_cleanup() {
         }
     })
     .unwrap();
-    assert!(matches!(common::event(&s).kind, EventKind::Opened));
+    assert!(matches!(common::event(&s).kind, EventKind::Opened(_)));
     wake_done.recv_timeout(Duration::from_secs(5)).unwrap();
     // Hold the worker inside the wake callback after its terminal event is visible.
     // Reusing the ID must succeed even before that callback returns.
@@ -437,12 +436,10 @@ fn returning_is_drained_even_when_delivery_is_limited() {
 fn invalid_open_inputs_never_create_or_rewrite_files() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("typo.db");
-    assert!(Session::open(path.clone(), Access::ReadOnly, false, || {}).is_err());
     assert!(
         Session::open_with_settings(
             path.clone(),
             Access::ReadOnly,
-            true,
             ConnectionSettings {
                 busy_timeout_ms: 5001,
                 ..ConnectionSettings::default()
@@ -455,10 +452,10 @@ fn invalid_open_inputs_never_create_or_rewrite_files() {
         if let Some(bytes) = &contents {
             std::fs::write(&path, bytes).unwrap();
         }
-        let s = Session::open(path.clone(), Access::ReadOnly, true, || {}).unwrap();
+        let s = Session::open(path.clone(), Access::ReadOnly, || {}).unwrap();
         assert!(matches!(common::event(&s).kind, EventKind::Failed(_)));
         assert_eq!(std::fs::read(&path).ok(), contents);
     }
-    let s = Session::open(dir.path().into(), Access::ReadOnly, true, || {}).unwrap();
+    let s = Session::open(dir.path().into(), Access::ReadOnly, || {}).unwrap();
     assert!(matches!(common::event(&s).kind, EventKind::Failed(_)));
 }

@@ -137,20 +137,18 @@ impl App {
                 if self.writable {
                     ui.colored_label(ui.visuals().warn_fg_color, "Opening for writes may migrate the journal to WAL and change the file before any SQL runs. Back up closed files with all required WAL state first.");
                 }
-                ui.small("Exclusive use is required in both modes. Read-only access does not lock out another application’s writer.");
-                let acknowledgement = ui.checkbox(
-                    &mut self.exclusive,
-                    "No other application has this database open",
-                );
-                #[cfg(test)]
-                {
-                    self.databases.acknowledgement_rect = Some(acknowledgement.rect);
+                ui.small("Compatible applications can share WAL access. Other writers are blocked by file locks.");
+                ui.small("Shared access uses Turso’s experimental multiprocess support.");
+                let usage = &self.databases.inspection.usage;
+                if !usage.applications.is_empty() {
+                    ui.label(format!("Also open in {}", usage.applications.join(", ")));
                 }
-                acknowledgement.on_hover_text("Exclusive use is required for both access modes. This acknowledgement is not an OS lock.");
+                if usage.incomplete {
+                    ui.weak("Application detection is limited; connection locks determine access.");
+                }
                 ui.add_space(8.0);
                 let enabled = !self.path.is_empty()
                     && self.picker.is_none()
-                    && self.exclusive
                     && self.databases.inspection.allows_open(&self.path)
                     && !self.has_drafts();
                 let response = crate::app::presentation::footer(ui, |ui| {
@@ -248,7 +246,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut app = App::new(&ctx);
         app.set_database_path(path.to_str().unwrap().into());
-        app.exclusive = true;
+
         inspect(&mut app, &ctx);
         assert_eq!(
             app.databases.inspection.kind(&app.path),
@@ -300,7 +298,7 @@ mod tests {
     }
 
     #[test]
-    fn access_panel_requires_consent_and_path_editing_resets_it() {
+    fn access_panel_uses_automatic_lock_checks_and_path_editing_resets_write_access() {
         let ctx = egui::Context::default();
         let mut app = App::new(&ctx);
         app.set_database_path("/work/example.db".into());
@@ -310,11 +308,9 @@ mod tests {
         click(&mut app, &ctx, open);
         assert!(app.session.is_none());
 
-        let acknowledgement = app.databases.acknowledgement_rect.unwrap().center();
-        click(&mut app, &ctx, acknowledgement);
         inspect(&mut app, &ctx);
         frame(&mut app, &ctx, vec![], egui::vec2(1280.0, 720.0));
-        assert!(app.exclusive && app.databases.open_enabled);
+        assert!(app.databases.open_enabled);
         assert!(!app.writable);
         let (_tx, rx) = std::sync::mpsc::sync_channel(1);
         app.picker = Some(rx);
@@ -334,7 +330,6 @@ mod tests {
             egui::vec2(1280.0, 720.0),
         );
         assert_ne!(app.path, "/work/example.db");
-        assert!(!app.exclusive, "path: {}", app.path);
         assert!(!app.writable);
         assert!(!app.databases.open_enabled);
         assert!(app.session.is_none());
@@ -345,7 +340,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut app = App::new(&ctx);
         app.set_database_path("/work/example.db".into());
-        app.exclusive = true;
+
         app.writable = true;
         app.databases.message = Some("Folder excluded.".into());
         app.databases.summary = Some(crate::discovery::Summary {
@@ -409,7 +404,7 @@ mod tests {
             );
         }
         assert_eq!(app.path, "/work/example.db");
-        assert!(app.exclusive && app.writable);
+        assert!(app.writable);
         assert!(app.session.is_none());
     }
 

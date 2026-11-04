@@ -64,7 +64,16 @@ async fn open(
     path: PathBuf,
     access: Access,
     settings: ConnectionSettings,
-) -> Result<(turso::Database, Connection, Connection), Failure> {
+) -> Result<
+    (
+        turso::Database,
+        Connection,
+        Connection,
+        crate::access::Admission,
+        tursobench_core::Coordination,
+    ),
+    Failure,
+> {
     let path = std::fs::canonicalize(path).map_err(|e| Failure {
         kind: ErrorKind::Io,
         message: e.to_string(),
@@ -79,6 +88,7 @@ async fn open(
             "Select an existing non-empty regular database file",
         ));
     }
+    let mut admission = crate::access::Admission::acquire(&path)?;
     let path = path
         .to_str()
         .ok_or_else(|| Failure::input("Non-UTF8 paths are not supported by Turso's builder"))?;
@@ -86,6 +96,7 @@ async fn open(
         // Validate compatibility before permitting the engine's writable-open side effects.
         let preflight = Builder::new_local(path)
             .experimental_index_method(true)
+            .experimental_multiprocess_wal(admission.reservation.is_none())
             .read_only(true)
             .build()
             .await
@@ -99,15 +110,33 @@ async fn open(
         drop(r);
         drop(c);
         drop(preflight);
+        // A writable open initializes/joins native coordination. The held
+        // main-file lock excludes legacy writers across this transition.
+        admission.reservation = None;
     }
+    let shared = admission.reservation.is_none();
     let db = Builder::new_local(path)
         // Turso's native FTS indexes require both the Cargo `fts` feature and
         // index-method capability when opening existing files or creating indexes.
         .experimental_index_method(true)
+        .experimental_multiprocess_wal(shared)
         .read_only(access == Access::ReadOnly)
         .build()
         .await
         .map_err(failure)?;
+    let coordination = if shared {
+        if !db.is_multiprocess_wal_coordinated().map_err(failure)? {
+            return Err(Failure::input(
+                "Shared WAL coordination is unavailable; no uncoordinated connection was admitted",
+            ));
+        }
+        tursobench_core::Coordination::SharedWal
+    } else {
+        tursobench_core::Coordination::ProtectedReadOnly
+    };
+    // The engine now owns its native lifetime lock. Release the temporary
+    // admission lock so maintenance can later reserve a fully closed mapping.
+    admission.joined();
     let editor = db.connect().map_err(failure)?;
     let browse = db.connect().map_err(failure)?;
     for c in [&editor, &browse] {
@@ -120,7 +149,7 @@ async fn open(
         .map_err(failure)?;
     while rows.next().await.map_err(failure)?.is_some() {}
     drop(rows);
-    Ok((db, editor, browse))
+    Ok((db, editor, browse, admission, coordination))
 }
 pub(super) async fn worker(
     id: u64,
@@ -137,14 +166,19 @@ pub(super) async fn worker(
         generation: 0,
     };
     let source_path = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-    let (_db, editor, browse) = match open(path, access, settings).await {
+    let (_db, editor, browse, _admission, coordination) = match open(path, access, settings).await {
         Ok(v) => v,
-        Err(e) => {
+        Err(mut e) => {
+            let usage = crate::processes_using(&source_path);
+            if !usage.applications.is_empty() {
+                e.message
+                    .push_str(&format!(" Also open in {}.", usage.applications.join(", ")));
+            }
             output.send(ticket, EventKind::Failed(e));
             return;
         }
     };
-    if !output.send(ticket, EventKind::Opened) {
+    if !output.send(ticket, EventKind::Opened(coordination)) {
         return;
     }
     let mut worker = Worker {
@@ -219,7 +253,11 @@ pub(super) async fn worker(
     if let Some((request, destination)) = backup {
         let cleanup_failed = result.is_err() || browse_result.is_err();
         let result = match result.as_ref().and(browse_result.as_ref()) {
-            Ok(()) => crate::transfers::copy_closed(&source_path, &destination, settings).await,
+            Ok(()) => match crate::access::reserve(&source_path) {
+                Ok(Some(_reservation)) => crate::transfers::copy_closed(&source_path, &destination, settings).await,
+                Ok(None) => Err(Failure { kind: ErrorKind::Busy, message: "Backup not published: another shared connection is still open. Close it and retry from a new session.".into() }),
+                Err(e) => Err(e),
+            },
             Err(e) => Err(e.clone()),
         };
         let error = result.err();
