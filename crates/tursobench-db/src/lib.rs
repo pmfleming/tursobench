@@ -9,6 +9,7 @@ mod diagram;
 mod edits;
 mod imports;
 mod inspection;
+pub mod preferences;
 pub mod sql;
 mod transfers;
 mod validation;

@@ -108,15 +108,14 @@ confirmation for writable sessions and fresh access review for another database.
 - **History:** the filter icon shows only slow queries; the down-arrow orders by
   duration. Each card shows SQL, timing and any failed/slow status. Click its SQL
   preview or editor icon to load it. Loading clears bindings and does not execute
-  SQL. History includes this database and legacy unscoped entries. Stored SQL can
+  SQL. History is scoped to the current database. Stored SQL can
   contain sensitive values; bindings are never saved.
 - **Saved queries:** enter a name and use **+** to save the current editor SQL.
   Names can be edited directly in each card. The editor icon loads SQL without
-  running it and clears bindings. Search matches both names and SQL. Legacy
-  entries remain visible alongside queries for the current database.
+  running it and clears bindings. Search matches both names and SQL.
 - The trash icon on a query card removes that entry. The trash icon in the History
-  or Saved queries header clears stored entries **for all databases**, including
-  legacy entries; its tooltip identifies that scope.
+  or Saved queries header clears stored entries **for all databases**; its tooltip
+  identifies that scope.
 - **Checks:** Storage contains database files, journal mode, page count and free
   pages; Validation contains integrity and foreign-key checks. All six actions
   are read-only. They run on the browse worker and may take time; discarding result
@@ -147,6 +146,14 @@ insert JSON uses one entry per column: JSON `null` omits that column (DEFAULT);
 `{"type":"Null"}` explicitly inserts SQL NULL. Drafts never write until COMMIT.
 Query parameters are not persisted. History **does** store SQL literals: clear
 history if they contain sensitive information.
+
+## Preferences storage
+
+Settings, history, saved queries and workspace layouts are stored in the local
+Turso database `~/.config/tursobench/preferences.db` (under `XDG_CONFIG_HOME` when
+set). Saves run on a dedicated worker and retain the previous snapshot in the same
+transaction. Existing JSON preferences are left untouched and are not imported.
+See [storage details](data-formats.md) for the schema, limits and recovery behavior.
 
 ## Important limits
 

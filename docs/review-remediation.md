@@ -4,6 +4,10 @@ Implementation follows the eight stages agreed on 2026-11-04. Each stage is
 committed independently after its targeted checks. This document records actual
 delivery and remaining work; it is not a production-readiness claim.
 
+> Subsequent storage change: preferences now use an application-owned local Turso
+> database with no JSON/legacy migration. The original JSON recovery work below is
+> historical; current behavior is documented in [data formats](data-formats.md).
+
 ## Stage 1 — correctness and recovery
 
 - Replace the unsupported FK PRAGMA with parent-affinity/collation anti-joins,

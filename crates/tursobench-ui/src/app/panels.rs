@@ -31,7 +31,6 @@ impl App {
                     );
                     if response.clicked() {
                         self.preferences.appearance = Some(mode);
-                        self.preferences.legacy_appearance = false;
                         self.apply_theme(ui.ctx());
                         self.store.save(&self.preferences);
                     }
@@ -154,7 +153,6 @@ impl App {
             !self.preferences.saved_queries.is_empty(),
         ) {
             self.preferences.saved_queries.clear();
-            self.preferences.bookmarks.clear();
             self.store.save(&self.preferences);
         }
         ui.horizontal(|ui| {
@@ -264,7 +262,6 @@ impl App {
             !self.preferences.query_history.is_empty(),
         ) {
             self.preferences.query_history.clear();
-            self.preferences.history.clear();
             self.store.save(&self.preferences);
         }
         search(ui, &mut self.tools.history_search, "Search history…");

@@ -87,10 +87,8 @@ pub struct App {
 }
 impl App {
     pub(super) fn toggle_theme(&mut self, ctx: &egui::Context) {
-        self.preferences.dark_mode = !ctx.global_style().visuals.dark_mode;
-        self.preferences.appearance = Some(crate::appearance::Mode::from_dark(
-            self.preferences.dark_mode,
-        ));
+        let dark = !ctx.global_style().visuals.dark_mode;
+        self.preferences.appearance = Some(crate::appearance::Mode::from_dark(dark));
         self.apply_theme(ctx);
     }
     pub(super) fn apply_theme(&mut self, ctx: &egui::Context) {

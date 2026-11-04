@@ -151,3 +151,17 @@ status. Backup checkpoints, closes all source handles, refuses remaining WAL dat
 verifies integrity on a private closed-file copy and publishes a new destination.
 It never copies a live main file. These operations are explicit, never automatic
 repair. Transfer state is bound to its original session.
+
+
+## Application preferences
+
+`preferences::Store` is a separate application-owned Turso store, used only by the
+UI's dedicated storage thread. It does not use inspected-file sessions or alter
+their consent/lifecycle rules. The config path is `tursobench/preferences.db` under
+XDG config/home. A versioned singleton row stores current/previous JSON snapshots
+transactionally, at most 2 MiB each. No JSON-file or legacy-format migration exists.
+Read-only preflight rejects unrelated/corrupt/unsupported stores before writable
+opening. Failed or uncertain saves disable subsequent writes; external snapshot
+changes are never overwritten. Normal shutdown drains coalesced saves. Application
+preferences are the explicit exception to existing-files-only opening: this
+app-owned database is created automatically. See `docs/data-formats.md`.

@@ -22,8 +22,9 @@ issue map and reproducible scenarios are in [review remediation](review-remediat
 - Complete-table / execute-once query JSONL export; typed JSON/JSONL and mapped
   CSV/TSV imports; standard versus explicitly protected/annotated delimited files;
   lossless SQL-number validation; explicit checkpoint and coordinated verified backup.
-- Formatting and all-target Clippy with warnings denied pass. **174 regular
-  workspace tests pass**, plus the separately invoked manual frame profile.
+- Formatting and all-target Clippy with warnings denied pass. **173 regular
+  workspace tests pass** after the preferences storage change. The manual frame
+  profile was exercised separately at the remediation commit.
   Application fault tests cover commit/rollback boundaries, lost durable-COMMIT
   acknowledgement, output writer failure, actual worker unwind, preference
   corruption, spool quota/handle exhaustion and oversized inputs/metadata.
@@ -84,6 +85,13 @@ not certify general latency or total process-memory limits.
   cross-host binary reproducibility need separate qualification.
 
 ## Package workflow
+
+Subsequent preferences storage change: application settings/history/layouts now
+use a local Turso `preferences.db`, with transactional current/previous snapshots,
+worker-owned writes and shutdown draining. JSON files and legacy formats are not
+imported. Persistence regression tests replace the former JSON migration tests;
+see [current storage details](data-formats.md). Rebuild preview packages to include
+this subsequent change.
 
 `bash scripts/package-linux.sh` builds with `--locked --release`, collects notices
 and creates `target/tursobench-0.1.0-preview-linux-x86_64.tar.gz` plus SHA-256.

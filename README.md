@@ -110,6 +110,10 @@ The separate transfer panel offers complete-table and execute-once query JSONL
 exports, mapped imports, explicit checkpoint and coordinated verified backup.
 Large values have a bounded text/hex viewer and exact-byte save.
 
+Preferences, history and layouts use an application-owned local Turso database
+at `~/.config/tursobench/preferences.db` (or under `XDG_CONFIG_HOME`). Existing
+JSON preferences are not imported. [Storage details](docs/data-formats.md).
+
 ## Run
 
 Use the Nix development shell:

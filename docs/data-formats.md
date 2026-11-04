@@ -2,38 +2,46 @@
 
 ## Preferences
 
-`$XDG_CONFIG_HOME/tursobench/preferences.json`, falling back to
-`$HOME/.config/tursobench/preferences.json`. Never stored in the inspected database.
-Read/write opt-in and exclusive-use acknowledgement are deliberately not persisted.
-Busy timeout defaults to 250 ms, configurable 0–5000 ms after reopen. Query row
-retention is configurable 1–10,000; fixed byte/cell budgets still apply.
+`$XDG_CONFIG_HOME/tursobench/preferences.db`, falling back to
+`$HOME/.config/tursobench/preferences.db`. This is an application-owned **local
+Turso database**, separate from every database opened in the workbench. Existing
+`preferences.json` files are neither read nor imported; there is no backward
+compatibility or automatic format migration. The new store starts with defaults.
 
-History and bookmarks are capped at 100 entries and 512 KiB each (including names
-and scope paths), with a 64 KiB per-statement maximum. History records the last
-outcome/time per distinct SQL + database path; bookmarks have editable names.
-Absolute database path spellings **are persisted** for scoping (relative input is
-resolved against the working directory); aliases can have separate histories. Legacy statement lists migrate to visibly unscoped entries. SQL literals
-and paths may be sensitive. Parameter values, query results, editor buffers and
-drafts are not persisted. Loading history/bookmarks clears bindings. Clear history
-or delete bookmarks from the sidebar. System/Light/Dark appearance, NULL marker and slow-query
-threshold are also stored. Preferences use a private temporary file, flush/sync,
-then atomic replacement in the application directory. Saves run on a background
-worker with coalescing. This is best-effort convenience storage, not durable draft
-recovery; abrupt process shutdown can lose the most recent preference change.
-Preferences carry format version 1 and have a 2 MiB input/output limit. Valid
-fields/array entries survive malformed peers; recovery preserves the original
-and saves a separate copy. Each valid save retains a previous-file backup.
-Unreadable or newer-format startup data disables automatic persistence. Runtime
-corruption/newer data also refuses replacement, preserving the previous backup.
-These failures produce a visible warning/error and safe defaults where needed.
+The `app_preferences` table contains one row (`id = 1`), with `format_version`, a
+JSON-encoded `payload` snapshot and `previous` snapshot. Both database schema and
+snapshot format are version 1; the database has application ID `0x54554250`.
+Saving replaces the current snapshot and retains its predecessor in the same
+transaction. JSON is an internal serialization inside Turso, not a preferences
+file. Snapshots are limited to 2 MiB. Back up the closed store with any required
+WAL state; `previous` is a recovery snapshot, not a separate database backup.
+
+A dedicated storage worker owns the Turso connection. Startup waits for the initial
+settings; later writes are asynchronous and coalesced. Normal shutdown drains the
+latest pending snapshot and releases the writer. Forced termination can still lose
+uncommitted/pending preferences. Lock wait is 250 ms and the cooperative statement
+deadline is 5 s. Multiple concurrent application writers are not supported.
+Unreadable, unrelated or unsupported-version stores are preserved and disable
+saving. Invalid preference fields disable saving with a visible error rather than
+replacing saved queries with defaults. External snapshot changes and failed or
+uncertain saves also block further writes until restart/inspection. On Unix, the
+application preferences directory is private (0700) and newly created databases
+are 0600; WAL/sidecars stay inside the private directory.
+
+Read/write consent and exclusive-use acknowledgement are not persisted. History
+and saved queries are capped at 100 entries and 512 KiB each, with a 64 KiB SQL
+maximum. SQL literals and database paths are persisted and may be sensitive.
+Parameter values, query results, editor buffers, staged edits and transactions
+are not persisted. Settings, discovery state, inspector visibility, workspace and
+diagram layouts share the same snapshot. Loading saved SQL clears its bindings.
 
 The `discovery` preference stores the startup toggle, added search folders,
 exclusions, recent successful opens (absolute path and last-open time), and cached
 candidates (absolute path, size and optional modification time). Limits are 32
 search folders / 32 KiB, 64 exclusions / 32 KiB, 50 recent files / 64 KiB and 200
 cached candidates / 256 KiB, with 4096 bytes per path. Paths are normalized
-lexically, without filesystem access; non-UTF-8 paths are not persisted. Older
-preferences default to startup discovery enabled. Cached headers are rechecked;
+lexically, without filesystem access; non-UTF-8 paths are not persisted. Startup
+discovery is enabled by default. Cached headers are rechecked;
 modification times and directory timestamps are never proof of validity. Use
 **Forget database** in a row's context menu to remove an individual saved path; a future scan can
 rediscover it. Excluded folders disappear from the chooser and cached candidates.

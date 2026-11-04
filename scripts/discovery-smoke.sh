@@ -6,9 +6,12 @@ binary=${TURSOBENCH_BINARY:-$root/target/debug/tursobench}
 case "$binary" in /*) ;; *) binary="$root/$binary" ;; esac
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
+cd "$root"
+cargo build --locked -p tursobench-db --example preferences
+preferences_tool="$root/target/debug/examples/preferences"
 unset WAYLAND_DISPLAY
 export LIBGL_ALWAYS_SOFTWARE=1
-xvfb-run -a -s '-screen 0 1400x900x24' python3 - "$binary" "$work" <<'PY'
+xvfb-run -a -s '-screen 0 1400x900x24' python3 - "$binary" "$work" "$preferences_tool" <<'PY'
 import hashlib
 import json
 import os
@@ -18,13 +21,19 @@ import subprocess
 import sys
 import time
 
-binary, work = sys.argv[1], pathlib.Path(sys.argv[2])
+binary, work, preferences_tool = sys.argv[1], pathlib.Path(sys.argv[2]), sys.argv[3]
 home = work / "home"
 project = home / "Projects/demo"
 data = home / ".local/share"
 state = home / ".local/state"
 config = home / ".config"
-prefs_path = config / "tursobench/preferences.json"
+prefs_path = config / "tursobench/preferences.db"
+seed_path = work / "seed.json"
+def write_preferences(prefs):
+    seed_path.write_text(json.dumps(prefs))
+    subprocess.run([preferences_tool, str(prefs_path), str(seed_path)], check=True)
+def read_preferences():
+    return json.loads(subprocess.check_output([preferences_tool, str(prefs_path)], text=True))
 prefs_path.parent.mkdir(parents=True)
 expected = {project / "app.db", data / "demo/state",
             data / "clip-daemon/history/history.db",
@@ -46,11 +55,11 @@ for path in expected | ignored:
 (project / ".gitignore").write_text("*.db\n")
 (data / "unusual-profile-app/Local State").write_text("{}")
 missing = home / "removed.db"
-prefs_path.write_text(json.dumps({"discovery": {
+write_preferences({"discovery": {
     "enabled": True, "excluded": [str(excluded)],
     "cached": [{"path": str(path), "size": 100, "modified": None}
                for path in [missing, data / "unusual-profile-app/Default/History", data / "pki/nssdb/key4.db"]]
-}}))
+}})
 environment = dict(os.environ, HOME=str(home), XDG_CONFIG_HOME=str(config),
                    XDG_DATA_HOME=str(data), XDG_STATE_HOME=str(state),
                    XDG_CACHE_HOME=str(home / ".cache"))
@@ -85,7 +94,7 @@ def run_until(check, seconds):
             print(output.decode(errors="replace"), file=sys.stderr)
 
 def discovered():
-    prefs = json.loads(prefs_path.read_text())
+    prefs = read_preferences()
     cached = {pathlib.Path(e["path"]) for e in prefs["discovery"].get("cached", [])}
     if not expected.issubset(cached):
         return False
@@ -99,12 +108,12 @@ run_until(discovered, 15)
 assert snapshot() == before, "discovery changed a fixture or created a sidecar"
 
 # A persisted opt-out must suppress actual startup traversal and cache writes.
-prefs = json.loads(prefs_path.read_text())
+prefs = read_preferences()
 prefs["discovery"].update(enabled=False, cached=[])
-prefs_path.write_text(json.dumps(prefs))
+write_preferences(prefs)
 start = time.monotonic()
 def disabled():
-    assert not json.loads(prefs_path.read_text())["discovery"]["cached"]
+    assert not read_preferences()["discovery"]["cached"]
     return time.monotonic() - start > 3
 run_until(disabled, 15)
 assert snapshot() == before
