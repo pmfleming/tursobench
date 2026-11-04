@@ -344,6 +344,9 @@ impl App {
                 self.browse_completed();
             }
             kind => {
+                if matches!(kind, EventKind::Columns(_)) {
+                    self.status = "Running…".into();
+                }
                 self.document.result.apply(Event {
                     ticket: event.ticket,
                     kind,

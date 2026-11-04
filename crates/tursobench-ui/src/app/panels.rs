@@ -103,6 +103,18 @@ impl App {
                     )
                 },
             );
+            setting(
+                ui,
+                "Deadline",
+                "Statement deadline after reopen; 0 disables. Prior committed work is not rolled back.",
+                |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut self.preferences.query_timeout_ms)
+                            .range(0..=3_600_000)
+                            .suffix(" ms"),
+                    )
+                },
+            );
             setting(ui, "Slow ≥", "Slow query threshold", |ui| {
                 ui.add(
                     egui::DragValue::new(&mut self.preferences.slow_query_ms)

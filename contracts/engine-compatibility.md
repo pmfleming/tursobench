@@ -46,10 +46,14 @@ Observed on Linux x86_64, Rust 1.95.0:
 - **Only files not in use by another application are supported.** User must affirm
   exclusive use. A viewer opening successfully is not a concurrency guarantee.
   Do not copy a live main file without its WAL. No automatic snapshot feature.
-- No engine interrupt exposed by this version. “Discard results” means suppress
-  delivery, NOT stop execution or rollback. Drain statements to completion,
-  including RETURNING, and report transaction state afterward. Shutdown waits for
-  work and explicit rollback; a non-yielding engine call can delay it indefinitely.
+- The local Rust wrapper patch exposes the pinned SDK's existing interrupt and
+  per-statement timeout methods. Default deadline: 30 seconds, configurable after
+  reopen; zero disables. Discard/close interrupt SELECT/EXPLAIN reads; writes drain
+  unless their engine deadline is exceeded. CPU aggregate interruption, interrupted
+  insert atomicity, manual rollback and connection reuse pass real-engine tests.
+  Interrupt reports observed transaction state; it is not proof that preceding
+  work was rolled back. Engine deadlines are cooperative and do not certify a
+  hard process-memory or shutdown bound.
 - Bounded application retention and queues, not a hard process memory limit.
   Engine allocates a complete row before delivery; hostile huge values/queries
   can exhaust memory. Use trusted files/SQL only until process isolation exists.

@@ -18,16 +18,19 @@ monotonically increasing from 1. ResultSet rejects events with a different ticke
 Open/close events use request 0. GUI must not forget active transactions when
 replacing query results. Browse/schema cannot see editor uncommitted changes.
 
-Command queue: 2. Event queue: 8. Submit never blocks GUI. Worker blocks under
+Command queue: 32 requests, bounded additionally to 16 MiB of pending payloads. Event queue: 8. Submit never blocks GUI. Worker blocks under
 backpressure; discard and disconnect release row-delivery pressure. Chunks flush
 at 64 rows or 64 KiB (one row may exceed chunk target). Retention is capped at
 10,000 rows, 8 MiB, 64 KiB/cell, 512 columns, 1 MiB metadata; defaults 1,000 rows.
 Limits include owned value size but not all allocator overhead. Engine internal
 allocations and one incoming row are not bounded. No untrusted-file guarantee.
 
-Once the budget is reached, remaining rows are drained without retention. This
-may take arbitrarily long, but preserves statement completion semantics for
-writes with RETURNING. Limits apply to delivery, not execution. No SQL rewriting
+At a delivery limit, SELECT/EXPLAIN reads stop stepping; discard and close can
+interrupt the active read through the patched public wrapper. Writes, including
+RETURNING, still drain when delivery is limited/discarded. All managed connections
+have a configurable engine statement deadline (default 30 s, zero disables),
+independent of lock busy timeout. Deadline errors report actual transaction state,
+not an assumed rollback. Prior committed statements are never undone by timeout. No SQL rewriting
 for arbitrary queries. Completion reports Complete/Limited/Discarded independently
 of error and observed autocommit. An error is never displayed as full success.
 The UI keeps the last 100 execution outcomes, including replaced/discarded queries,

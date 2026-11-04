@@ -145,6 +145,7 @@ pub struct Preferences {
     pub bookmarks: Vec<String>,
     pub row_limit: usize,
     pub busy_timeout_ms: u64,
+    pub query_timeout_ms: u64,
     pub query_history: Vec<HistoryEntry>,
     pub saved_queries: Vec<Bookmark>,
     pub dark_mode: bool,
@@ -178,6 +179,7 @@ impl Default for Preferences {
             bookmarks: vec![],
             row_limit: 1000,
             busy_timeout_ms: 250,
+            query_timeout_ms: 30_000,
             query_history: vec![],
             saved_queries: vec![],
             dark_mode: true,
@@ -294,6 +296,7 @@ impl Preferences {
             layout_bytes <= 256 * 1024
         });
         self.row_limit = self.row_limit.clamp(1, 10_000);
+        self.query_timeout_ms = self.query_timeout_ms.min(3_600_000);
         self.busy_timeout_ms = self.busy_timeout_ms.min(5000);
         self.font_size = self.font_size.clamp(10, 20);
         self.slow_query_ms = self.slow_query_ms.clamp(1, 60_000);

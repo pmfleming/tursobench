@@ -68,11 +68,13 @@ pub struct Ticket {
 #[derive(Debug, Clone, Copy)]
 pub struct ConnectionSettings {
     pub busy_timeout_ms: u64,
+    pub query_timeout_ms: u64,
 }
 impl Default for ConnectionSettings {
     fn default() -> Self {
         Self {
             busy_timeout_ms: 250,
+            query_timeout_ms: 30_000,
         }
     }
 }
@@ -97,6 +99,7 @@ pub enum ErrorKind {
     Conflict,
     Engine,
     Unknown,
+    Interrupted,
 }
 #[derive(Debug, Clone)]
 pub struct Failure {

@@ -23,14 +23,20 @@ use std::{
 use worker::{Output, worker};
 
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
-const COMMAND_CAPACITY: usize = 2;
+const COMMAND_CAPACITY: usize = 32;
+const COMMAND_BYTES: usize = 16 * 1024 * 1024;
 const EVENT_CAPACITY: usize = 8;
 
 /// Only submitted, unfinished requests occupy this map. Cancellation targets one
 /// request; a newer view must never suppress an older view's unrelated results.
 #[derive(Default)]
 struct DeliveryControl {
-    requests: Mutex<std::collections::BTreeMap<u64, bool>>,
+    requests: Mutex<std::collections::BTreeMap<u64, (bool, usize)>>,
+    active_read: Mutex<Option<ActiveRead>>,
+}
+struct ActiveRead {
+    request: u64,
+    interrupt: Box<dyn Fn() + Send + Sync>,
 }
 impl DeliveryControl {
     fn discarded(&self, request: u64) -> bool {
@@ -38,12 +44,17 @@ impl DeliveryControl {
             .lock()
             .unwrap()
             .get(&request)
-            .copied()
+            .map(|(discarded, _)| *discarded)
             .unwrap_or(false)
     }
     fn discard(&self, request: u64) {
         if let Some(discarded) = self.requests.lock().unwrap().get_mut(&request) {
-            *discarded = true;
+            discarded.0 = true;
+        }
+        if let Some(active) = &*self.active_read.lock().unwrap()
+            && active.request == request
+        {
+            (active.interrupt)();
         }
     }
     fn finished(&self, request: u64) {
@@ -94,6 +105,84 @@ pub enum Operation {
     Browse(Browse),
     CommitEdits(DraftBatch),
     Close,
+}
+impl Operation {
+    fn bytes(&self) -> usize {
+        let values = |v: &[Value]| v.iter().map(Value::bytes).sum::<usize>();
+        std::mem::size_of::<Self>()
+            + match self {
+                Self::Execute {
+                    sql, parameters, ..
+                } => sql.len() + values(parameters),
+                Self::ExecuteBound {
+                    sql, parameters, ..
+                }
+                | Self::Explain {
+                    sql, parameters, ..
+                } => sql.len() + parameters.bytes(),
+                Self::Browse(b) => {
+                    b.table.len() + b.filters.iter().map(|f| f.value.bytes()).sum::<usize>()
+                }
+                Self::CommitEdits(batch) => {
+                    batch.table.name.len()
+                        + batch
+                            .table
+                            .columns
+                            .iter()
+                            .map(|c| {
+                                c.name.len()
+                                    + c.declared_type.len()
+                                    + c.default_sql.as_ref().map_or(0, String::len)
+                            })
+                            .sum::<usize>()
+                        + batch
+                            .edits
+                            .iter()
+                            .map(|edit| match edit {
+                                tursobench_core::Edit::Insert { values: v } => {
+                                    v.iter().flatten().map(Value::bytes).sum()
+                                }
+                                tursobench_core::Edit::Update { original, changes } => {
+                                    values(original)
+                                        + changes.iter().map(|(_, v)| v.bytes()).sum::<usize>()
+                                }
+                                tursobench_core::Edit::Delete { original } => values(original),
+                            })
+                            .sum::<usize>()
+                }
+                Self::Lookup { table, keys } => {
+                    table.len() + keys.iter().map(|(k, v)| k.len() + v.bytes()).sum::<usize>()
+                }
+                Self::References {
+                    table,
+                    key,
+                    values: v,
+                }
+                | Self::ReferenceCount {
+                    table,
+                    key,
+                    values: v,
+                }
+                | Self::Peek {
+                    table,
+                    key,
+                    values: v,
+                } => {
+                    table.len()
+                        + values(v)
+                        + key.target.len()
+                        + key.on_update.len()
+                        + key.on_delete.len()
+                        + key
+                            .columns
+                            .iter()
+                            .map(|(a, b)| a.len() + b.as_ref().map_or(0, String::len))
+                            .sum::<usize>()
+                }
+                Self::Inspect(s) | Self::Count(s) => s.len(),
+                _ => 0,
+            }
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Diagnostic {
@@ -167,6 +256,9 @@ impl Session {
         settings: ConnectionSettings,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Result<Self, Failure> {
+        if settings.query_timeout_ms > 3_600_000 {
+            return Err(Failure::input("Statement timeout must be 0–3600000 ms"));
+        }
         if settings.busy_timeout_ms > 5000 {
             return Err(Failure::input("Busy timeout must be 0–5000 ms"));
         }
@@ -230,7 +322,20 @@ impl Session {
         if pending.contains_key(&id) {
             return Err(Failure::input("Request is already pending"));
         }
-        pending.insert(id, false);
+        let bytes = request.operation.bytes();
+        if bytes > COMMAND_BYTES
+            || pending
+                .values()
+                .map(|(_, bytes)| bytes)
+                .sum::<usize>()
+                .saturating_add(bytes)
+                > COMMAND_BYTES
+        {
+            return Err(Failure::input(
+                "Pending requests exceed the 16 MiB queue budget",
+            ));
+        }
+        pending.insert(id, (false, bytes));
         if let Err(error) = self.commands.try_send(request) {
             pending.remove(&id);
             return Err(Failure::input(format!("Worker queue unavailable: {error}")));
@@ -242,6 +347,9 @@ impl Session {
     }
     pub fn close(&self) {
         self.closing.store(true, Ordering::Release);
+        if let Some(active) = &*self.discard.active_read.lock().unwrap() {
+            (active.interrupt)();
+        }
     }
 }
 impl Drop for Session {

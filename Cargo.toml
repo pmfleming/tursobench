@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["tools/engine-spike", "crates/tursobench-core", "crates/tursobench-db", "crates/tursobench-ui"]
-exclude = ["vendor/tantivy-sstable"]
+exclude = ["vendor/tantivy-sstable", "vendor/turso"]
 
 [workspace.package]
 version = "0.1.0"
@@ -21,6 +21,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [patch.crates-io]
+# Expose existing SDK interrupt/deadline methods without changing engine version.
+turso = { path = "vendor/turso" }
 # Turso's Tantivy dependency otherwise constrains zstd to a vulnerable 0.13 release.
 tantivy-sstable = { path = "vendor/tantivy-sstable" }
 

@@ -72,6 +72,7 @@ pub struct App {
     catalog: ResultSet,
     catalog_ticket: Option<Ticket>,
     catalog_error: String,
+    catalog_refresh_pending: bool,
     status: String,
     activity: std::collections::VecDeque<String>,
     transaction: TransactionState,
@@ -144,6 +145,7 @@ impl App {
             catalog: ResultSet::default(),
             catalog_ticket: None,
             catalog_error: String::new(),
+            catalog_refresh_pending: false,
             activity: std::collections::VecDeque::new(),
             status: load_error.unwrap_or_else(|| {
                 "Open a trusted local Turso database. Linux preview; exclusive use only.".into()
@@ -198,6 +200,7 @@ impl App {
             self.exclusive,
             ConnectionSettings {
                 busy_timeout_ms: self.preferences.busy_timeout_ms,
+                query_timeout_ms: self.preferences.query_timeout_ms,
             },
             move || wake.request_repaint(),
         ) {
@@ -303,7 +306,7 @@ impl App {
                 }
                 self.document.inspect = None;
                 self.document.tools.detail = None;
-                self.status = "Executing… (discard does not interrupt execution)".into();
+                self.status = "Queued for execution…".into();
                 Some(ticket)
             }
             Err(e) => {
@@ -391,7 +394,12 @@ impl App {
     fn refresh_catalog(&mut self) {
         self.tools.counts.clear();
         self.document.tools.context = Default::default();
-        if !self.ready || self.closing || self.catalog_ticket.is_some() {
+        if self.catalog_ticket.is_some() {
+            self.catalog_refresh_pending = true;
+            return;
+        }
+        self.catalog_refresh_pending = false;
+        if !self.ready || self.closing {
             return;
         }
         let Some(session) = &self.session else {

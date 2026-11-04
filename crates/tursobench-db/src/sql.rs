@@ -208,6 +208,16 @@ pub fn validate_single(sql: &str) -> Result<(), Failure> {
     Ok(())
 }
 
+pub(crate) fn stoppable_read(sql: &str) -> bool {
+    use turso_parser::ast::{Cmd, Stmt};
+    matches!(
+        Parser::new(sql.as_bytes()).next_cmd(),
+        Ok(Some(
+            Cmd::Stmt(Stmt::Select(_)) | Cmd::Explain(_) | Cmd::ExplainQueryPlan { .. }
+        ))
+    )
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Effect {
     Read,

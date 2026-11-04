@@ -8,6 +8,7 @@ pub(crate) fn failure(e: turso::Error) -> Failure {
         turso::Error::Busy(_) | turso::Error::BusySnapshot(_) => ErrorKind::Busy,
         turso::Error::Readonly(_) => ErrorKind::ReadOnly,
         turso::Error::Constraint(_) => ErrorKind::Constraint,
+        turso::Error::Interrupt(_) => ErrorKind::Interrupted,
         turso::Error::IoError(..) => ErrorKind::Io,
         _ => ErrorKind::Engine,
     };
@@ -42,6 +43,8 @@ pub(crate) fn from_engine(v: turso::Value) -> Value {
     }
 }
 pub(crate) async fn configure(c: &Connection, settings: ConnectionSettings) -> Result<(), Failure> {
+    c.query_timeout(Duration::from_millis(settings.query_timeout_ms))
+        .map_err(failure)?;
     c.busy_timeout(Duration::from_millis(settings.busy_timeout_ms))
         .map_err(failure)?;
     c.execute("PRAGMA foreign_keys = ON", ())

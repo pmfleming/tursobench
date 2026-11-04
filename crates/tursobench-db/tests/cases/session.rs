@@ -15,6 +15,109 @@ fn fixture() -> (tempfile::TempDir, PathBuf) {
     );
     (dir, path)
 }
+
+#[test]
+fn deadlines_interrupt_cpu_queries_and_writes_and_connections_recover() {
+    let (_dir, path) = fixture();
+    let s = Session::open_with_settings(
+        path,
+        Access::ReadWrite,
+        true,
+        ConnectionSettings {
+            query_timeout_ms: 10,
+            ..ConnectionSettings::default()
+        },
+        || {},
+    )
+    .unwrap();
+    assert!(matches!(common::event(&s).kind, EventKind::Opened));
+    let long = "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<100000000) SELECT sum(x) FROM n";
+    let started = std::time::Instant::now();
+    let result = run(&s, 1, long, Budget::default());
+    assert_eq!(
+        result.completion.unwrap().error.unwrap().kind,
+        ErrorKind::Interrupted
+    );
+    assert!(started.elapsed() < Duration::from_secs(3));
+    assert_eq!(
+        run(&s, 2, "SELECT 42", Budget::default()).rows,
+        vec![vec![Value::Integer(42)]]
+    );
+    run(&s, 3, "BEGIN", Budget::default());
+    run(
+        &s,
+        4,
+        "INSERT INTO items VALUES(3,'pending')",
+        Budget::default(),
+    );
+    let result = run(&s, 5, long, Budget::default());
+    assert!(result.completion.unwrap().error.is_some());
+    run(&s, 6, "ROLLBACK", Budget::default());
+    assert_eq!(
+        run(&s, 7, "SELECT count(*) FROM items", Budget::default()).rows,
+        vec![vec![Value::Integer(2)]]
+    );
+    let result = run(
+        &s,
+        8,
+        "WITH RECURSIVE n(x) AS (VALUES(10) UNION ALL SELECT x+1 FROM n WHERE x<100000000) INSERT INTO items SELECT x,'large' FROM n",
+        Budget::default(),
+    );
+    assert_eq!(
+        result.completion.unwrap().error.unwrap().kind,
+        ErrorKind::Interrupted
+    );
+    assert_eq!(
+        run(&s, 9, "SELECT count(*) FROM items", Budget::default()).rows,
+        vec![vec![Value::Integer(2)]]
+    );
+    s.close();
+    assert!(matches!(
+        common::event(&s).kind,
+        EventKind::Closed { rollback: Ok(()) }
+    ));
+}
+
+#[test]
+fn discard_interrupts_a_read_before_its_first_row_and_leaves_the_queue_usable() {
+    let (_dir, path) = fixture();
+    let s = common::opened(&path, Access::ReadOnly);
+    s.submit(Request {ticket:s.ticket(1,0), operation:Operation::Execute {sql:"WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<100000000) SELECT sum(x) FROM n".into(), parameters:vec![], budget:Budget::default()}}).unwrap();
+    assert!(matches!(common::event(&s).kind, EventKind::Columns(_)));
+    std::thread::sleep(Duration::from_millis(20));
+    let started = std::time::Instant::now();
+    for id in 2..=16 {
+        s.submit(Request {
+            ticket: s.ticket(id, 0),
+            operation: Operation::Execute {
+                sql: "SELECT 42".into(),
+                parameters: vec![],
+                budget: Budget::default(),
+            },
+        })
+        .unwrap();
+    }
+    s.discard_results(1);
+    loop {
+        if let EventKind::Finished(c) = common::event(&s).kind {
+            assert_eq!(c.delivery, Delivery::Discarded);
+            break;
+        }
+    }
+    assert!(started.elapsed() < Duration::from_secs(3));
+    let mut finished = 0;
+    while finished < 15 {
+        if let EventKind::Finished(c) = common::event(&s).kind {
+            assert!(c.error.is_none());
+            finished += 1;
+        }
+    }
+    s.close();
+    assert!(matches!(
+        common::event(&s).kind,
+        EventKind::Closed { rollback: Ok(()) }
+    ));
+}
 fn run(s: &Session, n: u64, sql: &str, budget: Budget) -> ResultSet {
     common::run(
         s,
@@ -141,7 +244,7 @@ fn real_readonly_bounded_results_and_cleanup() {
         assert_eq!(r.rows.len(), usize::from(index == 0));
         let completion = r.completion.unwrap();
         assert_eq!(completion.delivery, Delivery::Limited);
-        assert_eq!(completion.rows_seen, 2);
+        assert!((1..=2).contains(&completion.rows_seen));
     }
     let r = run(&s, 4, "SELECT zeroblob(100000)", Budget::default());
     assert!(r.rows.is_empty());
@@ -220,7 +323,7 @@ fn discard_unblocks_backpressure() {
         if let EventKind::Finished(c) = s.events.recv_timeout(Duration::from_secs(10)).unwrap().kind
         {
             assert_eq!(c.delivery, Delivery::Discarded);
-            assert_eq!(c.rows_seen, 10000);
+            assert!(c.rows_seen < 10000);
             break;
         }
     }
@@ -306,7 +409,8 @@ fn invalid_open_inputs_never_create_or_rewrite_files() {
             Access::ReadOnly,
             true,
             ConnectionSettings {
-                busy_timeout_ms: 5001
+                busy_timeout_ms: 5001,
+                ..ConnectionSettings::default()
             },
             || {}
         )

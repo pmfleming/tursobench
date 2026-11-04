@@ -79,6 +79,9 @@ impl App {
                     })
                 })
                 .collect();
+            if self.catalog_refresh_pending {
+                self.refresh_catalog();
+            }
         }
     }
 
@@ -100,7 +103,7 @@ impl App {
                 result.start(ticket);
                 self.tools.count_request = Some((name, result));
                 self.status =
-                    "Counting rows; full scan, discard does not interrupt execution".into();
+                    "Counting rows; full scan, discard interrupts SELECT reads; writes finish normally".into();
             }
             Err(e) => self.status = e.to_string(),
         }

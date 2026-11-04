@@ -52,3 +52,22 @@ metadata. Staged commits invalidate other tiles without discarding their drafts.
 Stage 2 verification: all 149 workspace tests, formatting, and all-target Clippy
 with warnings denied pass. New regressions cover no-file-output read-only SQL,
 manual rollback, committed cross-tile invalidation and automatic DDL discovery.
+
+## Stage 3 — execution lifecycle
+
+A pinned local Rust-wrapper patch exposes existing SDK interruption and statement
+wall-clock deadlines. Default deadline is 30 s (0 disables, maximum 1 hour), applied
+on reopen to all managed connections. Discard/close interrupt SELECT/EXPLAIN reads;
+budget-limited reads stop stepping. Writes/RETURNING still finish when delivery is
+suppressed. Interrupt/deadline errors preserve observed transaction state.
+
+The FIFO scheduler accepts 32 requests with a separate 16 MiB aggregate payload
+budget. Superseded reads skip execution, catalog refreshes coalesce while pending,
+and the UI distinguishes queued/running work. This preserves editor ordering and
+provides room for normal multi-tile metadata without an unbounded queue.
+
+Real-engine regressions cover CPU aggregation before the first row, manual
+transaction rollback after timeout, atomic interrupted bulk insertion, connection
+reuse and 15 queued reads after cancellation. All 151 workspace tests pass.
+Formatting and workspace all-target Clippy with warnings denied also pass. The
+engine patch provenance, source archive SHA-256 and license are in vendor/turso.

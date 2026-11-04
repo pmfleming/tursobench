@@ -303,6 +303,16 @@ async fn execute(
     access: Access,
 ) -> Completion {
     let started = std::time::Instant::now();
+    let stoppable = sql::stoppable_read(sql);
+    if stoppable {
+        let connection = c.clone();
+        *out.discard.active_read.lock().unwrap() = Some(crate::ActiveRead {
+            request: ticket.request,
+            interrupt: Box::new(move || {
+                let _ = connection.interrupt();
+            }),
+        });
+    }
     let mut completion = Completion {
         elapsed_ms: 0,
         delivery: Delivery::Complete,
@@ -314,6 +324,10 @@ async fn execute(
     let mut chunk = Vec::new();
     let result = async {
         sql::validate_single(sql)?;
+        if stoppable && out.discarded(ticket) {
+            completion.delivery = Delivery::Discarded;
+            return Ok(());
+        }
         if access == Access::ReadOnly {
             sql::validate_readonly(sql)?;
         }
@@ -351,6 +365,10 @@ async fn execute(
                     .collect(),
             ),
         };
+        if stoppable && out.discarded(ticket) {
+            completion.delivery = Delivery::Discarded;
+            return Ok(());
+        }
         let mut rows = stmt.query(parameters).await.map_err(failure)?;
         let mut kept = 0;
         let mut bytes = 0;
@@ -361,6 +379,9 @@ async fn execute(
             if out.discarded(ticket) {
                 completion.delivery = Delivery::Discarded;
                 chunk.clear();
+                if stoppable {
+                    break;
+                }
                 continue;
             }
             if completion.delivery == Delivery::Limited {
@@ -377,6 +398,9 @@ async fn execute(
                     .any(|v| v.bytes() > budget.cell_bytes.min(1024 * 1024))
             {
                 completion.delivery = Delivery::Limited;
+                if stoppable {
+                    break;
+                }
                 continue;
             }
             bytes += size;
@@ -394,6 +418,9 @@ async fn execute(
         Ok::<(), Failure>(())
     }
     .await;
+    if stoppable {
+        *out.discard.active_read.lock().unwrap() = None;
+    }
     if !chunk.is_empty() {
         out.send(ticket, EventKind::Rows(chunk));
     }
