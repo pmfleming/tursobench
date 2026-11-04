@@ -207,6 +207,7 @@ impl App {
                 if ui.add_enabled(enabled&&writable&&state.preview_current&&state.table.is_some(),egui::Button::new("Import mapped rows")).clicked(){operation=Some(Operation::Import(ImportSpec{path:state.input.clone().into(),table:state.table.as_ref().unwrap().name.clone(),format:state.format,source_columns:preview.columns.clone(),mapping:state.mapping.clone(),kinds:state.kinds.clone(),null_marker:state.null_marker.clone(),atomic:state.atomic}));}
             }
             ui.separator();ui.strong("Maintenance · write access and autocommit required");
+            ui.small("Checkpoints can be busy while another transaction is active. Close other shared connections before backup; a refused capture may leave this session closed.");
             if ui.add_enabled(enabled&&writable,egui::Button::new("Checkpoint WAL")).clicked(){operation=Some(Operation::Checkpoint);}
             if ui.add_enabled(enabled&&writable&&!state.output.is_empty(),egui::Button::new("Checkpoint, close session and save verified backup")).clicked(){operation=Some(Operation::BackupAndClose(state.output.clone().into()));}
             if state.ticket.is_some(){ui.spinner();cancel=ui.button("Cancel transfer after the current write").clicked();}

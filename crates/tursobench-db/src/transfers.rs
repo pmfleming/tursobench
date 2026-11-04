@@ -221,9 +221,8 @@ pub(crate) async fn checkpoint(c: &Connection) -> Result<(), Failure> {
     })?;
     let busy = row.get_value(0).map_err(failure)?;
     if busy != turso::Value::Integer(0) {
-        return Err(Failure::input(
-            "Checkpoint could not finish; backup is unavailable",
-        ));
+        return Err(Failure { kind: tursobench_core::ErrorKind::Busy,
+            message: "Checkpoint is busy; finish other transactions before retrying. Backup is unavailable.".into() });
     }
     while rows.next().await.map_err(failure)?.is_some() {}
     Ok(())

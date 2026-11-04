@@ -92,3 +92,27 @@ explicit refresh remains available.
 Real-process data/DDL notification and manual-snapshot tests pass. The GUI test
 exercises automatic table refresh, retained SQL results/focus, and draft
 preservation through external data and schema changes.
+
+## Stage 4 shared editing
+
+Shared writable sessions use the native WAL writer lock and bounded busy timeout;
+there is no application write replay. Busy/snapshot errors retain distinct
+messages and observed transaction state. Generated edits recheck schema and
+original row values inside `BEGIN IMMEDIATE`; imports recheck their target schema
+inside each batch's writer transaction. Successful generated commits invalidate
+other views immediately. Partial and unknown commit handling remains intact.
+
+The matching parser rejects journal/locking-mode setters, `BEGIN CONCURRENT`,
+ATTACH/DETACH and VACUUM on single SQL, script and execution/export paths. Scripts
+validate every statement before the first executes, so a forbidden later
+statement cannot leave earlier writes behind. Read-only enforcement still applies.
+The access-switch dialog uses close acknowledgement and fresh lock checks instead
+of asking the user to assert exclusive use.
+
+Separate-process tests pass for contended SQL, atomic scripts, imports and staged
+edits; original-value conflicts; active-reader checkpoint refusal; live-peer
+backup refusal without publication; and 80 simultaneous increment attempts with
+exact accounting of successful writes. Forty rounds of updates from both writers
+retain correct FTS query results. Both source and surviving peer remain usable
+and pass integrity checks. These bounded scenarios qualify this Linux preview;
+they do not certify arbitrary workloads or unqualified engines/filesystems.

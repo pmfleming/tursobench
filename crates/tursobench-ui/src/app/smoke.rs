@@ -320,7 +320,6 @@ impl App {
             10 => self.tools.help = true,
             11 => {
                 self.ui.access_dialog = true;
-                self.ui.access_ack = false;
             }
             12 => {
                 self.document.inspect = Some((0, 0));

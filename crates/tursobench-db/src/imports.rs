@@ -385,6 +385,14 @@ pub(crate) async fn import(
     let mut uncertain = false;
     let result = async {
         while let Some(row) = reader.next()? {
+            if pending == 0 && crate::browse::describe(&c, &spec.table).await? != table {
+                return Err(Failure {
+                    kind: tursobench_core::ErrorKind::Conflict,
+                    message:
+                        "Import target schema changed between batches; preview the mapping again"
+                            .into(),
+                });
+            }
             if cancel() {
                 return Err(error("Import cancelled"));
             }

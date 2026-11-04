@@ -51,7 +51,6 @@ pub(super) struct UiState {
     pub palette_index: usize,
     pub export_open: bool,
     pub access_dialog: bool,
-    pub access_ack: bool,
     pub font_rx: Option<std::sync::mpsc::Receiver<(egui::FontDefinitions, String)>>,
     pub font_label: String,
     #[cfg(test)]
@@ -83,7 +82,6 @@ impl UiState {
             palette_index: 0,
             export_open: false,
             access_dialog: false,
-            access_ack: false,
             font_rx: Some(crate::appearance::system_fonts(ctx.clone())),
             font_label: "Loading system fonts; built-in fallback available".into(),
             #[cfg(test)]
@@ -431,7 +429,6 @@ impl App {
             .clicked()
         {
             self.ui.access_dialog = true;
-            self.ui.access_ack = false;
         }
         let (state, color) = self.connection_status(ui.visuals());
         let (dot, _) = ui.allocate_exact_size(egui::vec2(7.0, 7.0), egui::Sense::hover());

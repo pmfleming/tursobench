@@ -207,8 +207,8 @@ impl App {
             .open(&mut open).anchor(egui::Align2::LEFT_BOTTOM, [12.0,-48.0]).max_width((ctx.content_rect().width()-40.0).min(520.0)).collapsible(false).show(ctx, |ui| {
                 presentation::notice(ui, super::icons::Icon::Lock, Intent::Pending,"The current session will close and roll back any open transaction before reopening. Local drafts will be discarded. Committed writes are not undone.");
                 if !self.writable { ui.label("Back up the closed database with its WAL state before editing. SQL writes autocommit unless you BEGIN; grid edits are staged for review."); }
-                ui.checkbox(&mut self.ui.access_ack, "No other application has this database open");
-                if presentation::footer(ui, |ui| ui.add_enabled(self.ui.access_ack && self.ready && !self.closing && self.commit_ticket.is_none() && !self.uncertain_edit,
+                ui.label("File locks and shared WAL coordination will be checked again when reopening.");
+                if presentation::footer(ui, |ui| ui.add_enabled(self.ready && !self.closing && self.commit_ticket.is_none() && !self.uncertain_edit,
                     presentation::action(ui,"Close cleanly and reopen",Intent::Pending))).inner.clicked() {
                     self.pending_access = Some(!self.writable);
                     self.ui.access_dialog = false;

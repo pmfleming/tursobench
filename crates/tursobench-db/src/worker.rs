@@ -386,6 +386,9 @@ impl Worker<'_> {
         budget: Budget,
     ) -> Result<EventKind, Failure> {
         let statements = sql::script_statements(&text)?;
+        for statement in &statements {
+            sql::validate_coordinated(statement)?;
+        }
         if self.uncertain
             && statements
                 .iter()
@@ -582,6 +585,7 @@ impl Worker<'_> {
         parameters: Bindings,
         editor: bool,
     ) -> Result<EventKind, Failure> {
+        sql::validate_coordinated(&text)?;
         if self.uncertain && matches!(sql::effect(&text), sql::Effect::Data | sql::Effect::Schema) {
             return Err(Failure::input(
                 "Prior outcome UNKNOWN; reopen before executing writes",
@@ -696,6 +700,9 @@ impl Worker<'_> {
                 if self.uncertain{return Ok(Some(EventKind::EditsCommitted(tursobench_core::CommitOutcome::Unknown(Failure{kind:ErrorKind::Unknown,message:"Prior outcome UNKNOWN; reopen before committing".into()}))));}
                 let outcome = self.commits.run(edits::commit(self.db, self.access, self.settings, batch)).await;
                 self.uncertain |= matches!(&outcome,tursobench_core::CommitOutcome::Unknown(_));
+                if matches!(outcome, tursobench_core::CommitOutcome::Committed { .. }) {
+                    self.output.send(Ticket { request:0, ..ticket }, EventKind::Invalidated { schema:false, source_request:ticket.request });
+                }
                 return Ok(Some(EventKind::EditsCommitted(outcome)));
             }
             Operation::Browse(spec) => {
@@ -814,6 +821,7 @@ async fn execute(
         if access == Access::ReadOnly {
             sql::validate_readonly(sql)?;
         }
+        sql::validate_coordinated(sql)?;
         sql::validate_bindings(sql, &parameters)?;
         if parameters.bytes() > 8 * 1024 * 1024 {
             return Err(Failure::input("Parameters exceed 8 MiB"));

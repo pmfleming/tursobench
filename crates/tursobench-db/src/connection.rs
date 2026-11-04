@@ -14,7 +14,15 @@ pub(crate) fn failure(e: turso::Error) -> Failure {
     };
     Failure {
         kind,
-        message: e.to_string(),
+        message: match e {
+            turso::Error::BusySnapshot(ref detail) => format!(
+                "Read snapshot changed; roll back the transaction before retrying. {detail}"
+            ),
+            turso::Error::Busy(ref detail) => {
+                format!("Database is busy; no automatic retry was made. {detail}")
+            }
+            _ => e.to_string(),
+        },
     }
 }
 pub(crate) fn state(c: &Connection) -> TransactionState {

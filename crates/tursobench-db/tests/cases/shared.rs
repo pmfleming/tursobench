@@ -48,8 +48,11 @@ impl Peer {
             .expect("bounded peer reply")
     }
     fn sql(&mut self, sql: &str) -> String {
-        writeln!(self.child.stdin.as_mut().unwrap(), "{sql}").unwrap();
+        self.send(sql);
         self.reply()
+    }
+    fn send(&mut self, sql: &str) {
+        writeln!(self.child.stdin.as_mut().unwrap(), "{sql}").unwrap();
     }
     fn ok(&mut self, sql: &str) -> String {
         let reply = self.sql(sql);
@@ -334,4 +337,191 @@ fn coordinated_native_fts_reads_follow_external_commits() {
             .ok("SELECT id FROM items WHERE fts_match(value,'initial')")
             .contains("Integer(1)")
     );
+}
+
+#[test]
+fn shared_edits_report_busy_conflicts_and_refuse_live_peer_backup() {
+    use tursobench_core::{
+        Access, Bindings, Budget, CommitOutcome, Edit, ErrorKind, EventKind, Value,
+    };
+    use tursobench_db::Operation;
+    let (dir, path) = fixture();
+    let (mut writer, _) = Peer::start(&path, "writer");
+    let mut app = common::Client::open(&path, Access::ReadWrite);
+    let (table, result) = app.browse("items", 0);
+    let original = result.rows[0].clone();
+    writer.ok("BEGIN IMMEDIATE");
+    writer.ok("UPDATE items SET value='pending'");
+    let busy = app.query("UPDATE items SET value='must not replay'", vec![]);
+    assert_eq!(
+        busy.completion.unwrap().error.unwrap().kind,
+        ErrorKind::Busy
+    );
+    let edit = Edit::Update {
+        original: original.clone(),
+        changes: vec![(1, Value::Text("draft".into()))],
+    };
+    assert!(
+        matches!(app.commit(table.clone(), vec![edit.clone()]), CommitOutcome::Rejected(e) if e.kind == ErrorKind::Busy)
+    );
+    let reply = app.run(Operation::Script {
+        sql: "UPDATE items SET value='atomic'".into(),
+        parameters: Bindings::Positional(vec![]),
+        atomic: true,
+        budget: Budget::default(),
+    });
+    assert_eq!(reply.failure.unwrap().kind, ErrorKind::Busy);
+    let input = dir.path().join("contended.csv");
+    std::fs::write(&input, "id,value\n2,imported\n").unwrap();
+    let reply = app.run(Operation::Import(tursobench_core::ImportSpec {
+        path: input,
+        table: "items".into(),
+        format: tursobench_core::ImportFormat::Csv,
+        source_columns: vec!["id".into(), "value".into()],
+        mapping: vec!["id".into(), "value".into()],
+        kinds: vec![
+            tursobench_core::InputKind::Integer,
+            tursobench_core::InputKind::Text,
+        ],
+        null_marker: "\\N".into(),
+        atomic: true,
+    }));
+    assert_eq!(reply.failure.unwrap().kind, ErrorKind::Busy);
+    writer.ok("ROLLBACK");
+    assert_eq!(
+        app.sql("SELECT value FROM items").rows,
+        vec![vec![Value::Text("initial".into())]]
+    );
+    writer.ok("UPDATE items SET value='external'");
+    assert!(
+        matches!(app.commit(table, vec![edit]), CommitOutcome::Rejected(e) if e.kind == ErrorKind::Conflict)
+    );
+    let (table, rows) = app.browse("items", 0);
+    assert!(matches!(
+        app.commit(
+            table,
+            vec![Edit::Update {
+                original: rows.rows[0].clone(),
+                changes: vec![(1, Value::Text("committed".into()))]
+            }]
+        ),
+        CommitOutcome::Committed { .. }
+    ));
+    assert!(writer.ok("SELECT value FROM items").contains("committed"));
+    writer.ok("BEGIN");
+    writer.ok("SELECT * FROM items");
+    app.sql("UPDATE items SET value='newer'");
+    assert_eq!(
+        app.run(Operation::Checkpoint).failure.unwrap().kind,
+        ErrorKind::Busy
+    );
+    writer.ok("ROLLBACK");
+    assert!(app.run(Operation::Checkpoint).failure.is_none());
+    let destination = dir.path().join("must-not-publish.db");
+    let reply = app.run(Operation::BackupAndClose(destination.clone()));
+    assert_eq!(reply.transfer.unwrap().error.unwrap().kind, ErrorKind::Busy);
+    assert!(!destination.exists());
+    loop {
+        match common::event(&app.session).kind {
+            EventKind::Invalidated { .. } => continue,
+            EventKind::Closed { rollback: Ok(()) } => break,
+            other => panic!("Unexpected backup close event: {other:?}"),
+        }
+    }
+    writer.ok("UPDATE items SET value='still usable'");
+    assert!(writer.ok("PRAGMA integrity_check").contains("ok"));
+}
+
+#[test]
+fn simultaneous_shared_writes_have_no_lost_or_replayed_updates_and_keep_fts_consistent() {
+    use tursobench_core::{Access, ErrorKind, Value};
+    let (_dir, path) = fixture();
+    let (mut writer, _) = Peer::start(&path, "writer");
+    writer.ok("CREATE TABLE counters(id INTEGER PRIMARY KEY, n INTEGER)");
+    writer.ok("INSERT INTO counters VALUES(1,0)");
+    writer.ok("INSERT INTO items VALUES(2,'second')");
+    writer.ok("CREATE INDEX search ON items USING fts(value)");
+    let mut app = common::Client::open(&path, Access::ReadWrite);
+    // The app's lifetime main-file lock also rejects a later legacy writer.
+    let (_legacy, reply) = Peer::start(&path, "legacy");
+    assert!(reply.starts_with("ERROR|"));
+    let mut successes = 0i64;
+    for i in 0..40 {
+        writer.send("UPDATE counters SET n=n+1");
+        let reply = app.query("UPDATE counters SET n=n+1", vec![]);
+        match reply.completion.unwrap().error {
+            None => successes += 1,
+            Some(e) => assert_eq!(e.kind, ErrorKind::Busy),
+        }
+        let reply = writer.reply();
+        if reply.starts_with("OK|") {
+            successes += 1
+        } else {
+            assert!(reply.contains("Busy"), "{reply}");
+        }
+        writer.ok(&format!("UPDATE items SET value='writer{i}' WHERE id=1"));
+        app.sql(&format!("UPDATE items SET value='editor{i}' WHERE id=2"));
+        assert_eq!(
+            app.sql(&format!(
+                "SELECT id FROM items WHERE fts_match(value,'writer{i}')"
+            ))
+            .rows,
+            vec![vec![Value::Integer(1)]]
+        );
+        assert!(
+            writer
+                .ok(&format!(
+                    "SELECT id FROM items WHERE fts_match(value,'editor{i}')"
+                ))
+                .contains("Integer(2)")
+        );
+    }
+    assert!(successes > 0);
+    assert_eq!(
+        app.sql("SELECT n FROM counters").rows,
+        vec![vec![Value::Integer(successes)]]
+    );
+    assert_eq!(
+        app.sql("PRAGMA integrity_check").rows,
+        vec![vec![Value::Text("ok".into())]]
+    );
+    app.close();
+}
+
+#[test]
+fn coordinated_policy_covers_single_script_and_export_before_execution() {
+    use tursobench_core::{Access, Bindings, Budget};
+    use tursobench_db::Operation;
+    let (dir, path) = fixture();
+    let mut app = common::Client::open(&path, Access::ReadWrite);
+    for sql in [
+        "PRAGMA journal_mode=DELETE",
+        "PRAGMA main.\"locking_mode\"(EXCLUSIVE)",
+        "BEGIN CONCURRENT",
+    ] {
+        assert!(app.query(sql, vec![]).completion.unwrap().error.is_some());
+        let reply = app.run(Operation::Script {
+            sql: format!("UPDATE items SET value='denied'; {sql}"),
+            parameters: Bindings::Positional(vec![]),
+            atomic: false,
+            budget: Budget::default(),
+        });
+        assert!(reply.failure.is_some());
+        let destination = dir.path().join("denied.jsonl");
+        assert!(
+            app.run(Operation::ExportQuery {
+                path: destination.clone(),
+                sql: sql.into(),
+                parameters: Bindings::Positional(vec![])
+            })
+            .failure
+            .is_some()
+        );
+        assert!(!destination.exists());
+    }
+    assert_eq!(
+        app.sql("SELECT value FROM items").rows,
+        vec![vec![tursobench_core::Value::Text("initial".into())]]
+    );
+    app.close();
 }

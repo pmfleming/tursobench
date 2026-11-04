@@ -341,6 +341,39 @@ pub(crate) fn validate_readonly(sql: &str) -> Result<(), Failure> {
     Ok(())
 }
 
+/// Keep every execution surface inside the qualified shared-WAL model.
+pub(crate) fn validate_coordinated(sql: &str) -> Result<(), Failure> {
+    use turso_parser::ast::{Cmd, Stmt, TransactionType};
+    match Parser::new(sql.as_bytes())
+        .next_cmd()
+        .map_err(|e| Failure::input(e.to_string()))?
+    {
+        Some(Cmd::Stmt(Stmt::Pragma {
+            name,
+            body: Some(_),
+        })) if ["journal_mode", "locking_mode"]
+            .iter()
+            .any(|n| name.name.as_str().eq_ignore_ascii_case(n)) =>
+        {
+            Err(Failure::input(
+                "Journal and locking modes are fixed for coordinated database sessions",
+            ))
+        }
+        Some(Cmd::Stmt(Stmt::Attach { .. } | Stmt::Detach { .. } | Stmt::Vacuum { .. })) => {
+            Err(Failure::input(
+                "ATTACH, DETACH and VACUUM are unavailable in coordinated sessions; use the session export or verified backup actions",
+            ))
+        }
+        Some(Cmd::Stmt(Stmt::Begin {
+            typ: Some(TransactionType::Concurrent),
+            ..
+        })) => Err(Failure::input(
+            "Shared WAL uses serialized writers; BEGIN CONCURRENT is unavailable",
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// The inline INTEGER PRIMARY KEY (except DESC) aliases rowid and cannot be NULL.
 pub(crate) fn inline_rowid_key(ddl: &str) -> Option<String> {
     use turso_parser::ast::{Cmd, ColumnConstraint, CreateTableBody, SortOrder, Stmt};
