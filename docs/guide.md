@@ -17,7 +17,8 @@ nix develop -c cargo run --locked -p tursobench-ui
 
 `flake.nix` / `flake.lock` pin Nixpkgs and the Rust overlay. The shell reads
 `rust-toolchain.toml` for Rust 1.95.0 and includes Cargo, rustfmt, Clippy,
-rust-analyzer, Rust sources, a C compiler, Python, Xvfb and desktop libraries.
+rust-analyzer, Rust sources, a C compiler, Python, headless Weston and Wayland
+desktop libraries.
 
 Enter the environment with `nix develop`, then run Cargo normally. The legacy
 `nix-shell` entry point uses the same pinned inputs and environment.
@@ -35,9 +36,15 @@ For Bash without an existing hook, run `eval "$(direnv hook bash)"` in your term
 is required. `.direnv/` is local cache data and is ignored by Git. Nix requires
 `nix-command` and `flakes` enabled; the first activation may download dependencies.
 
-Rust 1.95.0 is the tested toolchain. Linux needs OpenGL, X11 or Wayland and
-libxkbcommon. X11 also requires `libxkbcommon-x11.so.0` (provided by
-`libxkbcommon-x11-0` on Ubuntu, or its `libxkbcommon-x11-dev` development package).
+Rust 1.95.0 is the tested toolchain. The default Linux build uses native Wayland,
+OpenGL/EGL and libxkbcommon. Hyprland is the primary development desktop.
+The preview package requires a Wayland session; it does not fall back to Xwayland.
+For an X11-only compatibility build, use
+`cargo run --locked -p tursobench-ui --no-default-features --features x11`.
+That build also requires `libxkbcommon-x11.so.0` (`libxkbcommon-x11-0` on Ubuntu).
+To build both backends, add `--features x11` while retaining the defaults.
+Accessibility remains enabled; its transitive dependencies can include X11 code
+even though the default app explicitly selects Wayland and has no X11 renderer.
 The native file dialog requires the D-Bus runtime library
 (`libdbus-1.so.3`) and an XDG portal with a file chooser backend. The Nix shell
 provides the library; the desktop session provides the portal. Typing a path
@@ -216,7 +223,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 cargo run --locked -p engine-spike
 cargo build --locked -p tursobench-ui
-bash scripts/desktop-smoke.sh  # requires Python 3, xvfb-run, timeout and Mesa
+bash scripts/desktop-smoke.sh  # requires Python 3, Weston, timeout and Mesa
 bash scripts/discovery-smoke.sh  # startup scan with an isolated home and disposable files
 bash scripts/local-project-smoke.sh  # exact local-project schemas; synthetic data only
 bash scripts/package-linux.sh
@@ -224,7 +231,11 @@ bash scripts/package-smoke.sh  # install/run the trusted archive in a temporary 
 ```
 
 The smoke test uses 100,000 disposable rows, an isolated preferences directory,
-and a real desktop renderer under Xvfb. See the [manual smoke checklist](desktop-smoke-test.md).
+and a real Wayland renderer under headless Weston. All native smoke and capture
+scripts use `scripts/wayland-run.py`: a private compositor/socket, software GL,
+no X display and an assertion against the app's actual display handle. Its
+compositor/client logs remain under `target/wayland-smoke/`, including on failure.
+Native Hyprland checks complement CI; see the [desktop checklist](desktop-smoke-test.md).
 Packages contain a binary, desktop launcher, documentation, lockfile and dependency
 license inventory/texts. Build on the intended Linux distribution; a Nix-linked
 binary is not a portable Linux tarball. macOS/Windows packages are not promised.

@@ -41,8 +41,11 @@ bash scripts/discovery-smoke.sh
 bash scripts/local-project-smoke.sh
 ```
 
-The smoke tests need Python, Xvfb, `timeout` and Mesa, available in the Nix
-environment. For documentation-only changes, check links and rendered formatting.
+The smoke tests need Python, Weston with its headless backend/GL renderer,
+`timeout` and Mesa, available in the Nix environment. Native Wayland is the
+default and required CI path; X11 is checked separately as an opt-in build.
+Smoke logs remain under `target/wayland-smoke/` and are uploaded on CI failures.
+For documentation-only changes, check links and rendered formatting.
 See the [manual desktop checklist](docs/desktop-smoke-test.md) for UI changes.
 
 ## Pull requests

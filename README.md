@@ -129,7 +129,15 @@ cargo run --locked -p tursobench-ui -- /path/to/session.db
 ```
 
 Omit the path to open the chooser.
-Linux requires OpenGL and X11 or Wayland.
+The default Linux build requires native Wayland and OpenGL/EGL; Hyprland is the
+primary development desktop. X11 is an opt-in compatibility build:
+
+```sh
+cargo run --locked -p tursobench-ui --no-default-features --features x11
+```
+
+Enable `--features x11` with the defaults to build both backends; Wayland takes
+priority when available. The default preview package uses Wayland only.
 Use the desktop file picker or enter a path directly.
 Open never creates a database.
 
@@ -161,7 +169,9 @@ bash scripts/local-project-smoke.sh
 ```
 
 Tests cover typed execution, transactions, editing, worker ownership and UI behavior.
-Native smoke tests use Xvfb/Mesa.
+Native smoke tests use isolated headless Weston/Mesa with X11 disabled and verify
+the actual Wayland display handle. Logs remain under `target/wayland-smoke/`.
+Hyprland checks cover desktop integration and background-workspace behavior.
 
 [User guide](docs/guide.md) · [Workspace guide](docs/ui-redesign.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
 

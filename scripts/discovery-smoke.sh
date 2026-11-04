@@ -9,9 +9,7 @@ trap 'rm -rf "$work"' EXIT
 cd "$root"
 cargo build --locked -p tursobench-db --example preferences
 preferences_tool="$root/target/debug/examples/preferences"
-unset WAYLAND_DISPLAY
-export LIBGL_ALWAYS_SOFTWARE=1
-xvfb-run -a -s '-screen 0 1400x900x24' python3 - "$binary" "$work" "$preferences_tool" <<'PY'
+python3 scripts/wayland-run.py -- python3 - "$binary" "$work" "$preferences_tool" <<'PY'
 import hashlib
 import json
 import os

@@ -9,10 +9,6 @@ let
     libxkbcommon
     wayland
     libGL
-    libX11
-    libXcursor
-    libXi
-    libXrandr
   ];
 in pkgs.mkShell {
   name = "tursobench-dev";
@@ -22,7 +18,8 @@ in pkgs.mkShell {
     gcc
     pkg-config
     python3
-    xvfb-run
+    weston
+    wayland-utils
   ];
 
   buildInputs = desktopLibraries;

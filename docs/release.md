@@ -5,6 +5,31 @@ have implementation commits. This remains a **Linux preview**. Completed feature
 local verification and open production gates are separate below. The detailed
 issue map and reproducible scenarios are in [review remediation](review-remediation.md).
 
+## Wayland qualification (2026-11-04)
+
+Native Wayland is now the default build and preview-package target. X11 rendering
+is opt-in and has a separate CI compilation check. Required native CI and package
+smokes run under isolated headless Weston/Mesa, without an X display, and verify
+the actual application display handle. Failure logs are retained and uploaded.
+
+Local verification passes formatting, strict all-target Clippy, 197 regular tests
+(one manual profile ignored), X11-only and combined feature builds, the engine
+probe, native desktop/discovery/four-project smokes, resized screenshot captures,
+and extraction/install/startup of the rebuilt release archive. Screenshot checks
+verify laptop and widescreen client dimensions, rather than assuming the
+compositor honored a resize.
+
+On Hyprland 0.56.2 at 1.25x scaling and 75 Hz, the app and presentation probe pass
+hidden startup, show/hide/show and native close. All 30 observed compositor pings
+receive matching pongs. Each settled seven-second hidden sample uses at most one
+CPU tick; the probe resumes at 75 FPS when visible. The actual app is native
+Wayland with app ID `tursobench`, matching the packaged desktop launcher.
+
+Interactive keyboard/clipboard, portal selection/cancellation, and pointer
+alignment across other scaling/output configurations remain desktop acceptance
+checks; headless CI does not certify them. X11 runtime behavior is secondary and
+is not qualified by its compile check. Earlier Xvfb evidence below is historical.
+
 ## Implemented and locally exercised
 
 - Rust 1.95, eframe/egui 0.37 and Turso 0.8.3 with explicit native FTS support.
@@ -86,7 +111,7 @@ not certify general latency or total process-memory limits.
   metadata as replacement permission. Manual licensing review is required before
   public distribution; inspect bundled `MISSING-LICENSE-TEXTS.txt`.
 - Native portal/file-picker and broader compositor/window-manager manual checks
-  remain. Xvfb and headless interaction tests cannot qualify every desktop.
+  remain. Headless Weston and egui interaction tests cannot qualify every desktop.
   Linux x86_64 is the local target; configured Ubuntu CI has not run here.
   Nix-linked artifacts require the Nix runtime environment. macOS/Windows and
   cross-host binary reproducibility need separate qualification.
@@ -105,6 +130,9 @@ and creates `target/tursobench-0.1.0-preview-linux-x86_64.tar.gz` plus SHA-256.
 The manual GitHub workflow produces preview artifacts, not a stable release.
 Extract and run `bash install.sh /desired/prefix`; the default is `$HOME/.local`.
 `bash scripts/package-smoke.sh` verifies the trusted local archive, installs into
-a temporary prefix and runs the installed binary under Xvfb.
+a temporary prefix and runs the installed binary under headless Weston/Mesa,
+verifying native Wayland. Default packages require a Wayland session. The package
+workflow also checks release-binary discovery and all four local-project smokes.
+X11 is an opt-in compatibility feature and does not qualify the primary release.
 The desktop launcher expects `tursobench` on PATH. Validate on the intended Linux
 baseline and clear the dependency/license gates before public distribution.

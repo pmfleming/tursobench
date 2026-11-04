@@ -4796,6 +4796,7 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "libc",
+ "raw-window-handle",
  "rfd",
  "serde",
  "serde_json",
@@ -4805,6 +4806,7 @@ dependencies = [
  "turso",
  "tursobench-core",
  "tursobench-db",
+ "winit",
 ]
 
 [[package]]

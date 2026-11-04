@@ -39,7 +39,23 @@ PY
 cargo build --locked -p tursobench-ui
 export XDG_CONFIG_HOME="$work/config"
 export TURSOBENCH_CAPTURE_DIR="$output"
-export LIBGL_ALWAYS_SOFTWARE=1
-unset WAYLAND_DISPLAY
-xvfb-run -a -s '-screen 0 3440x1440x24' timeout 75 target/debug/tursobench --smoke-test "$work/sample.db"
+# Leave room for Wayland decorations around the largest 3440x1440 client scene.
+python3 scripts/wayland-run.py --width 3520 --height 1520 -- timeout 75 target/debug/tursobench --smoke-test "$work/sample.db"
+python3 - "$output" <<'PY'
+from pathlib import Path
+import struct
+import sys
+
+root = Path(sys.argv[1])
+# A compositor that forces fullscreen can produce valid PNGs at the wrong size.
+for name, expected in {
+    "workspace-dark.png": (1800, 1000),
+    "laptop-light.png": (1366, 768),
+    "laptop-dark.png": (1366, 768),
+    "widescreen.png": (3440, 1440),
+}.items():
+    dimensions = struct.unpack(">II", (root / name).read_bytes()[16:24])
+    assert dimensions == expected, (name, dimensions, expected)
+print("Wayland capture dimensions verified")
+PY
 printf 'Native captures saved to %s\n' "$output"

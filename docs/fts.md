@@ -65,7 +65,7 @@ Validated:
   mid-batch foreign-key failure/rollback and explicit editor rollback;
 - independent browse/editor transaction visibility and close-time rollback;
 - typed table-page and FTS result exports, headless egui rendering;
-- native Xvfb desktop open/browse/query/read-only-write rejection/close for all four
+- native Wayland/Weston desktop open/browse/query/read-only-write rejection/close for all four
   fixtures, including a real FTS query through the clipboard SQL editor.
 
 ## Reproduce

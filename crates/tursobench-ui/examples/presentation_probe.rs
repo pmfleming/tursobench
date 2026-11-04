@@ -2,6 +2,8 @@
 //! Move this window between visible and hidden workspaces to check frame pacing.
 //! Reports once a second and closes after 30 seconds (use an external timeout too).
 use eframe::egui;
+#[path = "../src/desktop.rs"]
+mod desktop;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -32,6 +34,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "TursoBench presentation probe",
         eframe::NativeOptions {
+            event_loop_builder: Some(Box::new(desktop::configure_backend)),
             renderer: eframe::Renderer::Glow,
             viewport: egui::ViewportBuilder::default()
                 .with_app_id("tursobench-presentation-probe")
@@ -39,6 +42,7 @@ fn main() -> eframe::Result {
             ..Default::default()
         },
         Box::new(|cc| {
+            desktop::verify_backend(cc)?;
             let frames = Arc::new(AtomicU64::new(0));
             let observed = frames.clone();
             let ctx = cc.egui_ctx.clone();

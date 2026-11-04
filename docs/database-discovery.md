@@ -179,7 +179,7 @@ versions, unknown headers, a real Turso fixture, and a SQLite-like classificatio
 that the user overrides before a successful Turso open. Header inspection and
 override are verified to leave fixture files unchanged.
 
-`bash scripts/discovery-smoke.sh` runs normal native startup under Xvfb with an
+`bash scripts/discovery-smoke.sh` runs normal native Wayland startup under headless Weston with an
 isolated home, working directory, data and preferences. It verifies project and
 extensionless app-data discovery, exclusions, stale-cache pruning, no automatic
 opening, no database changes or new sidecars, and the persisted startup opt-out.

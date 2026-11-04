@@ -1,7 +1,7 @@
 # Repeatable Linux desktop smoke test
 
-Run `cargo run --locked -p tursobench-ui -- /path/to/disposable.db` in a desktop
-session (NixOS: `nix-shell --run 'cargo run --locked -p tursobench-ui'`). Use only a
+Run `cargo run --locked -p tursobench-ui -- /path/to/disposable.db` in a native
+Wayland session (NixOS: `nix develop`). Hyprland is the primary acceptance desktop. Use only a
 closed disposable fixture. The engine spike generates its own temporary fixtures;
 for a retained fixture use `python3 tests/fixtures/generate.py /tmp/sample.db`.
 
@@ -35,7 +35,7 @@ for a retained fixture use `python3 tests/fixtures/generate.py /tmp/sample.db`.
 9. Exit through the native close button. No fixed-rate render loop when idle.
 
 Automated headless egui render/pointer-interaction tests run in `cargo test`.
-`bash scripts/desktop-smoke.sh` runs the native app under Xvfb/Mesa against a
+`bash scripts/desktop-smoke.sh` runs the native app under headless Weston/Mesa against a
 100,000-row disposable fixture and isolates preferences. It also loads and renders
 the native-metadata map and switches Data/Structure without replacing the retained table page. With Nix:
 
@@ -90,8 +90,35 @@ For the [responsive redesign](ui-redesign.md), also check both themes at 720×48
 - Closing/discard must stay pending until actual worker acknowledgement. Unknown
   staged outcomes must remain unknown in the review window and must not auto-retry.
 
-Native dialog and interactive desktop checks still require a working desktop and
-are not replaced by Xvfb tests. Record platform results in release notes.
+Native dialog and interactive desktop checks still require a working Wayland
+desktop and are not replaced by Weston tests. Record platform results in release notes.
+
+## Wayland acceptance
+
+All desktop, discovery, local-project, installed-package and capture scripts use
+`scripts/wayland-run.py`. It starts an isolated headless Weston GL compositor,
+unsets `DISPLAY`/`WAYLAND_SOCKET`, supplies a private Wayland socket and requires
+the actual application display handle to be Wayland. Each run retains compositor
+and client logs in `target/wayland-smoke/`; CI uploads these when a check fails.
+Readiness, execution and cleanup are bounded. No user compositor configuration
+is loaded or changed. Weston must provide its headless backend and desktop shell;
+the desktop shell allows capture checks to resize the window between scenes.
+
+On Hyprland, also verify the following using isolated preferences and fixtures:
+
+- `hyprctl clients -j` identifies the app as native Wayland (`xwayland: false`)
+  with class/app ID `tursobench`, matching `tursobench.desktop` and its icon.
+- Real keyboard typing, shortcuts, Unicode and clipboard copy/paste work.
+- The portal file picker opens, returns a selection and handles cancellation.
+- Tiled/floating resize and fractional scaling keep text, pointer positions and
+  all controls usable; restore the test window rather than changing user settings.
+- Hide/show across workspaces, background pings, idle CPU and native close pass
+  the presentation regression below. Do not disable compositor pacing.
+
+The default app selects Wayland explicitly. `--no-default-features --features x11`
+selects X11 explicitly; adding `--features x11` to the default build permits both
+and uses upstream Wayland-first selection. A separate CI job checks the X11
+build; primary smoke tests always run Wayland without an X server.
 
 - Ctrl K searches tables/columns/actions; arrow keys and Enter activate matches.
   Ctrl J shows SQL without replacing the retained result. Query results have their own label.
@@ -193,8 +220,11 @@ show it, hide it again, and show it again. It must resume rendering at the
 compositor's pace without a hidden-workspace busy loop or unresponsive dialog.
 Use `WAYLAND_DEBUG=client` to inspect `xdg_wm_base.ping`/`pong` pairs; retain logs
 locally. Repeat with the real app using isolated XDG configuration/state/cache
-directories and `{"discovery":{"enabled":false}}` in its test
-`tursobench/preferences.json`. Check idle behavior and native close as well.
+directories. Seed `{"discovery":{"enabled":false}}` into its test
+`tursobench/preferences.db` using the `preferences` example (see
+`scripts/discovery-smoke.sh`); the old JSON preferences file is no longer read.
+Set `TURSOBENCH_EXPECT_BACKEND=wayland` to verify the native display handle.
+Check idle behavior and native close as well.
 
 Local validation on 2026-11-03, Hyprland 0.56.2 on a 75 Hz output:
 

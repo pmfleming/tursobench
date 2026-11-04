@@ -8,10 +8,17 @@ license.workspace = true
 name = "tursobench"
 path = "src/main.rs"
 
+[features]
+default = ["wayland"]
+wayland = ["eframe/wayland", "winit/wayland"]
+x11 = ["eframe/x11", "winit/x11"]
+
 [dependencies]
 tursobench-core.workspace = true
 tursobench-db.workspace = true
 eframe.workspace = true
+raw-window-handle = "=0.6.2"
+winit = { version = "=0.30.13", default-features = false }
 # The same parser already used by egui; validate optional system fonts off-thread.
 skrifa = "=0.44.0"
 rfd = "=0.17.2"
