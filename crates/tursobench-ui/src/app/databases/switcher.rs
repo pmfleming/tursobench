@@ -3,6 +3,7 @@ use super::{
     presentation::{database_icon, folder_label},
 };
 use crate::app::icons::{self, Icon};
+use crate::app::presentation::{self, Intent};
 use eframe::egui;
 use std::path::Path;
 
@@ -90,20 +91,42 @@ impl App {
 
     fn recent_databases_ui(&mut self, ui: &mut egui::Ui, focus: bool) {
         ui.horizontal(|ui| {
+            let width = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
+            for (icon, label, intent) in [
+                (Icon::Folder, "Open database…", Intent::Primary),
+                (Icon::Disconnect, "Close database", Intent::Neutral),
+            ] {
+                let response = ui.add_sized(
+                    [width, 38.0],
+                    presentation::action(ui, &format!("    {label}"), intent),
+                );
+                response.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::Role::Button, response.enabled(), label)
+                });
+                icons::paint(
+                    ui.painter(),
+                    egui::Rect::from_center_size(
+                        egui::pos2(response.rect.left() + 17.0, response.rect.center().y),
+                        egui::vec2(18.0, 18.0),
+                    ),
+                    icon,
+                    if matches!(intent, Intent::Primary) {
+                        crate::appearance::Tokens::of(ui.ctx()).primary_ink
+                    } else {
+                        presentation::intent_color(ui, intent)
+                    },
+                );
+                if response.clicked() {
+                    self.pending_database = None;
+                    self.request_close();
+                    ui.close();
+                }
+            }
+        });
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
             ui.strong("Recent");
             ui.weak(self.preferences.discovery.recent.len().to_string());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if icons::button(ui, Icon::Disconnect, "Close database", "").clicked() {
-                    self.pending_database = None;
-                    self.request_close();
-                    ui.close();
-                }
-                if icons::button(ui, Icon::Folder, "Choose database", "Ctrl O").clicked() {
-                    self.pending_database = None;
-                    self.request_close();
-                    ui.close();
-                }
-            });
         });
         let search = ui.add_sized(
             [ui.available_width(), 28.0],
@@ -220,7 +243,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .nodes;
-            for name in ["Choose database", "Close database"] {
+            for name in ["Open database…", "Close database"] {
                 assert!(nodes.iter().any(|(_, n)| n.label() == Some(name)));
             }
             for (_, node) in nodes {

@@ -2153,7 +2153,7 @@ fn cancelling_a_recent_database_switch_clears_the_pending_path() {
     assert!(!app.closing);
     assert_eq!(app.session.as_ref().unwrap().id, session);
     assert_eq!(app.path, path.to_string_lossy());
-    for action in ["Choose database", "Close database"] {
+    for action in ["Open database…", "Close database"] {
         let output = frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
         click(&mut app, &ctx, control(&output, "Switch database"));
         frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
