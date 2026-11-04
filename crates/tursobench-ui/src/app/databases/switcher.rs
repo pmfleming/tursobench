@@ -222,6 +222,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::{App, egui};
+    use crate::app::test_ui::key_event;
 
     fn frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) -> egui::FullOutput {
         crate::app::test_ui::render(ctx, egui::vec2(720.0, 480.0), events, |ui| {
@@ -264,12 +265,7 @@ mod tests {
                 }
                 render(&mut app, vec![]);
                 let output = render(&mut app, vec![]);
-                let nodes = &output
-                    .platform_output
-                    .accesskit_update
-                    .as_ref()
-                    .unwrap()
-                    .nodes;
+                let nodes = crate::app::test_ui::nodes(&output);
                 let rows: Vec<_> = nodes
                     .iter()
                     .filter(|(_, n)| n.role() == egui::Role::ListBoxOption)
@@ -322,9 +318,7 @@ mod tests {
     #[test]
     fn recent_popup_is_bounded_and_filters_full_paths_with_keyboard_selection() {
         for dark in [false, true] {
-            let ctx = egui::Context::default();
-            ctx.enable_accesskit();
-            let mut app = App::new(&ctx);
+            let (ctx, mut app) = crate::app::test_ui::app();
             crate::appearance::theme(&ctx, dark);
             app.ready = true;
             app.writable = true;
@@ -347,12 +341,7 @@ mod tests {
                 frame(&mut app, &ctx, crate::app::test_ui::pointer(pos, pressed));
             }
             let output = frame(&mut app, &ctx, vec![]);
-            let nodes = &output
-                .platform_output
-                .accesskit_update
-                .as_ref()
-                .unwrap()
-                .nodes;
+            let nodes = crate::app::test_ui::nodes(&output);
             for name in ["Open database…", "Close database"] {
                 assert!(nodes.iter().any(|(_, n)| n.label() == Some(name)));
             }
@@ -366,12 +355,7 @@ mod tests {
             frame(&mut app, &ctx, vec![egui::Event::Text("snapshot".into())]);
             let output = frame(&mut app, &ctx, vec![]);
             assert_eq!(app.databases.switcher_filter, "snapshot");
-            let rows: Vec<_> = output
-                .platform_output
-                .accesskit_update
-                .as_ref()
-                .unwrap()
-                .nodes
+            let rows: Vec<_> = crate::app::test_ui::nodes(&output)
                 .iter()
                 .filter(|(_, node)| node.role() == egui::Role::ListBoxOption)
                 .collect();
@@ -380,13 +364,7 @@ mod tests {
             frame(
                 &mut app,
                 &ctx,
-                vec![egui::Event::Key {
-                    key: egui::Key::Enter,
-                    physical_key: None,
-                    pressed: true,
-                    repeat: false,
-                    modifiers: egui::Modifiers::NONE,
-                }],
+                vec![key_event(egui::Key::Enter, true, egui::Modifiers::NONE)],
             );
             assert_eq!(app.pending_database, Some(long_path.into()));
             assert!(app.confirm_close);

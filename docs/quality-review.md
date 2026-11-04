@@ -1,3 +1,101 @@
+# Quality review — 2026-11-05
+
+Reviewed the code at `0b7c4347c1a8f41320daccc5e372b5c2d25b5dc8` and refactored
+against fresh measurements from the local `Projects/rust-quality-lens` checkout.
+Both runs use the same binary, `rqlens.toml`, metadata launcher and Nix shell.
+They cover 81 authored modules; vendored dependencies are excluded. Older reviews
+below cover earlier, smaller versions of the project and are not this baseline.
+
+| Measurement | Before | After |
+| --- | ---: | ---: |
+| Maximum cognitive complexity | 96 | 84 |
+| Total cognitive complexity | 5,228 | 5,168 |
+| Maximum cyclomatic complexity | 72 | 72 |
+| Total cyclomatic complexity | 5,542 | 5,513 |
+| Total function Halstead effort | 39,021,252 | 38,468,150 |
+| Duplicated source lines | 2,212 | 2,158 |
+| Wildcard imports | 23 | 21 |
+| Observed panic paths, including tests | 446 | 434 |
+| Sum of module locality risk ↓ | 283.5 | 279.75 |
+| Mean module leverage ↑ | 25.93 | 25.93 |
+| Measured source modules | 81 | 81 |
+| First-party physical Rust lines | 34,061 | 34,054 |
+| Literal `.clone()` call sites | 383 | 379 |
+| Test and helper function lines | 9,846 | 9,752 |
+| Executed workspace tests | 197 | 195 |
+| Line coverage (%) | 83.13 | 83.3 |
+| Region coverage (%) | 82.49 | 82.85 |
+| Function coverage (%) | 84.67 | 85.04 |
+
+The main findings and resulting changes are:
+
+- **Repeated request policy.** Commands, paging, filters, sorting, restored views,
+  external refresh and transfers repeated the same ready/closing/draft/commit
+  checks. They now share `App::requests_enabled`; operation-specific checks stay
+  with each caller. Five duplicate palette commands use ribbon action dispatch.
+  Transaction operation construction belongs to the SQL executor. Shared grid,
+  column and ribbon alignment constants belong to presentation, removing
+  dependencies on the grid renderer. Locality risk fell; measured mean leverage
+  stayed flat, despite the additional reuse of policy and test support.
+- **Mixed UI responsibilities.** Ribbon action rendering and fixed window
+  controls have separate handlers. Discovery folder lists share row rendering;
+  settings sections and summaries have focused owners. The editor separates its
+  toolbar, bindings and buffer rendering. Transfer preview rendering belongs to
+  transfer state. Cognitive complexity fell from 82 to 31 in `pane_ribbon`,
+  from 61 to 24 in `discovery_settings_ui`, and from 96 to 45 in `transfer_ui`.
+- **Redundant work and escape paths.** Table selection borrows candidate names
+  and only owns the chosen navigation target. Built-in SQL completions borrow
+  static strings. Reverse-reference validation retains checked column metadata,
+  avoiding repeated searches and three `unwrap` paths. Storage shutdown owns its
+  sender while draining and no longer unwraps it. Bundled SVG icons dispatch once
+  through their geometry renderer, removing an `unreachable!` branch. Removed
+  the redundant selection-execution forwarding method and two test glob imports.
+- **Overlapping tests and repeated drivers.** Folder persistence and keyboard/
+  pointer behavior share one scenario. Row-slider and hidden-field navigation
+  share one real-database scenario, retaining draft, ticket and selection checks.
+  UI fixtures, key events, accessibility traversal, header-inspection waits and
+  exact retained-value assertions share support. Existing scenarios now also
+  exercise invalid completion offsets/large buffers, actual NULL-binding
+  generation, positional-binding guidance and discovery summary/error rendering.
+
+The project-size reduction is small: seven physical Rust lines and 19 nonblank
+source lines. Extracting readable transfer-preview code offsets much of the
+removed duplication. Test/helper function spans shrink by 94 lines while two
+fewer active tests execute. That volume measure unions function line ranges in
+RQLens test/support modules and test files, including shared helpers; it excludes
+module imports, constants and blank lines between functions. `.clone()` counts
+are literal call-site inventory, not allocation measurements. Runtime allocation
+or speed improvements were not benchmarked.
+
+Coverage increases from 19,067/22,936 to 19,130/22,965 lines. The same all-target
+coverage command runs both times; one manual profiling test remains ignored.
+RQLens inventories 198/196 tests, including the ignored test; ordinary workspace
+runs execute 197/195. Branch and mutation coverage were not collected.
+
+Remaining priorities are the edit-review window orchestration (cognitive 84),
+worker execution (75), and the operation dispatcher (cyclomatic 72). The dispatcher
+still determines the global cyclomatic maximum. The shared `App` remains a
+large dependency hub. Architecture identity remains partial: 1,302/1,328
+references resolved before and 1,370/1,396 after. Locality and leverage are
+heuristics, not verified isolation guarantees. Syntax/reliability inventories
+remain partial around unexpanded macros, including the existing desktop
+`compile_error!`; panic totals include test assertions/helpers. No lint
+suppressions or unsafe code were added.
+
+Validation passed: formatting, workspace/all-target Clippy with warnings denied,
+195 workspace tests, workspace build, engine spike, the 100,000-row Wayland
+desktop smoke, startup-discovery smoke and all four local-project schema/desktop
+smokes. The engine spike still identifies fault-injected commit/rollback failures
+and old-engine compatibility fixtures as unvalidated existing gates.
+
+Reproduction and evidence are retained in ignored build output under
+`target/quality-review-current/`: `lens.sh`, `baseline/`, `final/`,
+`baseline-source.json`, `final-source.json`, `comparison.json`, test/Clippy/build
+logs and individual smoke logs. Run the launcher within `nix develop`; it uses
+this machine's pre-existing Cargo-metadata workaround documented below.
+
+---
+
 # Incremental quality improvements — 2026-11-03–04
 
 The initial review/refactor was committed as `0051473`. The next priorities,

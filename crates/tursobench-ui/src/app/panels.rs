@@ -553,9 +553,7 @@ mod tests {
 
     #[test]
     fn settings_expose_discovery_and_font_controls_and_apply_size_without_drift() {
-        let ctx = egui::Context::default();
-        ctx.enable_accesskit();
-        let mut app = App::new(&ctx);
+        let (ctx, mut app) = crate::app::test_ui::app();
         let output = frame(&mut app, &ctx, ToolPanel::Settings, 240.0, vec![]);
         for name in [
             "Search folder path",
@@ -593,9 +591,7 @@ mod tests {
     #[test]
     fn navigator_controls_fit_narrow_panels_in_both_themes() {
         for dark in [false, true] {
-            let ctx = egui::Context::default();
-            ctx.enable_accesskit();
-            let mut app = App::new(&ctx);
+            let (ctx, mut app) = crate::app::test_ui::app();
             crate::appearance::theme(&ctx, dark);
             app.tools.database_scope = "/work/current.db".into();
             app.preferences.row_limit = 10_000;
@@ -648,9 +644,7 @@ mod tests {
 
     #[test]
     fn history_icons_filter_load_without_running_and_delete_only_the_chosen_entry() {
-        let ctx = egui::Context::default();
-        ctx.enable_accesskit();
-        let mut app = App::new(&ctx);
+        let (ctx, mut app) = crate::app::test_ui::app();
         app.tools.database_scope = "/work/current.db".into();
         app.preferences
             .record_query("/work/other.db", "SELECT 'other'", Some(900), false);
@@ -664,11 +658,7 @@ mod tests {
         assert!(app.tools.slow_only);
         let output = frame(&mut app, &ctx, ToolPanel::History, 240.0, vec![]);
         assert_eq!(
-            output
-                .platform_output
-                .accesskit_update
-                .unwrap()
-                .nodes
+            crate::app::test_ui::nodes(&output)
                 .iter()
                 .filter(|(_, n)| n.label() == Some("Load history query"))
                 .count(),
@@ -691,9 +681,7 @@ mod tests {
 
     #[test]
     fn saved_query_icons_keep_sql_and_scope_and_theme_controls_select_their_mode() {
-        let ctx = egui::Context::default();
-        ctx.enable_accesskit();
-        let mut app = App::new(&ctx);
+        let (ctx, mut app) = crate::app::test_ui::app();
         app.tools.database_scope = "/work/current.db".into();
         app.document.sql = "SELECT 'saved'".into();
         app.tools.bookmark_name = "Example".into();

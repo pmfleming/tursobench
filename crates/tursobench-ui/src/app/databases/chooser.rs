@@ -565,17 +565,9 @@ mod tests {
                 })
                 .collect();
             assert_eq!(texts, vec!["history.db", "clip-daemon/history", path]);
-            assert!(
-                output
-                    .platform_output
-                    .accesskit_update
-                    .unwrap()
-                    .nodes
-                    .iter()
-                    .any(|(_, node)| {
-                        node.label() == Some(&format!("{path} · Opened with Turso"))
-                    })
-            );
+            assert!(crate::app::test_ui::nodes(&output).iter().any(|(_, node)| {
+                node.label() == Some(&format!("{path} · Opened with Turso"))
+            }));
         }
     }
 }

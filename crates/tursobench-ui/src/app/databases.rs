@@ -517,6 +517,7 @@ mod tests {
         Path, State, egui, request,
     };
     use crate::app::shell;
+    use crate::app::test_ui::key_event;
     use crate::{discovery::Candidate, storage::RecentDatabase};
     use std::{
         sync::mpsc,
@@ -585,13 +586,7 @@ mod tests {
             ctx,
             [true, false]
                 .into_iter()
-                .map(|pressed| egui::Event::Key {
-                    key,
-                    physical_key: None,
-                    pressed,
-                    repeat: false,
-                    modifiers: egui::Modifiers::NONE,
-                })
+                .map(|pressed| key_event(key, pressed, egui::Modifiers::NONE))
                 .collect(),
             900.0,
         );
@@ -599,8 +594,7 @@ mod tests {
 
     #[test]
     fn search_and_results_support_shelllist_arrow_keys_and_explicit_selection() {
-        let ctx = egui::Context::default();
-        let mut app = App::new(&ctx);
+        let (ctx, mut app) = crate::app::test_ui::app();
         app.path = "/explicit/database.db".into();
 
         app.writable = true;
@@ -640,8 +634,7 @@ mod tests {
 
     #[test]
     fn typing_from_results_preserves_the_native_search_cursor() {
-        let ctx = egui::Context::default();
-        let mut app = App::new(&ctx);
+        let (ctx, mut app) = crate::app::test_ui::app();
         app.discovery_event(found("/work/agenda.db"));
         frame(&mut app, &ctx, vec![], 900.0);
         frame(
@@ -666,8 +659,7 @@ mod tests {
 
     #[test]
     fn keyboard_navigation_reveals_virtualized_results_and_survives_async_updates() {
-        let ctx = egui::Context::default();
-        let mut app = App::new(&ctx);
+        let (ctx, mut app) = crate::app::test_ui::app();
         for i in 0..100 {
             app.discovery_event(found(&format!("/work/{i:03}.db")));
         }
@@ -699,8 +691,7 @@ mod tests {
     }
     #[test]
     fn typing_and_enter_in_one_frame_selects_the_new_filtered_result() {
-        let ctx = egui::Context::default();
-        let mut app = App::new(&ctx);
+        let (ctx, mut app) = crate::app::test_ui::app();
         app.discovery_event(found("/work/agenda.db"));
         app.discovery_event(found("/work/clipboard.db"));
         frame(&mut app, &ctx, vec![], 900.0);
@@ -709,13 +700,7 @@ mod tests {
             &ctx,
             vec![
                 egui::Event::Text("clipboard".into()),
-                egui::Event::Key {
-                    key: egui::Key::Enter,
-                    physical_key: None,
-                    pressed: true,
-                    repeat: false,
-                    modifiers: egui::Modifiers::NONE,
-                },
+                key_event(egui::Key::Enter, true, egui::Modifiers::NONE),
             ],
             900.0,
         );
@@ -752,8 +737,7 @@ mod tests {
 
     #[test]
     fn incremental_discoveries_never_replace_paths_consent_or_row_order() {
-        let ctx = egui::Context::default();
-        let mut app = App::new(&ctx);
+        let (_ctx, mut app) = crate::app::test_ui::app();
         assert!(app.databases.job.is_none());
         app.path = "/explicit/command-line.db".into();
 
@@ -780,8 +764,7 @@ mod tests {
 
     #[test]
     fn stale_entries_aliases_and_forgetting_do_not_reappear_from_pending_events() {
-        let ctx = egui::Context::default();
-        let mut app = App::new(&ctx);
+        let (_ctx, mut app) = crate::app::test_ui::app();
         app.discovery_event(found("/work/a.db"));
         app.discovery_event(found("/work/b.db"));
         app.discovery_event(Event::Checked("/work/a.db".into(), Availability::Missing));
@@ -808,8 +791,7 @@ mod tests {
     }
     #[test]
     fn application_exclusions_remove_old_discoveries_but_keep_deliberate_open_history() {
-        let ctx = egui::Context::default();
-        let mut app = App::new(&ctx);
+        let (_ctx, mut app) = crate::app::test_ui::app();
         app.discovery_event(found("/data/custom-browser/History"));
         app.discovery_event(found("/data/custom-browser/Cookies"));
         app.tools.database_scope = "/data/custom-browser/History".into();
@@ -831,8 +813,7 @@ mod tests {
 
     #[test]
     fn chooser_filters_clicks_and_keyboard_focus_without_opening_a_native_dialog() {
-        let ctx = egui::Context::default();
-        let mut app = App::new(&ctx);
+        let (ctx, mut app) = crate::app::test_ui::app();
         app.discovery_event(found("/work/agenda.db"));
         app.discovery_event(found("/other/clipboard.db"));
         app.document.ui.nav = shell::Nav::Result;
@@ -884,8 +865,7 @@ mod tests {
         let mut header = [0; 100];
         header[..16].copy_from_slice(b"SQLite format 3\0");
         std::fs::write(&database, header).unwrap();
-        let ctx = egui::Context::default();
-        let mut app = App::new(&ctx);
+        let (ctx, mut app) = crate::app::test_ui::app();
         app.path = "selected.db".into();
 
         app.writable = true;
@@ -922,8 +902,7 @@ mod tests {
 
     #[test]
     fn roots_are_normalized_exclusions_win_and_only_successful_opens_are_recorded() {
-        let ctx = egui::Context::default();
-        let mut app = App::new(&ctx);
+        let (_ctx, mut app) = crate::app::test_ui::app();
         app.add_search_folder("relative".into());
         app.add_search_folder("/".into());
         assert!(app.preferences.discovery.roots.is_empty());
@@ -954,8 +933,7 @@ mod tests {
     #[test]
     fn cancellation_retains_the_job_until_it_acknowledges_completion() {
         let temp = tempfile::tempdir().unwrap();
-        let ctx = egui::Context::default();
-        let mut app = App::new(&ctx);
+        let (ctx, mut app) = crate::app::test_ui::app();
         app.start_discovery(&ctx, Some(temp.path().into()));
         app.databases.cancel();
         app.start_discovery(&ctx, Some(temp.path().join("replacement")));

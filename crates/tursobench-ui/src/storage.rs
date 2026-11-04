@@ -387,8 +387,8 @@ impl Store {
         self.flush();
     }
     pub fn flush(&mut self) {
-        if let Some(prefs) = self.pending.take() {
-            match self.tx.as_ref().unwrap().try_send(prefs) {
+        if let (Some(tx), Some(prefs)) = (&self.tx, self.pending.take()) {
+            match tx.try_send(prefs) {
                 Ok(()) => {}
                 Err(TrySendError::Full(p)) => self.pending = Some(p),
                 Err(TrySendError::Disconnected(_)) => {}
@@ -399,10 +399,11 @@ impl Store {
 impl Drop for Store {
     fn drop(&mut self) {
         // Drain the last coalesced snapshot and close the database before exit.
-        if let Some(prefs) = self.pending.take() {
-            let _ = self.tx.as_ref().unwrap().send(prefs);
+        if let Some(tx) = self.tx.take()
+            && let Some(prefs) = self.pending.take()
+        {
+            let _ = tx.send(prefs);
         }
-        self.tx.take();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -424,7 +425,7 @@ fn decode(payload: &str) -> Result<Preferences, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{CachedDatabase, MapLayout, Path, PathBuf, Preferences, Store, decode};
     fn read(path: &Path) -> Preferences {
         let db = tursobench_db::preferences::Store::open(path).unwrap();
         decode(db.payload().unwrap_or("{}")).unwrap()

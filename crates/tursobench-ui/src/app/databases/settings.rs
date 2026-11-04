@@ -48,90 +48,112 @@ impl App {
         });
         ui.separator();
 
-        ui.push_id("search-folders", |ui| {
-            let roots = super::search_roots(&self.preferences.discovery);
-            section_heading(ui, "Search folders", roots.len());
-            let (add, browse) = folder_input(
-                ui,
-                &mut self.databases.folder_input,
-                "Search folder path",
-                "Add and search folder",
-                Some(self.picker.is_none() && self.databases.job.is_none()),
-            );
-            if browse {
-                self.browse_search_folder(ui.ctx());
-            }
-            if add {
-                self.add_search_folder(PathBuf::from(&self.databases.folder_input));
-            }
-            let mut remove = None;
-            egui::ScrollArea::vertical()
-                .id_salt("search-folder-list")
-                .max_height(180.0)
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    for root in &roots {
-                        ui.push_id(&root.path, |ui| {
-                            if folder_row(ui, &root.path, "Remove search folder") {
-                                remove = Some(root.path.clone());
-                            }
-                        });
-                    }
-                });
-            if let Some(path) = remove {
-                self.remove_search_folder(path);
-            }
-        });
+        ui.push_id("search-folders", |ui| self.search_folders_ui(ui));
         ui.add_space(6.0);
         ui.separator();
-        ui.push_id("excluded-folders", |ui| {
-            section_heading(ui, "Excluded", self.preferences.discovery.excluded.len());
-            let (add, _) = folder_input(
-                ui,
-                &mut self.databases.exclude_input,
-                "Excluded folder path",
-                "Exclude folder",
-                None,
-            );
-            if add {
-                self.add_exclusion(PathBuf::from(&self.databases.exclude_input));
-            }
-            let mut remove = None;
-            for (index, path) in self.preferences.discovery.excluded.iter().enumerate() {
-                ui.push_id(path, |ui| {
-                    if folder_row(ui, path, "Remove exclusion") {
-                        remove = Some(index);
-                    }
-                });
-            }
-            if let Some(index) = remove {
-                self.preferences.discovery.excluded.remove(index);
-                self.store.save(&self.preferences);
-                self.databases.message = Some("Exclusion removed.".into());
-            }
-        });
-
+        ui.push_id("excluded-folders", |ui| self.excluded_folders_ui(ui));
         if let Some(summary) = &self.databases.summary {
-            ui.separator();
-            ui.horizontal_wrapped(|ui| {
-                metric(ui, Icon::Database, summary.probes, "Headers checked");
-                metric(ui, Icon::Folder, summary.directories, "Folders searched");
-                if summary.unavailable > 0 {
-                    metric(ui, Icon::Lock, summary.unavailable, "Unavailable locations");
-                }
-                if summary.skipped > 0 {
-                    metric(ui, Icon::Filter, summary.skipped, "Skipped locations");
-                }
-                if summary.limited {
-                    ui.colored_label(ui.visuals().warn_fg_color, "Limit reached");
-                } else if summary.cancelled {
-                    ui.weak("Stopped");
-                }
-            });
-            if let Some(error) = &summary.error {
-                ui.colored_label(ui.visuals().warn_fg_color, error);
+            discovery_summary(ui, summary);
+        }
+    }
+
+    fn search_folders_ui(&mut self, ui: &mut egui::Ui) {
+        let mut roots = super::search_roots(&self.preferences.discovery);
+        section_heading(ui, "Search folders", roots.len());
+        let (add, browse) = folder_input(
+            ui,
+            &mut self.databases.folder_input,
+            "Search folder path",
+            "Add and search folder",
+            Some(self.picker.is_none() && self.databases.job.is_none()),
+        );
+        if browse {
+            self.browse_search_folder(ui.ctx());
+        }
+        if add {
+            self.add_search_folder(PathBuf::from(&self.databases.folder_input));
+        }
+        let remove = egui::ScrollArea::vertical()
+            .id_salt("search-folder-list")
+            .max_height(180.0)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                folder_rows(
+                    ui,
+                    roots.iter().map(|r| r.path.as_path()),
+                    "Remove search folder",
+                )
+            })
+            .inner;
+        if let Some(index) = remove {
+            self.remove_search_folder(roots.remove(index).path);
+        }
+    }
+
+    fn excluded_folders_ui(&mut self, ui: &mut egui::Ui) {
+        let excluded = &self.preferences.discovery.excluded;
+        section_heading(ui, "Excluded", excluded.len());
+        let (add, _) = folder_input(
+            ui,
+            &mut self.databases.exclude_input,
+            "Excluded folder path",
+            "Exclude folder",
+            None,
+        );
+        if add {
+            self.add_exclusion(PathBuf::from(&self.databases.exclude_input));
+        }
+        if let Some(index) = folder_rows(
+            ui,
+            self.preferences
+                .discovery
+                .excluded
+                .iter()
+                .map(PathBuf::as_path),
+            "Remove exclusion",
+        ) {
+            self.preferences.discovery.excluded.remove(index);
+            self.store.save(&self.preferences);
+            self.databases.message = Some("Exclusion removed.".into());
+        }
+    }
+}
+
+fn folder_rows<'a>(
+    ui: &mut egui::Ui,
+    paths: impl Iterator<Item = &'a Path>,
+    action: &str,
+) -> Option<usize> {
+    let mut remove = None;
+    for (index, path) in paths.enumerate() {
+        if ui.push_id(path, |ui| folder_row(ui, path, action)).inner {
+            remove = Some(index);
+        }
+    }
+    remove
+}
+
+fn discovery_summary(ui: &mut egui::Ui, summary: &crate::discovery::Summary) {
+    ui.separator();
+    ui.horizontal_wrapped(|ui| {
+        metric(ui, Icon::Database, summary.probes, "Headers checked");
+        metric(ui, Icon::Folder, summary.directories, "Folders searched");
+        for (icon, count, name) in [
+            (Icon::Lock, summary.unavailable, "Unavailable locations"),
+            (Icon::Filter, summary.skipped, "Skipped locations"),
+        ] {
+            if count > 0 {
+                metric(ui, icon, count, name);
             }
         }
+        if summary.limited {
+            ui.colored_label(ui.visuals().warn_fg_color, "Limit reached");
+        } else if summary.cancelled {
+            ui.weak("Stopped");
+        }
+    });
+    if let Some(error) = &summary.error {
+        ui.colored_label(ui.visuals().warn_fg_color, error);
     }
 }
 
@@ -231,49 +253,29 @@ fn metric(ui: &mut egui::Ui, icon: Icon, count: usize, name: &str) {
 #[cfg(test)]
 mod tests {
     use super::{App, PathBuf, egui};
-    use std::collections::HashMap;
+    use crate::app::test_ui::{control, key_event, pointer};
 
     fn frame(
         app: &mut App,
         ctx: &egui::Context,
         events: Vec<egui::Event>,
         width: f32,
-    ) -> HashMap<String, egui::Rect> {
-        let output = crate::app::test_ui::render(ctx, egui::vec2(width, 600.0), events, |ui| {
+    ) -> egui::FullOutput {
+        crate::app::test_ui::render(ctx, egui::vec2(width, 900.0), events, |ui| {
             app.discovery_settings_ui(ui)
-        });
-        output
-            .platform_output
-            .accesskit_update
-            .unwrap()
-            .nodes
-            .iter()
-            .filter_map(|(_, node)| {
-                let label = node.label()?;
-                let bounds = node.bounds()?;
-                Some((
-                    label.to_owned(),
-                    egui::Rect::from_min_max(
-                        egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
-                        egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
-                    ),
-                ))
-            })
-            .collect()
+        })
     }
 
     fn click(app: &mut App, ctx: &egui::Context, rect: egui::Rect) {
         let pos = rect.center();
         for pressed in [true, false] {
-            frame(app, ctx, crate::app::test_ui::pointer(pos, pressed), 420.0);
+            frame(app, ctx, pointer(pos, pressed), 420.0);
         }
     }
 
     #[test]
-    fn default_folders_are_listed_and_removal_survives_preference_reload() {
-        let ctx = egui::Context::default();
-        ctx.enable_accesskit();
-        let mut app = App::new(&ctx);
+    fn folder_controls_add_remove_and_restore_saved_search_policy() {
+        let (ctx, mut app) = crate::app::test_ui::app();
         let roots = super::super::search_roots(&app.preferences.discovery);
         assert!(!roots.is_empty());
         frame(&mut app, &ctx, vec![], 420.0);
@@ -285,7 +287,7 @@ mod tests {
         app.preferences.discovery.removed_roots =
             roots.iter().skip(1).map(|r| r.path.clone()).collect();
         let nodes = frame(&mut app, &ctx, vec![], 420.0);
-        click(&mut app, &ctx, nodes["Remove search folder"]);
+        click(&mut app, &ctx, control(&nodes, "Remove search folder"));
         app.preferences.discovery.normalize();
         let saved = serde_json::to_string(&app.preferences.discovery).unwrap();
         let restored = serde_json::from_str(&saved).unwrap();
@@ -297,19 +299,13 @@ mod tests {
         assert_eq!(restored.len(), 1);
         assert_eq!(restored[0].path, roots[0].path);
         assert!(restored[0].explicit);
-    }
 
-    #[test]
-    fn folder_controls_support_keyboard_addition_and_pointer_removal() {
-        let ctx = egui::Context::default();
-        ctx.enable_accesskit();
-        let mut app = App::new(&ctx);
+        let roots = super::super::search_roots(&app.preferences.discovery);
+        app.preferences
+            .discovery
+            .removed_roots
+            .extend(roots.into_iter().map(|r| r.path));
         app.preferences.discovery.roots.clear();
-        app.preferences.discovery.removed_roots =
-            super::super::search_roots(&app.preferences.discovery)
-                .into_iter()
-                .map(|r| r.path)
-                .collect();
         app.preferences.discovery.excluded.clear();
         app.path = "/work/selected.db".into();
 
@@ -320,26 +316,14 @@ mod tests {
             ("Excluded folder path", "/work/projects/private"),
         ] {
             let nodes = frame(&mut app, &ctx, vec![], 420.0);
-            click(&mut app, &ctx, nodes[input]);
+            click(&mut app, &ctx, control(&nodes, input));
             frame(
                 &mut app,
                 &ctx,
                 vec![
                     egui::Event::Text(path.into()),
-                    egui::Event::Key {
-                        key: egui::Key::Enter,
-                        physical_key: None,
-                        pressed: true,
-                        repeat: false,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                    egui::Event::Key {
-                        key: egui::Key::Enter,
-                        physical_key: None,
-                        pressed: false,
-                        repeat: false,
-                        modifiers: egui::Modifiers::NONE,
-                    },
+                    key_event(egui::Key::Enter, true, egui::Modifiers::NONE),
+                    key_event(egui::Key::Enter, false, egui::Modifiers::NONE),
                 ],
                 420.0,
             );
@@ -356,7 +340,7 @@ mod tests {
         assert!(app.databases.exclude_input.is_empty());
         for action in ["Remove search folder", "Remove exclusion"] {
             let nodes = frame(&mut app, &ctx, vec![], 420.0);
-            click(&mut app, &ctx, nodes[action]);
+            click(&mut app, &ctx, control(&nodes, action));
         }
         assert!(app.preferences.discovery.roots.is_empty());
         assert!(app.preferences.discovery.excluded.is_empty());
@@ -390,13 +374,41 @@ mod tests {
                     "Remove search folder",
                     "Remove exclusion",
                 ] {
-                    let rect = nodes
-                        .get(name)
-                        .unwrap_or_else(|| panic!("Missing accessible name: {name}"));
+                    let rect = control(&nodes, name);
                     assert!(
                         rect.left() >= 0.0 && rect.right() <= width,
                         "{name}: {rect:?} at {width}"
                     );
+                }
+            }
+            for (limited, cancelled, status) in
+                [(false, true, "Stopped"), (true, true, "Limit reached")]
+            {
+                app.databases.summary = Some(crate::discovery::Summary {
+                    probes: 7,
+                    directories: 3,
+                    unavailable: 2,
+                    skipped: 1,
+                    limited,
+                    cancelled,
+                    error: Some("Unreadable search root".into()),
+                    ..Default::default()
+                });
+                let output = frame(&mut app, &ctx, vec![], 420.0);
+                for name in [
+                    "Headers checked: 7",
+                    "Folders searched: 3",
+                    "Unavailable locations: 2",
+                    "Skipped locations: 1",
+                ] {
+                    assert!(
+                        crate::app::test_ui::nodes(&output)
+                            .iter()
+                            .any(|(_, node)| node.label() == Some(name))
+                    );
+                }
+                for expected in [status, "Unreadable search root"] {
+                    assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == expected)));
                 }
             }
         }

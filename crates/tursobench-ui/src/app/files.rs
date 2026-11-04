@@ -219,8 +219,7 @@ mod tests {
 
     #[test]
     fn pending_picker_blocks_opening_the_previous_path() {
-        let ctx = egui::Context::default();
-        let mut app = App::new(&ctx);
+        let (ctx, mut app) = crate::app::test_ui::app();
         app.path = "previous.db".into();
 
         let (tx, rx) = mpsc::sync_channel(1);

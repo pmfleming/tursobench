@@ -126,15 +126,14 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{DatabaseKind, Inspection, mpsc};
 
     #[test]
     fn late_results_cannot_classify_another_selection_or_transfer_its_override() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("current.db");
         crate::test_support::create(&path, &["CREATE TABLE example(id INTEGER)"]);
-        let ctx = egui::Context::default();
-        let mut app = App::new(&ctx);
+        let (ctx, mut app) = crate::app::test_ui::app();
         let (tx, rx) = mpsc::sync_channel(1);
         app.databases.inspection = Inspection {
             path: "previous.db".into(),

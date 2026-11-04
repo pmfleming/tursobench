@@ -1,8 +1,6 @@
 pub(super) const ROW_HEIGHT: f32 = 29.0;
 pub(super) const STATUS_HEIGHT: f32 = ROW_HEIGHT + 2.0;
-pub(super) const GUTTER_WIDTH: f32 = 44.0;
-pub(super) const CELL_INSET: f32 = 8.0;
-pub(super) const CONTENT_INSET: f32 = GUTTER_WIDTH + CELL_INSET;
+use super::presentation::{CELL_INSET, CONTENT_INSET, GUTTER_WIDTH};
 pub(super) const HEADER_HEIGHT: f32 = 42.0;
 use super::{
     App, View,
@@ -629,10 +627,7 @@ impl App {
         });
         if let Some(i) = sort
             && self.document.view == View::Browse
-            && self.ready
-            && !self.closing
-            && !self.has_drafts()
-            && self.commit_ticket.is_none()
+            && self.requests_enabled()
             && let Some(b) = self.document.browse.as_mut()
         {
             if ui.input(|i| i.modifiers.shift) {

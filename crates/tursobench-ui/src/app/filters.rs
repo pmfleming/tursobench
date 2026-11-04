@@ -370,8 +370,7 @@ impl App {
         let (Some(table), Some(browse)) = (&self.document.table, &self.document.browse) else {
             return;
         };
-        let enabled =
-            !self.has_drafts() && self.commit_ticket.is_none() && self.ready && !self.closing;
+        let enabled = self.requests_enabled();
         let action = ui
             .add_enabled_ui(enabled, |ui| {
                 ui.horizontal(|ui| {

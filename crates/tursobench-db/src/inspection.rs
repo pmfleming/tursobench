@@ -224,16 +224,28 @@ pub(crate) fn reference_condition(
         let target = target
             .as_ref()
             .ok_or_else(|| Failure::input("Unresolved parent key"))?;
-        if !child
+        let (ct, pt) = child
             .columns
             .iter()
-            .any(|c| c.name.eq_ignore_ascii_case(source))
-            || !parent
-                .columns
-                .iter()
-                .any(|c| c.name.eq_ignore_ascii_case(target))
+            .find(|c| c.name.eq_ignore_ascii_case(source))
+            .zip(
+                parent
+                    .columns
+                    .iter()
+                    .find(|c| c.name.eq_ignore_ascii_case(target)),
+            )
+            .ok_or_else(|| Failure::input("Relationship columns no longer exist"))?;
+        if key.columns.len() == 1
+            && parent.binary_collations
+            && ct.declared_type.eq_ignore_ascii_case(&pt.declared_type)
         {
-            return Err(Failure::input("Relationship columns no longer exist"));
+            return Ok(format!(
+                "c.{} IN (SELECT p.{} FROM {} AS p WHERE p.{} IS ?1)",
+                quote_identifier(source),
+                quote_identifier(target),
+                quote_identifier(&parent.name),
+                quote_identifier(target)
+            ));
         }
         let target = quote_identifier(target);
         predicates.push(format!(
@@ -243,29 +255,6 @@ pub(crate) fn reference_condition(
         ));
     }
 
-    if key.columns.len() == 1 && parent.binary_collations {
-        let (source, target) = &key.columns[0];
-        let target = target.as_ref().unwrap();
-        let ct = child
-            .columns
-            .iter()
-            .find(|c| c.name.eq_ignore_ascii_case(source))
-            .unwrap();
-        let pt = parent
-            .columns
-            .iter()
-            .find(|c| c.name.eq_ignore_ascii_case(target))
-            .unwrap();
-        if ct.declared_type.eq_ignore_ascii_case(&pt.declared_type) {
-            return Ok(format!(
-                "c.{} IN (SELECT p.{} FROM {} AS p WHERE p.{} IS ?1)",
-                quote_identifier(source),
-                quote_identifier(target),
-                quote_identifier(&parent.name),
-                quote_identifier(target)
-            ));
-        }
-    }
     Ok(format!(
         "EXISTS (SELECT 1 FROM {} AS p WHERE {})",
         quote_identifier(&parent.name),

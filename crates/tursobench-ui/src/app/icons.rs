@@ -276,37 +276,6 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
         );
     };
     use Icon::*;
-    let asset = match icon {
-        Run => Some(include_str!("../../assets/icons/run.svg")),
-        RunAll => Some(include_str!("../../assets/icons/run-all.svg")),
-        CloneRecord => Some(include_str!("../../assets/icons/clone-record.svg")),
-        BeginTransaction => Some(include_str!("../../assets/icons/begin-transaction.svg")),
-        CommitTransaction => Some(include_str!("../../assets/icons/commit-transaction.svg")),
-        Bytecode => Some(include_str!("../../assets/icons/bytecode.svg")),
-        ReviewEdits => Some(include_str!("../../assets/icons/review-edits.svg")),
-        CopyValue => Some(include_str!("../../assets/icons/copy-value.svg")),
-        FitColumns => Some(include_str!("../../assets/icons/fit-columns.svg")),
-        _ => None,
-    };
-    if let Some(svg) = asset {
-        // These bundled vector images deliberately use only polylines. Render
-        // the asset geometry directly so currentColor follows the desktop theme
-        // at any scale, without rasterisation or a second set of icon drawings.
-        for part in svg.split("points=\"").skip(1) {
-            let points: Vec<_> = part
-                .split('"')
-                .next()
-                .unwrap_or_default()
-                .split_whitespace()
-                .filter_map(|pair| {
-                    let (x, y) = pair.split_once(',')?;
-                    Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?))
-                })
-                .collect();
-            line(&points);
-        }
-        return;
-    }
     match icon {
         Back => {
             line(&[(19., 12.), (5., 12.)]);
@@ -591,8 +560,21 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
             line(&[(11., 12.), (21., 2.)]);
             line(&[(16., 7.), (20., 11.)]);
         }
-        Run | RunAll | CloneRecord | BeginTransaction | CommitTransaction | Bytecode
-        | ReviewEdits | CopyValue | FitColumns => unreachable!("asset rendered above"),
+        Run => svg_lines(include_str!("../../assets/icons/run.svg"), line),
+        RunAll => svg_lines(include_str!("../../assets/icons/run-all.svg"), line),
+        CloneRecord => svg_lines(include_str!("../../assets/icons/clone-record.svg"), line),
+        BeginTransaction => svg_lines(
+            include_str!("../../assets/icons/begin-transaction.svg"),
+            line,
+        ),
+        CommitTransaction => svg_lines(
+            include_str!("../../assets/icons/commit-transaction.svg"),
+            line,
+        ),
+        Bytecode => svg_lines(include_str!("../../assets/icons/bytecode.svg"), line),
+        ReviewEdits => svg_lines(include_str!("../../assets/icons/review-edits.svg"), line),
+        CopyValue => svg_lines(include_str!("../../assets/icons/copy-value.svg"), line),
+        FitColumns => svg_lines(include_str!("../../assets/icons/fit-columns.svg"), line),
         Link => {
             line(&[
                 (10., 15.),
@@ -613,6 +595,25 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
                 (12., 18.),
             ]);
         }
+    }
+}
+
+fn svg_lines(svg: &str, line: impl Fn(&[(f32, f32)])) {
+    // These bundled vector images deliberately use only polylines. Render
+    // the asset geometry directly so currentColor follows the desktop theme
+    // at any scale, without rasterisation or a second set of icon drawings.
+    for part in svg.split("points=\"").skip(1) {
+        let points: Vec<_> = part
+            .split('"')
+            .next()
+            .unwrap_or_default()
+            .split_whitespace()
+            .filter_map(|pair| {
+                let (x, y) = pair.split_once(',')?;
+                Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?))
+            })
+            .collect();
+        line(&points);
     }
 }
 

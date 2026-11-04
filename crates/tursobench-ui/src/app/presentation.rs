@@ -3,6 +3,9 @@ use eframe::egui;
 
 pub(super) const BAR_INSET: f32 = 8.0;
 pub(super) const BAR_SPACING: f32 = 3.0;
+pub(super) const GUTTER_WIDTH: f32 = 44.0;
+pub(super) const CELL_INSET: f32 = 8.0;
+pub(super) const CONTENT_INSET: f32 = GUTTER_WIDTH + CELL_INSET;
 
 pub(super) fn chip(ui: &mut egui::Ui, text: &str, color: egui::Color32) -> egui::Response {
     let tokens = crate::appearance::Tokens::of(ui.ctx());

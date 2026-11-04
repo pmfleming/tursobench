@@ -109,7 +109,7 @@ impl Header<'_> {
         if highlighted {
             painter.rect_filled(rect, 2.0, ui.visuals().selection.bg_fill);
         }
-        let mut left = rect.left() + super::grid::CELL_INSET;
+        let mut left = rect.left() + super::presentation::CELL_INSET;
         for (show, icon) in [
             (self.primary_key > 0, Icon::Key),
             (self.foreign, Icon::Link),
@@ -142,7 +142,7 @@ impl Header<'_> {
             ),
             (
                 self.declared_type().unwrap_or("VALUE"),
-                rect.min + egui::vec2(super::grid::CELL_INSET, 31.0),
+                rect.min + egui::vec2(super::presentation::CELL_INSET, 31.0),
                 crate::appearance::monospace(ui.ctx(), 9.5),
                 tokens.faint,
                 0.0,

@@ -1,11 +1,17 @@
 use super::{
     App, View, context, egui, shell,
-    test_ui::{control, control_from, pointer_button},
+    test_ui::{control, control_from, control_prefix, inspect_selected, key_event, pointer_button},
     tiling, workspace,
 };
 use std::time::{Duration, Instant};
 use tursobench_core::{Budget, Event, EventKind, TransactionState, Value};
 use tursobench_db::{Operation, Request};
+fn assert_retained(app: &App, row: usize, col: usize, value: Value) {
+    assert_eq!(
+        app.document.result.rows[row][col], value,
+        "row {row}, column {col}"
+    );
+}
 fn assert_staged(app: &App, row: usize, col: usize, value: Value) {
     assert_eq!(
         app.document
@@ -15,17 +21,6 @@ fn assert_staged(app: &App, row: usize, col: usize, value: Value) {
         Some(&value),
         "row {row}, column {col}"
     );
-}
-fn inspect_selected(app: &mut App, ctx: &egui::Context) {
-    let start = Instant::now();
-    loop {
-        app.poll_database_inspection(ctx);
-        if app.databases.inspection.ready(&app.path) {
-            break;
-        }
-        assert!(start.elapsed() < Duration::from_secs(5));
-        std::thread::sleep(Duration::from_millis(2));
-    }
 }
 fn wait(app: &mut App, ctx: &egui::Context) {
     let start = Instant::now();
@@ -57,8 +52,7 @@ fn wait_closed(app: &mut App, ctx: &egui::Context) {
     }
 }
 fn connected(path: &std::path::Path, writable: bool) -> (egui::Context, App) {
-    let ctx = egui::Context::default();
-    let mut app = App::new(&ctx);
+    let (ctx, mut app) = crate::app::test_ui::app();
     app.path = path.to_string_lossy().into_owned();
 
     app.writable = writable;
@@ -74,15 +68,6 @@ fn fixture(statements: &[&str], writable: bool) -> (tempfile::TempDir, egui::Con
     let (ctx, app) = connected(&path, writable);
     (dir, ctx, app)
 }
-fn key_event(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
-    egui::Event::Key {
-        key,
-        physical_key: None,
-        pressed: true,
-        repeat: false,
-        modifiers,
-    }
-}
 fn click(app: &mut App, ctx: &egui::Context, pos: egui::Pos2) {
     for pressed in [true, false] {
         frame(
@@ -93,7 +78,7 @@ fn click(app: &mut App, ctx: &egui::Context, pos: egui::Pos2) {
     }
 }
 fn press_key(app: &mut App, ctx: &egui::Context, key: egui::Key, modifiers: egui::Modifiers) {
-    frame(app, ctx, vec![key_event(key, modifiers)]);
+    frame(app, ctx, vec![key_event(key, true, modifiers)]);
 }
 fn frame_at(
     app: &mut App,
@@ -202,10 +187,7 @@ fn external_changes_refresh_clean_tables_keep_sql_results_and_preserve_drafts() 
         std::thread::sleep(Duration::from_millis(5));
     }
     assert_staged(&app, 0, 1, Value::Text("draft".into()));
-    assert_eq!(
-        app.document.result.rows[0][1],
-        Value::Text("external".into())
-    );
+    assert_retained(&app, 0, 1, Value::Text("external".into()));
     crate::test_support::run(c.execute("CREATE TABLE added(id INTEGER)", ())).unwrap();
     let start = Instant::now();
     while !app.schema.iter().any(|t| t.name == "added") {
@@ -255,7 +237,7 @@ fn byte_limited_pages_continue_and_reverse_without_a_false_end() {
         "{}",
         app.document.tools.pages.error
     );
-    assert_eq!(app.document.result.rows[0][0], Value::Integer(1));
+    assert_retained(&app, 0, 0, Value::Integer(1));
     app.close();
     wait_closed(&mut app, &ctx);
 }
@@ -493,10 +475,7 @@ fn keyless_byte_limited_pages_and_deferred_sort_values_can_scroll_back() {
             );
             let offset = app.document.browse.as_ref().unwrap().offset;
             assert!(offset < before);
-            assert_eq!(
-                app.document.result.rows[0][0],
-                Value::Integer(offset as i64 + 1)
-            );
+            assert_retained(&app, 0, 0, Value::Integer(offset as i64 + 1));
         }
         app.close();
         wait_closed(&mut app, &ctx);
@@ -566,10 +545,10 @@ fn independent_documents_route_results_and_keep_filters_drafts_and_sql() {
         app.document.id, b_id,
         "background completions must not change focus"
     );
-    assert_eq!(app.document.result.rows[0][1], Value::Text("beta".into()));
+    assert_retained(&app, 0, 1, Value::Text("beta".into()));
     app.switch_document(a_id);
     assert_eq!(app.document.result.current, Some(a_ticket));
-    assert_eq!(app.document.result.rows[0][1], Value::Text("alpha".into()));
+    assert_retained(&app, 0, 1, Value::Text("alpha".into()));
     assert_eq!(app.document.sql, "SELECT 'draft a'");
     assert_eq!(app.document.filter, "body = alpha");
     app.stage_cell(0, 1, Value::Text("staged alpha".into()));
@@ -659,8 +638,7 @@ fn failed_open_after_close_can_retry_a_valid_database() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("valid.db");
     crate::test_support::create(&path, &["CREATE TABLE example(id INTEGER PRIMARY KEY)"]);
-    let ctx = egui::Context::default();
-    let mut app = App::new(&ctx);
+    let (ctx, mut app) = crate::app::test_ui::app();
     let disappearing = dir.path().join("missing.db");
     crate::test_support::create(&disappearing, &["CREATE TABLE example(id INTEGER)"]);
     app.set_database_path(disappearing.to_str().unwrap().into());
@@ -706,8 +684,7 @@ fn failed_open_completes_pending_exit_after_any_export() {
     }
     for pending_export in [false, true] {
         let dir = tempfile::tempdir().unwrap();
-        let ctx = egui::Context::default();
-        let mut app = App::new(&ctx);
+        let (ctx, mut app) = crate::app::test_ui::app();
         let disappearing = dir.path().join("missing.db");
         crate::test_support::create(&disappearing, &["CREATE TABLE example(id INTEGER)"]);
         app.set_database_path(disappearing.to_str().unwrap().into());
@@ -861,10 +838,10 @@ fn reverted_empty_batch_cannot_carry_identity_to_another_table() {
     assert_eq!(app.document.drafts.as_ref().unwrap().table.name, "b");
     app.commit_drafts();
     wait(&mut app, &ctx);
-    assert_eq!(app.document.result.rows[0][1], Value::Text("only b".into()));
+    assert_retained(&app, 0, 1, Value::Text("only b".into()));
     app.browse_table("a".into());
     wait(&mut app, &ctx);
-    assert_eq!(app.document.result.rows[0][1], Value::Text("same".into()));
+    assert_retained(&app, 0, 1, Value::Text("same".into()));
     app.document.sql = "BEGIN".into();
     app.run_sql();
     wait(&mut app, &ctx);
@@ -897,7 +874,7 @@ fn reverted_empty_batch_cannot_carry_identity_to_another_table() {
     assert!(app.status.contains("Copied retained"));
     app.browse_table("a".into());
     assert_eq!(app.document.table.as_ref().unwrap().name, "a");
-    assert_eq!(app.document.result.rows[0][1], Value::Text("same".into()));
+    assert_retained(&app, 0, 1, Value::Text("same".into()));
     app.document.ui.nav = shell::Nav::Result;
     frame(&mut app, &ctx, vec![]);
     assert!(app.session.is_none());
@@ -1014,7 +991,7 @@ fn click_inspect_stage_no_write_failed_commit_retains_drafts() {
     assert!(app.has_drafts());
     assert!(app.commit_ticket.is_none());
     // Inspecting, rendering and staging produced no SQL request or row mutation.
-    assert_eq!(app.document.result.rows[0][0], Value::Integer(1));
+    assert_retained(&app, 0, 0, Value::Integer(1));
     frame(&mut app, &ctx, vec![]);
     let s = app.session.as_ref().unwrap();
     app.sequence += 1;
@@ -1048,7 +1025,7 @@ fn click_inspect_stage_no_write_failed_commit_retains_drafts() {
     app.commit_drafts();
     wait(&mut app, &ctx);
     assert!(!app.has_drafts());
-    assert_eq!(app.document.result.rows[1][0], Value::Integer(3));
+    assert_retained(&app, 1, 0, Value::Integer(3));
     // An ambiguous acknowledgement must retain the owning view's draft and
     // prevent both another commit and further staging, even in the background.
     app.stage_cell(0, 1, Value::Text("uncertain draft".into()));
@@ -1145,7 +1122,7 @@ fn selection_named_history_metadata_reference_back_and_tools_render() {
     let cursor = app.document.sql[..byte].chars().count();
     app.document.tools.selection = cursor..cursor;
     app.document.params = r#"{":name":{"type":"Text","value":"bound-only-secret"}}"#.into();
-    app.run_selection();
+    app.run_current(None);
     wait(&mut app, &ctx);
     assert_eq!(
         app.document.result.rows,
@@ -1192,7 +1169,6 @@ fn overview_and_table_views_preserve_camera_and_rejects_navigation_with_drafts()
         true,
     );
     assert_eq!(app.document.ui.nav, shell::Nav::Overview);
-    assert_eq!(app.document.ui.nav, shell::Nav::Overview);
     assert_eq!(app.ui.diagram.data.as_ref().unwrap().tables.len(), 2);
     frame(&mut app, &ctx, vec![]);
     // Explicit user camera choices survive opening/resizing other views.
@@ -1201,18 +1177,12 @@ fn overview_and_table_views_preserve_camera_and_rejects_navigation_with_drafts()
     app.browse_table("a".into());
     wait(&mut app, &ctx);
     assert_eq!(app.document.ui.nav, shell::Nav::Table);
-    assert_eq!(
-        app.document.result.rows[0][1],
-        Value::Text("original".into())
-    );
+    assert_retained(&app, 0, 1, Value::Text("original".into()));
     let retained_ticket = app.document.result.current;
     app.refresh_catalog();
     wait(&mut app, &ctx);
     assert_eq!(app.document.result.current, retained_ticket);
-    assert_eq!(
-        app.document.result.rows[0][1],
-        Value::Text("original".into())
-    );
+    assert_retained(&app, 0, 1, Value::Text("original".into()));
     for view in [
         shell::TableView::Data,
         shell::TableView::Structure,
@@ -1408,8 +1378,7 @@ fn navigation_restores_typed_browse_context_and_query_return_without_dropping_dr
 
 #[test]
 fn settings_shortcut_uses_the_left_panel_before_a_database_is_open() {
-    let ctx = egui::Context::default();
-    let mut app = App::new(&ctx);
+    let (ctx, mut app) = crate::app::test_ui::app();
     frame(&mut app, &ctx, vec![]);
     press_key(&mut app, &ctx, egui::Key::Comma, egui::Modifiers::CTRL);
     let output = frame_at(&mut app, &ctx, egui::vec2(1280.0, 720.0), vec![]);
@@ -1462,16 +1431,7 @@ fn sidebar_catalog_includes_views_when_map_is_incomplete_and_tools_preserve_rows
         app.select_tool(panel);
         assert_eq!(app.ui.sidebar, panel);
         assert_eq!(app.document.ui.nav, nav);
-        let mut output = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1280.0, 720.0),
-                )),
-                ..Default::default()
-            },
-            |ui| app.render(ui),
-        );
+        let output = frame_at(&mut app, &ctx, egui::vec2(1280.0, 720.0), vec![]);
         assert!(output.shapes.len() > 10);
         if panel == shell::ToolPanel::Settings {
             let heading = output
@@ -1494,7 +1454,6 @@ fn sidebar_catalog_includes_views_when_map_is_incomplete_and_tools_preserve_rows
             );
         }
         app.select_tool(shell::ToolPanel::Schema);
-        output.textures_delta.clear();
         assert_eq!(app.document.result.current, ticket);
         assert_eq!(app.document.result.rows, rows);
     }
@@ -1857,10 +1816,7 @@ fn column_presentation_preserves_schema_indices_and_manual_widths() {
         .visuals
         .insert(1, super::columns::CellStyle::Status);
     frame(&mut app, &ctx, vec![]);
-    assert_eq!(
-        app.document.result.rows[0][1],
-        Value::Text("a long string".into())
-    );
+    assert_retained(&app, 0, 1, Value::Text("a long string".into()));
     app.document.tools.columns.move_before(2, 0);
     for (from, target, expected) in [
         (2, 2, vec![2, 0, 1]),
@@ -1882,7 +1838,7 @@ fn column_presentation_preserves_schema_indices_and_manual_widths() {
     assert_eq!(app.document.tools.cell_editor.input, "42");
     app.stage_cell(0, 2, Value::Integer(55));
     assert_staged(&app, 0, 2, Value::Integer(55));
-    assert_eq!(app.document.result.rows[0][0], Value::Integer(1));
+    assert_retained(&app, 0, 0, Value::Integer(1));
     super::test_ui::render(&ctx, egui::vec2(300.0, 240.0), vec![], |ui| {
         let rect = ui.available_rect_before_wrap();
         for (style, name, value, painted) in [
@@ -1994,7 +1950,7 @@ fn scroll_pages_append_evict_reload_and_reject_stale_or_draft_owned_fetches() {
     app.request_page(true);
     wait(&mut app, &ctx);
     assert_eq!(app.document.browse.as_ref().unwrap().offset, 0);
-    assert_eq!(app.document.result.rows[0][0], Value::Integer(1));
+    assert_retained(&app, 0, 0, Value::Integer(1));
     app.stage_cell(0, 1, Value::Integer(999));
     app.request_page(false);
     assert!(app.document.tools.pages.pending.is_none());
@@ -2118,7 +2074,11 @@ fn actual_grid_keys_extend_copy_and_stage_inline_without_writing() {
     send(
         &mut app,
         egui::Modifiers::SHIFT,
-        vec![key_event(egui::Key::ArrowRight, egui::Modifiers::SHIFT)],
+        vec![key_event(
+            egui::Key::ArrowRight,
+            true,
+            egui::Modifiers::SHIFT,
+        )],
     );
     assert_eq!(
         app.selected_cells().collect::<Vec<_>>(),
@@ -2127,7 +2087,7 @@ fn actual_grid_keys_extend_copy_and_stage_inline_without_writing() {
     let output = send(
         &mut app,
         egui::Modifiers::CTRL,
-        vec![key_event(egui::Key::C, egui::Modifiers::CTRL)],
+        vec![key_event(egui::Key::C, true, egui::Modifiers::CTRL)],
     );
     assert!(
         output
@@ -2139,12 +2099,16 @@ fn actual_grid_keys_extend_copy_and_stage_inline_without_writing() {
     send(
         &mut app,
         egui::Modifiers::NONE,
-        vec![key_event(egui::Key::ArrowRight, egui::Modifiers::NONE)],
+        vec![key_event(
+            egui::Key::ArrowRight,
+            true,
+            egui::Modifiers::NONE,
+        )],
     );
     send(
         &mut app,
         egui::Modifiers::NONE,
-        vec![key_event(egui::Key::Enter, egui::Modifiers::NONE)],
+        vec![key_event(egui::Key::Enter, true, egui::Modifiers::NONE)],
     );
     assert!(app.document.tools.inline.is_some());
     send(
@@ -2152,7 +2116,7 @@ fn actual_grid_keys_extend_copy_and_stage_inline_without_writing() {
         egui::Modifiers::NONE,
         vec![
             egui::Event::Text("draft".into()),
-            key_event(egui::Key::Enter, egui::Modifiers::NONE),
+            key_event(egui::Key::Enter, true, egui::Modifiers::NONE),
         ],
     );
     assert!(app.document.tools.inline.is_none());
@@ -2167,7 +2131,7 @@ fn actual_grid_keys_extend_copy_and_stage_inline_without_writing() {
         app.document.tools.inline.as_mut().unwrap().editor.input = input.into();
         let mut output = ctx.run_ui(
             egui::RawInput {
-                events: vec![key_event(egui::Key::Enter, egui::Modifiers::NONE)],
+                events: vec![key_event(egui::Key::Enter, true, egui::Modifiers::NONE)],
                 ..Default::default()
             },
             |ui| app.record_inspector(ui, 0),
@@ -2176,10 +2140,7 @@ fn actual_grid_keys_extend_copy_and_stage_inline_without_writing() {
         assert_eq!(app.document.tools.inline.is_none(), accepted);
     }
     assert_staged(&app, 0, 1, Value::Integer(123));
-    assert_eq!(
-        app.document.result.rows[0][1],
-        Value::Integer(9007199254740993)
-    );
+    assert_retained(&app, 0, 1, Value::Integer(9007199254740993));
     app.start_inline(0, 1);
     press_key(&mut app, &ctx, egui::Key::Escape, egui::Modifiers::NONE);
     assert!(app.document.tools.inline.is_none());
@@ -2219,12 +2180,12 @@ fn token_entry_enter_retains_typed_filter_and_empty_clipboard_fields() {
         &ctx,
         vec![
             egui::Event::Text("n>=2".into()),
-            key_event(egui::Key::Enter, egui::Modifiers::NONE),
+            key_event(egui::Key::Enter, true, egui::Modifiers::NONE),
         ],
     );
     wait(&mut app, &ctx);
     assert_eq!(app.document.result.rows.len(), 1);
-    assert_eq!(app.document.result.rows[0][0], Value::Integer(2));
+    assert_retained(&app, 0, 0, Value::Integer(2));
     assert_eq!(
         app.document.browse.as_ref().unwrap().filters[0].op,
         tursobench_core::FilterOp::GreaterOrEqual
@@ -2340,31 +2301,20 @@ fn cancelling_a_recent_database_switch_clears_the_pending_path() {
     let session = app.session.as_ref().unwrap().id;
     let other = dir.path().join("other.db");
     app.preferences.discovery.record_open(other.clone(), 1);
-    fn control(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
-        let bounds = output
-            .platform_output
-            .accesskit_update
-            .as_ref()
-            .unwrap()
-            .nodes
-            .iter()
-            .find_map(|(_, node)| {
-                node.label()
-                    .filter(|name| name.starts_with(label))
-                    .and(node.bounds())
-            })
-            .unwrap_or_else(|| panic!("Missing switcher control: {label}"));
-        egui::pos2(
-            (bounds.x0 + bounds.x1) as f32 / 2.0,
-            (bounds.y0 + bounds.y1) as f32 / 2.0,
-        )
-    }
     for target in [&path, &other] {
         let output = frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
-        click(&mut app, &ctx, control(&output, "Switch database"));
+        click(
+            &mut app,
+            &ctx,
+            control_prefix(&output, "Switch database").center(),
+        );
         frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
         let output = frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
-        click(&mut app, &ctx, control(&output, target.to_str().unwrap()));
+        click(
+            &mut app,
+            &ctx,
+            control_prefix(&output, target.to_str().unwrap()).center(),
+        );
         if target == &path {
             assert!(!app.confirm_close && !app.closing);
             assert!(app.pending_database.is_none());
@@ -2381,10 +2331,14 @@ fn cancelling_a_recent_database_switch_clears_the_pending_path() {
     assert_eq!(app.path, path.to_string_lossy());
     for action in ["Open database…", "Close database"] {
         let output = frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
-        click(&mut app, &ctx, control(&output, "Switch database"));
+        click(
+            &mut app,
+            &ctx,
+            control_prefix(&output, "Switch database").center(),
+        );
         frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
         let output = frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
-        click(&mut app, &ctx, control(&output, action));
+        click(&mut app, &ctx, control(&output, action).center());
         assert!(app.confirm_close);
         assert!(app.pending_database.is_none());
         press_key(&mut app, &ctx, egui::Key::Escape, egui::Modifiers::NONE);
@@ -2509,10 +2463,7 @@ fn full_length_workspace_dividers_resize_adjacent_tiles_and_preserve_live_state(
         assert_eq!(app.workspace.splits, splits);
     }
     assert_eq!(app.document.result.current, ticket);
-    assert_eq!(
-        app.document.result.rows[0][1],
-        Value::Text("retained".into())
-    );
+    assert_retained(&app, 0, 1, Value::Text("retained".into()));
     assert_staged(&app, 0, 1, Value::Text("draft".into()));
     assert_eq!(app.document.inspect, Some((0, 1)));
     assert_eq!(app.workspace.focused, focus);
@@ -2685,11 +2636,18 @@ fn automatic_map_fit_keeps_every_node_inside_its_resized_tile() {
 }
 
 #[test]
-fn record_slider_moves_between_loaded_rows_and_keeps_field_and_drafts() {
+fn record_controls_move_rows_and_hidden_fields_without_fetching_or_losing_drafts() {
+    let columns = (0..12)
+        .map(|i| format!("field_{i} INTEGER"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let values = (0..12).map(|i| i.to_string()).collect::<Vec<_>>().join(",");
     let (_dir, ctx, mut app) = fixture(
         &[
-            "CREATE TABLE sample(id INTEGER PRIMARY KEY, body TEXT)",
-            "INSERT INTO sample VALUES(1,'first'),(2,'second'),(3,'third')",
+            &format!("CREATE TABLE sample(id INTEGER PRIMARY KEY, body TEXT,{columns})"),
+            &format!(
+                "INSERT INTO sample VALUES(1,'first',{values}),(2,'second',{values}),(3,'third',{values})"
+            ),
         ],
         true,
     );
@@ -2717,30 +2675,10 @@ fn record_slider_moves_between_loaded_rows_and_keeps_field_and_drafts() {
         assert_eq!(app.document.result.current, ticket);
         assert_eq!(app.sequence, sequence, "slider must not fetch more rows");
     }
-    app.close();
-}
-
-#[test]
-fn record_header_selects_hidden_fields_without_changing_row_or_drafts() {
-    let columns = (0..12)
-        .map(|i| format!("field_{i} INTEGER"))
-        .collect::<Vec<_>>()
-        .join(",");
-    let values = (0..12).map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-    let (_dir, ctx, mut app) = fixture(
-        &[
-            &format!("CREATE TABLE sample(id INTEGER PRIMARY KEY,{columns})"),
-            &format!("INSERT INTO sample VALUES(1,{values}),(2,{values})"),
-        ],
-        true,
-    );
-    ctx.enable_accesskit();
-    app.browse_table("sample".into());
-    wait(&mut app, &ctx);
     app.open_record_window(1, 0);
     frame(&mut app, &ctx, vec![]);
     app.stage_cell(1, 2, Value::Integer(999));
-    app.document.tools.columns.hidden.insert(5);
+    app.document.tools.columns.hidden.insert(6);
     let ticket = app.document.result.current;
     for label in ["Choose field", "field_4"] {
         frame(&mut app, &ctx, vec![]);
@@ -2756,10 +2694,10 @@ fn record_header_selects_hidden_fields_without_changing_row_or_drafts() {
         let bounds = control_from(&output, label, left);
         click(&mut app, &ctx, bounds.center());
     }
-    assert_eq!(app.document.inspect, Some((1, 5)));
+    assert_eq!(app.document.inspect, Some((1, 6)));
     assert_eq!(app.document.result.current, ticket);
     assert!(app.document.has_drafts());
-    assert!(app.document.tools.columns.hidden.contains(&5));
+    assert!(app.document.tools.columns.hidden.contains(&6));
     assert_eq!(app.document.tools.cell_editor.input, "4");
     assert!(
         app.document.tools.record_scroll_to.is_none(),
@@ -2859,7 +2797,7 @@ fn fixed_panes_preserve_drafts_selection_and_results_through_layout_changes() {
     frame(&mut app, &ctx, vec![]);
     assert_eq!(app.workspace.pane_rects.len(), 5);
     assert_eq!(app.document.result.current, ticket);
-    assert_eq!(app.document.result.rows[0][1], Value::Text("kept".into()));
+    assert_retained(&app, 0, 1, Value::Text("kept".into()));
     assert_eq!(app.document.filter, "body = 'unfinished'");
     assert_eq!(app.document.inspect, Some((0, 1)));
     let output = frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
@@ -2884,10 +2822,7 @@ fn fixed_panes_preserve_drafts_selection_and_results_through_layout_changes() {
     click(&mut app, &ctx, commit);
     wait(&mut app, &ctx);
     assert!(!app.has_drafts());
-    assert_eq!(
-        app.document.result.rows[0][1],
-        Value::Text("unsaved".into())
-    );
+    assert_retained(&app, 0, 1, Value::Text("unsaved".into()));
     app.close();
 }
 
@@ -2909,12 +2844,7 @@ fn run_all_command_bar_icon_preserves_sequential_and_atomic_script_policies() {
         ctx.enable_accesskit();
         frame(&mut app, &ctx, vec![]);
         let output = frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
-        let nodes = &output
-            .platform_output
-            .accesskit_update
-            .as_ref()
-            .unwrap()
-            .nodes;
+        let nodes = &crate::app::test_ui::nodes(&output);
         assert!(
             !nodes
                 .iter()
@@ -3269,7 +3199,7 @@ fn redesigned_dialog_actions_remain_visible_at_minimum_and_laptop_sizes() {
                     egui::Rect::from_min_size(egui::Pos2::ZERO, size).contains_rect(rect),
                     "{label} outside {size:?} with font {font_size}: {rect:?}"
                 );
-                assert_eq!(app.document.result.rows[0][1], Value::Text("stored".into()));
+                assert_retained(&app, 0, 1, Value::Text("stored".into()));
                 assert!(app.has_drafts());
             }
         }

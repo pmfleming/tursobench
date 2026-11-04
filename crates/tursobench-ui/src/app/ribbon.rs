@@ -1,12 +1,11 @@
 use super::{
-    App, View,
+    App,
     icons::{self, Icon},
     shell::ToolPanel,
     tiling::Kind,
 };
 use eframe::egui;
-use tursobench_core::{Budget, TransactionState};
-use tursobench_db::Operation;
+use tursobench_core::TransactionState;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Action {
@@ -57,28 +56,19 @@ impl App {
             ZoomOut => self.ui.diagram.camera.zoom() > super::diagram::MIN_ZOOM,
             ZoomIn => self.ui.diagram.camera.zoom() < super::diagram::MAX_ZOOM,
             Run | RunAll | Explain | Bytecode | Begin | Commit | Rollback => {
-                self.ready
-                    && !self.closing
-                    && !self.has_drafts()
-                    && self.commit_ticket.is_none()
+                self.requests_enabled()
                     && !self.executing()
                     && (!matches!(action, Commit) || self.transaction == TransactionState::Active)
             }
             Count => {
-                self.ready
-                    && !self.closing
-                    && !self.has_drafts()
-                    && self.commit_ticket.is_none()
+                self.requests_enabled()
                     && self.document.kind == Kind::Data
                     && self.document.object.is_some()
             }
-            Refresh => {
-                self.ready && !self.closing && !self.has_drafts() && self.commit_ticket.is_none()
-            }
+            Refresh => self.requests_enabled(),
             Insert => self.can_edit(),
             CloneRecord | DeleteRecord => self.can_edit() && self.document.inspect.is_some(),
-            CopyRecord => self.document.inspect.is_some(),
-            Inspect | CopyValue => self.document.inspect.is_some(),
+            CopyRecord | Inspect | CopyValue => self.document.inspect.is_some(),
             CopyRows | Export => !self.document.result.columns.is_empty(),
             Discard => {
                 self.document.active.is_some()
@@ -195,14 +185,7 @@ impl App {
                     Commit => "COMMIT",
                     _ => "ROLLBACK",
                 };
-                self.submit(
-                    Operation::Execute {
-                        sql: sql.into(),
-                        parameters: vec![],
-                        budget: Budget::default(),
-                    },
-                    View::Query,
-                );
+                self.run_transaction(sql);
             }
             Discard => {
                 let focus = self.workspace.focused;
@@ -365,36 +348,60 @@ impl App {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = super::presentation::BAR_SPACING;
             ui.spacing_mut().button_padding.x = super::presentation::BAR_INSET;
-            ui.style_mut().override_font_id = Some(crate::appearance::proportional(ui.ctx(), icons::RIBBON_TEXT_SIZE));
+            ui.style_mut().override_font_id = Some(crate::appearance::proportional(
+                ui.ctx(),
+                icons::RIBBON_TEXT_SIZE,
+            ));
             ui.spacing_mut().interact_size.y = icons::RIBBON_BUTTON_SIZE;
-            let show_restore = !self.workspace.minimized.is_empty() || self.workspace.expanded.is_some();
-            let controls_width = 2.0 * icons::RIBBON_BUTTON_SIZE + 20.0
-                + if show_restore { icons::RIBBON_BUTTON_SIZE + ui.spacing().item_spacing.x } else { 0.0 };
+            let show_restore =
+                !self.workspace.minimized.is_empty() || self.workspace.expanded.is_some();
+            let controls_width = 2.0 * icons::RIBBON_BUTTON_SIZE
+                + 20.0
+                + if show_restore {
+                    icons::RIBBON_BUTTON_SIZE + ui.spacing().item_spacing.x
+                } else {
+                    0.0
+                };
             let leading = if kind == Kind::Data {
-                (super::grid::CONTENT_INSET-ui.spacing().button_padding.x)
-                    .min((ui.available_width()-controls_width-64.0).max(super::presentation::BAR_INSET))
-            } else { super::presentation::BAR_INSET };
+                (super::presentation::CONTENT_INSET - ui.spacing().button_padding.x).min(
+                    (ui.available_width() - controls_width - 64.0)
+                        .max(super::presentation::BAR_INSET),
+                )
+            } else {
+                super::presentation::BAR_INSET
+            };
             ui.add_space(leading);
-            let show_title = matches!(kind,Kind::Data | Kind::Record | Kind::Result)
-                || kind==Kind::Structure && available && self.document.object.is_some();
+            let show_title = matches!(kind, Kind::Data | Kind::Record | Kind::Result)
+                || kind == Kind::Structure && available && self.document.object.is_some();
             if show_title {
-            let remaining = (ui.available_width() - controls_width).max(0.0);
-            let title_size = ui.painter().layout_no_wrap(
-                if kind==Kind::Structure { self.document.object.clone().unwrap_or_default() } else {kind.label().into()},
-                crate::appearance::proportional(ui.ctx(), icons::RIBBON_TEXT_SIZE),
-                ui.visuals().text_color(),
-            ).size();
-            let mut title_width = (if kind==Kind::Structure { title_size.x+4.0 } else { (remaining*0.25).max(title_size.x+4.0) })
+                let remaining = (ui.available_width() - controls_width).max(0.0);
+                let title_size = ui
+                    .painter()
+                    .layout_no_wrap(
+                        if kind == Kind::Structure {
+                            self.document.object.clone().unwrap_or_default()
+                        } else {
+                            kind.label().into()
+                        },
+                        crate::appearance::proportional(ui.ctx(), icons::RIBBON_TEXT_SIZE),
+                        ui.visuals().text_color(),
+                    )
+                    .size();
+                let mut title_width = (if kind == Kind::Structure {
+                    title_size.x + 4.0
+                } else {
+                    (remaining * 0.25).max(title_size.x + 4.0)
+                })
                 .min(200.0)
                 .min((remaining - 32.0).max(0.0));
-            if matches!(kind, Kind::Data | Kind::Record) {
-                title_width = title_width.max(48.0).min((remaining - 6.0).max(0.0));
-            }
-            ui.allocate_ui_with_layout(
-                egui::vec2(title_width, icons::RIBBON_BUTTON_SIZE),
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| self.ribbon_title(ui, kind, available),
-            );
+                if matches!(kind, Kind::Data | Kind::Record) {
+                    title_width = title_width.max(48.0).min((remaining - 6.0).max(0.0));
+                }
+                ui.allocate_ui_with_layout(
+                    egui::vec2(title_width, icons::RIBBON_BUTTON_SIZE),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| self.ribbon_title(ui, kind, available),
+                );
             }
             let ribbon_width = (ui.available_width() - controls_width).max(1.0);
             ui.allocate_ui_with_layout(
@@ -409,39 +416,62 @@ impl App {
                         .auto_shrink([false, true])
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                ui.add_enabled_ui(available, |ui| {
-                                    if kind == Kind::Record {
-                                        self.ribbon_record_slider(ui);
-                                    }
-                                    let mut group = None;
-                                    for &(action, icon, label) in kind.ribbon_actions() {
-                                        if group.is_some_and(|previous| previous != action.group()) { ui.separator(); }
-                                        group = Some(action.group());
-                                        self.ribbon_action(ui, action, icon, label);
-                                    }
-                                    match kind {
-                                        Kind::Data | Kind::Result => {
-                                            self.ribbon_columns(ui, "Visible columns")
-                                        }
-                                        Kind::Sql if self.document.kind == Kind::Sql => {
-                                            self.ribbon_editors(ui);
-                                            self.ribbon_sql_results(ui);
-                                        }
-                                        _ => {}
-                                    }
-                                });
-                                if available
-                                    && matches!(kind, Kind::Data | Kind::Record)
-                                    && self.document.has_drafts()
-                                {
-                                    self.ribbon_action(
-                                        ui,
-                                        Action::Review,
-                                        Icon::ReviewEdits,
-                                        "Review staged edits",
-                                    );
-                                }
-                                if available && self.action_enabled(Action::Discard)
+                                self.pane_actions(ui, kind, available);
+                            });
+                        });
+                    // A small fade signals that more direct actions can be scrolled
+                    // into view. It never covers the fixed window controls.
+                    if scroll.content_size.x
+                        > scroll.inner_rect.width() + scroll.state.clamped_offset().x + 1.0
+                    {
+                        let rect = scroll.inner_rect;
+                        let width = rect.width().min(24.0);
+                        for step in 0..12 {
+                            let x = rect.right() - width + width * step as f32 / 12.0;
+                            ui.painter().rect_filled(
+                                egui::Rect::from_min_max(
+                                    egui::pos2(x, rect.top()),
+                                    egui::pos2(x + width / 12.0 + 0.5, rect.bottom()),
+                                ),
+                                0.0,
+                                ui.visuals()
+                                    .faint_bg_color
+                                    .gamma_multiply(step as f32 / 12.0),
+                            );
+                        }
+                    }
+                },
+            );
+            self.pane_window_controls(ui, kind, show_restore);
+        });
+    }
+
+    fn pane_actions(&mut self, ui: &mut egui::Ui, kind: Kind, available: bool) {
+        ui.add_enabled_ui(available, |ui| {
+            if kind == Kind::Record {
+                self.ribbon_record_slider(ui);
+            }
+            let mut group = None;
+            for &(action, icon, label) in kind.ribbon_actions() {
+                if group.is_some_and(|previous| previous != action.group()) {
+                    ui.separator();
+                }
+                group = Some(action.group());
+                self.ribbon_action(ui, action, icon, label);
+            }
+            match kind {
+                Kind::Data | Kind::Result => self.ribbon_columns(ui, "Visible columns"),
+                Kind::Sql if self.document.kind == Kind::Sql => {
+                    self.ribbon_editors(ui);
+                    self.ribbon_sql_results(ui);
+                }
+                _ => {}
+            }
+        });
+        if available && matches!(kind, Kind::Data | Kind::Record) && self.document.has_drafts() {
+            self.ribbon_action(ui, Action::Review, Icon::ReviewEdits, "Review staged edits");
+        }
+        if available && self.action_enabled(Action::Discard)
                                     && ui
                                         .add(
                                             egui::Button::new("Discard results")
@@ -452,24 +482,12 @@ impl App {
                                     {
                                         self.dispatch_action(Action::Discard, ui.ctx());
                                 }
-                            });
-                        });
-                    // A small fade signals that more direct actions can be scrolled
-                    // into view. It never covers the fixed window controls.
-                    if scroll.content_size.x > scroll.inner_rect.width() + scroll.state.clamped_offset().x + 1.0 {
-                        let rect = scroll.inner_rect;
-                        let width = rect.width().min(24.0);
-                        for step in 0..12 {
-                            let x = rect.right() - width + width * step as f32 / 12.0;
-                            ui.painter().rect_filled(egui::Rect::from_min_max(egui::pos2(x, rect.top()), egui::pos2(x + width / 12.0 + 0.5, rect.bottom())), 0.0,
-                                ui.visuals().faint_bg_color.gamma_multiply(step as f32 / 12.0));
-                        }
-                    }
-                },
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui| {
-                ui.add_space(super::presentation::BAR_INSET);
-                let expand = icons::ribbon_button(
+    }
+
+    fn pane_window_controls(&mut self, ui: &mut egui::Ui, kind: Kind, show_restore: bool) {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.add_space(super::presentation::BAR_INSET);
+            let expand = icons::ribbon_button(
                 ui,
                 Icon::Fit,
                 if self.workspace.expanded == Some(kind) {
@@ -495,7 +513,6 @@ impl App {
             if expand.clicked() {
                 self.expand_pane(kind);
             }
-            });
         });
     }
 
@@ -614,10 +631,10 @@ impl App {
     }
 
     fn ribbon_table_selector(&mut self, ui: &mut egui::Ui, available: bool) {
-        let current = available.then(|| self.document.object.clone()).flatten();
-        let mut selected = current.clone();
+        let current = self.document.object.as_deref().filter(|_| available);
+        let mut selected = current;
         let response = egui::ComboBox::from_id_salt("table-selector")
-            .selected_text(current.as_deref().unwrap_or("Choose table"))
+            .selected_text(current.unwrap_or("Choose table"))
             .width(ui.available_width())
             .truncate()
             .show_ui(ui, |ui| {
@@ -630,18 +647,18 @@ impl App {
                     .collect();
                 tables.sort_by(|a, b| a.name.cmp(&b.name));
                 for table in tables {
-                    ui.selectable_value(&mut selected, Some(table.name.clone()), &table.name)
+                    ui.selectable_value(&mut selected, Some(table.name.as_str()), &table.name)
                         .on_hover_text(format!("{} · {}", table.name, table.kind));
                 }
             })
             .response;
         response
             .widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, true, "Choose table"));
-        response.on_hover_text(current.as_deref().unwrap_or("Choose a table to browse"));
+        response.on_hover_text(current.unwrap_or("Choose a table to browse"));
         if selected != current
             && let Some(name) = selected
         {
-            self.browse_table(name);
+            self.browse_table(name.to_owned());
         }
     }
 }
@@ -741,9 +758,7 @@ mod tests {
 
     #[test]
     fn narrow_ribbon_scrolls_to_a_direct_action_and_keeps_window_controls_fixed() {
-        let ctx = egui::Context::default();
-        ctx.enable_accesskit();
-        let mut app = App::new(&ctx);
+        let (ctx, mut app) = crate::app::test_ui::app();
         app.workspace.expanded = Some(Kind::Map);
         let mut time = 0.0;
         let mut render = |app: &mut App, events| {
@@ -808,18 +823,7 @@ mod tests {
         }
         assert!(!app.ui.diagram.show_system);
         for pressed in [true, false] {
-            render(
-                &mut app,
-                vec![
-                    egui::Event::PointerMoved(target),
-                    egui::Event::PointerButton {
-                        pos: target,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                ],
-            );
+            render(&mut app, crate::app::test_ui::pointer(target, pressed));
         }
         assert!(
             app.ui.diagram.show_system,

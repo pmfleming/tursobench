@@ -87,6 +87,11 @@ pub struct App {
     fk_cell_rect: Option<egui::Rect>,
 }
 impl App {
+    /// Shared admission for requests that must preserve staged edits and commits.
+    fn requests_enabled(&self) -> bool {
+        self.ready && !self.closing && !self.has_drafts() && self.commit_ticket.is_none()
+    }
+
     pub(super) fn toggle_theme(&mut self, ctx: &egui::Context) {
         let dark = !ctx.global_style().visuals.dark_mode;
         self.preferences.appearance = Some(crate::appearance::Mode::from_dark(dark));
@@ -592,6 +597,13 @@ impl eframe::App for App {
 mod test_ui {
     use eframe::egui;
 
+    pub(super) fn app() -> (egui::Context, App) {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let app = App::new(&ctx);
+        (ctx, app)
+    }
+
     pub(super) fn render(
         ctx: &egui::Context,
         size: egui::Vec2,
@@ -610,6 +622,20 @@ mod test_ui {
         output
     }
 
+    pub(super) fn key_event(
+        key: egui::Key,
+        pressed: bool,
+        modifiers: egui::Modifiers,
+    ) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers,
+        }
+    }
+
     pub(super) fn pointer_button(pos: egui::Pos2, pressed: bool) -> egui::Event {
         egui::Event::PointerButton {
             pos,
@@ -622,21 +648,41 @@ mod test_ui {
         vec![egui::Event::PointerMoved(pos), pointer_button(pos, pressed)]
     }
 
-    pub(super) fn control(output: &egui::FullOutput, name: &str) -> egui::Rect {
-        control_from(output, name, f32::NEG_INFINITY)
-    }
-    pub(super) fn control_from(output: &egui::FullOutput, name: &str, left: f32) -> egui::Rect {
-        let bounds = output
+    pub(super) fn nodes(
+        output: &egui::FullOutput,
+    ) -> &[(egui::accesskit::NodeId, egui::accesskit::Node)] {
+        &output
             .platform_output
             .accesskit_update
             .as_ref()
             .expect("accessibility tree")
             .nodes
+    }
+
+    pub(super) fn control(output: &egui::FullOutput, name: &str) -> egui::Rect {
+        control_from(output, name, f32::NEG_INFINITY)
+    }
+    pub(super) fn control_from(output: &egui::FullOutput, name: &str, left: f32) -> egui::Rect {
+        control_matching(output, name, left, |label| label == name)
+    }
+    pub(super) fn control_prefix(output: &egui::FullOutput, name: &str) -> egui::Rect {
+        control_matching(output, name, f32::NEG_INFINITY, |label| {
+            label.starts_with(name)
+        })
+    }
+    fn control_matching(
+        output: &egui::FullOutput,
+        name: &str,
+        left: f32,
+        matches: impl Fn(&str) -> bool,
+    ) -> egui::Rect {
+        let bounds = nodes(output)
             .iter()
             .rev()
             .find_map(|(_, node)| {
-                node.bounds()
-                    .filter(|bounds| node.label() == Some(name) && bounds.x0 >= f64::from(left))
+                node.bounds().filter(|bounds| {
+                    node.label().is_some_and(&matches) && bounds.x0 >= f64::from(left)
+                })
             })
             .unwrap_or_else(|| panic!("Missing control: {name}"));
         egui::Rect::from_min_max(
@@ -645,12 +691,24 @@ mod test_ui {
         )
     }
     use super::{App, shell};
+    use std::time::{Duration, Instant};
+    pub(super) fn inspect_selected(app: &mut App, ctx: &egui::Context) {
+        let start = Instant::now();
+        loop {
+            app.poll_database_inspection(ctx);
+            if app.databases.inspection.ready(&app.path) {
+                break;
+            }
+            assert!(start.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
     use tursobench_core::Column;
     use tursobench_core::Value;
     #[test]
     fn renders_empty_and_large_cells_without_engine() {
-        let ctx = egui::Context::default();
-        let mut app = App::new(&ctx);
+        let (ctx, mut app) = crate::app::test_ui::app();
         app.document.ui.nav = shell::Nav::Table;
         app.document.result.columns = vec![Column {
             name: "data".into(),

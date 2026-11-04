@@ -729,10 +729,7 @@ impl App {
             "Workspace layout restored. SQL drafts, results and records are session-only.".into();
     }
     pub(super) fn load_restored_view(&mut self, ctx: &egui::Context) {
-        if !self.ready
-            || self.closing
-            || self.has_drafts()
-            || self.commit_ticket.is_some()
+        if !self.requests_enabled()
             || self.executing()
             || self.catalog_ticket.is_some()
             || self.ui.diagram.ticket.is_some()

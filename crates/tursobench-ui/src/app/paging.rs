@@ -32,10 +32,7 @@ impl App {
             || self.document.view != View::Browse
             || self.document.active.is_some()
             || self.document.tools.pages.pending.is_some()
-            || self.has_drafts()
-            || self.commit_ticket.is_some()
-            || !self.ready
-            || self.closing
+            || !self.requests_enabled()
         {
             return;
         }

@@ -189,6 +189,7 @@ impl App {
 mod tests {
     use super::{App, egui};
     use crate::app::databases::{Chooser, Entry, State};
+    use crate::app::test_ui::inspect_selected as inspect;
     use crate::discovery::Availability;
 
     fn frame(
@@ -219,18 +220,6 @@ mod tests {
         }
     }
 
-    fn inspect(app: &mut App, ctx: &egui::Context) {
-        let started = std::time::Instant::now();
-        loop {
-            app.poll_database_inspection(ctx);
-            if app.databases.inspection.ready(&app.path) {
-                break;
-            }
-            assert!(started.elapsed() < std::time::Duration::from_secs(5));
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-    }
-
     #[test]
     fn sqlite_guess_can_be_overridden_and_opens_with_turso() {
         use crate::discovery::DatabaseKind;
@@ -246,8 +235,7 @@ mod tests {
         file.write_all(&3_047_000u32.to_be_bytes()).unwrap();
         drop(file);
         let before = crate::test_support::snapshot(dir.path());
-        let ctx = egui::Context::default();
-        let mut app = App::new(&ctx);
+        let (ctx, mut app) = crate::app::test_ui::app();
         app.set_database_path(path.to_str().unwrap().into());
 
         inspect(&mut app, &ctx);
@@ -305,8 +293,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("example.db");
         crate::test_support::create(&path, &["CREATE TABLE example(id INTEGER)"]);
-        let ctx = egui::Context::default();
-        let mut app = App::new(&ctx);
+        let (ctx, mut app) = crate::app::test_ui::app();
         app.set_database_path(path.to_string_lossy().into_owned());
         frame(&mut app, &ctx, vec![], egui::vec2(1280.0, 720.0));
         assert!(!app.databases.open_enabled);
@@ -343,8 +330,7 @@ mod tests {
 
     #[test]
     fn search_settings_are_separate_from_access_review() {
-        let ctx = egui::Context::default();
-        let mut app = App::new(&ctx);
+        let (ctx, mut app) = crate::app::test_ui::app();
         app.set_database_path("/work/example.db".into());
 
         app.writable = true;
@@ -463,8 +449,7 @@ mod tests {
         bytes.truncate(100);
         std::fs::write(&path, bytes).unwrap();
         let _ = std::fs::remove_file(path.with_extension("db-wal"));
-        let ctx = egui::Context::default();
-        let mut app = App::new(&ctx);
+        let (ctx, mut app) = crate::app::test_ui::app();
         app.set_database_path(path.to_string_lossy().into_owned());
         inspect(&mut app, &ctx);
         assert!(app.databases.inspection.allows_open(&app.path));

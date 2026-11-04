@@ -1,7 +1,7 @@
 use super::{
     App, View,
     icons::{self, Icon},
-    shell,
+    ribbon::Action,
 };
 use eframe::egui;
 use tursobench_core::{Bindings, Budget, quote_identifier};
@@ -17,7 +17,11 @@ fn byte_index(text: &str, character: usize) -> usize {
 #[cfg(test)]
 #[test]
 fn completions_and_highlighting_preserve_unicode_and_quoted_text() {
+    use super::test_ui::{control, pointer, render};
     assert_eq!(byte_index("λx", 1), 2);
+    for (text, cursor) in [("λ", 1), ("x", 2), (&"x".repeat(65537), 0)] {
+        assert!(completion_span(text, cursor).is_none());
+    }
     assert_eq!(completion_span("SELECT users", 9), Some(7..12));
     assert_eq!(completion_span("SELECT λ", "SELECT λ".len()), Some(7..9));
     for text in [
@@ -36,6 +40,32 @@ fn completions_and_highlighting_preserve_unicode_and_quoted_text() {
         assert_eq!(highlighted(ui, text, 800.0).text(), text);
     });
     output.textures_delta.clear();
+    ctx.enable_accesskit();
+    let mut app = App::new(&ctx);
+    app.document.ui.params_open = true;
+    let draw = |app: &mut App, events| {
+        render(&ctx, egui::vec2(800.0, 500.0), events, |ui| {
+            app.editor_ui(ui)
+        })
+    };
+    for sql in ["SELECT :id, @name, :id", "SELECT ?1", "SELECT 1"] {
+        app.document.sql = sql.into();
+        draw(&mut app, vec![]);
+        let output = draw(&mut app, vec![]);
+        let pos = control(&output, "Generate NULL bindings").center();
+        for pressed in [true, false] {
+            draw(&mut app, pointer(pos, pressed));
+        }
+        if sql.contains('?') {
+            assert!(app.status.contains("Positional parameters"));
+        } else {
+            let Bindings::Named(values) = Bindings::parse_json(&app.document.params).unwrap()
+            else {
+                panic!("Expected named bindings")
+            };
+            assert_eq!(values, sql::named_template(sql));
+        }
+    }
 }
 fn completion_span(text: &str, cursor: usize) -> Option<std::ops::Range<usize>> {
     if text.len() > 64 * 1024 || cursor > text.len() || !text.is_char_boundary(cursor) {
@@ -109,6 +139,16 @@ fn highlighted(ui: &egui::Ui, text: &str, width: f32) -> std::sync::Arc<egui::Ga
     ui.fonts_mut(|fonts| fonts.layout_job(job))
 }
 impl App {
+    pub(super) fn run_transaction(&mut self, sql: &str) {
+        self.submit(
+            Operation::Execute {
+                sql: sql.into(),
+                parameters: vec![],
+                budget: Budget::default(),
+            },
+            View::Query,
+        );
+    }
     pub(super) fn run_text(&mut self, text: String, explain: Option<bool>) {
         if self.has_drafts() || self.commit_ticket.is_some() {
             self.status = "Commit or discard drafts first".into();
@@ -176,9 +216,6 @@ impl App {
             Err(e) => self.status = format!("Typed bindings: {e}"),
         }
     }
-    pub(super) fn run_selection(&mut self) {
-        self.run_current(None);
-    }
     pub(super) fn run_current(&mut self, explain: Option<bool>) {
         match self.current_text() {
             Ok(text) => self.run_text(text, explain),
@@ -228,90 +265,83 @@ impl App {
             })
             .inner;
         egui::Popup::menu(&response).show(|ui| {
-            if ui
-                .add_enabled(enabled, egui::Button::new("Run statements · stop on error"))
-                .clicked()
-            {
-                self.run_all(false);
-                ui.close();
-            }
-            if ui
-                .add_enabled(enabled, egui::Button::new("Run as one atomic transaction"))
-                .clicked()
-            {
-                self.run_all(true);
-                ui.close();
+            for (label, atomic) in [
+                ("Run statements · stop on error", false),
+                ("Run as one atomic transaction", true),
+            ] {
+                if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
+                    self.run_all(atomic);
+                    ui.close();
+                }
             }
         });
         response
     }
+    fn editor_toolbar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            if ui
+                .add_enabled(self.action_enabled(Action::Run), egui::Button::new("Run"))
+                .on_hover_text("Run one statement · Ctrl Enter")
+                .clicked()
+            {
+                self.dispatch_action(Action::Run, ui.ctx());
+            }
+            self.run_all_menu(ui, false);
+            if icons::button(ui, Icon::Explain, "Explain query plan", "").clicked() {
+                self.run_current(Some(false));
+            }
+            if icons::control(
+                ui,
+                Icon::Parameters,
+                "Typed parameters",
+                "",
+                self.document.ui.params_open,
+                false,
+            )
+            .clicked()
+            {
+                self.document.ui.params_open = !self.document.ui.params_open;
+            }
+            if icons::control(
+                ui,
+                Icon::Complete,
+                "Complete",
+                "Ctrl Space",
+                self.document.tools.complete,
+                false,
+            )
+            .clicked()
+            {
+                self.document.tools.complete = !self.document.tools.complete;
+            }
+            if icons::control(
+                ui,
+                Icon::Fit,
+                "Expand SQL editor",
+                "",
+                self.document.ui.sql_expanded,
+                false,
+            )
+            .clicked()
+            {
+                self.document.ui.sql_expanded = !self.document.ui.sql_expanded;
+            }
+            if icons::button(ui, Icon::Close, "Close SQL editor", "Ctrl J").clicked() {
+                self.document.ui.sql_open = false;
+            }
+            if icons::button(ui, Icon::Structure, "Explain bytecode", "").clicked() {
+                self.run_current(Some(true));
+            }
+            if icons::button(ui, Icon::Saved, "Bookmark editor SQL", "Ctrl S").clicked() {
+                self.dispatch_action(Action::SaveSql, ui.ctx());
+            }
+        });
+    }
+
     pub(super) fn editor_ui(&mut self, ui: &mut egui::Ui) {
         if !self.workspace.enabled {
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = 3.0;
-                if ui
-                    .add_enabled(
-                        self.ready
-                            && !self.closing
-                            && !self.has_drafts()
-                            && self.commit_ticket.is_none(),
-                        egui::Button::new("Run"),
-                    )
-                    .on_hover_text("Run one statement · Ctrl Enter")
-                    .clicked()
-                {
-                    self.run_sql();
-                }
-                self.run_all_menu(ui, false);
-                if icons::button(ui, Icon::Explain, "Explain query plan", "").clicked() {
-                    self.run_current(Some(false));
-                }
-                if icons::control(
-                    ui,
-                    Icon::Parameters,
-                    "Typed parameters",
-                    "",
-                    self.document.ui.params_open,
-                    false,
-                )
-                .clicked()
-                {
-                    self.document.ui.params_open = !self.document.ui.params_open;
-                }
-                if icons::control(
-                    ui,
-                    Icon::Complete,
-                    "Complete",
-                    "Ctrl Space",
-                    self.document.tools.complete,
-                    false,
-                )
-                .clicked()
-                {
-                    self.document.tools.complete = !self.document.tools.complete;
-                }
-                if icons::control(
-                    ui,
-                    Icon::Fit,
-                    "Expand SQL editor",
-                    "",
-                    self.document.ui.sql_expanded,
-                    false,
-                )
-                .clicked()
-                {
-                    self.document.ui.sql_expanded = !self.document.ui.sql_expanded;
-                }
-                if icons::button(ui, Icon::Close, "Close SQL editor", "Ctrl J").clicked() {
-                    self.document.ui.sql_open = false;
-                }
-                if icons::button(ui, Icon::Structure, "Explain bytecode", "").clicked() {
-                    self.run_current(Some(true));
-                }
-                if icons::button(ui, Icon::Saved, "Bookmark editor SQL", "Ctrl S").clicked() {
-                    self.ui.sidebar = shell::ToolPanel::Saved;
-                }
-            });
+            self.editor_toolbar(ui);
         }
         let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, width: f32| {
             highlighted(ui, text.as_str(), width)
@@ -385,7 +415,14 @@ impl App {
             self.document.tools.selection = range.start.0..range.end.0;
         }
         if self.document.ui.params_open {
-            ui.horizontal_wrapped(|ui| {
+            self.bindings_ui(ui);
+        }
+        if self.document.tools.complete {
+            self.completion_ui(ui, output.response.id);
+        }
+    }
+    fn bindings_ui(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
             ui.label("Typed bindings (JSON):");ui.add(egui::TextEdit::singleline(&mut self.document.params).desired_width(ui.available_width().min(420.0)));
             if ui.button("Generate NULL bindings").clicked(){
                 let names=sql::parameter_names(&self.document.sql);
@@ -393,11 +430,7 @@ impl App {
                 else {self.document.params=serde_json::to_string(&sql::named_template(&self.document.sql)).unwrap_or_default();}
             }
         });
-            ui.small("?1: [{\"type\":\"Integer\",\"value\":42}]    :id: {\":id\":{\"type\":\"Integer\",\"value\":42}}. Values are never interpolated or persisted.");
-        }
-        if self.document.tools.complete {
-            self.completion_ui(ui, output.response.id);
-        }
+        ui.small("?1: [{\"type\":\"Integer\",\"value\":42}]    :id: {\":id\":{\"type\":\"Integer\",\"value\":42}}. Values are never interpolated or persisted.");
     }
     fn completion_ui(&mut self, ui: &mut egui::Ui, editor_id: egui::Id) {
         let cursor = byte_index(&self.document.sql, self.document.tools.selection.end);
@@ -427,16 +460,21 @@ impl App {
             "vector_distance_cos",
         ]
         .into_iter()
-        .map(str::to_owned)
+        .map(std::borrow::Cow::Borrowed)
         .collect::<Vec<_>>();
         candidates.extend(
             self.schema
                 .iter()
                 .filter(|o| o.kind == "table" || o.kind == "view")
-                .map(|o| quote_identifier(&o.name)),
+                .map(|o| std::borrow::Cow::Owned(quote_identifier(&o.name))),
         );
         if let Some(info) = &self.document.tools.inspection {
-            candidates.extend(info.table.columns.iter().map(|c| quote_identifier(&c.name)));
+            candidates.extend(
+                info.table
+                    .columns
+                    .iter()
+                    .map(|c| std::borrow::Cow::Owned(quote_identifier(&c.name))),
+            );
         }
         candidates.retain(|c| c.trim_matches('"').to_lowercase().starts_with(&prefix));
         candidates.sort();
@@ -444,7 +482,7 @@ impl App {
         ui.small("Prefix completions: SQL/Turso functions, schema objects and inspected-table columns. Alias resolution is not inferred.");
         ui.horizontal_wrapped(|ui| {
             for candidate in candidates.into_iter().take(30) {
-                if ui.button(&candidate).clicked() {
+                if ui.button(candidate.as_ref()).clicked() {
                     self.document.sql.replace_range(span.clone(), &candidate);
                     let position =
                         self.document.sql[..start].chars().count() + candidate.chars().count();

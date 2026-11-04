@@ -347,12 +347,7 @@ impl App {
         }
     }
     pub(super) fn refresh_external_views(&mut self) {
-        if !self.ready
-            || self.closing
-            || self.has_drafts()
-            || self.commit_ticket.is_some()
-            || self.transaction != TransactionState::Autocommit
-        {
+        if !self.requests_enabled() || self.transaction != TransactionState::Autocommit {
             return;
         }
         let previous = self.document.id;

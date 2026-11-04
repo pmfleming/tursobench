@@ -1,6 +1,7 @@
 use super::presentation::{self, Intent};
 use super::{
     App, View,
+    ribbon::Action,
     shell::{Nav, TableView, ToolPanel},
     tiling::Kind,
 };
@@ -15,16 +16,12 @@ pub(super) enum Command {
     Close,
     Refresh,
     Panel(ToolPanel),
-    Export,
-    Review,
     Help,
     Theme,
     Begin,
+    Action(Action),
     Filter,
     Inspector,
-    Insert,
-    FitColumns,
-    ShowColumns,
     CopySelection,
     RefreshTable,
     Data,
@@ -104,7 +101,7 @@ impl App {
                 if self.workspace.enabled {
                     self.focus_pane(Kind::Sql);
                 }
-                self.run_selection();
+                self.run_current(None);
             } else if consumed(Modifiers::CTRL, Key::Enter) {
                 if self.workspace.enabled {
                     self.focus_pane(Kind::Sql);
@@ -142,7 +139,7 @@ impl App {
         }
         for (modifiers, key, command) in [
             (Modifiers::CTRL, Key::J, Command::Sql),
-            (Modifiers::CTRL, Key::E, Command::Export),
+            (Modifiers::CTRL, Key::E, Command::Action(Action::Export)),
             (Modifiers::CTRL, Key::F, Command::Filter),
             (Modifiers::CTRL, Key::Num1, Command::Data),
             (Modifiers::CTRL, Key::Num2, Command::Structure),
@@ -177,10 +174,7 @@ impl App {
             self.tools.help = !self.tools.help;
         }
         if !ctx.egui_wants_keyboard_input()
-            && !self.has_drafts()
-            && self.commit_ticket.is_none()
-            && self.ready
-            && !self.closing
+            && self.requests_enabled()
             && self.document.ui.nav == Nav::Table
         {
             let delta = if consumed(Modifiers::NONE, Key::PageDown) {
@@ -314,9 +308,15 @@ impl App {
             ("BEGIN editor transaction".into(), Command::Begin),
             ("Filter rows · Ctrl F".into(), Command::Filter),
             ("Toggle inspector · Space".into(), Command::Inspector),
-            ("New row (staged)".into(), Command::Insert),
-            ("Fit all columns".into(), Command::FitColumns),
-            ("Show hidden columns".into(), Command::ShowColumns),
+            ("New row (staged)".into(), Command::Action(Action::Insert)),
+            (
+                "Fit all columns".into(),
+                Command::Action(Action::FitColumns),
+            ),
+            (
+                "Show hidden columns".into(),
+                Command::Action(Action::ShowColumns),
+            ),
             (
                 "Copy selected cells · Ctrl C".into(),
                 Command::CopySelection,
@@ -328,8 +328,14 @@ impl App {
                 Command::Panel(ToolPanel::Diagnostics),
             ),
             ("Settings".into(), Command::Panel(ToolPanel::Settings)),
-            ("Export and copy retained result".into(), Command::Export),
-            ("Review staged edits".into(), Command::Review),
+            (
+                "Export and copy retained result".into(),
+                Command::Action(Action::Export),
+            ),
+            (
+                "Review staged edits".into(),
+                Command::Action(Action::Review),
+            ),
             ("Toggle theme".into(), Command::Theme),
             ("Keyboard shortcuts and help · F1".into(), Command::Help),
         ];
@@ -433,12 +439,6 @@ impl App {
                 self.document.tools.filter_focus = true;
             }
             Command::Inspector => self.toggle_inspector(),
-            Command::Insert => self.begin_insert(),
-            Command::FitColumns => {
-                self.document.tools.columns.manual.clear();
-                self.document.tools.columns.refit = true;
-            }
-            Command::ShowColumns => self.document.tools.columns.hidden.clear(),
             Command::CopySelection => match self.selection_tsv() {
                 Ok(text) => ctx.copy_text(text),
                 Err(e) => self.status = e,
@@ -452,11 +452,7 @@ impl App {
             Command::Panel(panel) => {
                 self.select_tool(panel);
             }
-            Command::Export => self.ui.export_open = true,
-            Command::Review => {
-                self.focus_drafts();
-                self.document.show_preview = true;
-            }
+            Command::Action(action) => self.dispatch_action(action, ctx),
             Command::Help => self.tools.help = true,
             Command::Theme => {
                 self.toggle_theme(ctx);

@@ -645,11 +645,7 @@ impl App {
                 }
                 if ui
                     .add_enabled_ui(
-                        self.document.view == View::Browse
-                            && self.ready
-                            && !self.closing
-                            && !self.has_drafts()
-                            && self.commit_ticket.is_none(),
+                        self.document.view == View::Browse && self.requests_enabled(),
                         |ui| icons::button(ui, Icon::Refresh, "Refresh table", "F5"),
                     )
                     .inner
