@@ -268,6 +268,40 @@ pub(crate) fn validate_readonly(sql: &str) -> Result<(), Failure> {
     Ok(())
 }
 
+/// The inline INTEGER PRIMARY KEY (except DESC) aliases rowid and cannot be NULL.
+pub(crate) fn inline_rowid_key(ddl: &str) -> Option<String> {
+    use turso_parser::ast::{Cmd, ColumnConstraint, CreateTableBody, SortOrder, Stmt};
+    let Ok(Some(Cmd::Stmt(Stmt::CreateTable {
+        body: CreateTableBody::ColumnsAndConstraints {
+            columns, options, ..
+        },
+        ..
+    }))) = Parser::new(ddl.as_bytes()).next_cmd()
+    else {
+        return None;
+    };
+    if options.contains_without_rowid() {
+        return None;
+    }
+    columns
+        .into_iter()
+        .find(|c| {
+            c.col_type
+                .as_ref()
+                .is_some_and(|t| t.name.eq_ignore_ascii_case("INTEGER") && t.size.is_none())
+                && c.constraints.iter().any(|c| {
+                    matches!(
+                        c.constraint,
+                        ColumnConstraint::PrimaryKey {
+                            order: None | Some(SortOrder::Asc),
+                            ..
+                        }
+                    )
+                })
+        })
+        .map(|c| c.col_name.as_str().to_owned())
+}
+
 /// Conservatively establish physical row identity from the matching engine parser.
 pub(crate) fn has_rowid(ddl: &str) -> bool {
     use turso_parser::ast::{Cmd, CreateTableBody, Stmt};

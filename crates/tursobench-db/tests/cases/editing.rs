@@ -22,6 +22,7 @@ fn composite_changed_keys_null_blob_and_defaults() {
     );
     h.sql("INSERT INTO nullable_keys VALUES('x',NULL,'a'),('x',NULL,'A')");
     let nullable = h.run(Operation::Browse(Browse {
+        options: Default::default(),
         table: "nullable_keys".into(),
         offset: 0,
         sort: None,
@@ -29,8 +30,10 @@ fn composite_changed_keys_null_blob_and_defaults() {
         filters: vec![],
     }));
     let ordered = nullable.result.rows;
-    assert_eq!(ordered[0][2], Value::Text("A".into()));
-    assert_eq!(ordered[1][2], Value::Text("a".into()));
+    // Nullable PK ties now follow physical row identity, preserving insertion order.
+    assert_eq!(ordered[0][2], Value::Text("a".into()));
+    assert_eq!(ordered[1][2], Value::Text("A".into()));
+    assert_eq!(h.browse("nullable_keys", 0).1.rows, ordered);
     let (table, page) = h.browse("items", 0);
     let rows = page.rows;
     assert!(table.editable());

@@ -13,6 +13,34 @@ pub enum Value {
     Blob(Vec<u8>),
 }
 impl Value {
+    pub fn from_input(value: serde_json::Value) -> Result<Self, Failure> {
+        Ok(match value {
+            serde_json::Value::Null => Self::Null,
+            serde_json::Value::Bool(v) => Self::Integer(i64::from(v)),
+            serde_json::Value::String(v) => Self::Text(v),
+            serde_json::Value::Number(n) => {
+                if let Some(n) = n.as_i64() {
+                    Self::Integer(n)
+                } else if n.is_u64() {
+                    return Err(Failure::input("Integer exceeds signed 64-bit range"));
+                } else {
+                    Self::Real(
+                        n.as_f64()
+                            .filter(|n| n.is_finite())
+                            .ok_or_else(|| Failure::input("Invalid real number"))?,
+                    )
+                }
+            }
+            serde_json::Value::Object(_) => {
+                serde_json::from_value(value).map_err(|e| Failure::input(e.to_string()))?
+            }
+            _ => {
+                return Err(Failure::input(
+                    "Use a tagged Blob for byte arrays; nested arrays are not scalar bindings",
+                ));
+            }
+        })
+    }
     pub fn bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + match self {
@@ -50,6 +78,26 @@ impl From<Vec<Value>> for Bindings {
     }
 }
 impl Bindings {
+    pub fn parse_json(input: &str) -> Result<Self, Failure> {
+        if input.len() > 8 * 1024 * 1024 {
+            return Err(Failure::input("Bindings exceed 8 MiB"));
+        }
+        match serde_json::from_str(input).map_err(|e| Failure::input(e.to_string()))? {
+            serde_json::Value::Array(values) => Ok(Self::Positional(
+                values
+                    .into_iter()
+                    .map(Value::from_input)
+                    .collect::<Result<_, _>>()?,
+            )),
+            serde_json::Value::Object(values) => Ok(Self::Named(
+                values
+                    .into_iter()
+                    .map(|(k, v)| Value::from_input(v).map(|v| (k, v)))
+                    .collect::<Result<_, _>>()?,
+            )),
+            _ => Err(Failure::input("Bindings require an array or named object")),
+        }
+    }
     pub fn bytes(&self) -> usize {
         match self {
             Self::Positional(v) => v.iter().map(Value::bytes).sum(),
@@ -173,6 +221,7 @@ pub struct Table {
     pub is_table: bool,
     /// True only when parsed schema establishes an ordinary rowid table.
     pub has_rowid: bool,
+    pub binary_collations: bool,
 }
 impl Table {
     pub fn keys(&self) -> Vec<usize> {
@@ -200,13 +249,13 @@ impl Table {
             && self.columns.iter().all(|c| c.hidden == 0)
     }
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Filter {
     pub column: usize,
     pub op: FilterOp,
     pub value: Value,
 }
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FilterOp {
     #[default]
     Equal,
@@ -250,11 +299,50 @@ impl FilterOp {
 }
 #[derive(Debug, Clone)]
 pub struct Browse {
+    pub options: BrowseOptions,
     pub table: String,
     pub offset: usize,
     pub sort: Option<usize>,
     pub descending: bool,
     pub filters: Vec<Filter>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct BrowseOptions {
+    pub sorts: Vec<(usize, bool)>,
+    pub predicate: Option<Box<FilterExpr>>,
+    /// Original retained row used to seek in the same filter/order generation.
+    pub cursor: Option<Vec<Value>>,
+    pub reverse: bool,
+    pub relation: Option<Box<(ForeignKey, Vec<Value>)>>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum FilterExpr {
+    Compare(Filter),
+    In { column: usize, values: Vec<Value> },
+    All(Vec<FilterExpr>),
+    Any(Vec<FilterExpr>),
+}
+impl FilterExpr {
+    pub fn bytes(&self) -> usize {
+        fn walk(expr: &FilterExpr, depth: usize) -> usize {
+            if depth > 8 {
+                return 16 * 1024 * 1024;
+            }
+            match expr {
+                FilterExpr::Compare(f) => f.value.bytes(),
+                FilterExpr::In { values, .. } => values
+                    .iter()
+                    .map(Value::bytes)
+                    .fold(0, usize::saturating_add),
+                FilterExpr::All(parts) | FilterExpr::Any(parts) => parts
+                    .iter()
+                    .map(|p| walk(p, depth + 1))
+                    .fold(0, usize::saturating_add),
+            }
+        }
+        walk(self, 0)
+    }
 }
 
 #[derive(Debug, Clone)]

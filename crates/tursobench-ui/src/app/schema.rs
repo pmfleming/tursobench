@@ -96,7 +96,15 @@ impl App {
         let ticket = session.ticket(self.sequence, self.generation);
         match session.submit(Request {
             ticket,
-            operation: Operation::Count(name.clone()),
+            operation: self
+                .document
+                .browse
+                .as_ref()
+                .filter(|b| b.table == name)
+                .map_or_else(
+                    || Operation::Count(name.clone()),
+                    |b| Operation::CountFiltered(b.clone()),
+                ),
         }) {
             Ok(()) => {
                 let mut result = tursobench_core::ResultSet::default();
@@ -291,7 +299,16 @@ impl App {
             };
             bound.push(value.clone());
         }
-        let destination = Destination::References(child.clone(), key, bound);
+        let mut browse = tursobench_core::Browse {
+            table: child.clone(),
+            offset: 0,
+            sort: None,
+            descending: false,
+            filters: vec![],
+            options: Default::default(),
+        };
+        browse.options.relation = Some(Box::new((key, bound)));
+        let destination = Destination::Page(browse.clone());
         let previous = self.navigation_entry();
         if self.has_drafts() || self.commit_ticket.is_some() {
             return;
@@ -315,11 +332,11 @@ impl App {
                     self.tools.back.remove(0);
                 }
             }
-            self.document.browse = None;
+            self.document.browse = Some(browse);
             self.document.table = None;
             self.document.tools.ddl = None;
             self.ui.diagram.selected = Some(child);
-            self.document.tools.related = Some(destination);
+            self.document.tools.related = None;
         }
     }
     pub(super) fn navigation_entry(&self) -> Option<NavigationEntry> {

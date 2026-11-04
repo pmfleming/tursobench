@@ -3,7 +3,7 @@ use super::{
     results::{CellEditor, CellKind},
 };
 use eframe::egui;
-use tursobench_core::{Browse, Filter, FilterOp, Table, Value};
+use tursobench_core::{Browse, Filter, FilterExpr, FilterOp, Table, Value};
 use tursobench_db::Operation;
 
 /// This grammar produces bound predicates, never SQL text.
@@ -102,13 +102,84 @@ pub(super) fn parse_filter(input: &str, table: &Table) -> Result<Filter, String>
                 .parse(value)
                 .or_else(|_| CellKind::Real.parse(value))?
         } else {
-            Value::Text(value.into())
+            if let Ok(n) = value.parse::<i64>() {
+                Value::Integer(n)
+            } else if value.contains(['.', 'e', 'E']) && value.parse::<f64>().is_ok() {
+                CellKind::Real.parse(value)?
+            } else {
+                Value::Text(value.into())
+            }
         }
     };
     if op == FilterOp::Contains && !matches!(value, Value::Text(_)) {
         return Err("Contains requires text".into());
     }
     Ok(Filter { column, op, value })
+}
+fn parse_expression(input: &str, table: &Table, depth: usize) -> Result<FilterExpr, String> {
+    if depth > 8 || input.len() > 64 * 1024 {
+        return Err("Expression exceeds nesting/size budget".into());
+    }
+    let input = input.trim();
+    let tokens = tursobench_db::sql::tokens(input);
+    for operator in ["OR", "AND"] {
+        let mut nesting = 0i32;
+        let mut boundaries = Vec::new();
+        for token in &tokens {
+            let text = input[token.range.clone()].trim();
+            if text == "(" {
+                nesting += 1;
+            } else if text == ")" {
+                nesting -= 1;
+            } else if nesting == 0
+                && token.style == tursobench_db::sql::TokenStyle::Keyword
+                && text.eq_ignore_ascii_case(operator)
+            {
+                boundaries.push(token.range.clone());
+            }
+        }
+        if !boundaries.is_empty() {
+            let mut parts = Vec::new();
+            let mut start = 0;
+            for end in boundaries {
+                parts.push(parse_expression(
+                    &input[start..end.start],
+                    table,
+                    depth + 1,
+                )?);
+                start = end.end;
+            }
+            parts.push(parse_expression(&input[start..], table, depth + 1)?);
+            return Ok(if operator == "OR" {
+                FilterExpr::Any(parts)
+            } else {
+                FilterExpr::All(parts)
+            });
+        }
+    }
+    if input.starts_with('(') && input.ends_with(')') {
+        return parse_expression(&input[1..input.len() - 1], table, depth + 1);
+    }
+    if let Some(token) = tokens.iter().find(|t| {
+        t.style == tursobench_db::sql::TokenStyle::Keyword
+            && input[t.range.clone()].trim().eq_ignore_ascii_case("IN")
+    }) {
+        let field = parse_filter(&format!("{} IS NULL", &input[..token.range.start]), table)?;
+        let list: Vec<serde_json::Value> =
+            serde_json::from_str(input[token.range.end..].trim()).map_err(|e| e.to_string())?;
+        if list.is_empty() || list.len() > 1000 {
+            return Err("IN requires 1–1000 values".into());
+        }
+        return Ok(FilterExpr::In {
+            column: field.column,
+            values: list
+                .into_iter()
+                .map(Value::from_input)
+                .collect::<Result<_, _>>()
+                .map_err(|e| e.to_string())?,
+        });
+    }
+    parse_filter(input, table).map(FilterExpr::Compare)
 }
 pub(super) struct FilterEditor {
     index: usize,
@@ -176,6 +247,8 @@ impl FilterChange {
             return Err("Filters exceed 32 predicates / 1 MiB".into());
         }
         next.offset = 0;
+        next.options.cursor = None;
+        next.options.reverse = false;
         Ok(next)
     }
 }
@@ -245,6 +318,7 @@ impl App {
         {
             return false;
         }
+        self.tools.counts.clear();
         self.document.browse = Some(next);
         self.document.tools.filter_editor = None;
         self.document.tools.filter_error.clear();
@@ -254,6 +328,7 @@ impl App {
         self.change_filters(FilterChange::Add(filter))
     }
     pub(super) fn filter_controls(&mut self, ui: &mut egui::Ui) {
+        self.expression_controls(ui);
         let (Some(table), Some(browse)) = (&self.document.table, &self.document.browse) else {
             return;
         };
@@ -323,6 +398,44 @@ impl App {
             None => {}
         }
     }
+    fn expression_controls(&mut self, ui: &mut egui::Ui) {
+        let mut change = None;
+        ui.menu_button("AND / OR / IN…", |ui| {
+            ui.label("Group comparisons with parentheses, AND and OR. IN accepts a JSON list.");
+            ui.label("Example: (id = 5 OR id IN [7,8]) AND name != 'hidden'");
+            ui.text_edit_multiline(&mut self.document.tools.advanced_filter);
+            if ui.button("Apply expression").clicked()
+                && let Some(table) = &self.document.table
+            {
+                change = Some(
+                    parse_expression(&self.document.tools.advanced_filter, table, 0).map(Some),
+                );
+            }
+            if ui.button("Clear expression").clicked() {
+                change = Some(Ok(None));
+            }
+        });
+        if let Some(change) = change {
+            match change {
+                Ok(predicate) => {
+                    if let Some(mut next) = self.document.browse.clone() {
+                        next.options.predicate = predicate.map(Box::new);
+                        next.options.cursor = None;
+                        next.options.reverse = false;
+                        next.offset = 0;
+                        if self
+                            .submit(Operation::Browse(next.clone()), View::Browse)
+                            .is_some()
+                        {
+                            self.document.browse = Some(next);
+                            self.tools.counts.clear();
+                        }
+                    }
+                }
+                Err(e) => self.document.tools.filter_error = e,
+            }
+        }
+    }
     pub(super) fn column_facets(&mut self, ui: &mut egui::Ui, column: usize) {
         if self.document.view != View::Browse || self.document.browse.is_none() {
             ui.label("Facets require a table browse");
@@ -374,11 +487,28 @@ impl App {
 mod tests {
     use super::{FilterChange, FilterEditor, parse_filter};
     use tursobench_core::{Browse, FilterOp, Table, Value};
+    #[test]
+    fn expressions_group_or_and_in_without_splitting_quoted_text() {
+        let table = table();
+        assert!(super::parse_expression("(n = 5 OR n IN [7,8]) AND r > 1.0", &table, 0).is_ok());
+        assert!(super::parse_expression("\"odd \"\" name\" = 'x OR y'", &table, 0).is_ok());
+        let mut table = table;
+        table.columns[1].declared_type.clear();
+        assert_eq!(
+            parse_filter("n = 5", &table).unwrap().value,
+            Value::Integer(5)
+        );
+        assert_eq!(
+            parse_filter("n = '5'", &table).unwrap().value,
+            Value::Text("5".into())
+        );
+    }
     fn table() -> Table {
         Table {
             name: "t".into(),
             is_table: true,
             has_rowid: true,
+            binary_collations: true,
             columns: [("odd \" name", "TEXT"), ("n", "INTEGER"), ("r", "REAL")]
                 .into_iter()
                 .map(|(name, ty)| tursobench_core::TableColumn {
@@ -456,6 +586,7 @@ mod tests {
     fn filter_changes_are_bounded_and_leave_the_source_untouched() {
         let filter = parse_filter("n=1", &table()).unwrap();
         let original = Browse {
+            options: Default::default(),
             table: "t".into(),
             offset: 100,
             sort: Some(1),
@@ -494,6 +625,7 @@ mod tests {
                 .is_err()
         );
         let full = Browse {
+            options: Default::default(),
             filters: vec![filter.clone(); 32],
             ..original.clone()
         };

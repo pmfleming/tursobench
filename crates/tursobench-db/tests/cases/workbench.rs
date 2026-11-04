@@ -93,6 +93,102 @@ fn readonly_vacuum_into_and_attach_do_not_create_files() {
 }
 
 #[test]
+fn seek_paging_grouped_filters_counts_and_reference_pages_are_complete() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("paging.db");
+    common::create(
+        &path,
+        &[
+            "CREATE TABLE p(id INTEGER PRIMARY KEY)",
+            "INSERT INTO p VALUES(1)",
+            "CREATE TABLE c(id INTEGER PRIMARY KEY, p INTEGER REFERENCES p(id), label TEXT COLLATE NOCASE)",
+            "CREATE INDEX c_p ON c(p)",
+            "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<251) INSERT INTO c SELECT x,1,CASE WHEN x%3=0 THEN NULL ELSE 'same' END FROM n",
+        ],
+    );
+    let mut client = Client::open(&path, Access::ReadOnly);
+    let key = client
+        .run(Operation::Inspect("c".into()))
+        .info
+        .unwrap()
+        .foreign_keys
+        .remove(0);
+    let legacy = client
+        .run(Operation::References {
+            table: "c".into(),
+            key: key.clone(),
+            values: vec![Value::Integer(1)],
+        })
+        .result;
+    assert_eq!(legacy.rows.len(), 100);
+    assert_eq!(legacy.completion.unwrap().delivery, Delivery::Limited);
+    let mut spec = Browse {
+        table: "c".into(),
+        offset: 0,
+        sort: None,
+        descending: false,
+        filters: vec![],
+        options: Default::default(),
+    };
+    spec.options.relation = Some(Box::new((key, vec![Value::Integer(1)])));
+    let first = client.run(Operation::Browse(spec.clone())).result;
+    spec.options.cursor = first.rows.last().cloned();
+    spec.offset = 100;
+    let second = client.run(Operation::Browse(spec.clone())).result;
+    assert_eq!(second.rows[0][0], Value::Integer(101));
+    spec.options.cursor = second.rows.first().cloned();
+    spec.options.reverse = true;
+    spec.offset = 0;
+    let mut previous = client.run(Operation::Browse(spec.clone())).result.rows;
+    previous.reverse();
+    assert_eq!(previous, first.rows);
+    spec.options.cursor = None;
+    spec.options.reverse = false;
+    spec.options.predicate = Some(Box::new(FilterExpr::Any(vec![
+        FilterExpr::In {
+            column: 0,
+            values: vec![Value::Integer(2), Value::Integer(3)],
+        },
+        FilterExpr::Compare(Filter {
+            column: 0,
+            op: FilterOp::Greater,
+            value: Value::Integer(249),
+        }),
+    ])));
+    assert_eq!(
+        client
+            .run(Operation::CountFiltered(spec.clone()))
+            .result
+            .rows,
+        vec![vec![Value::Integer(4)]]
+    );
+    assert_eq!(client.run(Operation::Browse(spec)).result.rows.len(), 4);
+    let mut sorted = Browse {
+        table: "c".into(),
+        offset: 0,
+        sort: Some(2),
+        descending: false,
+        filters: vec![],
+        options: Default::default(),
+    };
+    sorted.options.sorts.push((1, true));
+    let expected = client
+        .sql("SELECT id,p,label FROM c ORDER BY label ASC,p DESC,id ASC")
+        .rows;
+    let mut all = Vec::new();
+    loop {
+        let page = client.run(Operation::Browse(sorted.clone())).result.rows;
+        if page.is_empty() {
+            break;
+        }
+        sorted.options.cursor = page.last().cloned();
+        all.extend(page);
+    }
+    assert_eq!(all, expected);
+    client.close();
+}
+
+#[test]
 fn native_metadata_related_lookup_and_diagnostics_preserve_readonly_bytes() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("workbench.db");
@@ -407,6 +503,7 @@ fn typed_filter_chips_bind_values_escape_contains_and_combine_null_predicates() 
     let mut c = Client::open(&path, Access::ReadOnly);
     let mut run = |filters: Vec<Filter>| {
         c.run(Operation::Browse(Browse {
+            options: Default::default(),
             table: "filter rows".into(),
             offset: 0,
             sort: None,

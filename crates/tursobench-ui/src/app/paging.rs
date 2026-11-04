@@ -17,6 +17,7 @@ pub(super) struct Pending {
     owner: Option<Ticket>,
     offset: usize,
     previous: bool,
+    reverse: bool,
     error: String,
 }
 impl App {
@@ -52,11 +53,26 @@ impl App {
             }
             spec.offset = spec.offset.saturating_sub(100);
         } else {
-            if pages.end.is_some_and(|last| end >= last) || end > 1_000_000 {
+            if pages.end.is_some_and(|last| end >= last) {
                 return;
             }
             spec.offset = end;
         }
+        let seek = self.document.table.as_ref().is_some_and(|table| {
+            let keys = table.keys();
+            table.is_table && !keys.is_empty() && keys.iter().all(|i| table.columns[*i].not_null)
+        });
+        spec.options.cursor = if seek {
+            if previous {
+                self.document.result.rows.first().cloned()
+            } else {
+                self.document.result.rows.last().cloned()
+            }
+        } else {
+            None
+        };
+        spec.options.reverse = previous && seek;
+        let reverse = spec.options.reverse;
         let Some(session) = &self.session else {
             return;
         };
@@ -79,6 +95,7 @@ impl App {
                     owner: self.document.result.current,
                     offset,
                     previous,
+                    reverse,
                     error: String::new(),
                 });
                 pages.error.clear();
@@ -135,6 +152,9 @@ impl App {
                 page.error
             };
             return;
+        }
+        if page.reverse {
+            page.result.rows.reverse();
         }
         self.document
             .append_page(page, self.preferences.row_limit.clamp(200, 10_000) - 100);
@@ -290,6 +310,7 @@ mod tests {
                     columns: vec![],
                     is_table: true,
                     has_rowid: true,
+                    binary_collations: true,
                 }),
                 "Schema changed",
             ),
@@ -320,6 +341,7 @@ mod tests {
                 owner: Some(owner),
                 offset: 1,
                 previous: false,
+                reverse: false,
                 error: String::new(),
             });
             // A late completion cannot consume or alter the current pending page.

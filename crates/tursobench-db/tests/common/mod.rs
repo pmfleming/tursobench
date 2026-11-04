@@ -100,6 +100,7 @@ impl Client {
     }
     pub fn browse(&mut self, name: &str, offset: usize) -> (Table, ResultSet) {
         let reply = self.run(Operation::Browse(Browse {
+            options: Default::default(),
             table: name.into(),
             offset,
             sort: None,

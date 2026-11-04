@@ -856,6 +856,7 @@ mod tests {
                         columns: vec![],
                         is_table: true,
                         has_rowid: true,
+                        binary_collations: true,
                     },
                     indexes: vec![],
                     foreign_keys: targets

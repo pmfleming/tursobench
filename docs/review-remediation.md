@@ -71,3 +71,26 @@ transaction rollback after timeout, atomic interrupted bulk insertion, connectio
 reuse and 15 queued reads after cancellation. All 151 workspace tests pass.
 Formatting and workspace all-target Clippy with warnings denied also pass. The
 engine patch provenance, source archive SHA-256 and license are in vendor/turso.
+
+## Stage 4 — browsing and navigation
+
+Browse ordering uses selected sort columns plus proven primary-key/rowid ties,
+without the all-column sorter for ordinary tables. Inline INTEGER PRIMARY KEY
+rowid aliases are recognized structurally (DESC is excluded). Non-null PKs use
+forward/backward keyset paging; nullable keys and views retain an OFFSET fallback.
+The silent million-row clamp is removed. Shift-click adds secondary sort columns.
+
+The browser adds row jumps, explicit filter-aware counts and bounded grouped
+AND/OR expressions with typed IN lists. Bare numeric literals remain numeric on
+untyped/view columns; quote values to compare as text. Incoming-reference full
+views now use normal paging and counts; bounded previews probe one extra row and
+report Limited. Scalar references use an index-friendly IN query only when parent
+and child affinity match and parent collation is BINARY; other cases retain the
+parent-governed comparison semantics.
+
+Stage 4 verification: all 154 workspace tests, formatting and all-target Clippy
+pass. New cases cover forward/backward seek, NULL/collated multi-column ordering,
+251-row reference traversal, truncation status, grouped filters and matching
+counts. Real EXPLAIN plans confirm indexed first-page/sorted browsing needs no
+temporary B-tree. Concurrent changes invalidate cursors rather than promising a
+snapshot across page requests.

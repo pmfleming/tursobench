@@ -311,6 +311,35 @@ impl App {
                     "Only retained rows are exported. Scroll to load another table page.",
                 );
         }
+        if let Some(spec) = self.document.browse.clone() {
+            let mut jump = false;
+            ui.horizontal(|ui| {
+                ui.label("Go to row");
+                ui.add(
+                    egui::DragValue::new(&mut self.document.tools.jump_row)
+                        .range(1..=i64::MAX as usize),
+                );
+                jump = ui.button("Go").clicked();
+                if ui.button("Count matching rows").clicked() {
+                    self.count_table(spec.table.clone());
+                }
+                if let Some(count) = self.tools.counts.get(&spec.table) {
+                    ui.small(format!("{count} matching rows (last count)"));
+                }
+            });
+            if jump && !self.has_drafts() {
+                let mut next = spec;
+                next.offset = self.document.tools.jump_row.saturating_sub(1);
+                next.options.cursor = None;
+                next.options.reverse = false;
+                if self
+                    .submit(tursobench_db::Operation::Browse(next.clone()), View::Browse)
+                    .is_some()
+                {
+                    self.document.browse = Some(next);
+                }
+            }
+        }
         self.hover_context(ui.ctx());
         if self.document.ui.nav == shell::Nav::Table
             && self.document.ui.table_view == shell::TableView::Data
@@ -383,7 +412,14 @@ impl App {
             && self.commit_ticket.is_none()
             && let Some(b) = self.document.browse.as_mut()
         {
-            if b.sort != Some(i) {
+            if ui.input(|i| i.modifiers.shift) {
+                if let Some((_, desc)) = b.options.sorts.iter_mut().find(|(col, _)| *col == i) {
+                    *desc = !*desc;
+                } else if b.options.sorts.len() < 7 {
+                    b.options.sorts.push((i, false));
+                }
+            } else if b.sort != Some(i) {
+                b.options.sorts.clear();
                 b.sort = Some(i);
                 b.descending = false;
             } else if !b.descending {
@@ -393,6 +429,8 @@ impl App {
                 b.descending = false;
             }
             b.offset = 0;
+            b.options.cursor = None;
+            b.options.reverse = false;
             self.reload();
         }
     }

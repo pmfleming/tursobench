@@ -24,6 +24,7 @@ fn persistent_editor_isolated_browse_foreign_keys_and_close_rollback() {
     );
     client.sql("INSERT INTO parent VALUES (1)");
     let r = client.run(Operation::Browse(Browse {
+        options: Default::default(),
         table: "parent".into(),
         offset: 0,
         sort: None,

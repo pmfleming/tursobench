@@ -183,6 +183,31 @@ pub(crate) fn references_sql(
     values: &[Value],
     count: bool,
 ) -> Result<String, Failure> {
+    let condition = reference_condition(child, parent, key, values)?;
+    let columns = child
+        .columns
+        .iter()
+        .map(|c| format!("c.{}", quote_identifier(&c.name)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let columns = if count {
+        "count(*) AS row_count".into()
+    } else {
+        columns
+    };
+    let limit = if count { "" } else { " LIMIT 101" };
+    Ok(format!(
+        "SELECT {columns} FROM {} AS c WHERE {condition}{limit}",
+        quote_identifier(&child.name),
+    ))
+}
+
+pub(crate) fn reference_condition(
+    child: &Table,
+    parent: &Table,
+    key: &ForeignKey,
+    values: &[Value],
+) -> Result<String, Failure> {
     if key.columns.is_empty()
         || key.columns.len() != values.len()
         || child
@@ -217,21 +242,32 @@ pub(crate) fn references_sql(
             i + 1
         ));
     }
-    let columns = child
-        .columns
-        .iter()
-        .map(|c| format!("c.{}", quote_identifier(&c.name)))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let columns = if count {
-        "count(*) AS row_count".into()
-    } else {
-        columns
-    };
-    let limit = if count { "" } else { " LIMIT 100" };
+
+    if key.columns.len() == 1 && parent.binary_collations {
+        let (source, target) = &key.columns[0];
+        let target = target.as_ref().unwrap();
+        let ct = child
+            .columns
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(source))
+            .unwrap();
+        let pt = parent
+            .columns
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(target))
+            .unwrap();
+        if ct.declared_type.eq_ignore_ascii_case(&pt.declared_type) {
+            return Ok(format!(
+                "c.{} IN (SELECT p.{} FROM {} AS p WHERE p.{} IS ?1)",
+                quote_identifier(source),
+                quote_identifier(target),
+                quote_identifier(&parent.name),
+                quote_identifier(target)
+            ));
+        }
+    }
     Ok(format!(
-        "SELECT {columns} FROM {} AS c WHERE EXISTS (SELECT 1 FROM {} AS p WHERE {}){limit}",
-        quote_identifier(&child.name),
+        "EXISTS (SELECT 1 FROM {} AS p WHERE {})",
         quote_identifier(&parent.name),
         predicates.join(" AND ")
     ))

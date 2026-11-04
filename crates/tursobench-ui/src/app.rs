@@ -352,6 +352,7 @@ impl App {
             }
         }
         let browse = Browse {
+            options: Default::default(),
             table: name.clone(),
             offset: 0,
             sort: None,

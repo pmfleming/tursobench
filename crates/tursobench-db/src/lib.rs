@@ -100,6 +100,7 @@ pub enum Operation {
         values: Vec<Value>,
     },
     Count(String),
+    CountFiltered(Browse),
     Diagnostic(Diagnostic),
     Schema,
     Browse(Browse),
@@ -120,8 +121,23 @@ impl Operation {
                 | Self::Explain {
                     sql, parameters, ..
                 } => sql.len() + parameters.bytes(),
-                Self::Browse(b) => {
-                    b.table.len() + b.filters.iter().map(|f| f.value.bytes()).sum::<usize>()
+                Self::Browse(b) | Self::CountFiltered(b) => {
+                    b.table.len()
+                        + b.filters.iter().map(|f| f.value.bytes()).sum::<usize>()
+                        + b.options
+                            .predicate
+                            .as_ref()
+                            .map_or(0, |e| e.bytes().min(COMMAND_BYTES))
+                        + b.options.cursor.as_ref().map_or(0, |row| values(row))
+                        + b.options.relation.as_deref().map_or(0, |(key, v)| {
+                            key.target.len()
+                                + values(v)
+                                + key
+                                    .columns
+                                    .iter()
+                                    .map(|(a, b)| a.len() + b.as_ref().map_or(0, String::len))
+                                    .sum::<usize>()
+                        })
                 }
                 Self::CommitEdits(batch) => {
                     batch.table.name.len()

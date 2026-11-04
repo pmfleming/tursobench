@@ -224,6 +224,7 @@ mod tests {
             name: "a\"b".into(),
             is_table: true,
             has_rowid: true,
+            binary_collations: true,
             columns: vec![TableColumn {
                 name: "id".into(),
                 declared_type: "INTEGER".into(),

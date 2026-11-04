@@ -6,13 +6,12 @@ use std::{collections::BTreeMap, ops::Range};
 pub(super) enum Destination {
     Page(Browse),
     Related(String, Vec<(String, Value)>),
-    References(String, tursobench_core::ForeignKey, Vec<Value>),
 }
 impl Destination {
     pub fn table(&self) -> &str {
         match self {
             Self::Page(b) => &b.table,
-            Self::Related(t, _) | Self::References(t, _, _) => t,
+            Self::Related(t, _) => t,
         }
     }
     pub fn operation(&self) -> tursobench_db::Operation {
@@ -21,11 +20,6 @@ impl Destination {
             Self::Related(table, keys) => tursobench_db::Operation::Lookup {
                 table: table.clone(),
                 keys: keys.clone(),
-            },
-            Self::References(table, key, values) => tursobench_db::Operation::References {
-                table: table.clone(),
-                key: key.clone(),
-                values: values.clone(),
             },
         }
     }
@@ -75,6 +69,8 @@ pub(super) struct ViewTools {
     pub pages: super::paging::Pages,
     pub grid_scroll: eframe::egui::Vec2,
     pub row_stride: f32,
+    pub jump_row: usize,
+    pub advanced_filter: String,
     pub restore_scroll: Option<eframe::egui::Vec2>,
     pub cell_editor: results::CellEditor,
     pub selection: Range<usize>,

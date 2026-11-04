@@ -62,6 +62,7 @@ fn exact_project_schemas_open_browse_filter_page_and_preserve_readonly_files() {
         let key = table.keys()[0];
         let wanted = first.rows[0][key].clone();
         let filtered = c.run(Operation::Browse(Browse {
+            options: Default::default(),
             table: paged.into(),
             offset: 0,
             sort: Some(key),

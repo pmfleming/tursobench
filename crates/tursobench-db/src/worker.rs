@@ -214,7 +214,8 @@ impl Worker<'_> {
             }
             Operation::Browse(spec) => {
                 let table = describe(self.browse, &spec.table).await?;
-                let (sql, parameters) = browse_sql(&table, spec)?;
+                let relation=crate::browse::relationship(self.browse,&table,&spec).await?;
+                let (sql, parameters) = browse_sql(&table, spec,relation)?;
                 self.output.send(ticket, EventKind::Table(table));
                 (self.browse, sql, parameters.into(), Budget {rows:100,bytes:4*1024*1024,..default})
             }
@@ -230,7 +231,7 @@ impl Worker<'_> {
                 let parent = describe(self.browse, &key.target).await?;
                 let sql = inspection::references_sql(&child.table, &parent, &key, &values,count_references)?;
                 self.output.send(ticket, EventKind::Table(child.table));
-                (self.browse, sql, values.into(), default)
+                (self.browse, sql, values.into(), if count_references {default} else {Budget{rows:100,..default}})
             }
             Operation::Peek {table:name,key,values} => {
                 let child=inspection::inspect(self.browse,&name).await?;
@@ -239,6 +240,12 @@ impl Worker<'_> {
                 let keys=key.columns.iter().zip(values).map(|((_,target),value)|target.clone().map(|target|(target,value)).ok_or_else(||Failure::input("Unresolved parent key"))).collect::<Result<Vec<_>,_>>()?;
                 let (sql,parameters)=inspection::lookup_sql(&parent,keys)?;
                 (self.browse,sql,parameters.into(),Budget{rows:1,bytes:512*1024,..default})
+            }
+            Operation::CountFiltered(spec) => {
+                let table=describe(self.browse,&spec.table).await?;
+                let relation=crate::browse::relationship(self.browse,&table,&spec).await?;
+                let (sql,params)=crate::browse::count_sql(&table,&spec,relation)?;
+                (self.browse,sql,params.into(),default)
             }
             Operation::Count(name) => (self.browse, format!("SELECT count(*) AS row_count FROM {}", quote_identifier(&name)), vec![].into(), default),
             Operation::Diagnostic(crate::Diagnostic::ForeignKeys) => (self.browse, crate::validation::foreign_keys(self.browse).await?, vec![].into(), default),

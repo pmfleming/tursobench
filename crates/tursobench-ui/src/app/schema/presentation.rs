@@ -213,6 +213,7 @@ mod tests {
                 name: "__turso_internal_test".into(),
                 is_table: true,
                 has_rowid: true,
+                binary_collations: true,
                 columns: vec![TableColumn {
                     name: "child_id".into(),
                     declared_type: "INTEGER".into(),

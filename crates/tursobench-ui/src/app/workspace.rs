@@ -762,6 +762,7 @@ impl App {
             if self.document.kind == Kind::Data && matches!(object.kind.as_str(), "table" | "view")
             {
                 let browse = tursobench_core::Browse {
+                    options: Default::default(),
                     table: name,
                     offset: 0,
                     sort: None,
