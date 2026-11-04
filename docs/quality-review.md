@@ -45,7 +45,76 @@ validated and committed separately. Evidence is under `target/quality-five/`.
    formatting and all-target Clippy pass. No runtime speedup is claimed without
    comparative profiling; full-batch staging validation still clones drafts.
 
-<!-- five-follow-up-results -->
+5. **Bounded history presentation and shared query actions.** A borrowed history
+   row owns display flags and rendering; it has no dependency on persisted history
+   types. History and saved queries share load/delete controls. Empty searches
+   skip SQL case conversion. SQL previews stream at most 24 words and 120 Unicode
+   characters, avoiding a large intermediate vector/join for a long first word.
+   The two query-library scenarios share one fixture and retain their distinct
+   history, saved-query and theme assertions. Added cases cover stable equal-time
+   sorting, unknown durations, Unicode search, legacy/failed badges and long
+   Unicode previews. `query_history_ui` cognitive/cyclomatic complexity falls
+   from 50/22 to 14/17; one row is 11/4. All 127 active UI tests and Clippy pass.
+
+Both full measurements use the same local RQLens binary, configuration, metadata
+launcher and Nix shell. The preserved baseline artifacts were collected just
+before committing `14ee484`; the final artifacts precede the fifth commit. Both
+inventories contain 81 source modules.
+
+| Measurement | Series baseline | After five improvements |
+| --- | ---: | ---: |
+| Maximum cognitive complexity | 84 | 58 |
+| Sum of cognitive complexity | 5,168 | 5,081 |
+| Maximum cyclomatic complexity | 72 | 60 |
+| Sum of cyclomatic complexity | 5,513 | 5,555 |
+| Sum of function Halstead effort | 38,468,150 | 37,960,351 |
+| Duplicated source lines | 2,158 | 2,137 |
+| Observed panic paths, including tests | 434 | 436 |
+| Wildcard imports | 21 | 21 |
+| Sum of module locality risk | 279.75 | 279.75 |
+| Mean observed module leverage | 25.93 | 25.93 |
+| Physical first-party Rust lines | 34,054 | 34,526 |
+| Literal `.clone()` call sites | 379 | 377 |
+| Test/helper function lines | 9,752 | 9,889 |
+| Executed tests | 195 | 194 |
+| Line coverage (%) | 83.30 | 83.59 |
+| Region coverage (%) | 82.85 | 83.15 |
+| Function coverage (%) | 85.04 | 85.39 |
+
+Peak complexity, total cognitive complexity, effort, duplication and line coverage
+improve. The global cognitive maximum now belongs to grid orchestration (58);
+the cyclomatic maximum is the vector-icon painter (60). Runtime algorithms avoid
+redundant value copies, preview generation and repeated tail-size scans; speedups
+were not benchmarked.
+
+The tradeoffs are explicit: this series adds 472 physical Rust lines and 137
+lines of test/helper function spans, while executing one fewer test. More focused
+helpers and regression assertions increase summed cyclomatic complexity by 42.
+Mean module leverage and aggregate locality risk remain unchanged. Three new
+unwrap findings are in integration assertions, while the worker eviction unwrap
+is removed; no production panic path or lint suppression was added. This series
+is not a further overall LOC/test-code reduction.
+
+Coverage rises from 19,130/22,965 to 19,431/23,245 lines. Test/helper volume uses
+the same union of function spans as the preceding review, including helpers but
+excluding imports/constants and inter-function blank lines. One manual profiling
+test stays ignored. Branch/mutation coverage and comparative runtime profiling
+were not collected. Architecture identity remains partial at 1,375/1,401 resolved
+references (baseline 1,370/1,396); its locality/leverage scores remain advisory.
+
+Final checks pass: formatting, workspace/all-target Clippy with warnings denied,
+194 workspace tests, workspace build, engine spike, native Wayland desktop smoke,
+startup-discovery smoke and all four local-project schema/desktop smoke cases.
+The engine spike's existing fault-injection and old-engine compatibility gates
+remain unvalidated. Full-draft cloning during staging validation and the shared
+`App` dependency hub remain worthwhile follow-ups.
+
+Evidence is in `target/quality-five/`: `baseline/`, `final/`, `comparison.json`,
+`compare.py`, source inventories, per-improvement hotspot/test/Clippy logs, build,
+engine and native smoke logs. These are ignored build artifacts. Reproduce the
+measurements with `nix develop -c bash target/quality-five/lens.sh all` using the
+same local metadata launcher and coverage environment described below.
+
 
 ---
 

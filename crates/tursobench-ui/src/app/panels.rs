@@ -226,14 +226,11 @@ impl App {
                             ui.weak("Legacy")
                                 .on_hover_text("Saved before database-scoped queries");
                         }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if icons::button(ui, Icon::Trash, "Delete saved query", "").clicked() {
-                                remove = Some(index);
-                            }
-                            if icons::button(ui, Icon::Sql, "Load saved query", "").clicked() {
-                                load = Some(bookmark.sql.clone());
-                            }
-                        });
+                        match query_actions(ui, "Load saved query", "Delete saved query") {
+                            Some(QueryAction::Load) => load = Some(bookmark.sql.clone()),
+                            Some(QueryAction::Delete) => remove = Some(index),
+                            None => {}
+                        }
                     });
                 });
             });
@@ -266,29 +263,13 @@ impl App {
         }
         search(ui, &mut self.tools.history_search, "Search history…");
         ui.horizontal(|ui| {
-            if icons::control(
-                ui,
-                Icon::Filter,
-                "Slow queries only",
-                "",
-                self.tools.slow_only,
-                false,
-            )
-            .clicked()
-            {
-                self.tools.slow_only = !self.tools.slow_only;
-            }
-            if icons::control(
-                ui,
-                Icon::Down,
-                "Slowest first",
-                "",
-                self.tools.sort_slow,
-                false,
-            )
-            .clicked()
-            {
-                self.tools.sort_slow = !self.tools.sort_slow;
+            for (selected, icon, name) in [
+                (&mut self.tools.slow_only, Icon::Filter, "Slow queries only"),
+                (&mut self.tools.sort_slow, Icon::Down, "Slowest first"),
+            ] {
+                if icons::control(ui, icon, name, "", *selected, false).clicked() {
+                    *selected = !*selected;
+                }
             }
         });
         ui.add_space(4.0);
@@ -301,7 +282,7 @@ impl App {
             .enumerate()
             .filter(|(_, h)| {
                 (h.database.is_empty() || h.database == self.tools.database_scope)
-                    && h.sql.to_lowercase().contains(&query)
+                    && (query.is_empty() || h.sql.to_lowercase().contains(&query))
                     && (!self.tools.slow_only || h.elapsed_ms.is_some_and(|ms| ms >= threshold))
             })
             .collect();
@@ -314,51 +295,23 @@ impl App {
         let mut load = None;
         let mut remove = None;
         for (index, entry) in entries {
-            ui.push_id(("history-query", index), |ui| {
-                card(ui, |ui| {
-                    let preview = ui
-                        .add_sized(
-                            [ui.available_width(), 24.0],
-                            egui::Button::new(
-                                egui::RichText::new(sql_preview(&entry.sql)).monospace(),
-                            )
-                            .truncate()
-                            .frame(false),
-                        )
-                        .on_hover_text(&entry.sql);
-                    if preview.clicked() {
-                        load = Some(entry.sql.clone());
+            match ui
+                .push_id(("history-query", index), |ui| {
+                    HistoryRow {
+                        sql: &entry.sql,
+                        elapsed_ms: entry.elapsed_ms,
+                        failed: entry.failed,
+                        slow: entry.elapsed_ms.is_some_and(|ms| ms >= threshold),
+                        legacy: entry.database.is_empty(),
                     }
-                    ui.horizontal(|ui| {
-                        ui.small(entry.elapsed_ms.map_or("—".into(), |ms| format!("{ms} ms")));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if icons::button(ui, Icon::Trash, "Delete history entry", "").clicked()
-                            {
-                                remove = Some(index);
-                            }
-                            if icons::button(ui, Icon::Sql, "Load history query", "").clicked() {
-                                load = Some(entry.sql.clone());
-                            }
-                        });
-                    });
-                    if entry.failed
-                        || entry.elapsed_ms.is_some_and(|ms| ms >= threshold)
-                        || entry.database.is_empty()
-                    {
-                        ui.horizontal_wrapped(|ui| {
-                            if entry.failed {
-                                ui.colored_label(ui.visuals().error_fg_color, "Failed");
-                            }
-                            if entry.elapsed_ms.is_some_and(|ms| ms >= threshold) {
-                                ui.colored_label(ui.visuals().warn_fg_color, "Slow");
-                            }
-                            if entry.database.is_empty() {
-                                ui.weak("Legacy");
-                            }
-                        });
-                    }
-                });
-            });
+                    .show(ui)
+                })
+                .inner
+            {
+                Some(QueryAction::Load) => load = Some(entry.sql.clone()),
+                Some(QueryAction::Delete) => remove = Some(index),
+                None => {}
+            }
         }
         if let Some(index) = remove {
             self.preferences.query_history.remove(index);
@@ -451,7 +404,7 @@ fn section(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut egui::Ui))
     card(ui, contents);
 }
 
-fn card(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
+fn card<R>(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::new()
         .fill(ui.visuals().faint_bg_color)
         .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
@@ -459,8 +412,9 @@ fn card(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
         .inner_margin(9.0)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            contents(ui);
-        });
+            contents(ui)
+        })
+        .inner
 }
 
 fn setting(
@@ -506,14 +460,87 @@ fn action_row(ui: &mut egui::Ui, icon: Icon, label: &str, name: &str) -> egui::R
     response.on_hover_text(name)
 }
 
+#[derive(Clone, Copy)]
+enum QueryAction {
+    Load,
+    Delete,
+}
+
+fn query_actions(ui: &mut egui::Ui, load: &str, delete: &str) -> Option<QueryAction> {
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let delete = icons::button(ui, Icon::Trash, delete, "").clicked();
+        let load = icons::button(ui, Icon::Sql, load, "").clicked();
+        if load {
+            Some(QueryAction::Load)
+        } else if delete {
+            Some(QueryAction::Delete)
+        } else {
+            None
+        }
+    })
+    .inner
+}
+
+struct HistoryRow<'a> {
+    sql: &'a str,
+    elapsed_ms: Option<u64>,
+    failed: bool,
+    slow: bool,
+    legacy: bool,
+}
+impl HistoryRow<'_> {
+    fn show(&self, ui: &mut egui::Ui) -> Option<QueryAction> {
+        card(ui, |ui| {
+            let preview = ui
+                .add_sized(
+                    [ui.available_width(), 24.0],
+                    egui::Button::new(egui::RichText::new(sql_preview(self.sql)).monospace())
+                        .truncate()
+                        .frame(false),
+                )
+                .on_hover_text(self.sql);
+            let mut action = preview.clicked().then_some(QueryAction::Load);
+            ui.horizontal(|ui| {
+                ui.small(self.elapsed_ms.map_or("—".into(), |ms| format!("{ms} ms")));
+                action = query_actions(ui, "Load history query", "Delete history entry").or(action);
+            });
+            let badges = [
+                (self.failed, "Failed", ui.visuals().error_fg_color),
+                (self.slow, "Slow", ui.visuals().warn_fg_color),
+                (self.legacy, "Legacy", ui.visuals().weak_text_color()),
+            ];
+            if badges.iter().any(|(visible, _, _)| *visible) {
+                ui.horizontal_wrapped(|ui| {
+                    for (visible, label, color) in badges {
+                        if visible {
+                            ui.colored_label(color, label);
+                        }
+                    }
+                });
+            }
+            action
+        })
+    }
+}
+
+/// Bound work and allocation even when the first SQL word is very large.
 fn sql_preview(sql: &str) -> String {
-    sql.split_whitespace()
-        .take(24)
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(120)
-        .collect()
+    let mut preview = String::with_capacity(sql.len().min(120));
+    let mut remaining = 120;
+    for (index, word) in sql.split_whitespace().take(24).enumerate() {
+        if index > 0 {
+            preview.push(' ');
+            remaining -= 1;
+        }
+        for character in word.chars().take(remaining) {
+            preview.push(character);
+            remaining -= 1;
+        }
+        if remaining == 0 {
+            break;
+        }
+    }
+    preview
 }
 
 #[cfg(test)]
@@ -643,7 +670,10 @@ mod tests {
     }
 
     #[test]
-    fn history_icons_filter_load_without_running_and_delete_only_the_chosen_entry() {
+    fn query_library_filters_sorts_loads_and_deletes_scoped_entries_without_execution() {
+        assert_eq!(super::sql_preview(" SELECT\n\t λ  "), "SELECT λ");
+        assert_eq!(super::sql_preview(&"λ".repeat(32_768)), "λ".repeat(120));
+        assert_eq!(super::sql_preview(&"x ".repeat(25)), "x ".repeat(23) + "x");
         let (ctx, mut app) = crate::app::test_ui::app();
         app.tools.database_scope = "/work/current.db".into();
         app.preferences
@@ -677,12 +707,54 @@ mod tests {
                 .iter()
                 .all(|h| h.sql != "SELECT 'slow'")
         );
-    }
-
-    #[test]
-    fn saved_query_icons_keep_sql_and_scope_and_theme_controls_select_their_mode() {
-        let (ctx, mut app) = crate::app::test_ui::app();
-        app.tools.database_scope = "/work/current.db".into();
+        for (sql, elapsed) in [
+            ("SELECT 'tie-a'", 900),
+            ("SELECT 'tie-b'", 900),
+            ("SELECT 'middle'", 600),
+        ] {
+            app.preferences
+                .record_query("/work/current.db", sql, Some(elapsed), false);
+        }
+        app.preferences
+            .record_query("", "SELECT 'λ legacy'", None, true);
+        click(&mut app, &ctx, ToolPanel::History, "Slow queries only");
+        click(&mut app, &ctx, ToolPanel::History, "Slowest first");
+        let output = frame(&mut app, &ctx, ToolPanel::History, 240.0, vec![]);
+        let queries = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text.starts_with("SELECT") => {
+                    Some(text.galley.job.text.as_str())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            queries,
+            [
+                "SELECT 'tie-b'",
+                "SELECT 'tie-a'",
+                "SELECT 'middle'",
+                "SELECT 'fast'",
+                "SELECT 'λ legacy'"
+            ]
+        );
+        app.tools.history_search = "Λ LEGACY".into();
+        let output = frame(&mut app, &ctx, ToolPanel::History, 240.0, vec![]);
+        for badge in ["Failed", "Legacy"] {
+            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == badge)));
+        }
+        click(&mut app, &ctx, ToolPanel::History, "Load history query");
+        assert_eq!(app.document.sql, "SELECT 'λ legacy'");
+        assert_eq!(app.sequence, sequence);
+        click(&mut app, &ctx, ToolPanel::History, "Delete history entry");
+        assert!(
+            app.preferences
+                .query_history
+                .iter()
+                .all(|entry| !entry.database.is_empty())
+        );
         app.document.sql = "SELECT 'saved'".into();
         app.tools.bookmark_name = "Example".into();
         app.preferences
