@@ -23,6 +23,16 @@ validated and committed separately. Evidence is under `target/quality-five/`.
    `execute` cognitive/cyclomatic complexity falls from 75/55 to 25/32. Database
    tests (62), UI tests (128), formatting and all-target Clippy pass.
 
+3. **Focused worker dispatch.** Prepared queries have named connection, SQL,
+   binding and budget fields. Exhaustive public-operation routing delegates
+   browse/reference planning, imports, exports, checkpoints and staged commits
+   to focused handlers. Row, count and peek relationship reads share metadata
+   admission through a private mode enum; invalidation events share request
+   stamping. Terminal delivery and persistent-editor transaction reporting stay
+   centralized. Dispatcher cognitive/cyclomatic complexity falls from 16/72 to
+   4/45; relationship planning is 9/13. All database/UI tests, formatting and
+   all-target Clippy pass. The public operation protocol is unchanged.
+
 <!-- five-follow-up-results -->
 
 ---

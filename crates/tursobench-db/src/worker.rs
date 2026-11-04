@@ -28,6 +28,18 @@ pub(super) struct Output {
     pub(super) closing: Arc<AtomicBool>,
 }
 impl Output {
+    fn invalidated(&self, ticket: Ticket, schema: bool) {
+        self.send(
+            Ticket {
+                request: 0,
+                ..ticket
+            },
+            EventKind::Invalidated {
+                schema,
+                source_request: ticket.request,
+            },
+        );
+    }
     fn discarded(&self, t: Ticket) -> bool {
         self.discard.discarded(t.request) || self.closing.load(Ordering::Acquire)
     }
@@ -214,13 +226,7 @@ pub(super) async fn worker(
             if let Some(changes) = &mut changes {
                 match changes.poll(&browse).await {
                     Ok(Some(schema)) => {
-                        output.send(
-                            ticket,
-                            EventKind::Invalidated {
-                                schema,
-                                source_request: 0,
-                            },
-                        );
+                        output.invalidated(ticket, schema);
                     }
                     Ok(None) => {}
                     Err(e) if matches!(e.kind, ErrorKind::Busy | ErrorKind::Interrupted) => {}
@@ -331,6 +337,29 @@ pub(super) async fn worker(
         },
     );
 }
+struct Query<'a> {
+    connection: &'a Connection,
+    sql: String,
+    parameters: Bindings,
+    budget: Budget,
+}
+impl<'a> Query<'a> {
+    fn new(connection: &'a Connection, sql: String, parameters: Bindings, budget: Budget) -> Self {
+        Self {
+            connection,
+            sql,
+            parameters,
+            budget,
+        }
+    }
+}
+#[derive(Clone, Copy, PartialEq)]
+enum ReferenceRead {
+    Rows,
+    Count,
+    Peek,
+}
+
 struct Worker<'a> {
     db: &'a turso::Database,
     editor: &'a Connection,
@@ -344,7 +373,7 @@ struct Worker<'a> {
     dirty_data: bool,
     dirty_schema: bool,
 }
-impl Worker<'_> {
+impl<'a> Worker<'a> {
     fn note_completion(&mut self, ticket: Ticket, effect: sql::Effect, completion: &Completion) {
         self.uncertain |= completion.transaction == tursobench_core::TransactionState::Unknown;
         if completion.error.is_none() {
@@ -364,16 +393,7 @@ impl Worker<'_> {
         if completion.transaction == tursobench_core::TransactionState::Autocommit
             && self.dirty_data
         {
-            self.output.send(
-                Ticket {
-                    request: 0,
-                    ..ticket
-                },
-                EventKind::Invalidated {
-                    schema: self.dirty_schema,
-                    source_request: ticket.request,
-                },
-            );
+            self.output.invalidated(ticket, self.dirty_schema);
             self.dirty_data = false;
             self.dirty_schema = false;
         }
@@ -639,6 +659,189 @@ impl Worker<'_> {
         outcome.transaction = state(self.editor);
         Ok(EventKind::TransferFinished(outcome))
     }
+    async fn browse_query(
+        &self,
+        ticket: Ticket,
+        spec: tursobench_core::Browse,
+    ) -> Result<Query<'a>, Failure> {
+        let table = describe(self.browse, &spec.table).await?;
+        let relation = crate::browse::relationship(self.browse, &table, &spec).await?;
+        let rows = if spec.options.page_rows == 0 {
+            100
+        } else {
+            spec.options.page_rows
+        };
+        let bytes = if spec.options.page_bytes == 0 {
+            4 * 1024 * 1024
+        } else {
+            spec.options.page_bytes
+        };
+        let (sql, parameters) = browse_sql(&table, spec, relation)?;
+        self.output.send(ticket, EventKind::Table(table));
+        Ok(Query::new(
+            self.browse,
+            sql,
+            parameters.into(),
+            Budget {
+                rows,
+                bytes,
+                page: true,
+                ..Budget::default()
+            },
+        ))
+    }
+    async fn reference_query(
+        &self,
+        ticket: Ticket,
+        name: String,
+        key: tursobench_core::ForeignKey,
+        values: Vec<Value>,
+        mode: ReferenceRead,
+    ) -> Result<Query<'a>, Failure> {
+        let child = inspection::inspect(self.browse, &name).await?;
+        let peek = mode == ReferenceRead::Peek;
+        if !child.foreign_keys.contains(&key)
+            || peek && (key.columns.len() != values.len() || values.contains(&Value::Null))
+        {
+            return Err(Failure::input(if peek {
+                "Relationship metadata changed or key is NULL"
+            } else {
+                "Relationship metadata changed; refresh the schema"
+            }));
+        }
+        let parent = describe(self.browse, &key.target).await?;
+        let default = Budget::default();
+        if peek {
+            let keys = key
+                .columns
+                .iter()
+                .zip(values)
+                .map(|((_, target), value)| {
+                    target
+                        .clone()
+                        .map(|target| (target, value))
+                        .ok_or_else(|| Failure::input("Unresolved parent key"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let (sql, parameters) = inspection::lookup_sql(&parent, keys)?;
+            return Ok(Query::new(
+                self.browse,
+                sql,
+                parameters.into(),
+                Budget {
+                    rows: 1,
+                    bytes: 512 * 1024,
+                    ..default
+                },
+            ));
+        }
+        let count = mode == ReferenceRead::Count;
+        let sql = inspection::references_sql(&child.table, &parent, &key, &values, count)?;
+        self.output.send(ticket, EventKind::Table(child.table));
+        Ok(Query::new(
+            self.browse,
+            sql,
+            values.into(),
+            if count {
+                default
+            } else {
+                Budget {
+                    rows: 100,
+                    ..default
+                }
+            },
+        ))
+    }
+    async fn import(
+        &mut self,
+        ticket: Ticket,
+        spec: tursobench_core::ImportSpec,
+    ) -> Result<EventKind, Failure> {
+        if self.uncertain {
+            return Err(Failure::input(
+                "Prior outcome UNKNOWN; reopen before importing",
+            ));
+        }
+        if self.access != Access::ReadWrite
+            || state(self.editor) != tursobench_core::TransactionState::Autocommit
+        {
+            return Err(Failure::input(
+                "Import requires write access and editor autocommit",
+            ));
+        }
+        let outcome = crate::imports::import(self.db, spec, self.settings, || {
+            self.output.discarded(ticket)
+        })
+        .await?;
+        self.uncertain |= outcome.transaction == tursobench_core::TransactionState::Unknown;
+        if outcome.changed > 0 || outcome.transaction == tursobench_core::TransactionState::Unknown
+        {
+            self.output.invalidated(ticket, false);
+        }
+        Ok(EventKind::TransferFinished(outcome))
+    }
+    async fn export_table(
+        &mut self,
+        ticket: Ticket,
+        path: PathBuf,
+        mut spec: tursobench_core::Browse,
+    ) -> Result<EventKind, Failure> {
+        spec.offset = 0;
+        spec.options.cursor = None;
+        spec.options.reverse = false;
+        let table = describe(self.browse, &spec.table).await?;
+        let relation = crate::browse::relationship(self.browse, &table, &spec).await?;
+        let (mut text, parameters) = browse_sql(&table, spec, relation)?;
+        let end = text
+            .rfind(" LIMIT ")
+            .ok_or_else(|| Failure::input("Invalid controlled export query"))?;
+        text.truncate(end);
+        self.export(ticket, path, text, parameters.into(), false)
+            .await
+    }
+    async fn checkpoint(&self) -> Result<EventKind, Failure> {
+        if self.uncertain {
+            return Err(Failure::input(
+                "Prior outcome UNKNOWN; reopen before maintenance",
+            ));
+        }
+        if self.access != Access::ReadWrite {
+            return Err(Failure::input("Checkpoint requires write access"));
+        }
+        crate::transfers::checkpoint(self.editor).await?;
+        Ok(EventKind::TransferFinished(
+            tursobench_core::TransferOutcome {
+                rows: 0,
+                changed: 0,
+                transaction: state(self.editor),
+                error: None,
+                message: "Checkpoint completed".into(),
+                executed: false,
+            },
+        ))
+    }
+    async fn commit_edits(
+        &mut self,
+        ticket: Ticket,
+        batch: tursobench_core::DraftBatch,
+    ) -> EventKind {
+        if self.uncertain {
+            return EventKind::EditsCommitted(tursobench_core::CommitOutcome::Unknown(Failure {
+                kind: ErrorKind::Unknown,
+                message: "Prior outcome UNKNOWN; reopen before committing".into(),
+            }));
+        }
+        let outcome = self
+            .commits
+            .run(edits::commit(self.db, self.access, self.settings, batch))
+            .await;
+        self.uncertain |= matches!(&outcome, tursobench_core::CommitOutcome::Unknown(_));
+        if matches!(outcome, tursobench_core::CommitOutcome::Committed { .. }) {
+            self.output.invalidated(ticket, false);
+        }
+        EventKind::EditsCommitted(outcome)
+    }
+
     async fn dispatch(
         &mut self,
         ticket: Ticket,
@@ -657,99 +860,50 @@ impl Worker<'_> {
         }
         let tail_mode = matches!(&operation,Operation::Browse(spec) if spec.options.tail);
         let default = Budget::default();
-        let count_references = matches!(&operation, Operation::ReferenceCount { .. });
-        let (connection, sql, parameters, budget) = match operation {
-            Operation::ReadValue{handle,offset,bytes} => {
-                let (bytes,total)=self.depot.read(handle,offset,bytes)?;
-                return Ok(Some(EventKind::ValueChunk{handle,offset,bytes,total}));
+        let Query { connection, sql, parameters, budget } = match operation {
+            Operation::ReadValue { handle, offset, bytes } => {
+                let (bytes, total) = self.depot.read(handle, offset, bytes)?;
+                return Ok(Some(EventKind::ValueChunk { handle, offset, bytes, total }));
             }
-            Operation::SaveValue{handle,path} => {
-                self.depot.save(handle,&path)?;
+            Operation::SaveValue { handle, path } => {
+                self.depot.save(handle, &path)?;
                 return Ok(Some(EventKind::ValueSaved(path.display().to_string())));
             }
-            Operation::Definition(name) => (self.browse,"SELECT sql FROM sqlite_schema WHERE name=?1".into(),vec![Value::Text(name)].into(),default),
-            Operation::PreviewImport{path,format,kinds,null_marker} => return crate::imports::preview(&path,format,kinds,null_marker).map(EventKind::ImportPreview).map(Some),
-            Operation::Import(spec)=>{
-                if self.uncertain{return Err(Failure::input("Prior outcome UNKNOWN; reopen before importing"));}
-                if self.access!=Access::ReadWrite || state(self.editor)!=tursobench_core::TransactionState::Autocommit {return Err(Failure::input("Import requires write access and editor autocommit"));}
-                let outcome=crate::imports::import(self.db,spec,self.settings,||self.output.discarded(ticket)).await?;
-                self.uncertain |= outcome.transaction==tursobench_core::TransactionState::Unknown;
-                if outcome.changed>0 || outcome.transaction==tursobench_core::TransactionState::Unknown {self.output.send(Ticket{request:0,..ticket},EventKind::Invalidated{schema:false,source_request:ticket.request});}
-                return Ok(Some(EventKind::TransferFinished(outcome)));
-            }
-            Operation::ExportTable{path,mut spec}=>{
-                spec.offset=0;spec.options.cursor=None;spec.options.reverse=false;
-                let table=describe(self.browse,&spec.table).await?;
-                let relation=crate::browse::relationship(self.browse,&table,&spec).await?;
-                let (mut text,parameters)=browse_sql(&table,spec,relation)?;
-                let end=text.rfind(" LIMIT ").ok_or_else(||Failure::input("Invalid controlled export query"))?;text.truncate(end);
-                return self.export(ticket,path,text,parameters.into(),false).await.map(Some);
-            }
-            Operation::ExportQuery{path,sql,parameters}=>return self.export(ticket,path,sql,parameters,true).await.map(Some),
-            Operation::Checkpoint=>{
-                if self.uncertain{return Err(Failure::input("Prior outcome UNKNOWN; reopen before maintenance"));}
-                if self.access!=Access::ReadWrite{return Err(Failure::input("Checkpoint requires write access"));}
-                crate::transfers::checkpoint(self.editor).await?;
-                return Ok(Some(EventKind::TransferFinished(tursobench_core::TransferOutcome{rows:0,changed:0,transaction:state(self.editor),error:None,message:"Checkpoint completed".into(),executed:false})));
-            }
-            Operation::BackupAndClose(_)=>return Err(Failure::input("Backup must be coordinated by the session owner")),
-            Operation::Script{sql,parameters,atomic,budget} => return self.script(ticket,sql,parameters,atomic,budget).await.map(Some),
+            Operation::PreviewImport { path, format, kinds, null_marker } => return crate::imports::preview(&path, format, kinds, null_marker).map(EventKind::ImportPreview).map(Some),
+            Operation::Import(spec) => return self.import(ticket, spec).await.map(Some),
+            Operation::ExportTable { path, spec } => return self.export_table(ticket, path, spec).await.map(Some),
+            Operation::ExportQuery { path, sql, parameters } => return self.export(ticket, path, sql, parameters, true).await.map(Some),
+            Operation::Checkpoint => return self.checkpoint().await.map(Some),
+            Operation::BackupAndClose(_) => return Err(Failure::input("Backup must be coordinated by the session owner")),
+            Operation::Script { sql, parameters, atomic, budget } => return self.script(ticket, sql, parameters, atomic, budget).await.map(Some),
             Operation::Close => return Ok(None),
             Operation::Diagram => return diagram::load(self.browse).await.map(EventKind::Diagram).map(Some),
             Operation::Inspect(name) => return inspection::inspect(self.browse, &name).await.map(EventKind::Inspection).map(Some),
-            Operation::CommitEdits(batch) => {
-                if self.uncertain{return Ok(Some(EventKind::EditsCommitted(tursobench_core::CommitOutcome::Unknown(Failure{kind:ErrorKind::Unknown,message:"Prior outcome UNKNOWN; reopen before committing".into()}))));}
-                let outcome = self.commits.run(edits::commit(self.db, self.access, self.settings, batch)).await;
-                self.uncertain |= matches!(&outcome,tursobench_core::CommitOutcome::Unknown(_));
-                if matches!(outcome, tursobench_core::CommitOutcome::Committed { .. }) {
-                    self.output.send(Ticket { request:0, ..ticket }, EventKind::Invalidated { schema:false, source_request:ticket.request });
-                }
-                return Ok(Some(EventKind::EditsCommitted(outcome)));
-            }
-            Operation::Browse(spec) => {
-                let table = describe(self.browse, &spec.table).await?;
-                let relation=crate::browse::relationship(self.browse,&table,&spec).await?;
-                let rows=if spec.options.page_rows==0 {100}else{spec.options.page_rows};
-                let bytes=if spec.options.page_bytes==0 {4*1024*1024}else{spec.options.page_bytes};
-                let (sql, parameters) = browse_sql(&table, spec,relation)?;
-                self.output.send(ticket, EventKind::Table(table));
-                (self.browse, sql, parameters.into(), Budget {rows,bytes,page:true,..default})
-            }
-            Operation::Lookup { table: name, keys } => {
-                let table = describe(self.browse, &name).await?;
+            Operation::CommitEdits(batch) => return Ok(Some(self.commit_edits(ticket, batch).await)),
+            Operation::Browse(spec) => self.browse_query(ticket, spec).await?,
+            Operation::Lookup { table, keys } => {
+                let table = describe(self.browse, &table).await?;
                 let (sql, parameters) = inspection::lookup_sql(&table, keys)?;
                 self.output.send(ticket, EventKind::Table(table));
-                (self.browse, sql, parameters.into(), default)
+                Query::new(self.browse, sql, parameters.into(), default)
             }
-            Operation::References { table: name, key, values } | Operation::ReferenceCount { table: name,key,values } => {
-                let child = inspection::inspect(self.browse, &name).await?;
-                if !child.foreign_keys.contains(&key) { return Err(Failure::input("Relationship metadata changed; refresh the schema")); }
-                let parent = describe(self.browse, &key.target).await?;
-                let sql = inspection::references_sql(&child.table, &parent, &key, &values,count_references)?;
-                self.output.send(ticket, EventKind::Table(child.table));
-                (self.browse, sql, values.into(), if count_references {default} else {Budget{rows:100,..default}})
-            }
-            Operation::Peek {table:name,key,values} => {
-                let child=inspection::inspect(self.browse,&name).await?;
-                if !child.foreign_keys.contains(&key) || key.columns.len()!=values.len() || values.contains(&Value::Null) {return Err(Failure::input("Relationship metadata changed or key is NULL"));}
-                let parent=describe(self.browse,&key.target).await?;
-                let keys=key.columns.iter().zip(values).map(|((_,target),value)|target.clone().map(|target|(target,value)).ok_or_else(||Failure::input("Unresolved parent key"))).collect::<Result<Vec<_>,_>>()?;
-                let (sql,parameters)=inspection::lookup_sql(&parent,keys)?;
-                (self.browse,sql,parameters.into(),Budget{rows:1,bytes:512*1024,..default})
-            }
+            Operation::References { table, key, values } => self.reference_query(ticket, table, key, values, ReferenceRead::Rows).await?,
+            Operation::ReferenceCount { table, key, values } => self.reference_query(ticket, table, key, values, ReferenceRead::Count).await?,
+            Operation::Peek { table, key, values } => self.reference_query(ticket, table, key, values, ReferenceRead::Peek).await?,
             Operation::CountFiltered(spec) => {
-                let table=describe(self.browse,&spec.table).await?;
-                let relation=crate::browse::relationship(self.browse,&table,&spec).await?;
-                let (sql,params)=crate::browse::count_sql(&table,&spec,relation)?;
-                (self.browse,sql,params.into(),default)
+                let table = describe(self.browse, &spec.table).await?;
+                let relation = crate::browse::relationship(self.browse, &table, &spec).await?;
+                let (sql, params) = crate::browse::count_sql(&table, &spec, relation)?;
+                Query::new(self.browse, sql, params.into(), default)
             }
-            Operation::Count(name) => (self.browse, format!("SELECT count(*) AS row_count FROM {}", quote_identifier(&name)), vec![].into(), default),
-            Operation::Diagnostic(crate::Diagnostic::ForeignKeys) => (self.browse, crate::validation::foreign_keys(self.browse).await?, vec![].into(), default),
-            Operation::Diagnostic(kind) => (self.browse, kind.sql().into(), vec![].into(), default),
-            Operation::Schema => (self.browse, "SELECT type, name, tbl_name, CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END AS sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'view' THEN 1 ELSE 2 END, name".into(), vec![].into(), Budget {rows:10_000, bytes:8*1024*1024, cell_bytes:1024*1024,page:false}),
-            Operation::Explain { sql, parameters, bytecode } => (self.editor, sql::explain_sql(&sql, bytecode)?, parameters, default),
-            Operation::ExecuteBound { sql, parameters, budget } => (self.editor, sql, parameters, budget),
-            Operation::Execute { sql, parameters, budget } => (self.editor, sql, parameters.into(), budget),
+            Operation::Count(name) => Query::new(self.browse, format!("SELECT count(*) AS row_count FROM {}", quote_identifier(&name)), vec![].into(), default),
+            Operation::Definition(name) => Query::new(self.browse, "SELECT sql FROM sqlite_schema WHERE name=?1".into(), vec![Value::Text(name)].into(), default),
+            Operation::Diagnostic(crate::Diagnostic::ForeignKeys) => Query::new(self.browse, crate::validation::foreign_keys(self.browse).await?, vec![].into(), default),
+            Operation::Diagnostic(kind) => Query::new(self.browse, kind.sql().into(), vec![].into(), default),
+            Operation::Schema => Query::new(self.browse, "SELECT type, name, tbl_name, CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END AS sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'view' THEN 1 ELSE 2 END, name".into(), vec![].into(), Budget { rows: 10_000, bytes: 8*1024*1024, cell_bytes: 1024*1024, page: false }),
+            Operation::Explain { sql, parameters, bytecode } => Query::new(self.editor, sql::explain_sql(&sql, bytecode)?, parameters, default),
+            Operation::ExecuteBound { sql, parameters, budget } => Query::new(self.editor, sql, parameters, budget),
+            Operation::Execute { sql, parameters, budget } => Query::new(self.editor, sql, parameters.into(), budget),
         };
         let mut completion = execute(
             connection,
