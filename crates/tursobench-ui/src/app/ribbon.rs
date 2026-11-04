@@ -375,14 +375,16 @@ impl App {
                     .min((ui.available_width()-controls_width-64.0).max(super::presentation::BAR_INSET))
             } else { super::presentation::BAR_INSET };
             ui.add_space(leading);
+            let show_title = matches!(kind,Kind::Data | Kind::Record | Kind::Result)
+                || kind==Kind::Structure && available && self.document.object.is_some();
+            if show_title {
             let remaining = (ui.available_width() - controls_width).max(0.0);
             let title_size = ui.painter().layout_no_wrap(
-                kind.label().into(),
+                if kind==Kind::Structure { self.document.object.clone().unwrap_or_default() } else {kind.label().into()},
                 crate::appearance::proportional(ui.ctx(), icons::RIBBON_TEXT_SIZE),
                 ui.visuals().text_color(),
             ).size();
-            let mut title_width = (remaining * 0.25)
-                .max(title_size.x + 4.0)
+            let mut title_width = (if kind==Kind::Structure { title_size.x+4.0 } else { (remaining*0.25).max(title_size.x+4.0) })
                 .min(200.0)
                 .min((remaining - 32.0).max(0.0));
             if matches!(kind, Kind::Data | Kind::Record) {
@@ -393,6 +395,7 @@ impl App {
                 egui::Layout::left_to_right(egui::Align::Center),
                 |ui| self.ribbon_title(ui, kind, available),
             );
+            }
             let ribbon_width = (ui.available_width() - controls_width).max(1.0);
             ui.allocate_ui_with_layout(
                 egui::vec2(ribbon_width, icons::RIBBON_BUTTON_SIZE),
@@ -503,6 +506,13 @@ impl App {
         }
         if kind == Kind::Record {
             self.ribbon_field_selector(ui, available);
+            return;
+        }
+        if kind == Kind::Structure {
+            if available && let Some(name) = &self.document.object {
+                ui.add(egui::Label::new(egui::RichText::new(name).strong()).truncate())
+                    .on_hover_text(name);
+            }
             return;
         }
         let title = if available && let Some(name) = &self.document.object {

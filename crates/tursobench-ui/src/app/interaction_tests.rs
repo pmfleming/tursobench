@@ -2944,6 +2944,32 @@ fn every_tile_exposes_its_actions_without_an_overflow_menu() {
         frame_at(&mut app, &ctx, egui::vec2(3440.0, 1440.0), vec![]);
         let output = frame_at(&mut app, &ctx, egui::vec2(3440.0, 1440.0), vec![]);
         let tree = output.platform_output.accesskit_update.unwrap();
+        if matches!(
+            kind,
+            tiling::Kind::Map | tiling::Kind::Structure | tiling::Kind::Sql
+        ) {
+            let pane = app.workspace.pane_rects[0].1;
+            let titles: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text)
+                        if pane.contains(text.pos) && text.pos.y < pane.top() + tiling::BAR =>
+                    {
+                        Some(text.galley.job.text.as_str())
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                !titles.iter().any(|text| *text == kind.label()
+                    || text.starts_with(&format!("{} ·", kind.label()))),
+                "visible {kind:?} header: {titles:?}"
+            );
+            if kind == tiling::Kind::Structure {
+                assert!(titles.contains(&"sample"));
+            }
+        }
         let controls = tree
             .nodes
             .iter()
@@ -2978,6 +3004,19 @@ fn every_tile_exposes_its_actions_without_an_overflow_menu() {
             assert_eq!(minimize.size(), egui::vec2(30.0, 30.0));
             assert_eq!(expand.size(), egui::vec2(30.0, 30.0));
         }
+    }
+    app.workspace.expanded = None;
+    for kind in [
+        tiling::Kind::Map,
+        tiling::Kind::Structure,
+        tiling::Kind::Sql,
+    ] {
+        app.minimize_pane(kind);
+    }
+    frame_at(&mut app, &ctx, egui::vec2(3440.0, 1440.0), vec![]);
+    let output = frame_at(&mut app, &ctx, egui::vec2(3440.0, 1440.0), vec![]);
+    for label in ["Relationships", "Structure", "SQL"] {
+        control(&output, label);
     }
     app.close();
 }
