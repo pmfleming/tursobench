@@ -975,6 +975,21 @@ fn click_inspect_stage_no_write_failed_commit_retains_drafts() {
     assert!(!app.has_drafts());
     app.document.show_insert = false;
     app.stage_cell(0, 1, Value::Text("draft".into()));
+    app.document.show_preview = true;
+    frame(&mut app, &ctx, vec![]);
+    let output = frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
+    click(
+        &mut app,
+        &ctx,
+        control(&output, "Remove operation").center(),
+    );
+    assert!(
+        !app.has_drafts(),
+        "review removes the selected local operation"
+    );
+    assert_retained(&app, 0, 1, Value::Text("original".into()));
+    app.document.show_preview = false;
+    app.stage_cell(0, 1, Value::Text("draft".into()));
     let original = app.document.result.rows[0].clone();
     assert_staged(&app, 0, 1, Value::Text("draft".into()));
     app.document

@@ -80,6 +80,87 @@ pub(super) struct Presentation {
     parameter_index: Option<usize>,
     parameters: String,
 }
+impl Presentation {
+    fn review_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        draft: &DraftBatch,
+        can_remove: bool,
+    ) -> Option<usize> {
+        let statements = match self.review.as_ref()? {
+            Ok(statements) => statements,
+            Err(error) => {
+                ui.colored_label(ui.visuals().error_fg_color, error.to_string());
+                return None;
+            }
+        };
+        let remove = review_operations(ui, statements.len(), &mut self.selected, can_remove);
+        self.selected = self.selected.min(statements.len().saturating_sub(1));
+        if let Some((statement, edit)) = statements
+            .get(self.selected)
+            .zip(draft.edits.get(self.selected))
+        {
+            if self.parameter_index != Some(self.selected) {
+                self.parameters = crate::export::bindings_text(&statement.parameters);
+                self.parameter_index = Some(self.selected);
+            }
+            egui::ScrollArea::vertical()
+                .id_salt("review-details")
+                .max_height((ui.ctx().content_rect().height() - 420.0).clamp(80.0, 300.0))
+                .show(ui, |ui| {
+                    edit_diff(ui, &draft.table, edit);
+                    read_only_code(ui, &statement.sql);
+                    ui.small("Exact typed bindings (including original-value predicates):");
+                    read_only_code(ui, &self.parameters);
+                });
+        }
+        remove
+    }
+}
+
+fn review_operations(
+    ui: &mut egui::Ui,
+    count: usize,
+    selected: &mut usize,
+    can_remove: bool,
+) -> Option<usize> {
+    let mut remove = None;
+    egui::ScrollArea::vertical()
+        .id_salt("review-operations")
+        .max_height(150.0)
+        .show_rows(ui, 29.0, count, |ui, range| {
+            for i in range {
+                ui.push_id(i, |ui| {
+                    ui.horizontal(|ui| {
+                        if ui
+                            .selectable_label(*selected == i, format!("Operation {}", i + 1))
+                            .clicked()
+                        {
+                            *selected = i;
+                        }
+                        if ui
+                            .add_enabled(can_remove, egui::Button::new("Remove operation"))
+                            .clicked()
+                        {
+                            remove = Some(i);
+                        }
+                    });
+                });
+            }
+        });
+    remove
+}
+
+fn read_only_code(ui: &mut egui::Ui, mut text: &str) {
+    ui.add(
+        egui::TextEdit::multiline(&mut text)
+            .code_editor()
+            .interactive(false)
+            .desired_width(ui.available_width())
+            .desired_rows(2),
+    );
+}
+
 fn row_hash(row: &[Value]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -288,125 +369,116 @@ impl App {
     }
     pub(super) fn edit_windows(&mut self, ctx: &egui::Context) {
         if self.document.show_insert {
-            let mut open = true;
-            egui::Window::new("Stage insert — typed column values")
-                .frame(crate::app::presentation::window_frame(ctx))
-                .default_pos(ctx.content_rect().center() - egui::vec2(280.0, 180.0))
-                .open(&mut open)
-                .default_width(580.0)
-                .max_width((ctx.content_rect().width() - 40.0).max(280.0))
-                .show(ctx, |ui| {
-                    ui.checkbox(&mut self.document.insert_use_json, "Advanced JSON input");
-                    egui::ScrollArea::vertical()
-                        .max_height((ctx.content_rect().height() - 230.0).clamp(120.0, 400.0))
-                        .show(ui, |ui| {
-                            if let Some(t) = &self.document.table {
-                                ui.label(
-                                    t.columns
-                                        .iter()
-                                        .map(|c| c.name.as_str())
-                                        .collect::<Vec<_>>()
-                                        .join(", "),
-                                );
-                            }
-                            if self.document.insert_use_json {
-                                ui.small("JSON null omits a column; {\"type\":\"Null\"} inserts SQL NULL.");
-                                ui.add(
-                                    egui::TextEdit::multiline(&mut self.document.insert_json)
-                                        .code_editor()
-                                        .desired_width(ui.available_width())
-                                        .desired_rows(8),
-                                );
-                            } else if let Some(table) = &self.document.table {
-                                for (i, (field, column)) in self
-                                    .document
-                                    .insert_fields
-                                    .iter_mut()
-                                    .zip(&table.columns)
-                                    .enumerate()
-                                {
-                                    ui.add_enabled_ui(column.hidden == 0, |ui| {
-                                        field.show(ui, i, column)
-                                    });
-                                }
-                            }
-                        });
-                    if presentation::footer(ui, |ui| {
-                        ui.add_enabled(
-                            self.can_edit(),
-                            presentation::action(
-                                ui,
-                                "Stage insert (no database write)",
-                                Intent::Pending,
-                            ),
-                        )
-                    })
-                    .inner
-                    .clicked()
-                    {
-                        let values = if self.document.insert_use_json {
-                            serde_json::from_str::<Vec<Option<Value>>>(&self.document.insert_json)
-                                .map_err(|e| e.to_string())
-                        } else {
-                            self.document
-                                .insert_fields
-                                .iter()
-                                .map(InsertField::value)
-                                .collect::<Result<Vec<_>, _>>()
-                        };
-                        match values {
-                            Ok(values) => self.stage(|d| d.edits.push(Edit::Insert { values })),
-                            Err(e) => self.status = e.to_string(),
-                        }
-                    }
-                    ui.label(&self.status);
-                });
-            self.document.show_insert = open;
+            self.insert_window(ctx);
         }
         if self.document.show_preview {
-            self.update_draft_presentation();
-            let mut open = true;
-            egui::Window::new("Review staged atomic transaction").frame(crate::app::presentation::window_frame(ctx)).default_pos(ctx.content_rect().center()-egui::vec2(280.0,180.0))
-                .open(&mut open).default_width(760.0).max_width((ctx.content_rect().width()-40.0).max(280.0))
-                .show(ctx, |ui| {
-                    presentation::notice(ui,super::icons::Icon::ReviewEdits,Intent::Pending,"Dedicated connection · foreign keys enabled · original values checked · atomic batch. Only a confirmed commit clears these drafts.");
-                    let mut remove = None;
-                    if let Some(draft) = &self.document.drafts {
-                        ui.strong(format!("{} · {} staged operations",draft.table.name,draft.edits.len()));
-                        let model=&mut self.document.tools.draft_ui;
-                        match &model.review {
-                            Some(Ok(statements))=>{
-                                egui::ScrollArea::vertical().id_salt("review-operations").max_height(150.0).show_rows(ui,29.0,statements.len(),|ui,range|{
-                                    for i in range {ui.push_id(i,|ui|{ui.horizontal(|ui|{
-                                        if ui.selectable_label(model.selected==i,format!("Operation {}",i+1)).clicked(){model.selected=i;}
-                                        if ui.add_enabled(self.commit_ticket.is_none(),egui::Button::new("Remove operation")).clicked(){remove=Some(i);}
-                                    });});}
-                                });
-                                model.selected=model.selected.min(statements.len().saturating_sub(1));
-                                if let Some(statement)=statements.get(model.selected){
-                                    if model.parameter_index!=Some(model.selected){model.parameters=crate::export::bindings_text(&statement.parameters);model.parameter_index=Some(model.selected);}
-                                    egui::ScrollArea::vertical().id_salt("review-details").max_height((ctx.content_rect().height()-420.0).clamp(80.0,300.0)).show(ui,|ui|{
-                                        edit_diff(ui,&draft.table,&draft.edits[model.selected]);
-                                        let mut sql=statement.sql.as_str();
-                                        ui.add(egui::TextEdit::multiline(&mut sql).code_editor().interactive(false).desired_width(ui.available_width()).desired_rows(2));
-                                        ui.small("Exact typed bindings (including original-value predicates):");
-                                        let mut parameters=model.parameters.as_str();
-                                        ui.add(egui::TextEdit::multiline(&mut parameters).code_editor().interactive(false).desired_width(ui.available_width()).desired_rows(2));
-                                    });
-                                }
-                            }
-                            Some(Err(error))=>{ui.colored_label(ui.visuals().error_fg_color,error.to_string());}
-                            None=>{}
-                        }
-                    }
-                    if let Some(index) = remove && let Some(draft) = &mut self.document.drafts { draft.edits.remove(index); self.document.draft_revision=self.document.draft_revision.wrapping_add(1); }
-                    if self.uncertain_edit { ui.colored_label(ui.visuals().error_fg_color,"UNKNOWN outcome — close/reopen and inspect; never automatically retry."); }
-                    if self.commit_ticket.is_some() { ui.label("Committing — awaiting the actual outcome…"); }
-                    if presentation::footer(ui, |ui| ui.add_enabled(self.can_edit() && self.has_drafts(),presentation::action(ui,"COMMIT staged edits to database",Intent::Pending))).inner.clicked() { self.commit_drafts(); }
-                    ui.label(&self.status);
-                });
-            self.document.show_preview = open;
+            self.review_window(ctx);
         }
+    }
+
+    fn insert_fields_ui(&mut self, ui: &mut egui::Ui) {
+        if let Some(t) = &self.document.table {
+            ui.label(
+                t.columns
+                    .iter()
+                    .map(|c| c.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+        }
+        if self.document.insert_use_json {
+            ui.small("JSON null omits a column; {\"type\":\"Null\"} inserts SQL NULL.");
+            ui.add(
+                egui::TextEdit::multiline(&mut self.document.insert_json)
+                    .code_editor()
+                    .desired_width(ui.available_width())
+                    .desired_rows(8),
+            );
+        } else if let Some(table) = &self.document.table {
+            for (i, (field, column)) in self
+                .document
+                .insert_fields
+                .iter_mut()
+                .zip(&table.columns)
+                .enumerate()
+            {
+                ui.add_enabled_ui(column.hidden == 0, |ui| field.show(ui, i, column));
+            }
+        }
+    }
+
+    fn insert_window(&mut self, ctx: &egui::Context) {
+        let mut open = true;
+        egui::Window::new("Stage insert — typed column values")
+            .frame(crate::app::presentation::window_frame(ctx))
+            .default_pos(ctx.content_rect().center() - egui::vec2(280.0, 180.0))
+            .open(&mut open)
+            .default_width(580.0)
+            .max_width((ctx.content_rect().width() - 40.0).max(280.0))
+            .show(ctx, |ui| {
+                ui.checkbox(&mut self.document.insert_use_json, "Advanced JSON input");
+                egui::ScrollArea::vertical()
+                    .max_height((ctx.content_rect().height() - 230.0).clamp(120.0, 400.0))
+                    .show(ui, |ui| {
+                        self.insert_fields_ui(ui);
+                    });
+                if presentation::footer(ui, |ui| {
+                    ui.add_enabled(
+                        self.can_edit(),
+                        presentation::action(
+                            ui,
+                            "Stage insert (no database write)",
+                            Intent::Pending,
+                        ),
+                    )
+                })
+                .inner
+                .clicked()
+                {
+                    let values = if self.document.insert_use_json {
+                        serde_json::from_str::<Vec<Option<Value>>>(&self.document.insert_json)
+                            .map_err(|e| e.to_string())
+                    } else {
+                        self.document
+                            .insert_fields
+                            .iter()
+                            .map(InsertField::value)
+                            .collect::<Result<Vec<_>, _>>()
+                    };
+                    match values {
+                        Ok(values) => self.stage(|d| d.edits.push(Edit::Insert { values })),
+                        Err(e) => self.status = e.to_string(),
+                    }
+                }
+                ui.label(&self.status);
+            });
+        self.document.show_insert = open;
+    }
+
+    fn review_window(&mut self, ctx: &egui::Context) {
+        self.update_draft_presentation();
+        let mut open = true;
+        egui::Window::new("Review staged atomic transaction")
+            .frame(presentation::window_frame(ctx))
+            .default_pos(ctx.content_rect().center()-egui::vec2(280.0,180.0))
+            .open(&mut open).default_width(760.0)
+            .max_width((ctx.content_rect().width()-40.0).max(280.0))
+            .show(ctx, |ui| {
+                presentation::notice(ui,super::icons::Icon::ReviewEdits,Intent::Pending,"Dedicated connection · foreign keys enabled · original values checked · atomic batch. Only a confirmed commit clears these drafts.");
+                let remove = self.document.drafts.as_ref().and_then(|draft| {
+                    ui.strong(format!("{} · {} staged operations", draft.table.name, draft.edits.len()));
+                    self.document.tools.draft_ui.review_ui(ui, draft, self.commit_ticket.is_none())
+                });
+                if let Some(index) = remove && let Some(draft) = &mut self.document.drafts {
+                    draft.edits.remove(index);
+                    self.document.draft_revision=self.document.draft_revision.wrapping_add(1);
+                }
+                if self.uncertain_edit { ui.colored_label(ui.visuals().error_fg_color,"UNKNOWN outcome — close/reopen and inspect; never automatically retry."); }
+                if self.commit_ticket.is_some() { ui.label("Committing — awaiting the actual outcome…"); }
+                if presentation::footer(ui, |ui| ui.add_enabled(self.can_edit() && self.has_drafts(),presentation::action(ui,"COMMIT staged edits to database",Intent::Pending))).inner.clicked() { self.commit_drafts(); }
+                ui.label(&self.status);
+            });
+        self.document.show_preview = open;
     }
     pub(super) fn staged_edit_dock(&mut self, ui: &mut egui::Ui) {
         let count = self.document.drafts.as_ref().map_or(0, |d| d.edits.len());

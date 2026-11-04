@@ -1,3 +1,22 @@
+# Five follow-up improvements — 2026-11-05
+
+Baseline: `14ee484`, the completed quality review below. Each improvement is
+validated and committed separately. Evidence is under `target/quality-five/`.
+
+1. **Edit-review presentation ownership.** Insert fields, insert submission,
+   review-window actions, operation selection and cached diff/SQL/bindings
+   rendering have focused owners. The presentation model renders its own cached
+   review; SQL and parameter text share a read-only renderer. Selected statements
+   and edits use checked paired access. The existing edit/commit interaction now
+   clicks Remove operation in the real review window and verifies retained engine
+   values before re-staging. `edit_windows` cognitive/cyclomatic complexity falls
+   from 84/26 to 2/3; the largest extracted handler is 12/4. All 128 active UI
+   tests, formatting and workspace/all-target Clippy pass.
+
+<!-- five-follow-up-results -->
+
+---
+
 # Quality review — 2026-11-05
 
 Reviewed the code at `0b7c4347c1a8f41320daccc5e372b5c2d25b5dc8` and refactored
