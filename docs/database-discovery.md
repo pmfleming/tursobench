@@ -21,9 +21,13 @@ clicking a row also selects it. Browsing alone does not replace a command-line o
 previously selected path, and incoming discoveries preserve the highlight.
 
 Selecting a candidate does not connect to it. A compact access panel directly
-below the results shows the selected file, read-only/write choice, visible
-application usage when detectable and **Open database**. Admission locks are
-checked automatically on Open. Long paths are truncated with the full path
+below the results shows the selected file, path, read-only/write choice and
+**Open**. A non-writing background check identifies missing/invalid files and
+incompatible locks before enabling Open. Known blockers appear inline, including
+the locking application when available. Blocked files are rechecked periodically;
+the refresh icon checks again immediately. Failures from the actual engine open
+stay visible with **Retry** until another attempt or selection/access change.
+Admission locks are still checked authoritatively on Open. Long paths are truncated with the full path
 on hover. Changing the selected path resets write access and
 the SQLite classification override.
 Command-line paths keep priority.

@@ -75,6 +75,7 @@ impl Entry {
 #[derive(Default)]
 pub(super) struct Chooser {
     pub inspection: inspection::Inspection,
+    pub open_failure: Option<tursobench_core::Failure>,
     pub job: Option<Job>,
     entries: Vec<Entry>,
     filter: String,

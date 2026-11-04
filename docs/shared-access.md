@@ -159,3 +159,26 @@ The engine version/implementation is unchanged. No live user store was modified,
 no other application was reconfigured, and no release archive was repackaged.
 Extended soak, physical I/O/OOM faults, other engine versions, other platforms
 and network filesystems remain outside this qualification.
+
+## Open-panel feedback
+
+The compact open panel shows selection and access controls without permanent
+engine/protocol explanations. A background `check_access` queries existing Linux
+locks with `F_OFD_GETLK`, validates basic file prerequisites, and creates no
+sidecars. It neither acquires a coordination lifetime lock nor opens an engine.
+Same-process POSIX owners are detected before opening another descriptor so the
+probe cannot release their existing locks. Compatible active native WAL writers
+remain eligible; a protected reader or legacy writer is reported as a blocker.
+
+Known blockers disable Open and show a persistent inline reason. Blocked checks
+repeat every two seconds, with a manual recheck action. Actual engine failures
+are retained separately from transient status text, expose Retry, and clear on
+new selection/access or another opening attempt. Preflight is advisory; actual
+session admission still rechecks all safety conditions, including races after
+inspection. Tests cover lock preservation, shared-writer eligibility, missing
+file recovery, visible failures in both themes, and late engine failure during
+close/exit.
+
+Open-panel verification: 196 workspace tests pass (one manual profile ignored),
+strict all-target Clippy and formatting pass, and the rebuilt application passes
+the native desktop smoke on the 100,000-row disposable fixture.

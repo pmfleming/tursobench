@@ -6,7 +6,7 @@ use tursobench_core::{
 mod access;
 mod browse;
 mod observe;
-pub use access::{ProcessUsage, processes_using};
+pub use access::{ProcessUsage, check_access, processes_using};
 mod connection;
 mod diagram;
 mod edits;

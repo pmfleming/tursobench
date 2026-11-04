@@ -15,8 +15,8 @@ native multiprocess WAL; engine telemetry must confirm coordination. Standalone
 read-only sessions retain an exclusive coordination reservation to block future
 writers. A writable `-tshm` sidecar is required; hard-linked files are rejected.
 Trusted paths must not be swapped concurrently. Writable opening first performs
-read-only schema preflight and explicitly discloses possible DELETE-to-WAL journal
-migration. Read-only execution rejects ATTACH and VACUUM, including INTO.
+read-only schema preflight and warns that opening may change the file (including
+possible DELETE-to-WAL journal migration). Read-only execution rejects ATTACH and VACUUM, including INTO.
 
 FTS Cargo support and `experimental_index_method(true)` apply to every managed
 open; multiprocess WAL is enabled for coordinated sessions and other experimental

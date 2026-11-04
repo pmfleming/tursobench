@@ -17,14 +17,6 @@ impl DatabaseKind {
         }
     }
 
-    pub fn symbol(self) -> &'static str {
-        match self {
-            Self::LikelyTurso => "T",
-            Self::LikelySqlite => "S",
-            Self::Unknown => "?",
-        }
-    }
-
     pub fn explanation(self) -> &'static str {
         match self {
             Self::LikelyTurso => {

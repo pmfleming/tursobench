@@ -21,6 +21,139 @@ fn io_failure(e: std::io::Error) -> Failure {
     }
 }
 
+/// Advisory, non-mutating preflight. Queries locks without acquiring them or
+/// creating sidecars; Session::open still performs authoritative admission.
+pub fn check_access(path: &Path) -> Result<(), Failure> {
+    use std::io::Read;
+    let path = std::fs::canonicalize(path).map_err(|e| Failure {
+        kind: ErrorKind::Io,
+        message: match e.kind() {
+            std::io::ErrorKind::NotFound => "File not found.".into(),
+            std::io::ErrorKind::PermissionDenied => {
+                "Permission denied. Check file and folder access.".into()
+            }
+            _ => e.to_string(),
+        },
+    })?;
+    let metadata = std::fs::metadata(&path).map_err(io_failure)?;
+    if !metadata.is_file() {
+        return Err(Failure::input("Choose a database file, not a folder."));
+    }
+    if path.to_str().is_none() {
+        return Err(Failure::input("The database path must use UTF-8."));
+    }
+    #[cfg(target_os = "linux")]
+    if owns_posix_lock(&metadata) {
+        return Err(Failure {
+            kind: ErrorKind::Busy,
+            message: "Already in use by this application.".into(),
+        });
+    }
+    let mut file = File::open(&path).map_err(io_failure)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if file.metadata().map_err(io_failure)?.nlink() != 1 {
+            return Err(Failure::input(
+                "Hard-linked database files are unsupported.",
+            ));
+        }
+    }
+    let mut header = [0; 16];
+    if metadata.len() < 100
+        || file.read_exact(&mut header).is_err()
+        || &header != b"SQLite format 3\0"
+    {
+        return Err(Failure::input(
+            "No database header found. Choose a different file.",
+        ));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(pid) = conflicting_reader(&file, 0)? {
+            let owner = if pid > 0 {
+                process_name(pid as u32)
+            } else {
+                "Another connection".into()
+            };
+            return Err(Failure {
+                kind: ErrorKind::Busy,
+                message: format!(
+                    "{owner} holds a write lock. Close that connection to open this file."
+                ),
+            });
+        }
+        let mut sidecar = path.as_os_str().to_owned();
+        sidecar.push("-tshm");
+        match File::open(std::path::PathBuf::from(sidecar)) {
+            Ok(file) if conflicting_reader(&file, 1)?.is_some() => {
+                return Err(Failure {
+                    kind: ErrorKind::Busy,
+                    message:
+                        "Another read-only session has reserved this file. Close it before opening."
+                            .into(),
+                });
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(io_failure(e)),
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "linux"))]
+    Err(Failure::input(
+        "Database access is currently supported on Linux only.",
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn owns_posix_lock(target: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    // Closing any newly opened descriptor would release this process's POSIX
+    // locks on the inode. Inspect existing descriptors before opening the file.
+    let Ok(fds) = std::fs::read_dir("/proc/self/fd") else {
+        return false;
+    };
+    fds.flatten().any(|fd| {
+        std::fs::metadata(fd.path())
+            .is_ok_and(|m| m.dev() == target.dev() && m.ino() == target.ino())
+            && std::fs::read_to_string(
+                std::path::Path::new("/proc/self/fdinfo").join(fd.file_name()),
+            )
+            .is_ok_and(|s| {
+                s.lines()
+                    .any(|line| line.starts_with("lock:") && line.contains("POSIX"))
+            })
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn conflicting_reader(file: &File, length: libc::off_t) -> Result<Option<i32>, Failure> {
+    use std::os::fd::AsRawFd;
+    let mut region: libc::flock = unsafe { std::mem::zeroed() };
+    region.l_type = libc::F_RDLCK as _;
+    region.l_whence = libc::SEEK_SET as _;
+    region.l_len = length;
+    // SAFETY: initialized flock, valid borrowed descriptor; GETLK only queries.
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_OFD_GETLK, &mut region) } == -1 {
+        return Err(io_failure(std::io::Error::last_os_error()));
+    }
+    Ok((region.l_type != libc::F_UNLCK as libc::c_short).then_some(region.l_pid))
+}
+
+#[cfg(target_os = "linux")]
+fn process_name(pid: u32) -> String {
+    let name = std::fs::read_link(format!("/proc/{pid}/exe"))
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .or_else(|| std::fs::read_to_string(format!("/proc/{pid}/comm")).ok())
+        .unwrap_or_else(|| "Application".into());
+    let name = name.trim().trim_start_matches('.');
+    let name = name.strip_suffix("-wrapped").unwrap_or(name);
+    let name: String = name.chars().filter(|c| !c.is_control()).take(64).collect();
+    format!("{name} ({pid})")
+}
+
 #[cfg(target_os = "linux")]
 pub(crate) fn lock(file: &File, exclusive: bool) -> Result<bool, Failure> {
     lock_region(file, exclusive, 0)
@@ -184,15 +317,7 @@ pub fn processes_using(path: &Path) -> ProcessUsage {
                     .ok()
                     .is_some_and(|m| targets.contains(&(m.dev(), m.ino())))
                 {
-                    let name = std::fs::read_to_string(process.path().join("comm"))
-                        .unwrap_or_else(|_| "Application".into());
-                    let name: String = name
-                        .trim()
-                        .chars()
-                        .filter(|c| !c.is_control())
-                        .take(64)
-                        .collect();
-                    report.applications.push(format!("{name} ({pid})"));
+                    report.applications.push(process_name(pid));
                     break;
                 }
             }

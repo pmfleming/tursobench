@@ -22,7 +22,7 @@ issue map and reproducible scenarios are in [review remediation](review-remediat
 - Complete-table / execute-once query JSONL export; typed JSON/JSONL and mapped
   CSV/TSV imports; standard versus explicitly protected/annotated delimited files;
   lossless SQL-number validation; explicit checkpoint and coordinated verified backup.
-- Formatting and all-target Clippy with warnings denied pass. **192 regular
+- Formatting and all-target Clippy with warnings denied pass. **196 regular
   workspace tests pass** with shared access, including separate-process WAL,
   contention, recovery, FTS and backup-admission scenarios. One manual frame
   profile is ignored by default and was exercised separately at the remediation commit.

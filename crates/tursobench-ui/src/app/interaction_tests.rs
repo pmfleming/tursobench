@@ -661,9 +661,13 @@ fn failed_open_after_close_can_retry_a_valid_database() {
     crate::test_support::create(&path, &["CREATE TABLE example(id INTEGER PRIMARY KEY)"]);
     let ctx = egui::Context::default();
     let mut app = App::new(&ctx);
-    app.set_database_path(dir.path().join("missing.db").to_str().unwrap().into());
-
+    let disappearing = dir.path().join("missing.db");
+    crate::test_support::create(&disappearing, &["CREATE TABLE example(id INTEGER)"]);
+    app.set_database_path(disappearing.to_str().unwrap().into());
     inspect_selected(&mut app, &ctx);
+    // The file can disappear after advisory checks; actual admission must still
+    // report its asynchronous failure and complete a concurrent close request.
+    std::fs::remove_file(&disappearing).unwrap();
     app.open(&ctx);
     assert!(app.session.is_some());
     app.request_close();
@@ -704,10 +708,13 @@ fn failed_open_completes_pending_exit_after_any_export() {
         let dir = tempfile::tempdir().unwrap();
         let ctx = egui::Context::default();
         let mut app = App::new(&ctx);
-        app.set_database_path(dir.path().join("missing.db").to_str().unwrap().into());
+        let disappearing = dir.path().join("missing.db");
+        crate::test_support::create(&disappearing, &["CREATE TABLE example(id INTEGER)"]);
+        app.set_database_path(disappearing.to_str().unwrap().into());
 
         app.writable = true;
         inspect_selected(&mut app, &ctx);
+        std::fs::remove_file(&disappearing).unwrap();
         app.open(&ctx);
         app.quit = true;
         app.request_close();

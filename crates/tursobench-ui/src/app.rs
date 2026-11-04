@@ -186,6 +186,10 @@ impl App {
             self.status = "Checking the selected database header…".into();
             return;
         }
+        if let Some(error) = self.databases.inspection.blocked(&self.path) {
+            self.status = error.message.clone();
+            return;
+        }
         if !self.databases.inspection.allows_open(&self.path) {
             self.status =
                 "Likely SQLite. Select Open with Turso anyway to override this classification."
@@ -207,6 +211,7 @@ impl App {
             move || wake.request_repaint(),
         ) {
             Ok(s) => {
+                self.databases.open_failure = None;
                 self.documents.clear();
                 self.workspace = Default::default();
                 self.document = document::Document::default();
@@ -249,7 +254,10 @@ impl App {
                 self.status = "Opening…".into();
                 self.closing = false;
             }
-            Err(e) => self.status = e.to_string(),
+            Err(e) => {
+                self.status = e.to_string();
+                self.databases.open_failure = Some(e);
+            }
         }
     }
     fn submit(&mut self, operation: Operation, view: View) -> Option<Ticket> {

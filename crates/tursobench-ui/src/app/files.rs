@@ -29,6 +29,7 @@ impl App {
     pub(super) fn set_database_path(&mut self, path: String) {
         if self.path != path {
             self.path = path;
+            self.databases.open_failure = None;
 
             self.writable = false;
             self.databases.inspection.override_sqlite = false;

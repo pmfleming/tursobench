@@ -18,7 +18,6 @@ impl App {
                         ui.set_width(width);
                         ui.add_space(16.0);
                         ui.heading("Open database");
-                        ui.weak("Choose a recent database or browse for a local file.");
                         ui.add_space(12.0);
 
                         if self.path.is_empty() {
@@ -74,11 +73,10 @@ impl App {
         egui::Frame::new()
             .fill(ui.visuals().faint_bg_color)
             .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-            .corner_radius(10.0)
-            .inner_margin(16.0)
+            .corner_radius(6.0)
+            .inner_margin(12.0)
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.small("Selected database");
                 let path = Path::new(&self.path);
                 ui.add(
                     egui::Label::new(egui::RichText::new(
@@ -87,7 +85,7 @@ impl App {
                 );
                 ui.add(egui::Label::new(&self.path).truncate())
                     .on_hover_text(&self.path);
-                let edit = ui.link(if self.databases.editing_path { "Done editing path" } else { "Edit path…" });
+                let edit = ui.link(if self.databases.editing_path { "Done" } else { "Edit path…" });
                 #[cfg(test)]
                 {
                     self.databases.edit_path_rect = Some(edit.rect);
@@ -101,27 +99,18 @@ impl App {
                 let inspection = &mut self.databases.inspection;
                 #[cfg(test)]
                 { self.databases.override_rect = None; }
-                if inspection.ready(&self.path) {
-                    let kind = inspection.kind(&self.path);
+                if inspection.ready(&self.path) && inspection.kind(&self.path) == crate::discovery::DatabaseKind::LikelySqlite {
                     ui.horizontal_wrapped(|ui| {
-                        let response = ui.label(format!("{} · {}", kind.symbol(), kind.label()))
-                            .on_hover_text(kind.explanation());
-                        if let Some(error) = inspection.error() {
-                            response.on_hover_text(format!("Header inspection unavailable: {error}. Opening will validate the file."));
-                        }
-                        if kind == crate::discovery::DatabaseKind::LikelySqlite {
+                            ui.weak("Likely SQLite");
                             let response = ui.checkbox(&mut inspection.override_sqlite, "Open with Turso anyway");
                             #[cfg(test)]
                             { self.databases.override_rect = Some(response.rect); }
                             response.on_hover_text("Override the engine guess for this selected file. Turso still validates compatibility; this does not convert the file.");
-                        }
                     });
-                } else {
-                    ui.label("Checking database type…");
                 }
                 ui.add_space(8.0);
+                let writable = self.writable;
                 ui.horizontal_wrapped(|ui| {
-                    ui.label("Access");
                     ui.scope(|ui| {
                         if self.writable {
                             let color = crate::appearance::Tokens::of(ui.ctx()).pending;
@@ -134,25 +123,39 @@ impl App {
                         });
                     });
                 });
+                if self.writable != writable { self.databases.open_failure = None; }
                 if self.writable {
-                    ui.colored_label(ui.visuals().warn_fg_color, "Opening for writes may migrate the journal to WAL and change the file before any SQL runs. Back up closed files with all required WAL state first.");
+                    ui.small(egui::RichText::new("Opening for writes may change the file. Back up first.").color(ui.visuals().warn_fg_color));
                 }
-                ui.small("Compatible applications can share WAL access. Other writers are blocked by file locks.");
-                ui.small("Shared access uses Turso’s experimental multiprocess support.");
-                let usage = &self.databases.inspection.usage;
-                if !usage.applications.is_empty() {
-                    ui.label(format!("Also open in {}", usage.applications.join(", ")));
-                }
-                if usage.incomplete {
-                    ui.weak("Application detection is limited; connection locks determine access.");
+                let issue = self.databases.open_failure.as_ref()
+                    .or_else(|| self.databases.inspection.blocked(&self.path));
+                if let Some(error) = issue {
+                    let title = if self.databases.open_failure.is_some() { "Couldn’t open database" }
+                        else if error.kind == tursobench_core::ErrorKind::Busy { "Database in use" }
+                        else { "Cannot open database" };
+                    let color = ui.visuals().error_fg_color;
+                    egui::Frame::new().fill(color.gamma_multiply(0.09))
+                        .stroke(egui::Stroke::new(1.0,color.gamma_multiply(0.4)))
+                        .corner_radius(6).inner_margin(10.0).show(ui, |ui| {
+                            ui.colored_label(color, egui::RichText::new(title).strong());
+                            ui.add(egui::Label::new(&error.message).wrap());
+                        });
+                } else if !self.databases.inspection.ready(&self.path) {
+                    ui.horizontal(|ui| { ui.spinner(); ui.weak("Checking file…"); });
                 }
                 ui.add_space(8.0);
                 let enabled = !self.path.is_empty()
                     && self.picker.is_none()
                     && self.databases.inspection.allows_open(&self.path)
                     && !self.has_drafts();
-                let response = crate::app::presentation::footer(ui, |ui| {
-                    ui.add_enabled(enabled, crate::app::presentation::action(ui,"Open database",crate::app::presentation::Intent::Primary).min_size(egui::vec2(150.0,38.0)))
+                let response = ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let response = ui.add_enabled(enabled, crate::app::presentation::action(ui,
+                        if self.databases.open_failure.is_some() { "Retry" } else { "Open" },
+                        crate::app::presentation::Intent::Primary).min_size(egui::vec2(100.0,30.0)));
+                    if crate::app::icons::control(ui,crate::app::icons::Icon::Refresh,"Check again","",false,false).clicked() {
+                        self.databases.inspection.recheck();
+                    }
+                    response
                 }).inner;
                 #[cfg(test)]
                 {
@@ -299,9 +302,12 @@ mod tests {
 
     #[test]
     fn access_panel_uses_automatic_lock_checks_and_path_editing_resets_write_access() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("example.db");
+        crate::test_support::create(&path, &["CREATE TABLE example(id INTEGER)"]);
         let ctx = egui::Context::default();
         let mut app = App::new(&ctx);
-        app.set_database_path("/work/example.db".into());
+        app.set_database_path(path.to_string_lossy().into_owned());
         frame(&mut app, &ctx, vec![], egui::vec2(1280.0, 720.0));
         assert!(!app.databases.open_enabled);
         let open = app.databases.open_rect.unwrap().center();
@@ -329,7 +335,7 @@ mod tests {
             vec![egui::Event::Text("x".into())],
             egui::vec2(1280.0, 720.0),
         );
-        assert_ne!(app.path, "/work/example.db");
+        assert_ne!(app.path, path.to_str().unwrap());
         assert!(!app.writable);
         assert!(!app.databases.open_enabled);
         assert!(app.session.is_none());
@@ -406,6 +412,87 @@ mod tests {
         assert_eq!(app.path, "/work/example.db");
         assert!(app.writable);
         assert!(app.session.is_none());
+    }
+
+    #[test]
+    fn known_failures_are_visible_and_disable_open_then_recheck_recovers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.db");
+        for dark in [false, true] {
+            let ctx = egui::Context::default();
+            crate::appearance::theme(&ctx, dark);
+            let mut app = App::new(&ctx);
+            app.set_database_path(path.to_string_lossy().into_owned());
+            inspect(&mut app, &ctx);
+            let texts = frame(&mut app, &ctx, vec![], egui::vec2(960.0, 640.0));
+            assert!(texts.iter().any(|t| t == "Cannot open database"));
+            assert!(texts.iter().any(|t| t == "File not found."));
+            assert!(!app.databases.open_enabled);
+            assert!(app.databases.open_rect.unwrap().bottom() < 640.0);
+            assert!(
+                !texts
+                    .iter()
+                    .any(|t| t.contains("multiprocess") || t.contains("Selected database"))
+            );
+            crate::test_support::create(&path, &["CREATE TABLE ready(id INTEGER)"]);
+            app.databases.inspection.recheck();
+            let start = std::time::Instant::now();
+            loop {
+                app.poll_database_inspection(&ctx);
+                if app.databases.inspection.allows_open(&app.path) {
+                    break;
+                }
+                assert!(start.elapsed() < std::time::Duration::from_secs(5));
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            let texts = frame(&mut app, &ctx, vec![], egui::vec2(960.0, 640.0));
+            assert!(app.databases.open_enabled);
+            assert!(!texts.iter().any(|t| t == "Cannot open database"));
+            std::fs::remove_file(&path).unwrap();
+            let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        }
+    }
+
+    #[test]
+    fn engine_open_failure_stays_visible_until_retry_or_path_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("damaged.db");
+        crate::test_support::create(&path, &["CREATE TABLE damaged(id INTEGER)"]);
+        // Valid recognizable header, missing pages: preflight succeeds, engine fails.
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes.truncate(100);
+        std::fs::write(&path, bytes).unwrap();
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx);
+        app.set_database_path(path.to_string_lossy().into_owned());
+        inspect(&mut app, &ctx);
+        assert!(app.databases.inspection.allows_open(&app.path));
+        app.open(&ctx);
+        let start = std::time::Instant::now();
+        while app.databases.open_failure.is_none() {
+            app.poll(&ctx);
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(5),
+                "{}",
+                app.status
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let reason = app.databases.open_failure.as_ref().unwrap().message.clone();
+        app.status = "Unrelated status change".into();
+        let texts = frame(&mut app, &ctx, vec![], egui::vec2(960.0, 640.0));
+        assert!(texts.iter().any(|t| t == "Couldn’t open database"));
+        assert!(texts.iter().any(|t| t == &reason));
+        assert!(texts.iter().any(|t| t == "Retry"));
+        assert!(app.databases.open_enabled);
+        app.set_database_path(
+            dir.path()
+                .join("different.db")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        assert!(app.databases.open_failure.is_none());
     }
 
     #[test]

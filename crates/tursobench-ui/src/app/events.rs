@@ -272,6 +272,7 @@ impl App {
         self.log_outcome(format!("Request {} ERROR: {e}", ticket.request));
         if ticket.request == 0 {
             self.status = e.to_string();
+            self.databases.open_failure = Some(e);
             self.session = None;
             self.ready = false;
             self.document.active = None;
