@@ -189,6 +189,85 @@ fn seek_paging_grouped_filters_counts_and_reference_pages_are_complete() {
 }
 
 #[test]
+fn large_values_keep_rows_and_save_exact_original_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("large.db");
+    common::create(
+        &path,
+        &[
+            "CREATE TABLE t(id INTEGER PRIMARY KEY,value TEXT)",
+            "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<151) INSERT INTO t SELECT x,CASE WHEN x=50 THEN hex(zeroblob(50000)) ELSE 'small' END FROM n",
+        ],
+    );
+    let mut c = Client::open(&path, Access::ReadOnly);
+    let first = c.browse("t", 0).1;
+    assert_eq!(first.rows.len(), 100);
+    assert_eq!(first.completion.unwrap().delivery, Delivery::Complete);
+    let Value::Deferred(cell) = &first.rows[49][1] else {
+        panic!("large cell must be deferred")
+    };
+    let handle = cell.handle.unwrap();
+    assert_eq!(cell.bytes, 100000);
+    let chunk = c
+        .run(Operation::ReadValue {
+            handle,
+            offset: 99990,
+            bytes: 1024,
+        })
+        .chunk
+        .unwrap();
+    assert_eq!(chunk, (99990, b"0000000000".to_vec()));
+    let destination = dir.path().join("value.txt");
+    assert!(
+        c.run(Operation::SaveValue {
+            handle,
+            path: destination.clone()
+        })
+        .saved
+        .is_some()
+    );
+    assert_eq!(std::fs::read(&destination).unwrap(), vec![b'0'; 100000]);
+    assert!(
+        c.run(Operation::SaveValue {
+            handle,
+            path: destination
+        })
+        .failure
+        .is_some()
+    );
+    let second = c.browse("t", 100).1;
+    assert_eq!(second.rows.len(), 51);
+    assert_eq!(second.rows[0][0], Value::Integer(101));
+    c.close();
+}
+
+#[test]
+fn wide_rows_signal_page_continuation_instead_of_stalling() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("wide.db");
+    common::create(
+        &path,
+        &[
+            "CREATE TABLE t(id INTEGER PRIMARY KEY,value TEXT)",
+            "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<151) INSERT INTO t SELECT x,hex(zeroblob(25000)) FROM n",
+        ],
+    );
+    let mut c = Client::open(&path, Access::ReadOnly);
+    let first = c.browse("t", 0).1;
+    let n = first.rows.len();
+    assert!(n > 0 && n < 100);
+    assert_eq!(
+        first.completion.as_ref().unwrap().delivery,
+        Delivery::Complete
+    );
+    assert_eq!(first.completion.unwrap().page_has_more, Some(true));
+    let second = c.browse("t", n).1;
+    assert_eq!(second.rows[0][0], Value::Integer(n as i64 + 1));
+    assert_eq!(n + second.rows.len(), 151);
+    c.close();
+}
+
+#[test]
 fn native_metadata_related_lookup_and_diagnostics_preserve_readonly_bytes() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("workbench.db");

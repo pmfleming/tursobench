@@ -188,6 +188,9 @@ impl App {
         match action {
             Some(presentation::Action::Load) => self.request_inspection(name.into()),
             Some(presentation::Action::Browse(table)) => self.browse_table(table),
+            Some(presentation::Action::Definition(name)) => {
+                self.submit(Operation::Definition(name), View::Diagnostics);
+            }
             None => {}
         }
     }

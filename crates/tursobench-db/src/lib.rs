@@ -10,6 +10,7 @@ mod edits;
 mod inspection;
 pub mod sql;
 mod validation;
+mod values;
 mod worker;
 pub use sql::validate_single;
 use std::{
@@ -63,6 +64,16 @@ impl DeliveryControl {
 }
 
 pub enum Operation {
+    ReadValue {
+        handle: u64,
+        offset: u64,
+        bytes: usize,
+    },
+    SaveValue {
+        handle: u64,
+        path: PathBuf,
+    },
+    Definition(String),
     Execute {
         sql: String,
         parameters: Vec<Value>,
@@ -195,7 +206,7 @@ impl Operation {
                             .map(|(a, b)| a.len() + b.as_ref().map_or(0, String::len))
                             .sum::<usize>()
                 }
-                Self::Inspect(s) | Self::Count(s) => s.len(),
+                Self::Inspect(s) | Self::Count(s) | Self::Definition(s) => s.len(),
                 _ => 0,
             }
     }

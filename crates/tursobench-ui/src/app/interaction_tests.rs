@@ -142,6 +142,38 @@ fn committed_sql_invalidates_other_tiles_and_refreshes_schema() {
 }
 
 #[test]
+fn byte_limited_pages_continue_and_reverse_without_a_false_end() {
+    let (_dir, ctx, mut app) = fixture(
+        &[
+            "CREATE TABLE t(id INTEGER PRIMARY KEY,value TEXT)",
+            "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<151) INSERT INTO t SELECT x,hex(zeroblob(25000)) FROM n",
+        ],
+        false,
+    );
+    app.browse_table("t".into());
+    wait(&mut app, &ctx);
+    let first = app.document.result.rows.len();
+    assert!(first < 100);
+    assert!(app.document.tools.pages.end.is_none());
+    app.request_page(false);
+    wait(&mut app, &ctx);
+    assert_eq!(
+        app.document.result.rows[0][0],
+        Value::Integer(first as i64 + 1)
+    );
+    app.request_page(true);
+    wait(&mut app, &ctx);
+    assert!(
+        app.document.tools.pages.error.is_empty(),
+        "{}",
+        app.document.tools.pages.error
+    );
+    assert_eq!(app.document.result.rows[0][0], Value::Integer(1));
+    app.close();
+    wait_closed(&mut app, &ctx);
+}
+
+#[test]
 fn sql_selection_shortcut_and_window_expansion_have_distinct_targets() {
     let (_dir, ctx, mut app) = fixture(&["CREATE TABLE sample(id INTEGER PRIMARY KEY)"], false);
     app.open_sql_window(false);
@@ -254,6 +286,7 @@ fn independent_documents_route_results_and_keep_filters_drafts_and_sql() {
         elapsed_ms: 1,
         delivery: tursobench_core::Delivery::Complete,
         rows_seen: 1,
+        page_has_more: None,
         changed: 1,
         transaction: TransactionState::Active,
         error: None,

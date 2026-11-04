@@ -86,8 +86,8 @@ fn exact_project_schemas_open_browse_filter_page_and_preserve_readonly_files() {
         if name == "clipboard" {
             assert_eq!(matches(&mut c, "needle"), vec![vec![text("entry-0000")]]);
             let large = c.sql("SELECT bytes FROM payloads WHERE entry_id='entry-0204'");
-            assert!(large.rows.is_empty());
-            assert_eq!(large.completion.unwrap().delivery, Delivery::Limited);
+            assert!(matches!(&large.rows[0][0],Value::Deferred(cell) if cell.handle.is_some()));
+            assert_eq!(large.completion.unwrap().delivery, Delivery::Complete);
         }
         if name == "scratchpad" {
             assert_eq!(

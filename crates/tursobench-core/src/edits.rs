@@ -121,7 +121,10 @@ fn generate(table: &Table, edit: &Edit) -> Result<BoundEdit, Failure> {
     };
     let mut params = Vec::new();
     let mut bind = |value: Value| -> Result<String, Failure> {
-        if value.bytes() > 64 * 1024 || matches!(&value, Value::Real(n) if !n.is_finite()) {
+        if matches!(value, Value::Deferred(_))
+            || value.bytes() > 64 * 1024
+            || matches!(&value, Value::Real(n) if !n.is_finite())
+        {
             return Err(Failure::input("Edit value is oversized or non-finite"));
         }
         params.push(value);
@@ -151,6 +154,7 @@ fn generate(table: &Table, edit: &Edit) -> Result<BoundEdit, Failure> {
                     Value::Real(_) => "real",
                     Value::Text(_) => "text",
                     Value::Blob(_) => "blob",
+                    Value::Deferred(_) => return Err(Failure::input("Original row contains deferred cells; full originals are required for editing")),
                 };
                 Ok(format!(
                     "(typeof({name}) = {} AND {name} COLLATE BINARY IS {})",

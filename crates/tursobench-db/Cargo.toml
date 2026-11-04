@@ -10,5 +10,4 @@ turso.workspace = true
 turso_parser.workspace = true
 tokio.workspace = true
 
-[dev-dependencies]
 tempfile.workspace = true

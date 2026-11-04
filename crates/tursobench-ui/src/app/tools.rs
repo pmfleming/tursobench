@@ -55,6 +55,7 @@ pub(super) struct Tools {
 
 #[derive(Default)]
 pub(super) struct ViewTools {
+    pub large: super::large_values::Viewer,
     pub sql_focus: Option<eframe::egui::Id>,
     pub filter_focus: bool,
     pub filter_error: String,

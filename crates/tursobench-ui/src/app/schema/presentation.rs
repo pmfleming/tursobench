@@ -9,6 +9,7 @@ use tursobench_core::{ForeignKey, IndexInfo, Inspection, SchemaObject, Table};
 pub(super) enum Action {
     Load,
     Browse(String),
+    Definition(String),
 }
 pub(super) struct Structure<'a> {
     pub info: Option<&'a Inspection>,
@@ -18,9 +19,9 @@ pub(super) struct Structure<'a> {
 }
 impl Structure<'_> {
     pub fn show(&self, ui: &mut egui::Ui) -> Option<Action> {
-        self.definition(ui);
+        let definition = self.definition(ui);
         ui.separator();
-        let mut action = None;
+        let mut action = definition;
         let count = if ui.available_width() >= 720.0 { 2 } else { 1 };
         ui.columns(count, |panes| {
             if let Some(info) = self.info {
@@ -29,7 +30,9 @@ impl Structure<'_> {
             let ui = &mut panes[count - 1];
             if let Some(info) = self.info {
                 indexes(ui, &info.indexes);
-                action = foreign_keys(ui, &info.foreign_keys).map(Action::Browse);
+                if let Some(target) = foreign_keys(ui, &info.foreign_keys) {
+                    action = Some(Action::Browse(target));
+                }
             } else if !self.loading
                 && self
                     .object
@@ -42,7 +45,7 @@ impl Structure<'_> {
         self.definitions(ui);
         action
     }
-    fn definition(&self, ui: &mut egui::Ui) {
+    fn definition(&self, ui: &mut egui::Ui) -> Option<Action> {
         let ddl = self.object.and_then(|o| o.ddl.as_deref());
         ui.horizontal(|ui| {
             ui.strong("CREATE statement");
@@ -53,8 +56,14 @@ impl Structure<'_> {
         if let Some(ddl) = ddl {
             code_view(ui, ddl, 3);
         } else {
-            ui.weak("DDL not retained; refresh the catalog.");
+            ui.weak("DDL not retained; load it on demand.");
+            if let Some(object) = self.object
+                && ui.button("Load complete DDL").clicked()
+            {
+                return Some(Action::Definition(object.name.clone()));
+            }
         }
+        None
     }
     fn definitions(&self, ui: &mut egui::Ui) {
         let owner = self
@@ -338,7 +347,7 @@ mod tests {
                     match action {
                         Some(Action::Load) => assert_eq!(label, "Load structure"),
                         Some(Action::Browse(name)) => assert_eq!(name, label),
-                        None => panic!("missing action for {label}"),
+                        None | Some(Action::Definition(_)) => panic!("missing action for {label}"),
                     }
                 }
             }

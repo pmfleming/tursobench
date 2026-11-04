@@ -35,7 +35,7 @@ pub(crate) async fn commit(
         let current = describe(&c, &batch.table.name).await?;
         if current != batch.table { return Err(Failure { kind: ErrorKind::Conflict, message: "Table schema changed; reload before editing".into() }); }
         for (index, statement) in statements.into_iter().enumerate() {
-            let count = c.execute(&statement.sql, params_from_iter(statement.parameters.into_iter().map(to_engine))).await.map_err(failure)?;
+            let count = c.execute(&statement.sql, params_from_iter(statement.parameters.into_iter().map(to_engine).collect::<Result<Vec<_>,_>>()?)).await.map_err(failure)?;
             if count != 1 { return Err(Failure { kind: ErrorKind::Conflict, message: format!("Operation {} affected {count} rows instead of 1; original row changed or identity is ambiguous", index + 1) }); }
         }
         Ok::<(), Failure>(())

@@ -24,14 +24,19 @@ pub(crate) fn state(c: &Connection) -> TransactionState {
         Err(_) => TransactionState::Unknown,
     }
 }
-pub(crate) fn to_engine(v: Value) -> turso::Value {
-    match v {
+pub(crate) fn to_engine(v: Value) -> Result<turso::Value, Failure> {
+    Ok(match v {
         Value::Null => turso::Value::Null,
         Value::Integer(n) => turso::Value::Integer(n),
         Value::Real(n) => turso::Value::Real(n),
         Value::Text(s) => turso::Value::Text(s),
         Value::Blob(b) => turso::Value::Blob(b),
-    }
+        Value::Deferred(_) => {
+            return Err(Failure::input(
+                "Deferred values cannot be used as SQL bindings",
+            ));
+        }
+    })
 }
 pub(crate) fn from_engine(v: turso::Value) -> Value {
     match v {

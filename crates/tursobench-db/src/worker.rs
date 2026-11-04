@@ -145,6 +145,7 @@ pub(super) async fn worker(
         settings,
         output: &output,
         commits: edits::CommitState::default(),
+        depot: crate::values::Depot::default(),
         dirty_data: false,
         dirty_schema: false,
     };
@@ -167,6 +168,7 @@ pub(super) async fn worker(
         output.discard.finished(request.ticket.request);
         output.send(request.ticket, event);
     }
+    drop(worker);
     let result = rollback(&editor).await;
     let browse_result = rollback(&browse).await;
     drop(browse);
@@ -187,6 +189,7 @@ struct Worker<'a> {
     settings: ConnectionSettings,
     output: &'a Output,
     commits: edits::CommitState,
+    depot: crate::values::Depot,
     dirty_data: bool,
     dirty_schema: bool,
 }
@@ -205,6 +208,15 @@ impl Worker<'_> {
         let default = Budget::default();
         let count_references = matches!(&operation, Operation::ReferenceCount { .. });
         let (connection, sql, parameters, budget) = match operation {
+            Operation::ReadValue{handle,offset,bytes} => {
+                let (bytes,total)=self.depot.read(handle,offset,bytes)?;
+                return Ok(Some(EventKind::ValueChunk{handle,offset,bytes,total}));
+            }
+            Operation::SaveValue{handle,path} => {
+                self.depot.save(handle,&path)?;
+                return Ok(Some(EventKind::ValueSaved(path.display().to_string())));
+            }
+            Operation::Definition(name) => (self.browse,"SELECT sql FROM sqlite_schema WHERE name=?1".into(),vec![Value::Text(name)].into(),default),
             Operation::Close => return Ok(None),
             Operation::Diagram => return diagram::load(self.browse).await.map(EventKind::Diagram).map(Some),
             Operation::Inspect(name) => return inspection::inspect(self.browse, &name).await.map(EventKind::Inspection).map(Some),
@@ -217,7 +229,7 @@ impl Worker<'_> {
                 let relation=crate::browse::relationship(self.browse,&table,&spec).await?;
                 let (sql, parameters) = browse_sql(&table, spec,relation)?;
                 self.output.send(ticket, EventKind::Table(table));
-                (self.browse, sql, parameters.into(), Budget {rows:100,bytes:4*1024*1024,..default})
+                (self.browse, sql, parameters.into(), Budget {rows:100,bytes:4*1024*1024,page:true,..default})
             }
             Operation::Lookup { table: name, keys } => {
                 let table = describe(self.browse, &name).await?;
@@ -250,7 +262,7 @@ impl Worker<'_> {
             Operation::Count(name) => (self.browse, format!("SELECT count(*) AS row_count FROM {}", quote_identifier(&name)), vec![].into(), default),
             Operation::Diagnostic(crate::Diagnostic::ForeignKeys) => (self.browse, crate::validation::foreign_keys(self.browse).await?, vec![].into(), default),
             Operation::Diagnostic(kind) => (self.browse, kind.sql().into(), vec![].into(), default),
-            Operation::Schema => (self.browse, "SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'view' THEN 1 ELSE 2 END, name".into(), vec![].into(), Budget {rows:10_000, bytes:8*1024*1024, cell_bytes:1024*1024}),
+            Operation::Schema => (self.browse, "SELECT type, name, tbl_name, CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END AS sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'view' THEN 1 ELSE 2 END, name".into(), vec![].into(), Budget {rows:10_000, bytes:8*1024*1024, cell_bytes:1024*1024,page:false}),
             Operation::Explain { sql, parameters, bytecode } => (self.editor, sql::explain_sql(&sql, bytecode)?, parameters, default),
             Operation::ExecuteBound { sql, parameters, budget } => (self.editor, sql, parameters, budget),
             Operation::Execute { sql, parameters, budget } => (self.editor, sql, parameters.into(), budget),
@@ -261,8 +273,11 @@ impl Worker<'_> {
             &sql,
             parameters,
             budget,
-            self.output,
-            self.access,
+            ExecutionContext {
+                out: self.output,
+                access: self.access,
+                depot: &mut self.depot,
+            },
         )
         .await;
         // Every result reports the persistent editor's state, including browse/diagnostics.
@@ -300,15 +315,20 @@ impl Worker<'_> {
         Ok(Some(EventKind::Finished(completion)))
     }
 }
+struct ExecutionContext<'a> {
+    out: &'a Output,
+    access: Access,
+    depot: &'a mut crate::values::Depot,
+}
 async fn execute(
     c: &Connection,
     ticket: Ticket,
     sql: &str,
     parameters: Bindings,
     budget: Budget,
-    out: &Output,
-    access: Access,
+    context: ExecutionContext<'_>,
 ) -> Completion {
+    let ExecutionContext { out, access, depot } = context;
     let started = std::time::Instant::now();
     let stoppable = sql::stoppable_read(sql);
     if stoppable {
@@ -324,6 +344,7 @@ async fn execute(
         elapsed_ms: 0,
         delivery: Delivery::Complete,
         rows_seen: 0,
+        page_has_more: budget.page.then_some(false),
         changed: 0,
         transaction: state(c),
         error: None,
@@ -362,14 +383,17 @@ async fn execute(
         }
         out.send(ticket, EventKind::Columns(columns));
         let parameters = match parameters {
-            Bindings::Positional(values) => {
-                turso::params::Params::Positional(values.into_iter().map(to_engine).collect())
-            }
+            Bindings::Positional(values) => turso::params::Params::Positional(
+                values
+                    .into_iter()
+                    .map(to_engine)
+                    .collect::<Result<_, _>>()?,
+            ),
             Bindings::Named(values) => turso::params::Params::Named(
                 values
                     .into_iter()
-                    .map(|(name, value)| (name.into(), to_engine(value)))
-                    .collect(),
+                    .map(|(name, value)| to_engine(value).map(|value| (name.into(), value)))
+                    .collect::<Result<_, _>>()?,
             ),
         };
         if stoppable && out.discarded(ticket) {
@@ -394,9 +418,23 @@ async fn execute(
             if completion.delivery == Delivery::Limited {
                 continue;
             }
-            let values: Vec<Value> = (0..rows.column_count())
+            let mut values: Vec<Value> = (0..rows.column_count())
                 .map(|i| row.get_value(i).map(from_engine).map_err(failure))
                 .collect::<Result<_, _>>()?;
+            if budget.cell_bytes > 0 {
+                for value in &mut values {
+                    if value.bytes() > budget.cell_bytes.min(1024 * 1024) {
+                        *value = depot.defer(std::mem::replace(value, Value::Null));
+                    }
+                }
+                if budget.page && values.iter().map(Value::bytes).sum::<usize>() > budget.bytes {
+                    for value in &mut values {
+                        if matches!(value, Value::Text(_) | Value::Blob(_)) {
+                            *value = depot.defer(std::mem::replace(value, Value::Null));
+                        }
+                    }
+                }
+            }
             let size = values.iter().map(Value::bytes).sum::<usize>();
             if kept >= budget.rows.min(10_000)
                 || bytes + size > budget.bytes.min(8 * 1024 * 1024)
@@ -404,7 +442,11 @@ async fn execute(
                     .iter()
                     .any(|v| v.bytes() > budget.cell_bytes.min(1024 * 1024))
             {
-                completion.delivery = Delivery::Limited;
+                if budget.page && kept > 0 {
+                    completion.page_has_more = Some(true);
+                } else {
+                    completion.delivery = Delivery::Limited;
+                }
                 if stoppable {
                     break;
                 }

@@ -424,5 +424,6 @@ fn kind_name(value: &Value) -> &'static str {
         Value::Real(_) => "REAL",
         Value::Text(_) => "TEXT",
         Value::Blob(_) => "BLOB",
+        Value::Deferred(_) => "DEFERRED",
     }
 }

@@ -70,6 +70,7 @@ impl Document {
 
     pub fn disconnect(&mut self) {
         self.active = None;
+        self.tools.large.ticket = None;
         self.tools.inspection_ticket = None;
         self.tools.context.pending = None;
         self.tools.pages.pending = None;

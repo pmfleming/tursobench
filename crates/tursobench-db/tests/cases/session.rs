@@ -247,8 +247,10 @@ fn real_readonly_bounded_results_and_cleanup() {
         assert!((1..=2).contains(&completion.rows_seen));
     }
     let r = run(&s, 4, "SELECT zeroblob(100000)", Budget::default());
-    assert!(r.rows.is_empty());
-    assert_eq!(r.completion.unwrap().delivery, Delivery::Limited);
+    assert!(
+        matches!(&r.rows[0][0],Value::Deferred(cell) if cell.bytes==100000 && cell.handle.is_some())
+    );
+    assert_eq!(r.completion.unwrap().delivery, Delivery::Complete);
     let r = run(&s, 5, "SELECT * FROM items WHERE 0", Budget::default());
     assert_eq!(r.columns.len(), 2);
     assert!(r.rows.is_empty());

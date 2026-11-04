@@ -26,6 +26,8 @@ pub fn opened(path: &Path, access: Access) -> Session {
 }
 #[derive(Default)]
 pub struct Reply {
+    pub chunk: Option<(u64, Vec<u8>)>,
+    pub saved: Option<String>,
     pub result: ResultSet,
     pub table: Option<Table>,
     pub info: Option<Inspection>,
@@ -45,6 +47,8 @@ pub fn run(session: &Session, sequence: u64, operation: Operation) -> Reply {
         }
         assert_eq!(event.ticket, ticket);
         match event.kind {
+            EventKind::ValueChunk { offset, bytes, .. } => reply.chunk = Some((offset, bytes)),
+            EventKind::ValueSaved(path) => reply.saved = Some(path),
             EventKind::Table(table) => {
                 reply.table = Some(table);
                 continue;

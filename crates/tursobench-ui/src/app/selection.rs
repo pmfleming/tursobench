@@ -119,6 +119,11 @@ impl App {
                 text.push(if previous == r { '\t' } else { '\n' });
             }
             last = Some(r);
+            if matches!(self.document.result.rows[r][c], Value::Deferred(_)) {
+                return Err(
+                    "Selection contains deferred cells; save the full value instead".into(),
+                );
+            }
             let cell = crate::export::cell_text(&self.document.result.rows[r][c]);
             if cell.contains(['\t', '\n', '\r', '"']) {
                 text.push('"');

@@ -17,6 +17,7 @@ mod icons;
 mod inspector;
 #[cfg(test)]
 mod interaction_tests;
+mod large_values;
 mod paging;
 mod panels;
 mod presentation;
@@ -541,6 +542,7 @@ impl App {
     }
     pub fn render(&mut self, ui: &mut egui::Ui) {
         self.shell(ui);
+        self.large_value_ui(ui.ctx());
     }
 }
 impl eframe::App for App {

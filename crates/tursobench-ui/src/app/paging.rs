@@ -155,6 +155,9 @@ impl App {
         }
         if page.reverse {
             page.result.rows.reverse();
+            if let Some(browse) = &self.document.browse {
+                page.offset = browse.offset.saturating_sub(page.result.rows.len());
+            }
         }
         self.document
             .append_page(page, self.preferences.row_limit.clamp(200, 10_000) - 100);
@@ -167,7 +170,14 @@ impl Document {
             return;
         };
         let count = page.result.rows.len();
-        if count < 100 && !page.previous {
+        if count < 100
+            && !page.previous
+            && page
+                .result
+                .completion
+                .as_ref()
+                .is_none_or(|c| c.page_has_more != Some(true))
+        {
             self.tools.pages.end = Some(page.offset + count);
         }
         if count == 0 {
@@ -283,6 +293,7 @@ mod tests {
                 elapsed_ms: 1,
                 delivery,
                 rows_seen: 100,
+                page_has_more: None,
                 changed: 0,
                 transaction: TransactionState::Autocommit,
                 error,

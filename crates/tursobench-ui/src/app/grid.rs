@@ -340,6 +340,21 @@ impl App {
                 }
             }
         }
+        if let Some(cell) = self
+            .document
+            .inspect
+            .and_then(|(r, c)| self.document.result.rows.get(r)?.get(c))
+            .and_then(|v| {
+                if let Value::Deferred(v) = v {
+                    Some((**v).clone())
+                } else {
+                    None
+                }
+            })
+            && ui.button("View large value…").clicked()
+        {
+            self.open_large_value(cell);
+        }
         self.hover_context(ui.ctx());
         if self.document.ui.nav == shell::Nav::Table
             && self.document.ui.table_view == shell::TableView::Data

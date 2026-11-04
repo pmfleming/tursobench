@@ -11,7 +11,20 @@ pub enum Value {
     Real(f64),
     Text(String),
     Blob(Vec<u8>),
+    Deferred(Box<DeferredCell>),
 }
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeferredCell {
+    pub handle: Option<u64>,
+    pub kind: LargeKind,
+    pub bytes: u64,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LargeKind {
+    Text,
+    Blob,
+}
+
 impl Value {
     pub fn from_input(value: serde_json::Value) -> Result<Self, Failure> {
         Ok(match value {
@@ -46,6 +59,7 @@ impl Value {
             + match self {
                 Self::Text(s) => s.len(),
                 Self::Blob(b) => b.len(),
+                Self::Deferred(_) => std::mem::size_of::<DeferredCell>(),
                 _ => 0,
             }
     }
@@ -62,6 +76,7 @@ impl Value {
                 p
             }
             Self::Blob(b) => format!("[blob: {} bytes]", b.len()),
+            Self::Deferred(cell) => format!("[{:?}: {} bytes · deferred]", cell.kind, cell.bytes),
         }
     }
 }
@@ -179,6 +194,7 @@ pub struct Budget {
     pub rows: usize,
     pub bytes: usize,
     pub cell_bytes: usize,
+    pub page: bool,
 }
 impl Default for Budget {
     fn default() -> Self {
@@ -186,6 +202,7 @@ impl Default for Budget {
             rows: 1000,
             bytes: 8 * 1024 * 1024,
             cell_bytes: 64 * 1024,
+            page: false,
         }
     }
 }
@@ -201,6 +218,7 @@ pub struct Completion {
     pub elapsed_ms: u64,
     pub delivery: Delivery,
     pub rows_seen: u64,
+    pub page_has_more: Option<bool>,
     pub changed: u64,
     pub transaction: TransactionState,
     pub error: Option<Failure>,
@@ -389,7 +407,17 @@ pub struct SchemaDiagram {
 
 #[derive(Debug)]
 pub enum EventKind {
-    Invalidated { schema: bool, source_request: u64 },
+    ValueChunk {
+        handle: u64,
+        offset: u64,
+        bytes: Vec<u8>,
+        total: u64,
+    },
+    ValueSaved(String),
+    Invalidated {
+        schema: bool,
+        source_request: u64,
+    },
     Diagram(SchemaDiagram),
     Inspection(Inspection),
     Table(Table),
@@ -398,7 +426,9 @@ pub enum EventKind {
     Columns(Vec<Column>),
     Rows(Vec<Vec<Value>>),
     Finished(Completion),
-    Closed { rollback: Result<(), Failure> },
+    Closed {
+        rollback: Result<(), Failure>,
+    },
     Failed(Failure),
 }
 #[derive(Debug)]

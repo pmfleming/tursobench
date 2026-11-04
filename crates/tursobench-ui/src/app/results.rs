@@ -66,6 +66,7 @@ impl CellEditor {
                 Value::Real(_) => CellKind::Real,
                 Value::Text(_) => CellKind::Text,
                 Value::Blob(_) => CellKind::Blob,
+                Value::Deferred(_) => CellKind::Text,
             },
             input: match value {
                 Value::Null => String::new(),
@@ -75,7 +76,8 @@ impl CellEditor {
         }
     }
     pub fn inline(value: &Value) -> Option<Self> {
-        (!matches!(value, Value::Blob(_)) && value.bytes() <= 4096).then(|| Self::new(value))
+        (!matches!(value, Value::Blob(_) | Value::Deferred(_)) && value.bytes() <= 4096)
+            .then(|| Self::new(value))
     }
     pub fn parse(&self) -> Result<Value, String> {
         self.kind.parse(&self.input)
@@ -267,7 +269,7 @@ mod tests {
             assert_eq!(editor.parse().unwrap(), value);
             assert_eq!(
                 CellEditor::inline(&value).is_some(),
-                !matches!(value, Value::Blob(_))
+                !matches!(value, Value::Blob(_) | Value::Deferred(_))
             );
         }
         let overhead = Value::Text(String::new()).bytes();

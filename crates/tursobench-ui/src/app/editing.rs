@@ -13,6 +13,13 @@ impl App {
             .documents
             .values()
             .any(|d| d.has_drafts() || d.active.is_some())
+            && !self
+                .document
+                .result
+                .rows
+                .iter()
+                .flatten()
+                .any(|v| matches!(v, Value::Deferred(_)))
             && !self.document.stale
             && self.writable
             && self.ready

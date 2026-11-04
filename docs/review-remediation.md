@@ -94,3 +94,23 @@ pass. New cases cover forward/backward seek, NULL/collated multi-column ordering
 counts. Real EXPLAIN plans confirm indexed first-page/sorted browsing needs no
 temporary B-tree. Concurrent changes invalidate cursors rather than promising a
 snapshot across page requests.
+
+## Stage 5 — large values
+
+Oversized text/blob cells now carry a typed deferred handle; they cannot become SQL
+bindings, staged originals or silently exported placeholder text. The worker backs
+values from the original execution in private temporary files: at most 64 MiB per
+value, 256 MiB / 1,024 files per session with FIFO expiration. Values outside these
+limits remain visibly deferred/unavailable. Close drops the backing before its
+acknowledgement. This bounds application backing, not the engine's incoming row.
+
+The selected-cell viewer reads bounded 16 KiB text/hex chunks, searches the current
+chunk, and atomically saves exact original bytes to a new file. It never reruns SQL.
+Large DDL is excluded from catalog payloads and can be loaded separately into a
+result/large-value viewer. A browse page has an explicit continuation flag when its
+byte budget ends before 100 rows; forward/reverse keyed paging uses actual page
+length. Deferred rows require complete originals before staging edits.
+
+Stage 5 verification: all 157 workspace tests, formatting and all-target Clippy
+pass. New tests preserve a 100 KB cell at row 50, read/save its original bytes,
+refuse overwrite, continue 50 KB-wide rows, and reverse a short byte-limited page.

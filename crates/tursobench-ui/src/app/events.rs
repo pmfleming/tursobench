@@ -8,6 +8,7 @@ use tursobench_db::{Operation, Request};
 
 enum Target {
     Result,
+    Value,
     Context,
     Page,
     Inspection,
@@ -37,6 +38,7 @@ impl Document {
                 Target::Page,
             ),
             (self.tools.inspection_ticket, Target::Inspection),
+            (self.tools.large.ticket, Target::Value),
             (self.result.current, Target::Result),
         ]
         .into_iter()
@@ -106,6 +108,7 @@ impl App {
         let previous = self.document.id;
         let routed = owner.is_some_and(|id| id != previous && self.switch_document(id));
         match target {
+            Target::Value => self.value_event(event.kind),
             Target::Context => self.context_event(event),
             Target::Page => self.page_event(event),
             Target::Count => self.count_event(event),
@@ -359,7 +362,9 @@ impl App {
             && let Some(browse) = &self.document.browse
             && self.document.result.rows.len() < 100
             && self.document.result.completion.as_ref().is_some_and(|c| {
-                c.delivery == tursobench_core::Delivery::Complete && c.error.is_none()
+                c.delivery == tursobench_core::Delivery::Complete
+                    && c.error.is_none()
+                    && c.page_has_more != Some(true)
             })
         {
             self.document.tools.pages.end = Some(browse.offset + self.document.result.rows.len());

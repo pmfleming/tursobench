@@ -98,6 +98,16 @@ fn render(
     rows: &[Vec<Value>],
     table: &str,
 ) -> Result<(), String> {
+    if rows
+        .iter()
+        .flatten()
+        .any(|v| matches!(v, Value::Deferred(_)))
+    {
+        return Err(
+            "Result contains deferred cells; save full values or use a complete source export"
+                .into(),
+        );
+    }
     if rows.iter().any(|r| r.len() != columns.len()) {
         return Err("Result column/row widths do not match".into());
     }
@@ -240,6 +250,7 @@ pub fn cell_text(value: &Value) -> String {
         Value::Real(n) => n.to_string(),
         Value::Text(s) => s.clone(),
         Value::Blob(b) => format!("X'{}'", hex(b)),
+        Value::Deferred(_) => value.preview(),
     }
 }
 fn sql_literal(value: &Value) -> Result<String, String> {
@@ -253,6 +264,7 @@ fn sql_literal(value: &Value) -> Result<String, String> {
         Value::Text(s) if s.contains('\0') => format!("CAST(X'{}' AS TEXT)", hex(s.as_bytes())),
         Value::Text(s) => format!("'{}'", s.replace('\'', "''")),
         Value::Blob(b) => format!("X'{}'", hex(b)),
+        Value::Deferred(_) => return Err("Cannot export a deferred value as SQL".into()),
     })
 }
 fn line(writer: &mut impl Write, value: &Json) -> Result<(), String> {
@@ -266,6 +278,7 @@ fn encode(value: &Value) -> Json {
         Value::Real(n) => json!({"type":"real","value":n.to_string()}),
         Value::Text(s) => json!({"type":"text","value":s}),
         Value::Blob(b) => json!({"type":"blob","hex":hex(b)}),
+        Value::Deferred(v) => json!({"type":"deferred","bytes":v.bytes}),
     }
 }
 #[cfg(test)]
@@ -413,6 +426,7 @@ mod tests {
                         Value::Real(n) => turso::Value::Real(n),
                         Value::Text(s) => turso::Value::Text(s),
                         Value::Blob(b) => turso::Value::Blob(b),
+                        Value::Deferred(_) => panic!("Unexpected deferred test value"),
                     };
                     assert_eq!(row.get_value(i).unwrap(), value);
                 }
