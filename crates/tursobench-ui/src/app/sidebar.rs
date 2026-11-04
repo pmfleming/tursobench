@@ -307,42 +307,22 @@ impl App {
     pub(super) fn navigator_utilities(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            let width = ((ui.available_width() - 10.0) / 6.0).max(18.0);
+            let width = ((ui.available_width() - 8.0) / 5.0).max(18.0);
             for (icon, label, name, panel) in [
-                (Icon::Data, "Tables", "Tables", Some(ToolPanel::Schema)),
-                (
-                    Icon::History,
-                    "History",
-                    "History",
-                    Some(ToolPanel::History),
-                ),
-                (
-                    Icon::Saved,
-                    "Saved",
-                    "Saved queries",
-                    Some(ToolPanel::Saved),
-                ),
+                (Icon::Data, "Tables", "Tables", ToolPanel::Schema),
+                (Icon::History, "History", "History", ToolPanel::History),
+                (Icon::Saved, "Saved", "Saved queries", ToolPanel::Saved),
                 (
                     Icon::Checks,
                     "Checks",
                     "Database checks",
-                    Some(ToolPanel::Diagnostics),
+                    ToolPanel::Diagnostics,
                 ),
-                (Icon::Sql, "SQL", "New SQL editor", None),
-                (
-                    Icon::Settings,
-                    "Settings",
-                    "Settings",
-                    Some(ToolPanel::Settings),
-                ),
+                (Icon::Settings, "Settings", "Settings", ToolPanel::Settings),
             ] {
-                let selected = panel == Some(self.ui.sidebar);
+                let selected = panel == self.ui.sidebar;
                 if icons::rail_button(ui, icon, label, name, selected, width).clicked() {
-                    if let Some(panel) = panel {
-                        self.select_tool(panel);
-                    } else {
-                        self.open_sql_window(true);
-                    }
+                    self.select_tool(panel);
                 }
             }
         });
