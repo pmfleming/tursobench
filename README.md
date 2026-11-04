@@ -135,7 +135,7 @@ Open never creates a database.
 
 ## Current limits
 
-- **Exclusive local access.** Close other clients. Back up before writes. No live multiprocess use, cloud sync or encryption.
+- **Coordinated local access.** Shared readers and serialized writers are qualified with compatible Turso 0.8.3 SDK peers using experimental multiprocess WAL on Linux. Legacy writers are rejected. A standalone read-only session blocks writers until closed. See [shared access](docs/shared-access.md) for setup and limits. Cloud sync and encryption remain unsupported.
 - **Turso only.** SQLite headers indicate possible compatibility. No alternative engine is selected.
 - **Bounded delivery.** Queries default to 1,000 rows, 8 MiB per result and 64 KiB per cell. Engine memory is not bounded.
 - **Paging.** Suitable non-null keys use keyset paging; fallback deep offsets may be slow. Browsing is not snapshot-consistent.

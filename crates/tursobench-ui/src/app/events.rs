@@ -357,7 +357,12 @@ impl App {
         let previous = self.document.id;
         let ids: Vec<_> = std::iter::once(&self.document)
             .chain(self.documents.values())
-            .filter(|d| d.external_refresh && d.active.is_none() && d.tools.pages.pending.is_none())
+            .filter(|d| {
+                d.view == View::Browse
+                    && d.external_refresh
+                    && d.active.is_none()
+                    && d.tools.pages.pending.is_none()
+            })
             .map(|d| d.id)
             .collect();
         for id in ids {

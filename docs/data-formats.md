@@ -28,7 +28,8 @@ uncertain saves also block further writes until restart/inspection. On Unix, the
 application preferences directory is private (0700) and newly created databases
 are 0600; WAL/sidecars stay inside the private directory.
 
-Read/write consent and exclusive-use acknowledgement are not persisted. History
+Read/write opt-in is not persisted. Admission is checked using live locks rather
+than a saved exclusive-use acknowledgement. History
 and saved queries are capped at 100 entries and 512 KiB each, with a 64 KiB SQL
 maximum. SQL literals and database paths are persisted and may be sensitive.
 Parameter values, query results, editor buffers, staged edits and transactions

@@ -21,9 +21,10 @@ clicking a row also selects it. Browsing alone does not replace a command-line o
 previously selected path, and incoming discoveries preserve the highlight.
 
 Selecting a candidate does not connect to it. A compact access panel directly
-below the results shows the selected file, read-only/write choice, exclusive-use
-acknowledgement and **Open database**. Long paths are truncated with the full path
-on hover. Changing the selected path resets write access, acknowledgement, and
+below the results shows the selected file, read-only/write choice, visible
+application usage when detectable and **Open database**. Admission locks are
+checked automatically on Open. Long paths are truncated with the full path
+on hover. Changing the selected path resets write access and
 the SQLite classification override.
 Command-line paths keep priority.
 
@@ -141,7 +142,7 @@ file remains selectable, but requires **Open with Turso anyway** in its access
 panel. The override applies only to the current selection and is not persisted.
 Unknown files and failed inspections remain eligible for normal engine
 validation on Open. This override uses the existing Turso engine; it neither
-switches engines nor converts files. Access mode and exclusive-use acknowledgement
+switches engines nor converts files. Access mode and coordinated admission checks
 still apply. Engine validation happens on Open. Encrypted files,
 empty databases, damaged headers, unusual extensions and files outside the
 configured scope can be missed. This is a search of likely locations, never a

@@ -375,7 +375,10 @@ impl Database {
     /// Whether this open actually joined multiprocess WAL coordination.
     /// The builder option alone is insufficient: read-only opens can fall back.
     pub fn is_multiprocess_wal_coordinated(&self) -> Result<bool> {
-        let telemetry = self.inner.db_core()?.shared_wal_open_telemetry()
+        let telemetry = self
+            .inner
+            .db_core()?
+            .shared_wal_open_telemetry()
             .map_err(|e| Error::Error(e.to_string()))?;
         // Exclusive here means the first participant owns the coordination
         // mapping, not that multiprocess support is disabled.

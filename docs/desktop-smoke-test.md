@@ -5,7 +5,9 @@ session (NixOS: `nix-shell --run 'cargo run --locked -p tursobench-ui'`). Use on
 closed disposable fixture. The engine spike generates its own temporary fixtures;
 for a retained fixture use `python3 tests/fixtures/generate.py /tmp/sample.db`.
 
-1. Select a database and confirm Open is disabled until exclusive-use acknowledgement is checked.
+1. Select a database and confirm Open becomes available after header inspection,
+   with no exclusive-use acknowledgement. A legacy writer must produce a locking
+   error; a compatible shared peer must report shared WAL in connection status.
    The chooser should show cached/recent files immediately and append startup
    discoveries while remaining responsive. Filter by name/path; Ctrl+O returns to
    the chooser. Down enters results, Up/Down moves the marker and Up from the
@@ -15,9 +17,9 @@ for a retained fixture use `python3 tests/fixtures/generate.py /tmp/sample.db`.
    and remains available during discovery. In Search options, stop, refresh, add a
    search folder and exclude one. Restart to check cached entries, successful-open
    history and the startup toggle. Changing roots must not change the selected
-   database or acknowledge exclusive access.
+   database or change write access.
 2. Choose an existing file or type its path; changing the path must restore
-   read-only mode and clear the exclusive-use acknowledgement. Confirm it and open.
+   read-only mode. Open directly; admission locks determine access.
    Cancel the picker: keep the previous path and show a no-selection message.
    Try a typo: no new file. Close while an open is pending and fails, then retry;
    the app must not remain stuck closing. Picker failures must show feedback and

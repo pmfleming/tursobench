@@ -9,14 +9,18 @@ reads see committed state, independently of the editor's manual transaction.
 ## File access and lifecycle
 
 Open accepts existing, nonempty regular UTF-8 paths. Canonicalization and engine
-calls run on the worker. Read-only is the default and engine-enforced. Both modes
-require exclusive use; the acknowledgement does not lock out unrelated writers.
+calls run on the worker. Read-only is the default and engine-enforced. Linux OFD
+admission locks reject legacy writers. Compatible Turso 0.8.3 SDK peers share
+native multiprocess WAL; engine telemetry must confirm coordination. Standalone
+read-only sessions retain an exclusive coordination reservation to block future
+writers. A writable `-tshm` sidecar is required; hard-linked files are rejected.
 Trusted paths must not be swapped concurrently. Writable opening first performs
 read-only schema preflight and explicitly discloses possible DELETE-to-WAL journal
 migration. Read-only execution rejects ATTACH and VACUUM, including INTO.
 
 FTS Cargo support and `experimental_index_method(true)` apply to every managed
-open; other experimental flags remain off. Native FTS has dedicated coverage;
+open; multiprocess WAL is enabled for coordinated sessions and other experimental
+flags remain off. Native FTS has dedicated coverage;
 this is not qualification of every possible experimental index method.
 Foreign keys are enabled and verified when connections are configured. Editor SQL
 can change its own connection-local PRAGMAs; generated write lanes reconfigure
@@ -32,7 +36,7 @@ ordering is preserved and pending catalog refreshes coalesce. The event queue ha
 
 Close rejects queued/new work, interrupts an active stoppable read, waits for
 remaining work, explicitly rolls back, and drops connections, database and deferred
-backing before acknowledging Closed. Cleanup failure is reported. Dropping a
+backing and all admission locks before acknowledging Closed. Cleanup failure is reported. Dropping a
 Session is best effort; worker disconnection is UNKNOWN, not an acknowledgement.
 Native window close waits for cleanup; it does not silently dismiss a failure.
 Changing access requires acknowledged close and reopen.
@@ -71,7 +75,13 @@ Committed writes emit `Invalidated { schema, source_request }`. Manual writes wa
 until commit; full rollback clears pending invalidation. Other retained tiles show
 stale rows and require refresh before paging/staging. Schema changes refresh the
 catalog/diagram and invalidate inspection metadata. Drafts remain owned by their
-original view; arbitrary editor SQL is never rerun automatically.
+original view; arbitrary editor SQL is never rerun automatically. Shared sessions
+also observe database/WAL file changes every 500 ms between operations, use a
+separate autocommit connection to compare schema versions, and emit conservative
+request-zero invalidations. Clean table/related views refresh automatically;
+refresh defers during drafts or manual editor transactions. Removed/replaced
+source identities disconnect the session. See `docs/shared-access.md` for the
+qualified scope and process-diagnostic limits.
 
 ## Budgets and large values
 
@@ -147,7 +157,9 @@ atomic or opt-in 1,000-row / 8 MiB commit batches. Earlier confirmed batches are
 reported after later failure. See `docs/data-formats.md` for record/decoded limits.
 
 Writable-only checkpoint requires editor autocommit and validates native completion
-status. Backup checkpoints, closes all source handles, refuses remaining WAL data,
+status. Backup checkpoints, closes all source handles, acquires an exclusive
+coordination reservation while retaining the main-file reader lock, and refuses
+publication if a peer remains or WAL data remains. It then
 verifies integrity on a private closed-file copy and publishes a new destination.
 It never copies a live main file. These operations are explicit, never automatic
 repair. Transfer state is bound to its original session.
@@ -157,7 +169,7 @@ repair. Transfer state is bound to its original session.
 
 `preferences::Store` is a separate application-owned Turso store, used only by the
 UI's dedicated storage thread. It does not use inspected-file sessions or alter
-their consent/lifecycle rules. The config path is `tursobench/preferences.db` under
+their admission/lifecycle rules. The config path is `tursobench/preferences.db` under
 XDG config/home. A versioned singleton row stores current/previous JSON snapshots
 transactionally, at most 2 MiB each. No JSON-file or legacy-format migration exists.
 Read-only preflight rejects unrelated/corrupt/unsupported stores before writable

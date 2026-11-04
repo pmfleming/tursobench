@@ -82,6 +82,15 @@ impl Admission {
             return Err(Failure::input("Database file locking must be enabled"));
         }
         let main = File::open(path).map_err(io_failure)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if main.metadata().map_err(io_failure)?.nlink() != 1 {
+                return Err(Failure::input(
+                    "Hard-linked databases cannot be shared safely because aliases use different WAL/coordination paths. Open a database with one file name.",
+                ));
+            }
+        }
         if !lock(&main, false)? {
             return Err(Failure { kind: ErrorKind::Busy, message:
                 "Database is locked by another application. Close its legacy connection or reopen it with compatible multiprocess WAL support.".into() });
@@ -138,6 +147,10 @@ pub fn processes_using(path: &Path) -> ProcessUsage {
                     .map(|m| (m.dev(), m.ino()))
             })
             .collect();
+        if targets.is_empty() {
+            report.incomplete = true;
+            return report;
+        }
         let Ok(processes) = std::fs::read_dir("/proc") else {
             report.incomplete = true;
             return report;

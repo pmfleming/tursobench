@@ -4,7 +4,9 @@ TursoBench enables `turso = { version = "=0.8.3", default-features = false,
 features = ["fts"] }` and `Builder::experimental_index_method(true)`. Both
 read-only and read/write opens use this configuration. All managed connections,
 including dedicated edit commits, belong to that configured database handle.
-Other experimental flags, notably multiprocess WAL, remain disabled.
+Coordinated source sessions also enable experimental multiprocess WAL; other
+experimental flags remain disabled. Shared native FTS reads and updates have
+separate-process coverage; see [shared access](shared-access.md).
 
 ## Usage
 
@@ -96,6 +98,6 @@ dependency. The lockfile now uses zstd 0.14.3 and zstd-safe 8.2.0. See
 
 After the patch, `cargo audit` reports **zero vulnerability findings**, with
 one unsuppressed upstream `lru` panic-safety warning (RUSTSEC-2026-0253). This is
-not a blanket security certification; all preview/trusted-file/exclusive-use
+not a blanket security certification; all preview/trusted-file/coordinated-access
 restrictions in the compatibility contract still apply. Only native FTS index
 methods have been exercised, not every possible experimental index implementation.

@@ -21,6 +21,31 @@ participants must use the same WAL coordination protocol. A successful legacy
 read-only open is not evidence of safe sharing. No live user database is used
 for qualification, and no other application's configuration is changed.
 
+## Using shared access
+
+The other application must explicitly enable compatible native multiprocess WAL,
+for example `turso::Builder::new_local(path).experimental_multiprocess_wal(true)`
+with the pinned Rust SDK. Open that application first, then attach TursoBench
+read-only. Applications using the default legacy writer mode must close their
+connection or change their configuration before sharing. TursoBench does not
+reconfigure other applications. Shared editing uses the same protocol.
+
+The qualified environment is Linux x86_64 on local storage with Turso 0.8.3 SDK
+peers and ordinary WAL databases, including the tested native FTS indexes.
+Standalone read-only access reserves the file until closed; later compatible
+writers must wait or retry, and another TursoBench session reports Busy promptly.
+Some core/CLI clients probe an exclusive main-file lock and therefore refuse
+opening while TursoBench is connected, even with the experimental flag. Arbitrary
+SQLite clients, other engine versions, network filesystems and MVCC are not
+qualified. Hard-linked databases are rejected: two names can otherwise create
+different WAL/coordination paths for the same inode. Do not rename or replace
+source/sidecar files while connected, or disable advisory locking in peers.
+
+Read-only protects database, WAL and FTS contents; the writable coordination
+sidecar is separate from those contents and may be created. Process diagnostics
+inspect open descriptors, so permission restrictions and mmap-only users can
+hide applications. They are never a substitute for protocol-compatible locks.
+
 ## Stage 1 evidence
 
 `cargo test --locked -p tursobench-db --test suite shared:: -- --test-threads=1`
@@ -116,3 +141,21 @@ exact accounting of successful writes. Forty rounds of updates from both writers
 retain correct FTS query results. Both source and surviving peer remain usable
 and pass integrity checks. These bounded scenarios qualify this Linux preview;
 they do not certify arbitrary workloads or unqualified engines/filesystems.
+
+## Final verification (2026-11-04)
+
+- `cargo fmt --all --check` and workspace/all-target Clippy with warnings denied.
+- `cargo test --locked --workspace`: 192 passed; one manual profile ignored.
+- Native Xvfb/Mesa desktop smoke on the closed 100,000-row compatibility fixture.
+- All four synthetic local-project schemas pass their database cases and native
+  desktop smokes, including the clipboard native FTS schema.
+- The isolated startup-discovery smoke passes without opening or modifying any
+  candidate database; removed defaults, exclusions and opt-out remain effective.
+- Immediate close/reopen releases every admission lock before acknowledgement;
+  repeated protected reads preserve source contents. Hard-link aliases fail
+  before any coordination sidecar is created.
+
+The engine version/implementation is unchanged. No live user store was modified,
+no other application was reconfigured, and no release archive was repackaged.
+Extended soak, physical I/O/OOM faults, other engine versions, other platforms
+and network filesystems remain outside this qualification.

@@ -6,8 +6,10 @@ Run `nix-shell --run 'cargo run --locked -p engine-spike'` (or use Rust and
 Python 3 directly). The harness creates and deletes only disposable fixtures.
 No tursotui backend code is imported. `turso = "=0.8.3"`, default Cargo features
 OFF, `fts` explicitly ON, and `experimental_index_method(true)` enabled on every
-production database open, including read-only opens. Other experimental builder
-flags remain OFF. Turso is the only engine. See `docs/fts.md` for syntax, the
+production database open, including read-only opens. Experimental multiprocess WAL
+is enabled for coordinated source sessions; a protected standalone read-only
+session uses legacy reading under held main/coordination locks. Other experimental
+builder flags remain OFF. Turso is the only engine. See `docs/fts.md` for syntax, the
 scoped compression dependency patch, and local-project validation.
 
 Observed on Linux x86_64, Rust 1.95.0:
@@ -26,6 +28,9 @@ Observed on Linux x86_64, Rust 1.95.0:
 | 100,000 recursive result rows | ~0.95 s drained in debug, no result retention |
 | 1 MiB blob | Materialized by engine before application budget check |
 | Two-process viewer, WAL flag off/on | Read succeeded with parent handle open; NOT proof of safe live writes |
+| Qualified shared WAL readers/writers | Separate-process checkpoints, crash/restart, contention, optimistic conflicts, FTS updates and exact write accounting pass; see `docs/shared-access.md` |
+| SDK mixed-mode admission | Raw SDK admits legacy/shared writers together; application OFD locks reject this before opening |
+| Standalone read-only reservation | Main-file reader lock plus exclusive `-tshm` reservation prevent later legacy/native writers; source content preserved |
 | Read-only reopen | Writes rejected; main and existing WAL bytes unchanged |
 | Read-only missing path | Error, no file created |
 | Corrupt file / Unix permissions | NotAdb / PermissionDenied |
@@ -43,9 +48,16 @@ Observed on Linux x86_64, Rust 1.95.0:
   DELETE journal to WAL before SQL execution; the access panel discloses this
   before opt-in and writable opening performs read-only schema preflight.
   Mode changes require clean close/reopen.
-- **Only files not in use by another application are supported.** User must affirm
-  exclusive use. A viewer opening successfully is not a concurrency guarantee.
-  Do not copy a live main file without its WAL. No automatic snapshot feature.
+- **Coordinated local access on Linux.** Compatible Turso 0.8.3 SDK peers must enable
+  experimental multiprocess WAL. Main-file OFD read locks reject legacy writers.
+  Native coordination telemetry is verified; standalone read-only sessions reserve
+  the legacy path against future writers using an exclusive coordination-file lock.
+  Process enumeration is advisory and never authorizes access. No user assertion
+  of exclusive use remains. A writable coordination sidecar is required even for
+  read-only sessions. Core/CLI opens may conservatively refuse while the main-file
+  admission lock is held. No arbitrary SQLite/old-engine coexistence claim.
+  Do not copy a live main file without its WAL. Verified backup reserves native
+  coordination after engine close and refuses publication if a peer remains.
 - The local Rust wrapper patch exposes the pinned SDK's existing interrupt and
   per-statement timeout methods. Default deadline: 30 seconds, configurable after
   reopen; zero disables. Discard/close interrupt SELECT/EXPLAIN reads; writes drain
@@ -64,11 +76,11 @@ Observed on Linux x86_64, Rust 1.95.0:
 
 ## Unpassed release gates
 
-Physical engine I/O commit/rollback failure, process OOM and multiprocess
-writer stress, old tursotui-engine fixtures, full file-format coverage, and
+Physical engine I/O commit/rollback failure, process OOM, extended multiprocess
+soak workloads, old tursotui-engine fixtures, full file-format coverage, and
 cross-platform behavior are **not validated**. No old engine compatibility claim.
 Generated columns, WITHOUT ROWID, custom types, sync, encryption and experimental
-features other than index methods are disabled. Only native FTS index methods
+features other than index methods and multiprocess WAL are disabled. Only native FTS index methods
 have been qualified here; enabling the flag is not a blanket compatibility claim
 for every possible index method. Existing live application stores were not used. This implementation is a Linux preview,
 not a production-safety certification. New evidence must update this document.

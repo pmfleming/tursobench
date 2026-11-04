@@ -29,9 +29,11 @@ security reporting process; mention the TursoBench impact in a private report he
 
 ## Preview safety boundaries
 
-- Open trusted, local database files with no other application using them.
-  Read-only is the default; write access requires explicit opt-in. The exclusive-use
-  acknowledgement does not acquire an operating-system lock.
+- Open trusted, local database files. Read-only is the default; write access
+  requires explicit opt-in. Linux OFD admission locks reject legacy writers;
+  compatible Turso 0.8.3 SDK peers can use experimental multiprocess WAL. Other
+  engines, lock-disabled clients and source/sidecar replacement remain unsupported.
+  See [shared access](docs/shared-access.md) for the qualified protocol and limits.
 - Back up closed databases with all required WAL state before writes. Copying
   only the main file of a live database is not a safe backup.
 - Queries are not sandboxed. Discarding results does not cancel execution or

@@ -301,6 +301,7 @@ impl App {
                 self.document.script_results.clear();
                 self.document.script_message.clear();
                 self.document.stale = false;
+                self.document.external_refresh = false;
                 self.document.result.start(ticket);
                 self.document.active = Some(ticket);
                 self.document.view = view;

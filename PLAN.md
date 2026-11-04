@@ -1,5 +1,9 @@
 # TursoBench implementation plan
 
+> The initial concurrency restrictions below are historical. The implemented
+> Linux shared-access model and qualification are documented in
+> [shared access](docs/shared-access.md).
+
 ## 1. Direction and scope
 
 TursoBench is a local-first desktop database workbench built with Rust and

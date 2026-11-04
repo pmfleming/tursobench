@@ -4,6 +4,10 @@ Implementation follows the eight stages agreed on 2026-11-04. Each stage is
 committed independently after its targeted checks. This document records actual
 delivery and remaining work; it is not a production-readiness claim.
 
+> Subsequent concurrency change: [shared access](shared-access.md) supersedes the
+> exclusive-use acknowledgement and initial multiprocess restrictions recorded
+> below. Current admission uses Linux OFD locks and verified native coordination.
+
 > Subsequent storage change: preferences now use an application-owned local Turso
 > database with no JSON/legacy migration. The original JSON recovery work below is
 > historical; current behavior is documented in [data formats](data-formats.md).

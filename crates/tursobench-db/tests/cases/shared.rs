@@ -192,6 +192,48 @@ fn readonly_flag_is_not_proof_of_coordination() {
 }
 
 #[test]
+fn close_ack_releases_all_admission_locks_and_protected_reads_preserve_content() {
+    use tursobench_core::{Access, Coordination, EventKind};
+    let (dir, path) = fixture();
+    for _ in 0..8 {
+        let before = common::snapshot(dir.path());
+        let s = tursobench_db::Session::open(path.clone(), Access::ReadOnly, || {}).unwrap();
+        assert!(matches!(
+            common::event(&s).kind,
+            EventKind::Opened(Coordination::ProtectedReadOnly)
+        ));
+        common::run(&s, 1, tursobench_db::Operation::Schema);
+        s.close();
+        assert!(matches!(
+            common::event(&s).kind,
+            EventKind::Closed { rollback: Ok(()) }
+        ));
+        assert_eq!(common::snapshot(dir.path()), before);
+        // No delay: Closed promises every lock has already been released.
+        let (_legacy, reply) = Peer::start(&path, "legacy");
+        assert_eq!(reply, "READY|false");
+    }
+}
+
+#[test]
+fn hard_link_aliases_are_rejected_before_creating_coordination_sidecars() {
+    use tursobench_core::{Access, EventKind};
+    let (dir, path) = fixture();
+    let alias = dir.path().join("alias.db");
+    std::fs::hard_link(&path, &alias).unwrap();
+    let before = common::snapshot(dir.path());
+    for p in [&path, &alias] {
+        let s = tursobench_db::Session::open(p.clone(), Access::ReadOnly, || {}).unwrap();
+        assert!(
+            matches!(common::event(&s).kind, EventKind::Failed(e) if e.message.contains("Hard-linked"))
+        );
+    }
+    assert!(!dir.path().join("shared.db-tshm").exists());
+    assert!(!dir.path().join("alias.db-tshm").exists());
+    assert_eq!(common::snapshot(dir.path()), before);
+}
+
+#[test]
 fn application_admission_blocks_legacy_writers_and_reserves_readonly_fallback() {
     use tursobench_core::{Access, Coordination, ErrorKind, EventKind};
     let (_dir, path) = fixture();

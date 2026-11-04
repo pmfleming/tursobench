@@ -8,10 +8,10 @@ issue map and reproducible scenarios are in [review remediation](review-remediat
 ## Implemented and locally exercised
 
 - Rust 1.95, eframe/egui 0.37 and Turso 0.8.3 with explicit native FTS support.
-  Pinned wrapper methods expose existing SDK interruption/deadlines; the engine
+  Pinned wrapper methods expose existing SDK interruption/deadlines and coordination telemetry; the engine
   version and implementation are unchanged. Vendor patches include provenance.
 - Worker-owned connections, bounded admission/delivery, queue state, stale-event
-  protection, explicit access consent, managed transaction cleanup and truthful
+  protection, explicit write opt-in, held admission locks, managed transaction cleanup and truthful
   partial/unknown outcomes. Committed writes invalidate other retained views.
 - Supported metadata FK validation, visible catalog truncation, lazy DDL, indexed
   ordering/keyset paging where qualified, byte-aware continuation and stable scroll
@@ -22,9 +22,10 @@ issue map and reproducible scenarios are in [review remediation](review-remediat
 - Complete-table / execute-once query JSONL export; typed JSON/JSONL and mapped
   CSV/TSV imports; standard versus explicitly protected/annotated delimited files;
   lossless SQL-number validation; explicit checkpoint and coordinated verified backup.
-- Formatting and all-target Clippy with warnings denied pass. **179 regular
-  workspace tests pass** after the preferences and tile UI changes. The manual frame
-  profile was exercised separately at the remediation commit.
+- Formatting and all-target Clippy with warnings denied pass. **192 regular
+  workspace tests pass** with shared access, including separate-process WAL,
+  contention, recovery, FTS and backup-admission scenarios. One manual frame
+  profile is ignored by default and was exercised separately at the remediation commit.
   Application fault tests cover commit/rollback boundaries, lost durable-COMMIT
   acknowledgement, output writer failure, actual worker unwind, preference
   corruption, spool quota/handle exhaustion and oversized inputs/metadata.
@@ -38,6 +39,9 @@ issue map and reproducible scenarios are in [review remediation](review-remediat
   docs, lockfile, installer, launcher and icons are bundled. Archive metadata is
   deterministic; this is not proof of reproducible binary compilation.
 
+The archive/package evidence above belongs to the earlier remediation baseline;
+the shared-access changes have not been repackaged into a new release archive.
+
 The 1M-row release SQL benchmark measures the intended indexed/keyset paths;
 the 1,000-draft profile measures review rendering and lookup costs. Exact host
 observations, methodology and caveats are in the remediation record. Timings do
@@ -45,11 +49,14 @@ not certify general latency or total process-memory limits.
 
 ## Remaining release gates and scope limits
 
-- **Exclusive-use local files only.** The checkbox does not exclude unrelated
-  writers. Read-only protects the opened database; it does not establish a shared
-  writer lock. Writable opening may migrate DELETE journal mode to WAL and says so
-  before opt-in. Backup is coordinated checkpoint/close/copy/verification, not a
-  live external-writer snapshot.
+- **Coordinated local files on Linux.** Experimental multiprocess WAL is qualified
+  with compatible Turso 0.8.3 SDK peers. Held OFD admission locks reject legacy
+  writers and protect standalone read-only sessions, including future coordinator
+  startup. Shared read-only fallback is verified rather than assumed. See
+  [shared access](shared-access.md) for setup, sidecar requirements and CLI limits.
+  Writable opening may migrate DELETE journal mode to WAL. Backup requires a
+  post-close exclusive coordination reservation and refuses a live-peer copy.
+  These local scenarios are not broad production multiprocess certification.
 - Engine deadlines are cooperative. Application budgets do not bound engine
   allocations, a complete incoming row, process memory or shutdown latency.
   Process OOM, physical engine disk-full/I/O faults and every storage syscall

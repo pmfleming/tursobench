@@ -45,10 +45,18 @@ works without a portal. No database is created by Open. For a disposable sample:
 python3 tests/fixtures/generate.py /tmp/tursobench-sample.db
 ```
 
-**Use trusted files not open in another application.** Back up closed files with
-all required WAL state before trying writes. Do not copy only the main file of a
-live database. Live multiprocess use, cloud sync, encryption and other engines
-are unsupported. The exclusive-use checkbox is an acknowledgement, not an OS lock.
+**Use trusted local files.** Compatible Turso 0.8.3 SDK applications can share WAL
+access on Linux when they enable experimental multiprocess WAL. Other writers
+are rejected through held file locks; no exclusive-use checkbox is required.
+When opening a file alone read-only, TursoBench reserves access and blocks writers
+until closed. The database and WAL contents stay unchanged; a `-tshm` coordination
+sidecar may be created, so the folder and sidecar must be writable. Application
+detection is informational and can be incomplete. See [shared access](shared-access.md).
+
+Back up before trying writes. Do not copy only the main file of a live database.
+Verified backup requires other shared connections to close and refuses publication
+if it cannot reserve the source. Cloud sync, encryption and other engines remain
+unsupported. Shared access is an experimental Linux preview feature.
 
 ## Features
 

@@ -88,10 +88,11 @@ async fn open(
             "Select an existing non-empty regular database file",
         ));
     }
-    let mut admission = crate::access::Admission::acquire(&path)?;
-    let path = path
+    let text = path
         .to_str()
         .ok_or_else(|| Failure::input("Non-UTF8 paths are not supported by Turso's builder"))?;
+    let mut admission = crate::access::Admission::acquire(&path)?;
+    let path = text;
     if access == Access::ReadWrite {
         // Validate compatibility before permitting the engine's writable-open side effects.
         let preflight = Builder::new_local(path)
