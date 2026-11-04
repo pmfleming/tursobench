@@ -29,9 +29,21 @@ validated and committed separately. Evidence is under `target/quality-five/`.
    to focused handlers. Row, count and peek relationship reads share metadata
    admission through a private mode enum; invalidation events share request
    stamping. Terminal delivery and persistent-editor transaction reporting stay
-   centralized. Dispatcher cognitive/cyclomatic complexity falls from 16/72 to
+   centralized. Dispatcher cognitive/cyclomatic complexity falls from 34/72 to
    4/45; relationship planning is 9/13. All database/UI tests, formatting and
    all-target Clippy pass. The public operation protocol is unchanged.
+
+4. **Borrowed staged values and lazy previews.** Overlay caches retain edit/change
+   locations and borrow the draft's value during painting, rather than owning
+   another copy of each changed value. Cached SQL and bindings are generated only
+   when the review UI requests them. Typed insert preparation borrows retained
+   values directly for its field editors and JSON display, removing serialization
+   followed by parsing, cloned parsed cells and a silent parse fallback. Existing
+   interaction coverage now stages the actual typed clone and checks exact values;
+   it also checks that an overlay value has the draft value's identity. The manual
+   cache profile now measures the actual value lookup. All 128 active UI tests,
+   formatting and all-target Clippy pass. No runtime speedup is claimed without
+   comparative profiling; full-batch staging validation still clones drafts.
 
 <!-- five-follow-up-results -->
 

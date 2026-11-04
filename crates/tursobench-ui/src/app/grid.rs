@@ -745,7 +745,7 @@ impl App {
         ui.horizontal(|ui| {
             let overlay = self.document.tools.draft_ui.rows.get(&row);
             let deleted = overlay.is_some_and(|r| r.deleted);
-            let modified = overlay.is_some_and(|r| !r.updates.is_empty());
+            let modified = overlay.is_some_and(|r| r.modified());
             let offset = self.document.browse.as_ref().map_or(0, |b| b.offset);
             let marker = if deleted {
                 "D"
@@ -816,9 +816,7 @@ impl App {
             .document
             .tools
             .draft_ui
-            .rows
-            .get(&row)
-            .and_then(|r| r.updates.get(&col));
+            .value(self.document.drafts.as_ref(), row, col);
         let displayed = staged.unwrap_or(value);
         let (rect, response) = ui.allocate_exact_size(
             egui::vec2(self.document.tools.columns.widths[col], 29.0),

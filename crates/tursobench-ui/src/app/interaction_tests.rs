@@ -370,14 +370,11 @@ fn profile_one_thousand_staged_edits() {
             for r in 980..1000 {
                 for col in 0..2 {
                     if cached {
-                        std::hint::black_box(
-                            app.document
-                                .tools
-                                .draft_ui
-                                .rows
-                                .get(&r)
-                                .and_then(|r| r.updates.get(&col)),
-                        );
+                        std::hint::black_box(app.document.tools.draft_ui.value(
+                            app.document.drafts.as_ref(),
+                            r,
+                            col,
+                        ));
                     } else {
                         std::hint::black_box(
                             app.document
@@ -973,8 +970,33 @@ fn click_inspect_stage_no_write_failed_commit_retains_drafts() {
     let clone: Vec<Option<Value>> = serde_json::from_str(&app.document.insert_json).unwrap();
     assert_eq!(clone, vec![None, Some(Value::Text("original".into()))]);
     assert!(!app.has_drafts());
+    frame(&mut app, &ctx, vec![]);
+    let output = frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
+    click(
+        &mut app,
+        &ctx,
+        control(&output, "Stage insert (no database write)").center(),
+    );
+    assert_eq!(
+        app.document.drafts.as_ref().unwrap().edits,
+        vec![tursobench_core::Edit::Insert { values: clone }]
+    );
+    assert_eq!(app.document.result.rows.len(), 2);
+    app.document.drafts = None;
     app.document.show_insert = false;
     app.stage_cell(0, 1, Value::Text("draft".into()));
+    app.update_draft_presentation();
+    let draft = app.document.drafts.as_ref().unwrap();
+    let cached = app
+        .document
+        .tools
+        .draft_ui
+        .value(Some(draft), 0, 1)
+        .unwrap();
+    assert!(std::ptr::eq(
+        cached,
+        draft.displayed(&app.document.result.rows[0], 1).unwrap()
+    ));
     app.document.show_preview = true;
     frame(&mut app, &ctx, vec![]);
     let output = frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);

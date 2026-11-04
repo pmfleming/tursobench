@@ -15,27 +15,33 @@ pub(super) struct InsertField {
     editor: super::results::CellEditor,
 }
 impl InsertField {
-    fn new(column: &tursobench_core::TableColumn, value: Option<Value>) -> Self {
+    fn new(column: &tursobench_core::TableColumn, value: Option<&Value>) -> Self {
         let mode = match value {
             None => InsertMode::Default,
             Some(Value::Null) => InsertMode::Null,
             _ => InsertMode::Value,
         };
-        let initial = value.unwrap_or_else(|| {
-            let ty = column.declared_type.to_uppercase();
-            if ty.contains("INT") {
-                Value::Integer(0)
-            } else if ty.contains("REAL") {
-                Value::Real(0.0)
-            } else if ty.contains("BLOB") {
-                Value::Blob(vec![])
-            } else {
-                Value::Text(String::new())
-            }
-        });
+        let fallback;
+        let initial = if let Some(value) = value {
+            value
+        } else {
+            fallback = {
+                let ty = column.declared_type.to_uppercase();
+                if ty.contains("INT") {
+                    Value::Integer(0)
+                } else if ty.contains("REAL") {
+                    Value::Real(0.0)
+                } else if ty.contains("BLOB") {
+                    Value::Blob(vec![])
+                } else {
+                    Value::Text(String::new())
+                }
+            };
+            &fallback
+        };
         Self {
             mode,
-            editor: super::results::CellEditor::new(&initial),
+            editor: super::results::CellEditor::new(initial),
         }
     }
     fn value(&self) -> Result<Option<Value>, String> {
@@ -66,10 +72,32 @@ impl InsertField {
         });
     }
 }
+struct PreparedInsert {
+    json: String,
+    fields: Vec<InsertField>,
+}
+impl PreparedInsert {
+    fn new(table: &Table, values: Vec<Option<&Value>>) -> Result<Self, serde_json::Error> {
+        Ok(Self {
+            json: serde_json::to_string_pretty(&values)?,
+            fields: table
+                .columns
+                .iter()
+                .zip(values)
+                .map(|(column, value)| InsertField::new(column, value))
+                .collect(),
+        })
+    }
+}
+#[derive(Clone, Copy)]
+struct CellChange {
+    edit: usize,
+    change: usize,
+}
 #[derive(Default)]
 pub(super) struct RowPresentation {
     pub deleted: bool,
-    pub updates: std::collections::BTreeMap<usize, Value>,
+    updates: std::collections::BTreeMap<usize, CellChange>,
 }
 #[derive(Default)]
 pub(super) struct Presentation {
@@ -80,14 +108,35 @@ pub(super) struct Presentation {
     parameter_index: Option<usize>,
     parameters: String,
 }
+impl RowPresentation {
+    pub(super) fn modified(&self) -> bool {
+        !self.updates.is_empty()
+    }
+}
 impl Presentation {
+    pub(super) fn value<'a>(
+        &self,
+        draft: Option<&'a DraftBatch>,
+        row: usize,
+        column: usize,
+    ) -> Option<&'a Value> {
+        let location = self.rows.get(&row)?.updates.get(&column)?;
+        let Edit::Update { changes, .. } = draft?.edits.get(location.edit)? else {
+            return None;
+        };
+        changes
+            .get(location.change)
+            .filter(|(col, _)| *col == column)
+            .map(|(_, value)| value)
+    }
+
     fn review_ui(
         &mut self,
         ui: &mut egui::Ui,
         draft: &DraftBatch,
         can_remove: bool,
     ) -> Option<usize> {
-        let statements = match self.review.as_ref()? {
+        let statements = match self.review.get_or_insert_with(|| draft.preview()) {
             Ok(statements) => statements,
             Err(error) => {
                 ui.colored_label(ui.visuals().error_fg_color, error.to_string());
@@ -196,26 +245,31 @@ impl App {
         if self.document.tools.draft_ui.signature == Some(signature) {
             return;
         }
-        let mut edits = std::collections::HashMap::<u64, Vec<&Edit>>::new();
-        for edit in &draft.edits {
+        let mut edits = std::collections::HashMap::<u64, Vec<(usize, &Edit)>>::new();
+        for (index, edit) in draft.edits.iter().enumerate() {
             if let Edit::Update { original, .. } | Edit::Delete { original } = edit {
-                edits.entry(row_hash(original)).or_default().push(edit);
+                edits
+                    .entry(row_hash(original))
+                    .or_default()
+                    .push((index, edit));
             }
         }
         let mut model = Presentation {
             signature: Some(signature),
-            review: Some(draft.preview()),
             selected: self.document.tools.draft_ui.selected,
             ..Default::default()
         };
         for (row, values) in self.document.result.rows.iter().enumerate() {
             if let Some(edits) = edits.get(&row_hash(values)) {
                 let mut entry = RowPresentation::default();
-                for edit in edits {
+                for &(edit_index, edit) in edits {
                     match edit {
                         Edit::Update { original, changes } if original == values => {
-                            for (col, value) in changes {
-                                entry.updates.entry(*col).or_insert_with(|| value.clone());
+                            for (change_index, (col, _)) in changes.iter().enumerate() {
+                                entry.updates.entry(*col).or_insert(CellChange {
+                                    edit: edit_index,
+                                    change: change_index,
+                                });
                             }
                         }
                         Edit::Delete { original } if original == values => entry.deleted = true,
@@ -332,28 +386,19 @@ impl App {
                 .zip(row)
                 .map(|(c, v)| (c.primary_key <= 0).then_some(v))
                 .collect();
-            let json = serde_json::to_string_pretty(&values);
-            if json.is_ok() {
+            let prepared = PreparedInsert::new(table, values);
+            if prepared.is_ok() {
                 self.status = "Clone prepared locally; primary keys omitted. Supply any required keys before staging.".into();
             }
-            self.prepare_insert(json);
+            self.prepare_insert(prepared);
         }
     }
-    fn prepare_insert(&mut self, json: Result<String, serde_json::Error>) {
-        match json {
-            Ok(json) => {
-                let values: Vec<Option<Value>> = serde_json::from_str(&json).unwrap_or_default();
-                self.document.insert_fields =
-                    self.document.table.as_ref().map_or_else(Vec::new, |table| {
-                        table
-                            .columns
-                            .iter()
-                            .enumerate()
-                            .map(|(i, c)| InsertField::new(c, values.get(i).cloned().flatten()))
-                            .collect()
-                    });
+    fn prepare_insert(&mut self, prepared: Result<PreparedInsert, serde_json::Error>) {
+        match prepared {
+            Ok(prepared) => {
+                self.document.insert_fields = prepared.fields;
                 self.document.insert_use_json = false;
-                self.document.insert_json = json;
+                self.document.insert_json = prepared.json;
                 self.document.show_insert = true;
             }
             Err(error) => self.status = error.to_string(),
@@ -363,8 +408,8 @@ impl App {
         if self.can_edit()
             && let Some(table) = &self.document.table
         {
-            let json = serde_json::to_string_pretty(&vec![None::<&Value>; table.columns.len()]);
-            self.prepare_insert(json);
+            let prepared = PreparedInsert::new(table, vec![None; table.columns.len()]);
+            self.prepare_insert(prepared);
         }
     }
     pub(super) fn edit_windows(&mut self, ctx: &egui::Context) {
