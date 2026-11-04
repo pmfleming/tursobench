@@ -178,6 +178,18 @@ pub(super) async fn worker(
             return;
         }
     };
+    let mut changes = if coordination == tursobench_core::Coordination::SharedWal {
+        match crate::observe::Changes::new(&source_path, &browse).await {
+            Ok(changes) => Some(changes),
+            Err(e) => {
+                output.send(ticket, EventKind::Failed(e));
+                return;
+            }
+        }
+    } else {
+        None
+    };
+    let mut observed = std::time::Instant::now();
     if !output.send(ticket, EventKind::Opened(coordination)) {
         return;
     }
@@ -196,6 +208,28 @@ pub(super) async fn worker(
     };
     let mut backup = None;
     while !output.closing.load(Ordering::Acquire) {
+        if observed.elapsed() >= Duration::from_millis(500) {
+            observed = std::time::Instant::now();
+            if let Some(changes) = &mut changes {
+                match changes.poll(&browse).await {
+                    Ok(Some(schema)) => {
+                        output.send(
+                            ticket,
+                            EventKind::Invalidated {
+                                schema,
+                                source_request: 0,
+                            },
+                        );
+                    }
+                    Ok(None) => {}
+                    Err(e) if matches!(e.kind, ErrorKind::Busy | ErrorKind::Interrupted) => {}
+                    Err(e) => {
+                        output.send(ticket, EventKind::Failed(e));
+                        break;
+                    }
+                }
+            }
+        }
         let request = match rx.recv_timeout(Duration::from_millis(25)) {
             Ok(r) => r,
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
@@ -286,6 +320,9 @@ pub(super) async fn worker(
             }),
         );
     }
+    // Closed acknowledges that both native and admission locks are released;
+    // a user may immediately reopen in another access mode after this event.
+    drop(_admission);
     output.send(
         ticket,
         EventKind::Closed {

@@ -168,6 +168,10 @@ impl App {
             }
             _ => {}
         }
+        if self.diagram_refresh_pending {
+            self.diagram_refresh_pending = false;
+            self.load_diagram();
+        }
     }
     fn commit_outcome(&mut self, ticket: Ticket, outcome: CommitOutcome) {
         self.log_outcome(format!(
@@ -304,10 +308,23 @@ impl App {
     }
     fn invalidate_views(&mut self, schema: bool, source_request: u64) {
         self.tools.counts.clear();
+        if let Some(request) = self.tools.count_request.take()
+            && let Some(ticket) = request.result.current
+            && let Some(session) = &self.session
+        {
+            session.discard_results(ticket.request);
+        }
         if schema {
             self.ui.diagram.stale = true;
+            self.diagram_refresh_pending |= self.ui.diagram.ticket.is_some();
         }
         for document in std::iter::once(&mut self.document).chain(self.documents.values_mut()) {
+            if source_request == 0 {
+                document.external_refresh = document.view == View::Browse;
+                if schema && document.kind == super::tiling::Kind::Structure {
+                    document.needs_load = true;
+                }
+            }
             document.tools.filtered_count = None;
             document.tools.context = Default::default();
             document.tools.pages.pending = None;
@@ -327,6 +344,39 @@ impl App {
             self.refresh_catalog();
             self.load_diagram();
         }
+    }
+    pub(super) fn refresh_external_views(&mut self) {
+        if !self.ready
+            || self.closing
+            || self.has_drafts()
+            || self.commit_ticket.is_some()
+            || self.transaction != TransactionState::Autocommit
+        {
+            return;
+        }
+        let previous = self.document.id;
+        let ids: Vec<_> = std::iter::once(&self.document)
+            .chain(self.documents.values())
+            .filter(|d| d.external_refresh && d.active.is_none() && d.tools.pages.pending.is_none())
+            .map(|d| d.id)
+            .collect();
+        for id in ids {
+            if !self.switch_document(id) {
+                continue;
+            }
+            // Reload table/related reads only. Arbitrary SQL is never replayed.
+            if self.document.browse.is_some() || self.document.tools.related.is_some() {
+                let navigation = self.navigation_entry();
+                self.reload();
+                if self.document.active.is_some() {
+                    self.document.external_refresh = false;
+                    self.document.tools.restore_navigation = navigation;
+                }
+            } else {
+                self.document.external_refresh = false;
+            }
+        }
+        self.switch_document(previous);
     }
     fn record_completion(&mut self, ticket: Ticket, c: &Completion) {
         if c.transaction == TransactionState::Unknown {

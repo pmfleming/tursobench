@@ -75,6 +75,7 @@ pub struct App {
     catalog_ticket: Option<Ticket>,
     catalog_error: String,
     catalog_refresh_pending: bool,
+    diagram_refresh_pending: bool,
     status: String,
     activity: std::collections::VecDeque<String>,
     transaction: TransactionState,
@@ -146,6 +147,7 @@ impl App {
             catalog_ticket: None,
             catalog_error: String::new(),
             catalog_refresh_pending: false,
+            diagram_refresh_pending: false,
             activity: std::collections::VecDeque::new(),
             status: load_error.unwrap_or_else(|| {
                 "Open a trusted local Turso database. Linux preview; coordinated local access."
@@ -470,6 +472,7 @@ impl App {
         for event in events {
             self.handle_event(ctx, event);
         }
+        self.refresh_external_views();
         if disconnected
             && self
                 .session

@@ -142,6 +142,86 @@ fn committed_sql_invalidates_other_tiles_and_refreshes_schema() {
 }
 
 #[test]
+fn external_changes_refresh_clean_tables_keep_sql_results_and_preserve_drafts() {
+    let (_dir, ctx, mut app) = fixture(
+        &[
+            "CREATE TABLE t(id INTEGER PRIMARY KEY, value TEXT)",
+            "INSERT INTO t VALUES(1,'initial')",
+        ],
+        true,
+    );
+    app.browse_table("t".into());
+    wait(&mut app, &ctx);
+    let table = app.document.id;
+    app.run_text("SELECT value FROM t".into(), None);
+    wait(&mut app, &ctx);
+    let query = app.document.id;
+    let (db, c) = crate::test_support::run(async {
+        let db = turso::Builder::new_local(&app.path)
+            .experimental_multiprocess_wal(true)
+            .build()
+            .await
+            .unwrap();
+        let c = db.connect().unwrap();
+        (db, c)
+    });
+    crate::test_support::run(c.execute("UPDATE t SET value='external'", ())).unwrap();
+    let start = Instant::now();
+    loop {
+        app.poll(&ctx);
+        if app
+            .document_ref(table)
+            .unwrap()
+            .result
+            .rows
+            .first()
+            .is_some_and(|r| r[1] == Value::Text("external".into()))
+        {
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(5), "{}", app.status);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(app.document_ref(query).unwrap().stale);
+    assert_eq!(
+        app.document_ref(query).unwrap().result.rows,
+        vec![vec![Value::Text("initial".into())]]
+    );
+    assert_eq!(
+        app.document.id, query,
+        "automatic refresh keeps keyboard focus"
+    );
+    app.switch_document(table);
+    wait(&mut app, &ctx);
+    app.stage_cell(0, 1, Value::Text("draft".into()));
+    crate::test_support::run(c.execute("UPDATE t SET value='changed again'", ())).unwrap();
+    let start = Instant::now();
+    while !app.document.external_refresh {
+        app.poll(&ctx);
+        assert!(start.elapsed() < Duration::from_secs(5));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_staged(&app, 0, 1, Value::Text("draft".into()));
+    assert_eq!(
+        app.document.result.rows[0][1],
+        Value::Text("external".into())
+    );
+    crate::test_support::run(c.execute("CREATE TABLE added(id INTEGER)", ())).unwrap();
+    let start = Instant::now();
+    while !app.schema.iter().any(|t| t.name == "added") {
+        app.poll(&ctx);
+        assert!(start.elapsed() < Duration::from_secs(5), "{}", app.status);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_staged(&app, 0, 1, Value::Text("draft".into()));
+    app.document.drafts = None;
+    drop(c);
+    drop(db);
+    app.close();
+    wait_closed(&mut app, &ctx);
+}
+
+#[test]
 fn byte_limited_pages_continue_and_reverse_without_a_false_end() {
     let (_dir, ctx, mut app) = fixture(
         &[

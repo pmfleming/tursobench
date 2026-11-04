@@ -68,3 +68,27 @@ Backup now requires an exclusive coordination reservation after engine close,
 while the main-file admission lock is still held. It refuses publication if any
 shared peer remains or WAL data remains. This prevents a main-file copy racing a
 compatible writer. Workspace verification follows in subsequent stages.
+
+## Stage 3 external changes
+
+Shared sessions check main/WAL identity, nanosecond modification/change times and
+length every 500 ms on the worker between operations. The pinned engine has no
+public `data_version` pragma. File changes are conservative notifications (a
+checkpoint or uncommitted WAL flush can also trigger them), not a commit log.
+Committed schema versions are read on the autocommit browse connection. Busy or
+interrupted polls retry on the next interval. Source removal/replacement closes
+the session with an explanation. No polling occurs inside a long-running request;
+it resumes when that serialized operation finishes.
+
+Notifications invalidate retained pages, related-row caches, counts and metadata.
+Clean table/related views refresh with retained focus and scroll/selection where
+the original row still exists. SQL results are marked stale and never replayed.
+Refresh waits during staged edits or a manual editor transaction; pending edits
+and the editor's snapshot stay intact. Schema notifications refresh the catalog,
+relationships and structure tiles, including another pass when a diagram load
+was already pending. Metadata polling cannot certify every unusual filesystem;
+explicit refresh remains available.
+
+Real-process data/DDL notification and manual-snapshot tests pass. The GUI test
+exercises automatic table refresh, retained SQL results/focus, and draft
+preservation through external data and schema changes.

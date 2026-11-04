@@ -17,10 +17,12 @@ pub fn event(session: &Session) -> Event {
 }
 pub fn opened(path: &Path, access: Access) -> Session {
     let session = Session::open(path.into(), access, || {}).unwrap();
+    let opened = event(&session);
     assert!(
-        matches!(event(&session).kind, EventKind::Opened(_)),
-        "open {}",
-        path.display()
+        matches!(opened.kind, EventKind::Opened(_)),
+        "open {}: {:?}",
+        path.display(),
+        opened.kind
     );
     session
 }
@@ -144,9 +146,12 @@ impl Client {
     }
     pub fn close(self) {
         self.session.close();
-        assert!(matches!(
-            event(&self.session).kind,
-            EventKind::Closed { rollback: Ok(()) }
-        ));
+        loop {
+            match event(&self.session).kind {
+                EventKind::Invalidated { .. } => continue,
+                EventKind::Closed { rollback: Ok(()) } => break,
+                other => panic!("Unexpected close response: {other:?}"),
+            }
+        }
     }
 }

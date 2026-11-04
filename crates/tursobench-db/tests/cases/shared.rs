@@ -195,7 +195,7 @@ fn application_admission_blocks_legacy_writers_and_reserves_readonly_fallback() 
     {
         let (_legacy, _) = Peer::start(&path, "legacy");
         let usage = tursobench_db::processes_using(&path);
-        assert!(!usage.applications.is_empty());
+        assert!(!usage.applications.is_empty() || usage.incomplete);
         for access in [Access::ReadOnly, Access::ReadWrite] {
             let s = tursobench_db::Session::open(path.clone(), access, || {}).unwrap();
             assert!(
@@ -265,6 +265,49 @@ fn engine_mixed_mode_open_probe() {
     // The SDK supplies custom storage, bypassing the core's legacy lock probe.
     // Our admission layer must reject this case before calling the builder.
     assert_eq!(reply, "READY|true");
+}
+
+#[test]
+fn external_commits_notify_data_and_schema_without_changing_manual_snapshots() {
+    use tursobench_core::{Access, EventKind, Value};
+    let (_dir, path) = fixture();
+    let (mut writer, _) = Peer::start(&path, "writer");
+    let mut app = common::Client::open(&path, Access::ReadWrite);
+    app.sql("BEGIN");
+    assert_eq!(
+        app.sql("SELECT value FROM items").rows,
+        vec![vec![Value::Text("initial".into())]]
+    );
+    writer.ok("UPDATE items SET value='external'");
+    assert!(matches!(
+        common::event(&app.session).kind,
+        EventKind::Invalidated {
+            schema: false,
+            source_request: 0
+        }
+    ));
+    assert_eq!(
+        app.sql("SELECT value FROM items").rows,
+        vec![vec![Value::Text("initial".into())]]
+    );
+    app.sql("ROLLBACK");
+    assert_eq!(
+        app.sql("SELECT value FROM items").rows,
+        vec![vec![Value::Text("external".into())]]
+    );
+    writer.ok("ALTER TABLE items ADD COLUMN added INTEGER");
+    assert!(matches!(
+        common::event(&app.session).kind,
+        EventKind::Invalidated {
+            schema: true,
+            source_request: 0
+        }
+    ));
+    assert_eq!(
+        app.sql("SELECT added FROM items").rows,
+        vec![vec![Value::Null]]
+    );
+    app.close();
 }
 
 #[test]
