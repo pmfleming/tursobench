@@ -20,3 +20,21 @@ Process enumeration is explanatory, never proof of exclusive use. Compatible
 participants must use the same WAL coordination protocol. A successful legacy
 read-only open is not evidence of safe sharing. No live user database is used
 for qualification, and no other application's configuration is changed.
+
+## Stage 1 evidence
+
+`cargo test --locked -p tursobench-db --test suite shared:: -- --test-threads=1`
+passes on Linux x86_64 with separate processes. Twelve write/checkpoint/truncate
+cycles remain visible to an open reader. Read-only SQL rejects writes without
+changing the database/WAL bytes. A killed writer's pending transaction remains
+invisible and a replacement writer recovers. Native FTS searches see external
+updates. Closed read-only opens without a `.tshm` mapping report no coordination.
+
+Qualification also reproduced a gap: the SDK's custom-storage open path admits
+a multiprocess writer alongside a live legacy writer. The builder flag is not
+sufficient admission control. Stage 2 must acquire and retain a Linux OFD shared
+lock over the main file before any engine open; this conflicts with legacy
+writers' whole-file POSIX locks, survives unrelated descriptor closes, and allows
+compatible SDK peers. A read-only fallback retains that lock and must report
+protected read-only access rather than shared WAL. Core/CLI opens that probe an
+exclusive main-file lock may conservatively refuse while TursoBench is open.

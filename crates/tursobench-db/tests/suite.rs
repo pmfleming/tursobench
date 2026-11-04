@@ -5,6 +5,8 @@ mod editing;
 mod local_projects;
 #[path = "cases/session.rs"]
 mod session;
+#[path = "cases/shared.rs"]
+mod shared;
 #[path = "cases/transactions.rs"]
 mod transactions;
 #[path = "cases/transfers.rs"]
