@@ -31,6 +31,7 @@ pub(super) enum Icon {
     Edit,
     Fit,
     Arrange,
+    RestoreTiles,
     Columns,
     System,
     Plus,
@@ -430,6 +431,13 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
             box_(3., 4., 18., 13.);
             line(&[(12., 17.), (12., 21.)]);
             line(&[(8., 21.), (16., 21.)]);
+        }
+        RestoreTiles => {
+            box_(3., 3., 18., 18.);
+            line(&[(12., 3.), (12., 21.)]);
+            line(&[(3., 10.), (12., 10.)]);
+            line(&[(12., 9.), (21., 9.)]);
+            line(&[(12., 15.), (21., 15.)]);
         }
         Sun => {
             circle(12., 12., 4.);

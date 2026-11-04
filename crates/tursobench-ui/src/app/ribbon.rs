@@ -436,7 +436,7 @@ impl App {
                                     self.ribbon_action(
                                         ui,
                                         Action::Retile,
-                                        Icon::Arrange,
+                                        Icon::RestoreTiles,
                                         "Restore all tiles",
                                     );
                                 }
