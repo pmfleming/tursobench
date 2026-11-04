@@ -373,6 +373,15 @@ impl App {
     }
 
     pub(super) fn diagnostics_ui(&mut self, ui: &mut egui::Ui) {
+        if ui
+            .add_enabled(
+                self.ready,
+                egui::Button::new("Data transfer / maintenance…"),
+            )
+            .clicked()
+        {
+            self.open_transfers();
+        }
         ui.horizontal(|ui| {
             ui.strong("Checks");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

@@ -231,6 +231,48 @@ pub struct ScriptResult {
     pub rows: Vec<Vec<Value>>,
     pub completion: Completion,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ImportFormat {
+    #[default]
+    JsonLines,
+    Json,
+    Csv,
+    Tsv,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InputKind {
+    #[default]
+    Text,
+    Integer,
+    Real,
+    Blob,
+}
+#[derive(Debug, Clone)]
+pub struct ImportSpec {
+    pub source_columns: Vec<String>,
+    pub path: std::path::PathBuf,
+    pub table: String,
+    pub format: ImportFormat,
+    pub mapping: Vec<String>,
+    pub kinds: Vec<InputKind>,
+    pub null_marker: String,
+    pub atomic: bool,
+}
+#[derive(Debug, Clone)]
+pub struct ImportPreview {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<Value>>,
+    pub scope: String,
+}
+#[derive(Debug, Clone)]
+pub struct TransferOutcome {
+    pub rows: u64,
+    pub changed: u64,
+    pub transaction: TransactionState,
+    pub error: Option<Failure>,
+    pub message: String,
+    pub executed: bool,
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableColumn {
     pub name: String,
@@ -415,6 +457,8 @@ pub struct SchemaDiagram {
 
 #[derive(Debug)]
 pub enum EventKind {
+    ImportPreview(ImportPreview),
+    TransferFinished(TransferOutcome),
     ScriptResult(ScriptResult),
     ScriptOutcome {
         atomic: bool,

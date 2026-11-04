@@ -91,7 +91,10 @@ are limited to 2 MiB; exceeding the limit leaves the clipboard unchanged.
 - **Typed JSON** (`.json`): one object with `header`, `rows` (arrays of the same
   typed cells as JSONL), and `end: {"rows": N}`. Header format is
   `tursobench-typed-json`. Duplicate column aliases remain separate array entries.
-- **Annotated CSV/TSV** (`.csv` / `.tsv`): the first line is a `# TursoBench ...`
+- **CSV/TSV** (`.csv` / `.tsv`): standard files start directly with the header
+  and do not alter text. Separate spreadsheet-protection variants prefix formula-like
+  text, and separate annotated variants retain scope metadata. In annotated mode
+  the first line is a `# TursoBench ...`
   scope/row-count/convention notice. **Skip that metadata line** before parsing
   the header and records as CSV/tab-delimited CSV. Quoting doubles embedded quotes
   and preserves delimiters/newlines. NULL is unquoted `\N`; blobs are `X'hex'`.
@@ -127,3 +130,43 @@ stored engine values, not draft overlays. Ctrl Shift C and exports retain the
 existing annotated/typed format and canonical result column order. Numeric
 selection summaries preserve integer sum/min/max exactly and label approximate
 averages or mixed-real aggregates.
+
+
+## Complete source transfers
+
+The transfer/maintenance panel is available from retained export and Diagnostics.
+Complete-table JSONL export streams the current filter/sort through a dedicated
+read; execute-and-export runs the selected/cursor statement exactly once on the
+editor connection. It never reruns a prior retained result implicitly. New-file
+publication is atomic. A file error after a write started does not undo that SQL:
+the write is drained and its actual completion/transaction state is reported.
+
+Streaming typed JSONL v2 uses the same cell encoding as v1, with
+`rows_expected: null` in the header and a required final exact row count. Scope is
+`complete-table` or `complete-query-result`. Imports accept v1/v2 JSONL and retained
+typed JSON v1, validate end records, and reject unknown/deferred cell kinds.
+
+CSV/TSV import handles quoted delimiters, escaped quotes, multiline fields and
+unquoted NULL markers. Mapping/type choices are explicit; CSV defaults to TEXT
+and target affinities/constraints still apply. Preview reads at most ten rows /
+1 MiB and does not certify the unread remainder. Input rows are capped at 8 MiB,
+encoded records at 16 MiB, and whole-object JSON at 16 MiB (use JSONL for larger
+files). NaN cannot be imported as a SQL real; infinities are supported by typed
+interchange. Atomic import rolls back on any data/footer error; optional batch
+mode commits every 1,000 rows or 8 MiB and reports earlier confirmed commits.
+
+## Deferred values and maintenance
+
+Oversized result cells use session-owned temporary backing, with a chunk viewer
+and exact-byte save action. Retained exports/copies reject deferred cells rather
+than fabricating full values. Backing is capped at 64 MiB/value, 256 MiB/session
+and 1,024 files with FIFO expiration; engine incoming allocations are not bounded.
+
+Checkpoint and backup require write access and editor autocommit. Backup explicitly
+checkpoints and closes the source session, refuses a remaining nonempty WAL, copies
+the closed main file, verifies the private copy with Turso integrity_check, and
+publishes without overwrite. Exclusive use by other applications remains required.
+
+SQL real literals are checked against the pinned engine numeric conversion before
+publication. If neither supported decimal spelling reloads the exact f64 bits,
+SQL export is rejected; typed JSON/JSONL remains the fidelity-preserving option.

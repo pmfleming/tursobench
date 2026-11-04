@@ -136,6 +136,7 @@ pub(super) async fn worker(
         request: 0,
         generation: 0,
     };
+    let source_path = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
     let (_db, editor, browse) = match open(path, access, settings).await {
         Ok(v) => v,
         Err(e) => {
@@ -154,10 +155,12 @@ pub(super) async fn worker(
         settings,
         output: &output,
         commits: edits::CommitState::default(),
+        uncertain: false,
         depot: crate::values::Depot::default(),
         dirty_data: false,
         dirty_schema: false,
     };
+    let mut backup = None;
     while !output.closing.load(Ordering::Acquire) {
         let request = match rx.recv_timeout(Duration::from_millis(25)) {
             Ok(r) => r,
@@ -166,6 +169,36 @@ pub(super) async fn worker(
         };
         if output.closing.load(Ordering::Acquire) {
             break;
+        }
+        if let Operation::BackupAndClose(destination) = request.operation {
+            let prepared = if worker.uncertain {
+                Err(Failure {
+                    kind: ErrorKind::Unknown,
+                    message: "Prior outcome UNKNOWN; reopen and inspect before maintenance".into(),
+                })
+            } else if access != Access::ReadWrite {
+                Err(Failure {
+                    kind: ErrorKind::ReadOnly,
+                    message: "Backup-and-close requires write access for an explicit checkpoint"
+                        .into(),
+                })
+            } else if destination.exists() {
+                Err(Failure::input("Backup destination already exists"))
+            } else {
+                crate::transfers::checkpoint(&editor).await
+            };
+            match prepared {
+                Ok(()) => {
+                    output.closing.store(true, Ordering::Release);
+                    backup = Some((request.ticket, destination));
+                    break;
+                }
+                Err(e) => {
+                    output.discard.finished(request.ticket.request);
+                    output.send(request.ticket, EventKind::Failed(e));
+                    continue;
+                }
+            }
         }
         let event = match worker.dispatch(request.ticket, request.operation).await {
             Ok(Some(event)) => event,
@@ -183,6 +216,38 @@ pub(super) async fn worker(
     drop(browse);
     drop(editor);
     drop(_db);
+    if let Some((request, destination)) = backup {
+        let cleanup_failed = result.is_err() || browse_result.is_err();
+        let result = match result.as_ref().and(browse_result.as_ref()) {
+            Ok(()) => crate::transfers::copy_closed(&source_path, &destination, settings).await,
+            Err(e) => Err(e.clone()),
+        };
+        let error = result.err();
+        let message = if let Some(e) = &error {
+            format!("Backup not published; session closed: {e}")
+        } else {
+            format!(
+                "Verified backup saved to {}; source session closed",
+                destination.display()
+            )
+        };
+        output.discard.finished(request.request);
+        output.send(
+            request,
+            EventKind::TransferFinished(tursobench_core::TransferOutcome {
+                rows: 0,
+                changed: 0,
+                transaction: if cleanup_failed {
+                    tursobench_core::TransactionState::Unknown
+                } else {
+                    tursobench_core::TransactionState::Autocommit
+                },
+                error,
+                message,
+                executed: false,
+            }),
+        );
+    }
     output.send(
         ticket,
         EventKind::Closed {
@@ -198,12 +263,14 @@ struct Worker<'a> {
     settings: ConnectionSettings,
     output: &'a Output,
     commits: edits::CommitState,
+    uncertain: bool,
     depot: crate::values::Depot,
     dirty_data: bool,
     dirty_schema: bool,
 }
 impl Worker<'_> {
     fn note_completion(&mut self, ticket: Ticket, effect: sql::Effect, completion: &Completion) {
+        self.uncertain |= completion.transaction == tursobench_core::TransactionState::Unknown;
         if completion.error.is_none() {
             match effect {
                 sql::Effect::Rollback => {
@@ -244,6 +311,15 @@ impl Worker<'_> {
         budget: Budget,
     ) -> Result<EventKind, Failure> {
         let statements = sql::script_statements(&text)?;
+        if self.uncertain
+            && statements
+                .iter()
+                .any(|s| matches!(sql::effect(s), sql::Effect::Data | sql::Effect::Schema))
+        {
+            return Err(Failure::input(
+                "Prior outcome UNKNOWN; reopen and inspect before further writes",
+            ));
+        }
         if atomic
             && (state(self.editor) != tursobench_core::TransactionState::Autocommit
                 || statements.iter().any(|s| sql::transaction_control(s)))
@@ -411,6 +487,7 @@ impl Worker<'_> {
         if discarded {
             summary.delivery = Delivery::Discarded;
         }
+        self.uncertain |= summary.transaction == tursobench_core::TransactionState::Unknown;
         summary.elapsed_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
         self.output.send(
             ticket,
@@ -420,6 +497,66 @@ impl Worker<'_> {
             },
         );
         Ok(EventKind::Finished(summary))
+    }
+    async fn export(
+        &mut self,
+        ticket: Ticket,
+        path: PathBuf,
+        text: String,
+        parameters: Bindings,
+        editor: bool,
+    ) -> Result<EventKind, Failure> {
+        if self.uncertain && matches!(sql::effect(&text), sql::Effect::Data | sql::Effect::Schema) {
+            return Err(Failure::input(
+                "Prior outcome UNKNOWN; reopen before executing writes",
+            ));
+        }
+        if self.access == Access::ReadOnly {
+            sql::validate_readonly(&text)?;
+        }
+        let connection = if editor { self.editor } else { self.browse };
+        if sql::stoppable_read(&text) {
+            let c = connection.clone();
+            *self.output.discard.active_read.lock().unwrap() = Some(crate::ActiveRead {
+                request: ticket.request,
+                interrupt: Box::new(move || {
+                    let _ = c.interrupt();
+                }),
+            });
+        }
+        let result = crate::transfers::export(
+            connection,
+            &path,
+            &text,
+            parameters,
+            if editor {
+                "complete-query-result"
+            } else {
+                "complete-table"
+            },
+            || self.output.discarded(ticket),
+        )
+        .await;
+        *self.output.discard.active_read.lock().unwrap() = None;
+        let mut outcome = result?;
+        if editor {
+            let completion = Completion {
+                elapsed_ms: 0,
+                delivery: Delivery::Complete,
+                rows_seen: outcome.rows,
+                page_has_more: None,
+                changed: outcome.changed,
+                transaction: outcome.transaction,
+                error: if outcome.executed {
+                    None
+                } else {
+                    outcome.error.clone()
+                },
+            };
+            self.note_completion(ticket, sql::effect(&text), &completion);
+        }
+        outcome.transaction = state(self.editor);
+        Ok(EventKind::TransferFinished(outcome))
     }
     async fn dispatch(
         &mut self,
@@ -432,6 +569,11 @@ impl Worker<'_> {
             }
             _ => sql::Effect::Read,
         };
+        if self.uncertain && matches!(effect, sql::Effect::Data | sql::Effect::Schema) {
+            return Err(Failure::input(
+                "Prior outcome UNKNOWN; reopen before executing writes",
+            ));
+        }
         let default = Budget::default();
         let count_references = matches!(&operation, Operation::ReferenceCount { .. });
         let (connection, sql, parameters, budget) = match operation {
@@ -444,12 +586,39 @@ impl Worker<'_> {
                 return Ok(Some(EventKind::ValueSaved(path.display().to_string())));
             }
             Operation::Definition(name) => (self.browse,"SELECT sql FROM sqlite_schema WHERE name=?1".into(),vec![Value::Text(name)].into(),default),
+            Operation::PreviewImport{path,format,kinds,null_marker} => return crate::imports::preview(&path,format,kinds,null_marker).map(EventKind::ImportPreview).map(Some),
+            Operation::Import(spec)=>{
+                if self.uncertain{return Err(Failure::input("Prior outcome UNKNOWN; reopen before importing"));}
+                if self.access!=Access::ReadWrite || state(self.editor)!=tursobench_core::TransactionState::Autocommit {return Err(Failure::input("Import requires write access and editor autocommit"));}
+                let outcome=crate::imports::import(self.db,spec,self.settings,||self.output.discarded(ticket)).await?;
+                self.uncertain |= outcome.transaction==tursobench_core::TransactionState::Unknown;
+                if outcome.changed>0 || outcome.transaction==tursobench_core::TransactionState::Unknown {self.output.send(Ticket{request:0,..ticket},EventKind::Invalidated{schema:false,source_request:ticket.request});}
+                return Ok(Some(EventKind::TransferFinished(outcome)));
+            }
+            Operation::ExportTable{path,mut spec}=>{
+                spec.offset=0;spec.options.cursor=None;spec.options.reverse=false;
+                let table=describe(self.browse,&spec.table).await?;
+                let relation=crate::browse::relationship(self.browse,&table,&spec).await?;
+                let (mut text,parameters)=browse_sql(&table,spec,relation)?;
+                let end=text.rfind(" LIMIT 100 OFFSET ").ok_or_else(||Failure::input("Invalid controlled export query"))?;text.truncate(end);
+                return self.export(ticket,path,text,parameters.into(),false).await.map(Some);
+            }
+            Operation::ExportQuery{path,sql,parameters}=>return self.export(ticket,path,sql,parameters,true).await.map(Some),
+            Operation::Checkpoint=>{
+                if self.uncertain{return Err(Failure::input("Prior outcome UNKNOWN; reopen before maintenance"));}
+                if self.access!=Access::ReadWrite{return Err(Failure::input("Checkpoint requires write access"));}
+                crate::transfers::checkpoint(self.editor).await?;
+                return Ok(Some(EventKind::TransferFinished(tursobench_core::TransferOutcome{rows:0,changed:0,transaction:state(self.editor),error:None,message:"Checkpoint completed".into(),executed:false})));
+            }
+            Operation::BackupAndClose(_)=>return Err(Failure::input("Backup must be coordinated by the session owner")),
             Operation::Script{sql,parameters,atomic,budget} => return self.script(ticket,sql,parameters,atomic,budget).await.map(Some),
             Operation::Close => return Ok(None),
             Operation::Diagram => return diagram::load(self.browse).await.map(EventKind::Diagram).map(Some),
             Operation::Inspect(name) => return inspection::inspect(self.browse, &name).await.map(EventKind::Inspection).map(Some),
             Operation::CommitEdits(batch) => {
+                if self.uncertain{return Ok(Some(EventKind::EditsCommitted(tursobench_core::CommitOutcome::Unknown(Failure{kind:ErrorKind::Unknown,message:"Prior outcome UNKNOWN; reopen before committing".into()}))));}
                 let outcome = self.commits.run(edits::commit(self.db, self.access, self.settings, batch)).await;
+                self.uncertain |= matches!(&outcome,tursobench_core::CommitOutcome::Unknown(_));
                 return Ok(Some(EventKind::EditsCommitted(outcome)));
             }
             Operation::Browse(spec) => {

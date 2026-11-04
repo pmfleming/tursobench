@@ -17,6 +17,7 @@ enum Target {
     Diagram,
     Commit,
     Session,
+    Transfer,
 }
 impl Document {
     fn event_target(&self, ticket: Ticket) -> Option<Target> {
@@ -77,6 +78,7 @@ impl App {
         }
         for (current, target) in [
             (self.catalog_ticket, Target::Catalog),
+            (self.tools.transfers.ticket, Target::Transfer),
             (self.ui.diagram.ticket, Target::Diagram),
             (
                 self.tools
@@ -108,6 +110,7 @@ impl App {
         let previous = self.document.id;
         let routed = owner.is_some_and(|id| id != previous && self.switch_document(id));
         match target {
+            Target::Transfer => self.transfer_event(event.kind),
             Target::Value => self.value_event(event.kind),
             Target::Context => self.context_event(event),
             Target::Page => self.page_event(event),
@@ -204,6 +207,7 @@ impl App {
         self.restore_workspace();
     }
     fn closed(&mut self, ctx: &egui::Context, rollback: Result<(), Failure>) {
+        self.tools.transfers.disconnected();
         let reopen = if rollback.is_ok() && !self.uncertain_edit && !self.quit {
             self.pending_access.take()
         } else {

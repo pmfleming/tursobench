@@ -180,13 +180,17 @@ impl App {
         self.run_current(None);
     }
     pub(super) fn run_current(&mut self, explain: Option<bool>) {
-        let start = byte_index(&self.document.sql, self.document.tools.selection.start);
-        let end = byte_index(&self.document.sql, self.document.tools.selection.end);
-        match sql::selection_or_statement(&self.document.sql, start..end) {
+        match self.current_text() {
             Ok(text) => self.run_text(text, explain),
             Err(e) => self.status = e.to_string(),
         }
     }
+    pub(super) fn current_text(&self) -> Result<String, tursobench_core::Failure> {
+        let start = byte_index(&self.document.sql, self.document.tools.selection.start);
+        let end = byte_index(&self.document.sql, self.document.tools.selection.end);
+        sql::selection_or_statement(&self.document.sql, start..end)
+    }
+
     fn run_all(&mut self, atomic: bool) {
         match Bindings::parse_json(&self.document.params) {
             Ok(parameters) => {

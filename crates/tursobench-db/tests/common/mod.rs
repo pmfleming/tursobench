@@ -26,6 +26,8 @@ pub fn opened(path: &Path, access: Access) -> Session {
 }
 #[derive(Default)]
 pub struct Reply {
+    pub transfer: Option<tursobench_core::TransferOutcome>,
+    pub preview: Option<tursobench_core::ImportPreview>,
     pub script: Vec<tursobench_core::ScriptResult>,
     pub rolled_back: bool,
     pub chunk: Option<(u64, Vec<u8>)>,
@@ -49,6 +51,8 @@ pub fn run(session: &Session, sequence: u64, operation: Operation) -> Reply {
         }
         assert_eq!(event.ticket, ticket);
         match event.kind {
+            EventKind::ImportPreview(preview) => reply.preview = Some(preview),
+            EventKind::TransferFinished(outcome) => reply.transfer = Some(outcome),
             EventKind::ScriptResult(result) => {
                 reply.result.columns = result.columns.clone();
                 reply.result.rows = result.rows.clone();

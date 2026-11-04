@@ -4780,9 +4780,11 @@ dependencies = [
 name = "tursobench-db"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "tempfile",
  "tokio",
  "turso",
+ "turso_core",
  "turso_parser",
  "tursobench-core",
 ]

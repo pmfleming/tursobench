@@ -21,6 +21,10 @@ pub(crate) async fn describe(c: &Connection, name: &str) -> Result<Table, Failur
         .map_err(failure)?
         .ok_or_else(|| Failure::input("Table or view no longer exists"))?;
     let kind = schema.get_value(0).map_err(failure)?;
+    let declarations = match schema.get_value(1).map_err(failure)? {
+        turso::Value::Text(ddl) if ddl.len() <= 1024 * 1024 => crate::sql::declared_types(&ddl),
+        _ => Default::default(),
+    };
     let rowid_key = match schema.get_value(1).map_err(failure)? {
         turso::Value::Text(ddl) if ddl.len() <= 1024 * 1024 => crate::sql::inline_rowid_key(&ddl),
         _ => None,
@@ -61,7 +65,10 @@ pub(crate) async fn describe(c: &Connection, name: &str) -> Result<Table, Failur
         };
         let column = TableColumn {
             name: text(1)?,
-            declared_type: text(2)?,
+            declared_type: declarations
+                .get(&text(1)?.to_ascii_lowercase())
+                .cloned()
+                .unwrap_or(text(2)?),
             not_null: integer(3)? != 0
                 || rowid_key
                     .as_ref()

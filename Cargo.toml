@@ -13,6 +13,7 @@ rust-version = "1.95"
 tursobench-core = { path = "crates/tursobench-core" }
 tursobench-db = { path = "crates/tursobench-db" }
 turso_parser = "=0.8.3"
+turso_core = { version = "=0.8.3", default-features = false }
 eframe = { version = "=0.37.0", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "glow", "x11", "wayland"] }
 turso = { version = "=0.8.3", default-features = false, features = ["fts"] }
 tokio = { version = "1", features = ["rt", "time", "macros"] }

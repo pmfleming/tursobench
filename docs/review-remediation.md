@@ -137,3 +137,32 @@ deletes; newly supplied non-finite values remain rejected.
 Stage 6 verification: all 162 workspace tests, formatting and all-target Clippy
 pass, including sequential partial success versus atomic rollback, trigger/script
 boundaries, convenient bindings, staged bulk deletion and infinity row matching.
+
+## Stage 7 — transfer and maintenance
+
+Complete-table and execute-once query JSONL exports stream original engine values
+without display retention limits. Version 2 headers permit an unknown initial row
+count; exact end records and atomic no-overwrite publication remain mandatory.
+Write execution finishes even after an output failure, and its actual state is
+reported separately from publication. No retained result silently reruns SQL.
+
+Typed JSON/JSONL and CSV/TSV imports provide bounded previews, explicit column/type
+mapping, validation, atomic rollback or opt-in confirmed batch commits. CSV quoting,
+multiline fields, literal versus unquoted NULL markers and blobs are covered.
+Standard CSV/TSV has no metadata preamble and preserves text; annotated and
+spreadsheet-protected variants are separate explicit choices. REAL display keeps
+1.0 distinct, SQL export checks exact engine numeric conversion, and table headers
+recover declared type parameters from parsed DDL.
+
+Explicit checkpoint validates native status. Backup checkpoints and closes the
+source, rejects remaining WAL data, verifies a private closed-file copy and
+publishes a new destination. The app exposes transfer/maintenance controls from
+Diagnostics and retained export, preserving the existing retained-only path.
+
+Stage 7 verification: 166 workspace tests, formatting and all-target Clippy pass.
+Integration tests export/import 1,205 rows including a 100 KB value, detect missing
+end records, distinguish atomic rollback from 1,000 confirmed batch commits, map
+quoted multiline CSV/NULL/blob values, execute INSERT RETURNING only once, and
+restore recent WAL data from a verified backup. A 512-value floating-point probe
+checks accepted SQL spellings against actual engine result bits. Unknown script,
+import and generated-commit outcomes block further mutations until reopen.

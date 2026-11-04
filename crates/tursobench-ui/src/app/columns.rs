@@ -21,6 +21,7 @@ pub(super) struct Columns {
 }
 pub(super) struct Header<'a> {
     pub column: &'a tursobench_core::Column,
+    original_type: Option<&'a str>,
     primary_key: i64,
     indexed: bool,
     foreign: bool,
@@ -32,6 +33,13 @@ impl Document {
         let info = self.browse_inspection();
         Header {
             column,
+            original_type: self
+                .table
+                .as_ref()
+                .filter(|_| self.view == View::Browse)
+                .and_then(|t| t.columns.get(i))
+                .filter(|c| c.name == column.name)
+                .map(|c| c.declared_type.as_str()),
             primary_key: info
                 .and_then(|info| info.table.columns.get(i))
                 .map_or(0, |c| c.primary_key),
@@ -54,6 +62,9 @@ impl Document {
     }
 }
 impl Header<'_> {
+    pub fn declared_type(&self) -> Option<&str> {
+        self.original_type.or(self.column.declared_type.as_deref())
+    }
     pub fn key_icon(&self) -> Option<Icon> {
         if self.primary_key > 0 {
             Some(Icon::Key)
@@ -136,7 +147,7 @@ impl Header<'_> {
                 reserve,
             ),
             (
-                self.column.declared_type.as_deref().unwrap_or("VALUE"),
+                self.declared_type().unwrap_or("VALUE"),
                 rect.min + egui::vec2(8.0, 31.0),
                 crate::appearance::monospace(ui.ctx(), 9.5),
                 tokens.faint,

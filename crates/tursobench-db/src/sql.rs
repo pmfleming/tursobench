@@ -384,6 +384,42 @@ pub(crate) fn has_rowid(ddl: &str) -> bool {
         }))) if !options.contains_without_rowid())
 }
 
+/// Check the pinned engine's numeric conversion before publishing a supposedly lossless SQL literal.
+pub fn checked_real_literal(n: f64) -> Result<String, Failure> {
+    if !n.is_finite() {
+        return Err(Failure::input(
+            "SQL export requires finite reals; use typed JSONL",
+        ));
+    }
+    for literal in [format!("{n:?}"), format!("{n:.17e}")] {
+        if let turso_core::Numeric::Float(parsed) = turso_core::Numeric::from(literal.as_str())
+            && f64::from(parsed).to_bits() == n.to_bits()
+        {
+            return Ok(literal);
+        }
+    }
+    Err(Failure::input(
+        "Turso 0.8.3 cannot reload this real literal exactly; use typed JSON/JSONL",
+    ))
+}
+pub(crate) fn declared_types(ddl: &str) -> BTreeMap<String, String> {
+    use turso_parser::ast::{Cmd, CreateTableBody, Stmt};
+    let Ok(Some(Cmd::Stmt(Stmt::CreateTable {
+        body: CreateTableBody::ColumnsAndConstraints { columns, .. },
+        ..
+    }))) = Parser::new(ddl.as_bytes()).next_cmd()
+    else {
+        return BTreeMap::new();
+    };
+    columns
+        .into_iter()
+        .filter_map(|c| {
+            c.col_type
+                .map(|t| (c.col_name.as_str().to_ascii_lowercase(), t.to_string()))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{named_template, parameter_names, selection_or_statement, validate_bindings};

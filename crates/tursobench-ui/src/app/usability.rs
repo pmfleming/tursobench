@@ -71,6 +71,15 @@ impl App {
         }
     }
     pub(super) fn usability_controls(&mut self, ui: &mut egui::Ui) {
+        if ui
+            .add_enabled(
+                self.ready,
+                egui::Button::new("Complete export / import / maintenance…"),
+            )
+            .clicked()
+        {
+            self.open_transfers();
+        }
         let scope = self.export_scope();
         let enabled = self.document.result.completion.is_some() && self.document.active.is_none();
         ui.horizontal_wrapped(|ui| {

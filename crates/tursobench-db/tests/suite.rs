@@ -7,5 +7,7 @@ mod local_projects;
 mod session;
 #[path = "cases/transactions.rs"]
 mod transactions;
+#[path = "cases/transfers.rs"]
+mod transfers;
 #[path = "cases/workbench.rs"]
 mod workbench;

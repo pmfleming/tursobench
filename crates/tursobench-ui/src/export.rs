@@ -13,15 +13,33 @@ pub enum Format {
     Csv,
     Tsv,
     Sql,
+    CsvSafe,
+    TsvSafe,
+    CsvAnnotated,
+    TsvAnnotated,
 }
 impl Format {
-    pub const ALL: [Self; 5] = [Self::JsonLines, Self::Json, Self::Csv, Self::Tsv, Self::Sql];
+    pub const ALL: [Self; 9] = [
+        Self::JsonLines,
+        Self::Json,
+        Self::Csv,
+        Self::Tsv,
+        Self::Sql,
+        Self::CsvSafe,
+        Self::TsvSafe,
+        Self::CsvAnnotated,
+        Self::TsvAnnotated,
+    ];
     pub fn label(self) -> &'static str {
         match self {
             Self::JsonLines => "Typed JSONL",
             Self::Json => "Typed JSON",
-            Self::Csv => "Annotated CSV",
-            Self::Tsv => "Annotated TSV",
+            Self::Csv => "CSV",
+            Self::CsvSafe => "CSV · spreadsheet protection",
+            Self::CsvAnnotated => "Annotated CSV",
+            Self::Tsv => "TSV",
+            Self::TsvSafe => "TSV · spreadsheet protection",
+            Self::TsvAnnotated => "Annotated TSV",
             Self::Sql => "SQL INSERTs",
         }
     }
@@ -29,8 +47,8 @@ impl Format {
         match self {
             Self::JsonLines => "jsonl",
             Self::Json => "json",
-            Self::Csv => "csv",
-            Self::Tsv => "tsv",
+            Self::Csv | Self::CsvSafe | Self::CsvAnnotated => "csv",
+            Self::Tsv | Self::TsvSafe | Self::TsvAnnotated => "tsv",
             Self::Sql => "sql",
         }
     }
@@ -138,7 +156,12 @@ fn render(
             }
             writeln!(w, "],\"end\":{{\"rows\":{}}}}}", rows.len()).map_err(error)?;
         }
-        Format::Csv | Format::Tsv => render_delimited(w, format, scope, columns, rows)?,
+        Format::Csv
+        | Format::Tsv
+        | Format::CsvSafe
+        | Format::TsvSafe
+        | Format::CsvAnnotated
+        | Format::TsvAnnotated => render_delimited(w, format, scope, columns, rows)?,
         Format::Sql => render_sql(w, scope, columns, rows, table)?,
     }
     Ok(())
@@ -151,13 +174,28 @@ fn render_delimited(
     rows: &[Vec<Value>],
 ) -> Result<(), String> {
     let error = |e: std::io::Error| e.to_string();
-    let delimiter = if format == Format::Csv { "," } else { "\t" };
-    writeln!(w, "# TursoBench scope={} rows={}; NULL=\\N, blobs=X'hex', text formula-safe; skip this metadata line", scope.replace(['\r','\n'], " "), rows.len()).map_err(error)?;
+    let delimiter = if matches!(format, Format::Csv | Format::CsvSafe | Format::CsvAnnotated) {
+        ","
+    } else {
+        "\t"
+    };
+    let protect = matches!(
+        format,
+        Format::CsvSafe | Format::TsvSafe | Format::CsvAnnotated | Format::TsvAnnotated
+    );
+    let annotated = matches!(format, Format::CsvAnnotated | Format::TsvAnnotated);
+    if annotated {
+        writeln!(w, "# TursoBench scope={} rows={}; NULL=\\N, blobs=X'hex', text formula-safe; skip this metadata line", scope.replace(['\r','\n'], " "), rows.len()).map_err(error)?;
+    }
     separated(
         w,
-        columns
-            .iter()
-            .map(|c| Ok(csv_field(&spreadsheet_text(&c.name)))),
+        columns.iter().map(|c| {
+            Ok(csv_field(&if protect {
+                spreadsheet_text(&c.name)
+            } else {
+                c.name.clone()
+            }))
+        }),
         delimiter,
     )?;
     w.write_all(b"\r\n").map_err(error)?;
@@ -167,7 +205,11 @@ fn render_delimited(
             row.iter().map(|value| {
                 Ok(match value {
                     Value::Null => "\\N".into(),
-                    Value::Text(text) => csv_field(&spreadsheet_text(text)),
+                    Value::Text(text) => csv_field(&if protect {
+                        spreadsheet_text(text)
+                    } else {
+                        text.clone()
+                    }),
                     _ => csv_field(&cell_text(value)),
                 })
             }),
@@ -247,7 +289,7 @@ pub fn cell_text(value: &Value) -> String {
     match value {
         Value::Null => "NULL".into(),
         Value::Integer(n) => n.to_string(),
-        Value::Real(n) => n.to_string(),
+        Value::Real(n) => format!("{n:?}"),
         Value::Text(s) => s.clone(),
         Value::Blob(b) => format!("X'{}'", hex(b)),
         Value::Deferred(_) => value.preview(),
@@ -257,7 +299,9 @@ fn sql_literal(value: &Value) -> Result<String, String> {
     Ok(match value {
         Value::Null => "NULL".into(),
         Value::Integer(n) => n.to_string(),
-        Value::Real(n) if n.is_finite() => format!("{n:?}"),
+        Value::Real(n) if n.is_finite() => {
+            tursobench_db::sql::checked_real_literal(*n).map_err(|e| e.to_string())?
+        }
         Value::Real(_) => {
             return Err("Non-finite reals require typed JSON/JSONL, not SQL export".into());
         }
@@ -303,14 +347,21 @@ mod tests {
             Value::Text("a'\0b".into()),
         ]];
         let cols = columns(5);
-        for format in Format::ALL {
-            let path = dir.path().join(format!("result.{}", format.extension()));
+        for (index, format) in Format::ALL.into_iter().enumerate() {
+            let path = dir
+                .path()
+                .join(format!("result-{index}.{}", format.extension()));
             let text = clipboard(format, "table-page", &cols, &rows, "t\"x").unwrap();
             write_result_as(&path, format, "table-page", &cols, &rows, "t\"x").unwrap();
             assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
             assert!(write_result_as(&path, format, "other", &[], &[], "t").is_err());
             assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
-            assert!(text.contains("table-page"));
+            if !matches!(
+                format,
+                Format::Csv | Format::Tsv | Format::CsvSafe | Format::TsvSafe
+            ) {
+                assert!(text.contains("table-page"));
+            }
             match format {
                 Format::JsonLines => {
                     let lines: Vec<Json> = text
@@ -331,7 +382,12 @@ mod tests {
                     assert!(text.contains("\"t\"\"x\""));
                     assert!(text.contains("'001', NULL, X'00ff', 1.0, CAST(X'61270062' AS TEXT)"));
                 }
-                Format::Csv | Format::Tsv => {
+                Format::Csv
+                | Format::Tsv
+                | Format::CsvSafe
+                | Format::TsvSafe
+                | Format::CsvAnnotated
+                | Format::TsvAnnotated => {
                     let escaped = clipboard(
                         format,
                         "limited-query-result",
@@ -344,8 +400,17 @@ mod tests {
                         "",
                     )
                     .unwrap();
-                    assert!(escaped.contains("limited-query-result"));
-                    assert!(escaped.contains("\"'=1+1\""));
+                    if matches!(format, Format::CsvAnnotated | Format::TsvAnnotated) {
+                        assert!(escaped.contains("limited-query-result"));
+                    }
+                    let protected = matches!(
+                        format,
+                        Format::CsvSafe
+                            | Format::TsvSafe
+                            | Format::CsvAnnotated
+                            | Format::TsvAnnotated
+                    );
+                    assert_eq!(escaped.contains("\"'=1+1\""), protected);
                     assert!(escaped.contains("a,\"\"b\n"));
                     assert!(escaped.contains("\\N"));
                 }

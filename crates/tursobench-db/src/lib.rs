@@ -7,8 +7,10 @@ mod browse;
 mod connection;
 mod diagram;
 mod edits;
+mod imports;
 mod inspection;
 pub mod sql;
+mod transfers;
 mod validation;
 mod values;
 mod worker;
@@ -64,6 +66,24 @@ impl DeliveryControl {
 }
 
 pub enum Operation {
+    ExportQuery {
+        path: PathBuf,
+        sql: String,
+        parameters: Bindings,
+    },
+    ExportTable {
+        path: PathBuf,
+        spec: Browse,
+    },
+    PreviewImport {
+        path: PathBuf,
+        format: tursobench_core::ImportFormat,
+        kinds: Vec<tursobench_core::InputKind>,
+        null_marker: String,
+    },
+    Import(tursobench_core::ImportSpec),
+    Checkpoint,
+    BackupAndClose(PathBuf),
     Script {
         sql: String,
         parameters: Bindings,
@@ -132,6 +152,31 @@ impl Operation {
                 Self::Execute {
                     sql, parameters, ..
                 } => sql.len() + values(parameters),
+                Self::ExportQuery {
+                    path,
+                    sql,
+                    parameters,
+                } => path.as_os_str().len() + sql.len() + parameters.bytes(),
+                Self::ExportTable { path, spec } => {
+                    path.as_os_str().len()
+                        + spec.table.len()
+                        + spec.filters.iter().map(|f| f.value.bytes()).sum::<usize>()
+                        + spec
+                            .options
+                            .predicate
+                            .as_ref()
+                            .map_or(0, |p| p.bytes().min(COMMAND_BYTES))
+                }
+                Self::Import(spec) => {
+                    spec.path.as_os_str().len()
+                        + spec.table.len()
+                        + spec
+                            .mapping
+                            .iter()
+                            .chain(&spec.source_columns)
+                            .map(String::len)
+                            .sum::<usize>()
+                }
                 Self::Script {
                     sql, parameters, ..
                 }
@@ -215,6 +260,13 @@ impl Operation {
                             .map(|(a, b)| a.len() + b.as_ref().map_or(0, String::len))
                             .sum::<usize>()
                 }
+                Self::PreviewImport {
+                    path,
+                    kinds,
+                    null_marker,
+                    ..
+                } => path.as_os_str().len() + kinds.len() + null_marker.len(),
+                Self::SaveValue { path, .. } | Self::BackupAndClose(path) => path.as_os_str().len(),
                 Self::Inspect(s) | Self::Count(s) | Self::Definition(s) => s.len(),
                 _ => 0,
             }

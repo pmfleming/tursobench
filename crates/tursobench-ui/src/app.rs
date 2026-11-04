@@ -30,6 +30,7 @@ mod sidebar;
 mod smoke;
 pub(crate) mod tiling;
 mod tools;
+mod transfers;
 mod usability;
 pub(crate) mod workspace;
 use eframe::egui;
@@ -545,6 +546,7 @@ impl App {
     pub fn render(&mut self, ui: &mut egui::Ui) {
         self.shell(ui);
         self.large_value_ui(ui.ctx());
+        self.transfer_ui(ui.ctx());
     }
 }
 impl eframe::App for App {

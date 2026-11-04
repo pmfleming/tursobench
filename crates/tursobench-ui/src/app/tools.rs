@@ -37,6 +37,7 @@ pub(super) struct NavigationEntry {
 }
 #[derive(Default)]
 pub(super) struct Tools {
+    pub transfers: super::transfers::State,
     pub schema_filter: String,
     pub tree_focus: Option<eframe::egui::Id>,
     pub back: Vec<NavigationEntry>,

@@ -507,7 +507,7 @@ impl App {
             ui.scroll_to_rect(rect, Some(egui::Align::Center));
         }
         header.paint(ui, rect, highlighted);
-        let response=response.on_hover_text(format!("{} · {}\nPK = key position; IX = declared leading index; FK = foreign key. Index method/partial predicate may not apply. Drag the right edge or right-click to resize.",header.column.name,header.column.declared_type.as_deref().unwrap_or("runtime type")));
+        let response=response.on_hover_text(format!("{} · {}\nPK = key position; IX = declared leading index; FK = foreign key. Index method/partial predicate may not apply. Drag the right edge or right-click to resize.",header.column.name,header.declared_type().unwrap_or("runtime type")));
         let filter_label = format!("Filter {}", header.column.name);
         if highlighted {
             self.document.tools.scroll_to_column = false;
