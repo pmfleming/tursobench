@@ -36,7 +36,9 @@ is required. `.direnv/` is local cache data and is ignored by Git. Nix requires
 `nix-command` and `flakes` enabled; the first activation may download dependencies.
 
 Rust 1.95.0 is the tested toolchain. Linux needs OpenGL, X11 or Wayland and
-libxkbcommon; the native file dialog requires the D-Bus runtime library
+libxkbcommon. X11 also requires `libxkbcommon-x11.so.0` (provided by
+`libxkbcommon-x11-0` on Ubuntu, or its `libxkbcommon-x11-dev` development package).
+The native file dialog requires the D-Bus runtime library
 (`libdbus-1.so.3`) and an XDG portal with a file chooser backend. The Nix shell
 provides the library; the desktop session provides the portal. Typing a path
 works without a portal. No database is created by Open. For a disposable sample:

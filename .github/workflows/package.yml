@@ -7,7 +7,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.95.0
-      - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev xvfb xauth libgl1-mesa-dri
+      - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libgl1-mesa-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev xvfb xauth libgl1-mesa-dri
       - run: cargo test --workspace --locked
       - run: bash scripts/package-linux.sh
       - run: TURSOBENCH_BINARY=target/release/tursobench bash scripts/desktop-smoke.sh
