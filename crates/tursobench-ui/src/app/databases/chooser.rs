@@ -438,44 +438,43 @@ impl Entry {
         );
         let width = (rect.width() - 76.0).max(0.0);
         let tokens = crate::appearance::Tokens::of(ui.ctx());
-        let badge = self.badge().unwrap_or_else(|| match self.engine_mark() {
-            super::presentation::EngineMark::OpenedTurso => "Turso",
-            super::presentation::EngineMark::LikelyTurso => "Likely Turso",
-            super::presentation::EngineMark::Other => match self.kind {
+        let badge = self.badge().or_else(|| match self.engine_mark() {
+            super::presentation::EngineMark::Other => Some(match self.kind {
                 crate::discovery::DatabaseKind::LikelySqlite => "SQLite",
                 _ => "Unknown",
-            },
+            }),
+            _ => None,
         });
         let badge_color = if self.badge().is_some() {
             ui.visuals().error_fg_color
         } else {
-            match self.engine_mark() {
-                super::presentation::EngineMark::OpenedTurso => tokens.primary,
-                super::presentation::EngineMark::LikelyTurso => tokens.pending,
-                _ => tokens.muted,
-            }
+            tokens.muted
         };
-        let badge = egui::WidgetText::from(
-            egui::RichText::new(badge).size(crate::appearance::text_size(ui.ctx(), 10.5)),
-        )
-        .into_galley(
-            ui,
-            Some(egui::TextWrapMode::Truncate),
-            width * 0.50,
-            egui::TextStyle::Small,
-        );
-        let badge_rect = egui::Rect::from_min_size(
-            egui::pos2(rect.right() - badge.size().x - 22.0, rect.top() + 10.0),
-            egui::vec2(badge.size().x + 12.0, 18.0),
-        );
-        ui.painter()
-            .rect_filled(badge_rect, 4.0, badge_color.gamma_multiply(0.13));
-        ui.painter().galley(
-            badge_rect.min + egui::vec2(6.0, (18.0 - badge.size().y) / 2.0),
-            badge,
-            badge_color,
-        );
-        let title_width = (badge_rect.left() - rect.left() - 66.0).max(0.0);
+        let title_width = if let Some(badge) = badge {
+            let badge = egui::WidgetText::from(
+                egui::RichText::new(badge).size(crate::appearance::text_size(ui.ctx(), 10.5)),
+            )
+            .into_galley(
+                ui,
+                Some(egui::TextWrapMode::Truncate),
+                width * 0.50,
+                egui::TextStyle::Small,
+            );
+            let badge_rect = egui::Rect::from_min_size(
+                egui::pos2(rect.right() - badge.size().x - 22.0, rect.top() + 10.0),
+                egui::vec2(badge.size().x + 12.0, 18.0),
+            );
+            ui.painter()
+                .rect_filled(badge_rect, 4.0, badge_color.gamma_multiply(0.13));
+            ui.painter().galley(
+                badge_rect.min + egui::vec2(6.0, (18.0 - badge.size().y) / 2.0),
+                badge,
+                badge_color,
+            );
+            (badge_rect.left() - rect.left() - 66.0).max(0.0)
+        } else {
+            width
+        };
         ui.painter().galley(
             rect.left_top() + egui::vec2(58.0, 11.0),
             title.into_galley(
@@ -565,10 +564,7 @@ mod tests {
                     _ => None,
                 })
                 .collect();
-            assert_eq!(
-                texts,
-                vec!["Turso", "history.db", "clip-daemon/history", path]
-            );
+            assert_eq!(texts, vec!["history.db", "clip-daemon/history", path]);
             assert!(
                 output
                     .platform_output
