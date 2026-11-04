@@ -80,11 +80,24 @@ impl App {
             self.databases.switcher_filter.clear();
         }
         let width = 340.0_f32.min(ui.ctx().content_rect().width() - 32.0);
+        let screen = ui.ctx().content_rect();
+        let below = (screen.bottom() - response.rect.bottom() - 12.0).max(0.0);
+        let above = (response.rect.top() - screen.top() - 12.0).max(0.0);
+        let (align, height) = if below >= above {
+            (egui::RectAlign::BOTTOM_START, below)
+        } else {
+            (egui::RectAlign::TOP_START, above)
+        };
         egui::Popup::menu(&response)
             .width(width)
+            .align(align)
+            .align_alternatives(&[])
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .show(|ui| {
                 ui.set_width(width);
+                // Override the area's small initial height before sizing its
+                // scroll view, otherwise short lists remain unnecessarily clipped.
+                ui.set_max_height((height - 12.0).max(0.0));
                 self.recent_databases_ui(ui, response.clicked());
             });
     }
@@ -96,10 +109,21 @@ impl App {
                 (Icon::Folder, "Open database…", Intent::Primary),
                 (Icon::Disconnect, "Close database", Intent::Neutral),
             ] {
-                let response = ui.add_sized(
-                    [width, 38.0],
-                    presentation::action(ui, &format!("    {label}"), intent),
-                );
+                let primary = matches!(intent, Intent::Primary);
+                let tokens = crate::appearance::Tokens::of(ui.ctx());
+                let color = if primary {
+                    tokens.primary_ink
+                } else {
+                    ui.visuals().text_color()
+                };
+                let button = if primary {
+                    presentation::action(ui, &format!("    {label}"), intent)
+                } else {
+                    egui::Button::new(egui::RichText::new(format!("    {label}")).color(color))
+                        .fill(tokens.raised)
+                        .stroke(egui::Stroke::new(1.0, tokens.line_strong))
+                };
+                let response = ui.add_sized([width, 38.0], button);
                 response.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::Role::Button, response.enabled(), label)
                 });
@@ -110,11 +134,7 @@ impl App {
                         egui::vec2(18.0, 18.0),
                     ),
                     icon,
-                    if matches!(intent, Intent::Primary) {
-                        crate::appearance::Tokens::of(ui.ctx()).primary_ink
-                    } else {
-                        presentation::intent_color(ui, intent)
-                    },
+                    color,
                 );
                 if response.clicked() {
                     self.pending_database = None;
@@ -152,10 +172,11 @@ impl App {
         {
             select = Some(recent[0].path.clone());
         }
-        let height = (ui.ctx().content_rect().height() - 180.0).clamp(120.0, 360.0);
+        let height = ui.available_height().max(0.0);
         egui::ScrollArea::vertical()
             .id_salt("recent-databases")
             .max_height(height)
+            .min_scrolled_height(0.0)
             .auto_shrink([false, true])
             .show(ui, |ui| {
                 if recent.is_empty() {
@@ -207,6 +228,95 @@ mod tests {
             ui.set_width(220.0);
             app.database_switcher_ui(ui);
         })
+    }
+
+    #[test]
+    fn recent_popup_shows_short_lists_fully_and_close_uses_normal_contrast() {
+        for dark in [false, true] {
+            for (size, top) in [
+                (egui::vec2(720.0, 480.0), 0.0),
+                (egui::vec2(720.0, 480.0), 380.0),
+                (egui::vec2(1280.0, 720.0), 0.0),
+            ] {
+                let ctx = egui::Context::default();
+                ctx.enable_accesskit();
+                crate::appearance::theme(&ctx, dark);
+                let mut app = App::new(&ctx);
+                app.ready = true;
+                app.writable = true;
+                app.path = "/work/current.db".into();
+                for path in ["/work/current.db", "/work/other.db"] {
+                    app.preferences.discovery.record_open(path.into(), 1);
+                }
+                let render = |app: &mut App, events| {
+                    crate::app::test_ui::render(&ctx, size, events, |ui| {
+                        ui.set_width(220.0);
+                        ui.add_space(top);
+                        app.database_switcher_ui(ui);
+                    })
+                };
+                render(&mut app, vec![]);
+                for pressed in [true, false] {
+                    render(
+                        &mut app,
+                        crate::app::test_ui::pointer(egui::pos2(100.0, top + 25.0), pressed),
+                    );
+                }
+                render(&mut app, vec![]);
+                let output = render(&mut app, vec![]);
+                let nodes = &output
+                    .platform_output
+                    .accesskit_update
+                    .as_ref()
+                    .unwrap()
+                    .nodes;
+                let rows: Vec<_> = nodes
+                    .iter()
+                    .filter(|(_, n)| n.role() == egui::Role::ListBoxOption)
+                    .map(|(_, n)| {
+                        let b = n.bounds().unwrap();
+                        egui::Rect::from_min_max(
+                            egui::pos2(b.x0 as f32, b.y0 as f32),
+                            egui::pos2(b.x1 as f32, b.y1 as f32),
+                        )
+                    })
+                    .collect();
+                assert_eq!(rows.len(), 2);
+                for row in rows {
+                    assert!(ctx.content_rect().contains_rect(row));
+                    let shape=output.shapes.iter().find(|shape|matches!(&shape.shape,egui::Shape::Rect(rect) if rect.rect==row)).unwrap();
+                    assert!(
+                        shape.clip_rect.contains_rect(row),
+                        "clipped recent row: {row:?}, clip {:?}",
+                        shape.clip_rect
+                    );
+                }
+                let close_text = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text)
+                            if text.galley.job.text.trim() == "Close database" =>
+                        {
+                            Some(text)
+                        }
+                        _ => None,
+                    })
+                    .unwrap();
+                assert_eq!(
+                    close_text.galley.job.sections[0].format.color,
+                    ctx.global_style().visuals.text_color()
+                );
+                let close = crate::app::test_ui::control(&output, "Close database");
+                for pressed in [true, false] {
+                    render(
+                        &mut app,
+                        crate::app::test_ui::pointer(close.center(), pressed),
+                    );
+                }
+                assert!(app.confirm_close);
+            }
+        }
     }
 
     #[test]

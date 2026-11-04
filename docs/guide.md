@@ -95,12 +95,13 @@ shortcuts, evidence and the remaining gaps—not a claim of complete parity.
 The large footer icons switch between Tables, History, Saved queries, Checks and
 Settings in the left panel. Hover controls for their names; F1 opens keyboard help.
 
-The database card at the top opens a bounded, scrollable recent-database switcher.
+The database card at the top opens a recent-database switcher that grows into the
+available screen space, scrolling only when the list needs more room.
 Each row shows its filename, two nearest folders and the same engine icon as the
 database chooser; hover shows only its full path. The active database is highlighted.
 Search matches full paths as well as filenames; Enter selects a single matching
-result. Selecting the active database simply dismisses the switcher. The folder
-icon returns to the database chooser, and the power icon closes the database.
+result. Selecting the active database simply dismisses the switcher.
+**Open database…** returns to the chooser, and **Close database** closes the database.
 Switching or closing still follows the managed close/rollback flow, including
 confirmation for writable sessions and fresh access review for another database.
 
