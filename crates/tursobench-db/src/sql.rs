@@ -208,6 +208,56 @@ pub fn validate_single(sql: &str) -> Result<(), Failure> {
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Effect {
+    Read,
+    Data,
+    Schema,
+    Rollback,
+}
+
+pub(crate) fn effect(sql: &str) -> Effect {
+    use turso_parser::ast::{Cmd, Stmt};
+    match Parser::new(sql.as_bytes()).next_cmd() {
+        Ok(Some(Cmd::Explain(_) | Cmd::ExplainQueryPlan { .. })) => Effect::Read,
+        Ok(Some(Cmd::Stmt(stmt))) => match stmt {
+            Stmt::Select(_)
+            | Stmt::Begin { .. }
+            | Stmt::Commit { .. }
+            | Stmt::Release { .. }
+            | Stmt::Savepoint { .. } => Effect::Read,
+            Stmt::Rollback {
+                savepoint_name: None,
+                ..
+            } => Effect::Rollback,
+            Stmt::Rollback { .. } => Effect::Read,
+            Stmt::Insert { .. } | Stmt::Update(_) | Stmt::Delete { .. } => Effect::Data,
+            Stmt::Pragma { body: None, .. } => Effect::Read,
+            _ => Effect::Schema,
+        },
+        _ => Effect::Read,
+    }
+}
+
+pub(crate) fn validate_readonly(sql: &str) -> Result<(), Failure> {
+    use turso_parser::ast::{Cmd, Stmt};
+    let command = Parser::new(sql.as_bytes())
+        .next_cmd()
+        .map_err(|e| Failure::input(e.to_string()))?;
+    if matches!(
+        command,
+        Some(Cmd::Stmt(Stmt::Attach { .. } | Stmt::Vacuum { .. }))
+    ) {
+        return Err(Failure {
+            kind: tursobench_core::ErrorKind::ReadOnly,
+            message:
+                "Read-only sessions cannot attach databases or run VACUUM, including VACUUM INTO"
+                    .into(),
+        });
+    }
+    Ok(())
+}
+
 /// Conservatively establish physical row identity from the matching engine parser.
 pub(crate) fn has_rowid(ddl: &str) -> bool {
     use turso_parser::ast::{Cmd, CreateTableBody, Stmt};

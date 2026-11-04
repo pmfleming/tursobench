@@ -172,6 +172,7 @@ impl App {
         self.commit_owner = None;
         match outcome {
             CommitOutcome::Committed { operations } => {
+                self.invalidate_views(false, ticket.request);
                 self.tools.counts.clear();
                 self.document.tools.context = Default::default();
                 self.ui.diagram.stale = true;
@@ -278,6 +279,10 @@ impl App {
     }
     fn session_event(&mut self, ctx: &egui::Context, event: Event) {
         match event.kind {
+            EventKind::Invalidated {
+                schema,
+                source_request,
+            } => self.invalidate_views(schema, source_request),
             EventKind::Opened if event.ticket.request == 0 => self.opened(),
             EventKind::Closed { rollback } if event.ticket.request == 0 => {
                 self.closed(ctx, rollback)
@@ -287,12 +292,29 @@ impl App {
             _ => {}
         }
     }
-    fn record_completion(&mut self, ticket: Ticket, c: &Completion) {
-        if c.changed > 0 || self.tools.pending_history.contains_key(&ticket.request) {
-            self.ui.diagram.stale = self.ui.diagram.data.is_some();
-            self.document.tools.context = Default::default();
-            self.tools.counts.clear();
+    fn invalidate_views(&mut self, schema: bool, source_request: u64) {
+        self.tools.counts.clear();
+        self.ui.diagram.stale = true;
+        for document in std::iter::once(&mut self.document).chain(self.documents.values_mut()) {
+            document.tools.context = Default::default();
+            document.tools.pages.pending = None;
+            if schema {
+                document.tools.inspection = None;
+                document.tools.inspection_ticket = None;
+            }
+            if document
+                .result
+                .current
+                .is_some_and(|t| t.request != source_request)
+            {
+                document.stale = true;
+            }
         }
+        if schema {
+            self.refresh_catalog();
+        }
+    }
+    fn record_completion(&mut self, ticket: Ticket, c: &Completion) {
         self.record_history(ticket, Some(c.elapsed_ms), c.error.is_some());
         self.log_outcome(format!(
             "Request {}: {}",

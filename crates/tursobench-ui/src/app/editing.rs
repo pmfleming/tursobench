@@ -13,6 +13,7 @@ impl App {
             .documents
             .values()
             .any(|d| d.has_drafts() || d.active.is_some())
+            && !self.document.stale
             && self.writable
             && self.ready
             && !self.closing

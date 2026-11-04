@@ -73,6 +73,24 @@ async fn open(
     let path = path
         .to_str()
         .ok_or_else(|| Failure::input("Non-UTF8 paths are not supported by Turso's builder"))?;
+    if access == Access::ReadWrite {
+        // Validate compatibility before permitting the engine's writable-open side effects.
+        let preflight = Builder::new_local(path)
+            .experimental_index_method(true)
+            .read_only(true)
+            .build()
+            .await
+            .map_err(failure)?;
+        let c = preflight.connect().map_err(failure)?;
+        let mut r = c
+            .query("SELECT name FROM sqlite_schema LIMIT 1", ())
+            .await
+            .map_err(failure)?;
+        while r.next().await.map_err(failure)?.is_some() {}
+        drop(r);
+        drop(c);
+        drop(preflight);
+    }
     let db = Builder::new_local(path)
         // Turso's native FTS indexes require both the Cargo `fts` feature and
         // index-method capability when opening existing files or creating indexes.
@@ -127,6 +145,8 @@ pub(super) async fn worker(
         settings,
         output: &output,
         commits: edits::CommitState::default(),
+        dirty_data: false,
+        dirty_schema: false,
     };
     while !output.closing.load(Ordering::Acquire) {
         let request = match rx.recv_timeout(Duration::from_millis(25)) {
@@ -167,6 +187,8 @@ struct Worker<'a> {
     settings: ConnectionSettings,
     output: &'a Output,
     commits: edits::CommitState,
+    dirty_data: bool,
+    dirty_schema: bool,
 }
 impl Worker<'_> {
     async fn dispatch(
@@ -174,6 +196,12 @@ impl Worker<'_> {
         ticket: Ticket,
         operation: Operation,
     ) -> Result<Option<EventKind>, Failure> {
+        let effect = match &operation {
+            Operation::Execute { sql, .. } | Operation::ExecuteBound { sql, .. } => {
+                sql::effect(sql)
+            }
+            _ => sql::Effect::Read,
+        };
         let default = Budget::default();
         let count_references = matches!(&operation, Operation::ReferenceCount { .. });
         let (connection, sql, parameters, budget) = match operation {
@@ -220,10 +248,48 @@ impl Worker<'_> {
             Operation::ExecuteBound { sql, parameters, budget } => (self.editor, sql, parameters, budget),
             Operation::Execute { sql, parameters, budget } => (self.editor, sql, parameters.into(), budget),
         };
-        let mut completion =
-            execute(connection, ticket, &sql, parameters, budget, self.output).await;
+        let mut completion = execute(
+            connection,
+            ticket,
+            &sql,
+            parameters,
+            budget,
+            self.output,
+            self.access,
+        )
+        .await;
         // Every result reports the persistent editor's state, including browse/diagnostics.
         completion.transaction = state(self.editor);
+        if completion.error.is_none() {
+            match effect {
+                sql::Effect::Rollback => {
+                    self.dirty_data = false;
+                    self.dirty_schema = false;
+                }
+                sql::Effect::Data => self.dirty_data = true,
+                sql::Effect::Schema => {
+                    self.dirty_data = true;
+                    self.dirty_schema = true;
+                }
+                sql::Effect::Read => {}
+            }
+        }
+        if completion.transaction == tursobench_core::TransactionState::Autocommit
+            && self.dirty_data
+        {
+            self.output.send(
+                Ticket {
+                    request: 0,
+                    ..ticket
+                },
+                EventKind::Invalidated {
+                    schema: self.dirty_schema,
+                    source_request: ticket.request,
+                },
+            );
+            self.dirty_data = false;
+            self.dirty_schema = false;
+        }
         Ok(Some(EventKind::Finished(completion)))
     }
 }
@@ -234,6 +300,7 @@ async fn execute(
     parameters: Bindings,
     budget: Budget,
     out: &Output,
+    access: Access,
 ) -> Completion {
     let started = std::time::Instant::now();
     let mut completion = Completion {
@@ -247,6 +314,9 @@ async fn execute(
     let mut chunk = Vec::new();
     let result = async {
         sql::validate_single(sql)?;
+        if access == Access::ReadOnly {
+            sql::validate_readonly(sql)?;
+        }
         sql::validate_bindings(sql, &parameters)?;
         if parameters.bytes() > 8 * 1024 * 1024 {
             return Err(Failure::input("Parameters exceed 8 MiB"));

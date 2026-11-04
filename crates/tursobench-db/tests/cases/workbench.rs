@@ -69,6 +69,30 @@ fn catalog_preserves_large_definitions_and_more_than_one_thousand_indexes() {
 }
 
 #[test]
+fn readonly_vacuum_into_and_attach_do_not_create_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("source.db");
+    common::create(&path, &["CREATE TABLE t(id INTEGER PRIMARY KEY)"]);
+    let before = snapshot(dir.path());
+    let mut client = Client::open(&path, Access::ReadOnly);
+    for sql in [
+        format!("VACUUM INTO '{}'", dir.path().join("copy.db").display()),
+        format!(
+            "ATTACH '{}' AS other",
+            dir.path().join("attached.db").display()
+        ),
+    ] {
+        let result = client.query(&sql, vec![]);
+        assert_eq!(
+            result.completion.unwrap().error.unwrap().kind,
+            ErrorKind::ReadOnly
+        );
+    }
+    client.close();
+    assert_eq!(snapshot(dir.path()), before);
+}
+
+#[test]
 fn native_metadata_related_lookup_and_diagnostics_preserve_readonly_bytes() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("workbench.db");

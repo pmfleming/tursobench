@@ -5,6 +5,7 @@ use tursobench_core::{Browse, DraftBatch, Inspection, ResultSet, Table, Ticket};
 pub(super) struct Document {
     pub id: u64,
     pub needs_load: bool,
+    pub stale: bool,
     pub kind: super::tiling::Kind,
     pub object: Option<String>,
     pub source: Option<u64>,
@@ -30,6 +31,7 @@ impl Default for Document {
         Self {
             id: 0,
             needs_load: false,
+            stale: false,
             kind: Default::default(),
             object: None,
             source: None,

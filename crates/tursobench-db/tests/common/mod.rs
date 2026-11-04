@@ -40,6 +40,9 @@ pub fn run(session: &Session, sequence: u64, operation: Operation) -> Reply {
     reply.result.start(ticket);
     loop {
         let event = event(session);
+        if matches!(event.kind, EventKind::Invalidated { .. }) {
+            continue;
+        }
         assert_eq!(event.ticket, ticket);
         match event.kind {
             EventKind::Table(table) => {

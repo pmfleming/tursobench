@@ -284,6 +284,7 @@ impl App {
                 self.document.tools.pages = Default::default();
                 self.document.tools.grid_selection = None;
                 self.document.tools.inline = None;
+                self.document.stale = false;
                 self.document.result.start(ticket);
                 self.document.active = Some(ticket);
                 self.document.view = view;

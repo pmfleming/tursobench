@@ -130,3 +130,10 @@ Turso 0.8.3's public Connection exposes no interruption/progress API. Row/byte
 budgets and busy timeout do not bound scan execution. Automatic counts remain
 deferred until isolated cancellable execution is implemented and verified. No
 new execution-timeout or rollback guarantee is introduced by the redesign.
+
+
+Committed SQL emits `Invalidated { schema, source_request }` under session request
+zero. Manual transaction writes are invalidated on commit, not before; full
+rollback clears pending invalidation. Retained views show a stale marker and
+require refresh for paging/staging. Read-only execution rejects ATTACH and VACUUM,
+including VACUUM INTO; file-output maintenance requires a writable session.

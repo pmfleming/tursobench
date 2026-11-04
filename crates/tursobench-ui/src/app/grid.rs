@@ -163,6 +163,12 @@ impl CellAppearance<'_> {
 }
 impl App {
     pub(super) fn grid_contents(&mut self, ui: &mut egui::Ui) {
+        if self.document.stale {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                "Data changed since this result was loaded. Refresh to reload.",
+            );
+        }
         #[cfg(test)]
         {
             self.fk_cell_rect = None;

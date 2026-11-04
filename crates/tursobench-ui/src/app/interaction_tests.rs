@@ -108,6 +108,40 @@ fn frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) {
 }
 
 #[test]
+fn committed_sql_invalidates_other_tiles_and_refreshes_schema() {
+    let (_dir, ctx, mut app) = fixture(
+        &[
+            "CREATE TABLE t(id INTEGER PRIMARY KEY, value TEXT)",
+            "INSERT INTO t VALUES(1,'old')",
+        ],
+        true,
+    );
+    app.browse_table("t".into());
+    wait(&mut app, &ctx);
+    let table_view = app.document.id;
+    app.run_text("BEGIN".into(), None);
+    wait(&mut app, &ctx);
+    app.run_text("UPDATE t SET value='new'".into(), None);
+    wait(&mut app, &ctx);
+    assert!(!app.document_ref(table_view).unwrap().stale);
+    app.run_text("ROLLBACK".into(), None);
+    wait(&mut app, &ctx);
+    assert!(!app.document_ref(table_view).unwrap().stale);
+    app.run_text("UPDATE t SET value='new'".into(), None);
+    wait(&mut app, &ctx);
+    assert!(app.document_ref(table_view).unwrap().stale);
+    assert_eq!(
+        app.document_ref(table_view).unwrap().result.rows[0][1],
+        Value::Text("old".into())
+    );
+    app.run_text("CREATE TABLE added(id INTEGER PRIMARY KEY)".into(), None);
+    wait(&mut app, &ctx);
+    assert!(app.schema.iter().any(|o| o.name == "added"));
+    app.close();
+    wait_closed(&mut app, &ctx);
+}
+
+#[test]
 fn sql_selection_shortcut_and_window_expansion_have_distinct_targets() {
     let (_dir, ctx, mut app) = fixture(&["CREATE TABLE sample(id INTEGER PRIMARY KEY)"], false);
     app.open_sql_window(false);

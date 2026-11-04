@@ -135,8 +135,9 @@ impl App {
                     });
                 });
                 if self.writable {
-                    ui.colored_label(ui.visuals().warn_fg_color, "Back up closed files with all required WAL state before trying writes.");
+                    ui.colored_label(ui.visuals().warn_fg_color, "Opening for writes may migrate the journal to WAL and change the file before any SQL runs. Back up closed files with all required WAL state first.");
                 }
+                ui.small("Exclusive use is required in both modes. Read-only access does not lock out another application’s writer.");
                 let acknowledgement = ui.checkbox(
                     &mut self.exclusive,
                     "No other application has this database open",

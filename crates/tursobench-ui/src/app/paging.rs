@@ -21,7 +21,8 @@ pub(super) struct Pending {
 }
 impl App {
     pub(super) fn request_page(&mut self, previous: bool) {
-        if self.document.view != View::Browse
+        if self.document.stale
+            || self.document.view != View::Browse
             || self.document.active.is_some()
             || self.document.tools.pages.pending.is_some()
             || self.has_drafts()

@@ -298,6 +298,7 @@ pub struct SchemaDiagram {
 
 #[derive(Debug)]
 pub enum EventKind {
+    Invalidated { schema: bool, source_request: u64 },
     Diagram(SchemaDiagram),
     Inspection(Inspection),
     Table(Table),

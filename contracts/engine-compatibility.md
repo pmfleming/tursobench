@@ -39,8 +39,10 @@ Observed on Linux x86_64, Rust 1.95.0:
 - Dedicated serialized worker per database session, current-thread Tokio runtime.
   Persistent editor connection; separate browse and edit connections. GUI never
   holds engine handles. Enable and verify foreign keys on writable connections.
-- Existing regular files only. Default read-only. No implicit creation, repair,
-  checkpoint, or migration. Mode changes require clean close/reopen.
+- Existing regular files only. Default read-only. No implicit creation, repair or checkpoint. Writable opening may migrate a
+  DELETE journal to WAL before SQL execution; the access panel discloses this
+  before opt-in and writable opening performs read-only schema preflight.
+  Mode changes require clean close/reopen.
 - **Only files not in use by another application are supported.** User must affirm
   exclusive use. A viewer opening successfully is not a concurrency guarantee.
   Do not copy a live main file without its WAL. No automatic snapshot feature.
