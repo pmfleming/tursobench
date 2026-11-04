@@ -257,6 +257,59 @@ fn real_readonly_bounded_results_and_cleanup() {
     let r = run(&s, 5, "SELECT * FROM items WHERE 0", Budget::default());
     assert_eq!(r.columns.len(), 2);
     assert!(r.rows.is_empty());
+    let unit = Value::Integer(0).bytes();
+    for (index, (bytes, page, kept, delivery, more)) in [
+        (2 * unit, false, 2, Delivery::Complete, None),
+        (2 * unit, true, 2, Delivery::Complete, Some(true)),
+        (unit, true, 1, Delivery::Complete, Some(true)),
+        (unit - 1, true, 0, Delivery::Limited, Some(false)),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let r = run(
+            &s,
+            30 + index as u64,
+            "SELECT id FROM items ORDER BY id",
+            Budget {
+                rows: 2,
+                bytes,
+                page,
+                ..Budget::default()
+            },
+        );
+        assert_eq!(
+            r.rows,
+            (1..=kept)
+                .map(|n| vec![Value::Integer(n)])
+                .collect::<Vec<_>>()
+        );
+        let completion = r.completion.unwrap();
+        assert_eq!(
+            (completion.delivery, completion.page_has_more),
+            (delivery, more)
+        );
+    }
+    let tail = common::run(
+        &s,
+        40,
+        Operation::Browse(Browse {
+            table: "items".into(),
+            offset: 0,
+            sort: None,
+            descending: false,
+            filters: vec![],
+            options: BrowseOptions {
+                tail: true,
+                page_rows: 2,
+                page_bytes: 3 * unit,
+                ..Default::default()
+            },
+        }),
+    )
+    .result;
+    assert_eq!(tail.rows, vec![vec![Value::Integer(2), Value::Null]]);
+    assert_eq!(tail.completion.unwrap().page_has_more, Some(true));
     for ticket in [
         Ticket {
             session: s.id + 1,

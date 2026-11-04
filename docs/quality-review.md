@@ -13,6 +13,16 @@ validated and committed separately. Evidence is under `target/quality-five/`.
    from 84/26 to 2/3; the largest extracted handler is 12/4. All 128 active UI
    tests, formatting and workspace/all-target Clippy pass.
 
+2. **Bounded result delivery.** A dedicated buffer owns cell deferral, retained
+   row/byte limits, chunking and tail-window eviction. SQL execution retains
+   validation, engine reads and write draining. Tail entries retain their byte
+   sizes, avoiding repeated size scans and the eviction `unwrap`. Partial chunks
+   still flush on engine errors, and page completion is recorded only after
+   successful row traversal. The existing real-engine budget scenario now checks
+   exact byte boundaries, page/non-page outcomes and byte-evicted tail rows.
+   `execute` cognitive/cyclomatic complexity falls from 75/55 to 25/32. Database
+   tests (62), UI tests (128), formatting and all-target Clippy pass.
+
 <!-- five-follow-up-results -->
 
 ---

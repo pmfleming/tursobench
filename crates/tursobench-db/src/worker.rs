@@ -777,6 +777,121 @@ struct ExecutionContext<'a> {
     depot: &'a mut crate::values::Depot,
     tail: bool,
 }
+/// Retention and delivery budgets are independent of engine execution. Writes
+/// drain their rows even when this buffer refuses further output.
+struct ResultDelivery<'a> {
+    out: &'a Output,
+    ticket: Ticket,
+    budget: Budget,
+    tail: bool,
+    chunk: Vec<Vec<Value>>,
+    suffix: std::collections::VecDeque<(Vec<Value>, usize)>,
+    kept: usize,
+    bytes: usize,
+    chunk_bytes: usize,
+}
+impl<'a> ResultDelivery<'a> {
+    fn new(out: &'a Output, ticket: Ticket, budget: Budget, tail: bool) -> Self {
+        Self {
+            out,
+            ticket,
+            budget,
+            tail,
+            chunk: Vec::new(),
+            suffix: Default::default(),
+            kept: 0,
+            bytes: 0,
+            chunk_bytes: 0,
+        }
+    }
+    fn push(
+        &mut self,
+        mut values: Vec<Value>,
+        depot: &mut crate::values::Depot,
+        completion: &mut Completion,
+    ) -> bool {
+        self.defer_cells(&mut values, depot);
+        let size = values.iter().map(Value::bytes).sum::<usize>();
+        if self.tail {
+            self.retain_tail(values, size, completion);
+            return true;
+        }
+        if self.kept >= self.budget.rows.min(10_000)
+            || self.bytes + size > self.budget.bytes.min(8 * 1024 * 1024)
+            || values
+                .iter()
+                .any(|v| v.bytes() > self.budget.cell_bytes.min(1024 * 1024))
+        {
+            if self.budget.page && self.kept > 0 {
+                completion.page_has_more = Some(true);
+            } else {
+                completion.delivery = Delivery::Limited;
+            }
+            return false;
+        }
+        self.bytes += size;
+        self.kept += 1;
+        if !self.chunk(values, size) {
+            completion.delivery = Delivery::Discarded;
+        }
+        true
+    }
+    fn defer_cells(&self, values: &mut [Value], depot: &mut crate::values::Depot) {
+        if self.budget.cell_bytes == 0 {
+            return;
+        }
+        for value in values.iter_mut() {
+            if value.bytes() > self.budget.cell_bytes.min(1024 * 1024) {
+                *value = depot.defer(std::mem::replace(value, Value::Null));
+            }
+        }
+        if self.budget.page && values.iter().map(Value::bytes).sum::<usize>() > self.budget.bytes {
+            for value in values {
+                if matches!(value, Value::Text(_) | Value::Blob(_)) {
+                    *value = depot.defer(std::mem::replace(value, Value::Null));
+                }
+            }
+        }
+    }
+    fn retain_tail(&mut self, values: Vec<Value>, size: usize, completion: &mut Completion) {
+        while self.bytes + size > self.budget.bytes
+            || self.suffix.len() >= self.budget.rows.min(100)
+        {
+            let Some((_, evicted_bytes)) = self.suffix.pop_front() else {
+                break;
+            };
+            self.bytes -= evicted_bytes;
+            completion.page_has_more = Some(true);
+        }
+        if size > self.budget.bytes {
+            completion.delivery = Delivery::Limited;
+            return;
+        }
+        self.bytes += size;
+        self.suffix.push_back((values, size));
+    }
+    fn chunk(&mut self, values: Vec<Value>, size: usize) -> bool {
+        self.chunk_bytes += size;
+        self.chunk.push(values);
+        if self.chunk.len() < 64 && self.chunk_bytes < 64 * 1024 {
+            return true;
+        }
+        self.chunk_bytes = 0;
+        self.out.send(
+            self.ticket,
+            EventKind::Rows(std::mem::take(&mut self.chunk)),
+        )
+    }
+    fn finish(mut self) {
+        while let Some((values, size)) = self.suffix.pop_front() {
+            self.chunk(values, size);
+        }
+        if !self.chunk.is_empty() {
+            self.out.send(self.ticket, EventKind::Rows(self.chunk));
+        }
+    }
+}
+
 async fn execute(
     c: &Connection,
     ticket: Ticket,
@@ -811,8 +926,7 @@ async fn execute(
         transaction: state(c),
         error: None,
     };
-    let mut chunk = Vec::new();
-    let mut suffix = std::collections::VecDeque::<Vec<Value>>::new();
+    let mut delivery = ResultDelivery::new(out, ticket, budget, tail);
     let result = async {
         sql::validate_single(sql)?;
         if stoppable && out.discarded(ticket) {
@@ -865,15 +979,11 @@ async fn execute(
             return Ok(());
         }
         let mut rows = stmt.query(parameters).await.map_err(failure)?;
-        let mut kept = 0;
-        let mut bytes = 0;
-
-        let mut chunk_bytes = 0;
         while let Some(row) = rows.next().await.map_err(failure)? {
             completion.rows_seen += 1;
             if out.discarded(ticket) {
                 completion.delivery = Delivery::Discarded;
-                chunk.clear();
+                delivery.chunk.clear();
                 if stoppable {
                     break;
                 }
@@ -882,72 +992,14 @@ async fn execute(
             if completion.delivery == Delivery::Limited {
                 continue;
             }
-            let mut values: Vec<Value> = (0..rows.column_count())
+            let values = (0..rows.column_count())
                 .map(|i| row.get_value(i).map(from_engine).map_err(failure))
                 .collect::<Result<_, _>>()?;
-            if budget.cell_bytes > 0 {
-                for value in &mut values {
-                    if value.bytes() > budget.cell_bytes.min(1024 * 1024) {
-                        *value = depot.defer(std::mem::replace(value, Value::Null));
-                    }
-                }
-                if budget.page && values.iter().map(Value::bytes).sum::<usize>() > budget.bytes {
-                    for value in &mut values {
-                        if matches!(value, Value::Text(_) | Value::Blob(_)) {
-                            *value = depot.defer(std::mem::replace(value, Value::Null));
-                        }
-                    }
-                }
-            }
-            let size = values.iter().map(Value::bytes).sum::<usize>();
-            if tail {
-                while !suffix.is_empty()
-                    && (bytes + size > budget.bytes || suffix.len() >= budget.rows.min(100))
-                {
-                    bytes -= suffix
-                        .pop_front()
-                        .unwrap()
-                        .iter()
-                        .map(Value::bytes)
-                        .sum::<usize>();
-                    completion.page_has_more = Some(true);
-                }
-                if size > budget.bytes {
-                    completion.delivery = Delivery::Limited;
-                    continue;
-                }
-                bytes += size;
-                suffix.push_back(values);
-                continue;
-            }
-            if kept >= budget.rows.min(10_000)
-                || bytes + size > budget.bytes.min(8 * 1024 * 1024)
-                || values
-                    .iter()
-                    .any(|v| v.bytes() > budget.cell_bytes.min(1024 * 1024))
-            {
-                if budget.page && kept > 0 {
-                    completion.page_has_more = Some(true);
-                } else {
-                    completion.delivery = Delivery::Limited;
-                }
-                if stoppable {
-                    break;
-                }
-                continue;
-            }
-            bytes += size;
-            kept += 1;
-            chunk_bytes += size;
-            chunk.push(values);
-            if chunk.len() >= 64 || chunk_bytes >= 64 * 1024 {
-                if !out.send(ticket, EventKind::Rows(std::mem::take(&mut chunk))) {
-                    completion.delivery = Delivery::Discarded;
-                }
-                chunk_bytes = 0;
+            if !delivery.push(values, depot, &mut completion) && stoppable {
+                break;
             }
         }
-        if budget.page && kept >= budget.rows {
+        if budget.page && delivery.kept >= budget.rows {
             completion.page_has_more = Some(true);
         }
         completion.changed = stmt.n_change();
@@ -957,18 +1009,7 @@ async fn execute(
     if stoppable {
         *out.discard.active_read.lock().unwrap() = None;
     }
-    let mut suffix_bytes = 0;
-    for values in suffix {
-        suffix_bytes += values.iter().map(Value::bytes).sum::<usize>();
-        chunk.push(values);
-        if chunk.len() >= 64 || suffix_bytes >= 64 * 1024 {
-            out.send(ticket, EventKind::Rows(std::mem::take(&mut chunk)));
-            suffix_bytes = 0;
-        }
-    }
-    if !chunk.is_empty() {
-        out.send(ticket, EventKind::Rows(chunk));
-    }
+    delivery.finish();
     completion.elapsed_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
     completion.error = result.err();
     completion.transaction = state(c);
