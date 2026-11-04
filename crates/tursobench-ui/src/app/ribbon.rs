@@ -363,12 +363,18 @@ impl App {
         // Keep tile identity and window controls fixed while the action ribbon scrolls.
         // Never drop actions based on width or replace them with an overflow menu.
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 3.0;
+            ui.spacing_mut().item_spacing.x = super::presentation::BAR_SPACING;
+            ui.spacing_mut().button_padding.x = super::presentation::BAR_INSET;
             ui.style_mut().override_font_id = Some(crate::appearance::proportional(ui.ctx(), icons::RIBBON_TEXT_SIZE));
             ui.spacing_mut().interact_size.y = icons::RIBBON_BUTTON_SIZE;
             let show_restore = !self.workspace.minimized.is_empty() || self.workspace.expanded.is_some();
             let controls_width = 2.0 * icons::RIBBON_BUTTON_SIZE + 20.0
                 + if show_restore { icons::RIBBON_BUTTON_SIZE + ui.spacing().item_spacing.x } else { 0.0 };
+            let leading = if kind == Kind::Data {
+                (super::grid::CONTENT_INSET-ui.spacing().button_padding.x)
+                    .min((ui.available_width()-controls_width-64.0).max(super::presentation::BAR_INSET))
+            } else { super::presentation::BAR_INSET };
+            ui.add_space(leading);
             let remaining = (ui.available_width() - controls_width).max(0.0);
             let title_size = ui.painter().layout_no_wrap(
                 kind.label().into(),
@@ -458,12 +464,9 @@ impl App {
                     }
                 },
             );
-            ui.separator();
-            if show_restore {
-                self.ribbon_action(ui, Action::Retile, Icon::RestoreTiles, "Restore all tiles");
-            }
-            let minimize = icons::ribbon_button(ui, Icon::Minimize, "Minimize to header", "", None);
-            let expand = icons::ribbon_button(
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui| {
+                ui.add_space(super::presentation::BAR_INSET);
+                let expand = icons::ribbon_button(
                 ui,
                 Icon::Fit,
                 if self.workspace.expanded == Some(kind) {
@@ -474,6 +477,11 @@ impl App {
                 "Ctrl Alt Enter",
                 None,
             );
+            let minimize = icons::ribbon_button(ui, Icon::Minimize, "Minimize to header", "", None);
+            if show_restore {
+                self.ribbon_action(ui, Action::Retile, Icon::RestoreTiles, "Restore all tiles");
+            }
+            ui.separator();
             #[cfg(test)]
             self.workspace
                 .controls
@@ -484,6 +492,7 @@ impl App {
             if expand.clicked() {
                 self.expand_pane(kind);
             }
+            });
         });
     }
 

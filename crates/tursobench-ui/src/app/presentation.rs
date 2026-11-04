@@ -1,6 +1,9 @@
 //! Shared visual primitives; callers retain action routing and enabled-state rules.
 use eframe::egui;
 
+pub(super) const BAR_INSET: f32 = 8.0;
+pub(super) const BAR_SPACING: f32 = 3.0;
+
 pub(super) fn chip(ui: &mut egui::Ui, text: &str, color: egui::Color32) -> egui::Response {
     let tokens = crate::appearance::Tokens::of(ui.ctx());
     let text_color = if color == tokens.primary {

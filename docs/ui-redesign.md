@@ -88,6 +88,10 @@ older rows at the retention limit. A fixed 31 px status bar (one 29 px data row
 plus 2 px) anchors the range/retained count at the bottom of Table data and query
 results; table browsing also has compact row-jump/count controls. It uses theme colors and a subtle top
 divider; controls stay on one line, scrolling horizontally at narrow widths.
+The table name, first data-cell text and retained-range text share one left
+alignment after the row-number gutter. Command/status bars use the same 8 px edge
+inset and 3 px control spacing, with window and status actions aligned on the right.
+The column-header band spans the tile without stretching fitted data columns.
 Drafts suspend paging; stale replies cannot
 replace a newer result. Back restores the table's filters, sort and selection.
 

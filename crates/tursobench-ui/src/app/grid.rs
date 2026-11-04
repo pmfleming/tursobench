@@ -1,5 +1,9 @@
 pub(super) const ROW_HEIGHT: f32 = 29.0;
 pub(super) const STATUS_HEIGHT: f32 = ROW_HEIGHT + 2.0;
+pub(super) const GUTTER_WIDTH: f32 = 44.0;
+pub(super) const CELL_INSET: f32 = 8.0;
+pub(super) const CONTENT_INSET: f32 = GUTTER_WIDTH + CELL_INSET;
+pub(super) const HEADER_HEIGHT: f32 = 42.0;
 use super::{
     App, View,
     icons::{self, Icon},
@@ -81,9 +85,9 @@ impl CellAppearance<'_> {
         job.wrap.overflow_character = Some('…');
         let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
         let position = if matches!(self.value, Value::Integer(_) | Value::Real(_)) {
-            rect.right_center() - egui::vec2(7.0 + galley.size().x, galley.size().y * 0.5)
+            rect.right_center() - egui::vec2(CELL_INSET + galley.size().x, galley.size().y * 0.5)
         } else {
-            rect.left_center() + egui::vec2(7.0, -galley.size().y * 0.5)
+            rect.left_center() + egui::vec2(CELL_INSET, -galley.size().y * 0.5)
         };
         painter.galley(position, galley, color);
     }
@@ -131,8 +135,8 @@ impl CellAppearance<'_> {
             egui::Stroke::new(1.0, tokens.line_soft),
         );
         if self.related {
-            let end = rect.right() - 7.0;
-            let mut x = rect.left() + 7.0;
+            let end = rect.right() - CELL_INSET;
+            let mut x = rect.left() + CELL_INSET;
             while x < end {
                 painter.circle_filled(egui::pos2(x, rect.bottom() - 4.0), 0.65, color);
                 x += 3.0;
@@ -252,7 +256,7 @@ impl App {
             + 2 * usize::from(!self.document.tools.pages.error.is_empty());
         let remaining = (ui.available_height()
             - if self.workspace.enabled {
-                42.0 + auxiliary_rows as f32 * ROW_HEIGHT
+                HEADER_HEIGHT + auxiliary_rows as f32 * ROW_HEIGHT
             } else {
                 52.0
             })
@@ -276,6 +280,19 @@ impl App {
         }
         let mut page_range = 0..0;
         let restore = self.document.tools.restore_scroll.take();
+        if !self.document.result.columns.is_empty() {
+            let band = egui::Rect::from_min_size(
+                ui.cursor().min,
+                egui::vec2(ui.available_width(), HEADER_HEIGHT),
+            );
+            ui.painter()
+                .rect_filled(band, 0.0, ui.visuals().faint_bg_color);
+            ui.painter().hline(
+                band.x_range(),
+                band.bottom() - 0.5,
+                egui::Stroke::new(1.0, crate::appearance::Tokens::of(ui.ctx()).line_soft),
+            );
+        }
         let horizontal = egui::ScrollArea::horizontal()
             .horizontal_scroll_offset(restore.map_or(self.document.tools.grid_scroll.x, |s| s.x))
             .id_salt("result-columns")
@@ -431,7 +448,10 @@ impl App {
             .frame(
                 egui::Frame::new()
                     .fill(tokens.raised)
-                    .inner_margin(egui::Margin::symmetric(6, 1))
+                    .inner_margin(egui::Margin::symmetric(
+                        super::presentation::BAR_INSET as i8,
+                        1,
+                    ))
                     .corner_radius(egui::CornerRadius {
                         sw: 6,
                         se: 6,
@@ -439,7 +459,7 @@ impl App {
                     }),
             )
             .show(ui, |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
+                ui.spacing_mut().item_spacing = egui::vec2(super::presentation::BAR_SPACING, 0.0);
                 ui.spacing_mut().interact_size.y = ROW_HEIGHT;
                 ui.spacing_mut().button_padding = egui::vec2(5.0, 1.0);
                 ui.style_mut().override_font_id =
@@ -495,7 +515,12 @@ impl App {
         } else {
             0.0
         };
-        let width = ui.available_width().max(actions_width + 120.0);
+        let leading = if self.workspace.enabled {
+            CONTENT_INSET - super::presentation::BAR_INSET
+        } else {
+            0.0
+        };
+        let width = ui.available_width().max(leading + actions_width + 120.0);
         egui::ScrollArea::horizontal()
             .id_salt("grid-status-actions")
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
@@ -504,21 +529,30 @@ impl App {
                 ui.set_width(width);
                 ui.horizontal(|ui| {
                     if self.workspace.enabled {
+                        ui.add_space(leading);
                         let start = spec.as_ref().map_or(0, |b| b.offset);
                         let count = self.document.result.rows.len();
-                        ui.add_sized(
-                            [width - actions_width - 6.0, ROW_HEIGHT],
-                            egui::Label::new(
-                                egui::RichText::new(format!(
-                                    "{}–{} · {count} retained",
-                                    start + usize::from(count > 0),
-                                    start + count
-                                ))
-                                .monospace()
-                                .size(crate::appearance::text_size(ui.ctx(), 11.0))
-                                .color(ui.visuals().weak_text_color()),
-                            )
-                            .truncate(),
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(
+                                width - leading - actions_width - super::presentation::BAR_SPACING,
+                                ROW_HEIGHT,
+                            ),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(format!(
+                                            "{}–{} · {count} retained",
+                                            start + usize::from(count > 0),
+                                            start + count
+                                        ))
+                                        .monospace()
+                                        .size(crate::appearance::text_size(ui.ctx(), 11.0))
+                                        .color(ui.visuals().weak_text_color()),
+                                    )
+                                    .truncate(),
+                                );
+                            },
                         );
                     }
                     if let Some(spec) = &spec {
@@ -586,7 +620,7 @@ impl App {
     fn grid_header(&mut self, ui: &mut egui::Ui) {
         let mut sort = None;
         ui.horizontal(|ui| {
-            ui.add_sized([44.0, 42.0], egui::Label::new("#"));
+            ui.add_sized([GUTTER_WIDTH, HEADER_HEIGHT], egui::Label::new("#"));
             for i in self.visible_columns() {
                 if self.grid_column_header(ui, i) {
                     sort = Some(i);
@@ -627,7 +661,7 @@ impl App {
         let tokens = crate::appearance::Tokens::of(ui.ctx());
         let header = self.document.column_header(i);
         let (rect, response) = ui.allocate_exact_size(
-            egui::vec2(self.document.tools.columns.widths[i], 42.0),
+            egui::vec2(self.document.tools.columns.widths[i], HEADER_HEIGHT),
             egui::Sense::click_and_drag(),
         );
         header.describe(&response, ui.is_enabled());
@@ -734,7 +768,7 @@ impl App {
                 tokens.faint
             };
             let gutter = ui.add_sized(
-                [44.0, 29.0],
+                [GUTTER_WIDTH, ROW_HEIGHT],
                 egui::Label::new(
                     egui::RichText::new(format!("{marker}{}", offset + row + 1))
                         .color(marker_color)

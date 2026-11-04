@@ -1420,6 +1420,90 @@ fn sidebar_catalog_includes_views_when_map_is_incomplete_and_tools_preserve_rows
 }
 
 #[test]
+fn table_title_cells_and_status_share_alignment_and_header_fills_the_tile() {
+    let (_dir, ctx, mut app) = fixture(
+        &[
+            "CREATE TABLE alignment_table(label TEXT PRIMARY KEY,value INTEGER)",
+            "INSERT INTO alignment_table VALUES('aligned-cell',42)",
+        ],
+        false,
+    );
+    app.browse_table("alignment_table".into());
+    wait(&mut app, &ctx);
+    ctx.enable_accesskit();
+    for dark in [false, true] {
+        crate::appearance::theme(&ctx, dark);
+        for (size, scale, expanded) in [
+            (egui::vec2(900.0, 600.0), 1.0, false),
+            (egui::vec2(1400.0, 900.0), 1.0, true),
+            (egui::vec2(1440.0, 960.0), 1.5, true),
+        ] {
+            ctx.set_pixels_per_point(scale);
+            app.workspace.expanded = expanded.then_some(tiling::Kind::Data);
+            frame_at(&mut app, &ctx, size, vec![]);
+            let output = frame_at(&mut app, &ctx, size, vec![]);
+            let pane = app
+                .workspace
+                .pane_rects
+                .iter()
+                .find(|(kind, _)| *kind == tiling::Kind::Data)
+                .unwrap()
+                .1;
+            let text_position = |value: &str| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text)
+                            if text.galley.job.text == value && pane.contains(text.pos) =>
+                        {
+                            Some(text.pos)
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("Missing tile text {value}"))
+            };
+            let title = text_position("alignment_table");
+            let cell = text_position("aligned-cell");
+            let status = text_position("1–1 · 1 retained");
+            assert!(
+                (title.x - cell.x).abs() < 1.1,
+                "title {title:?}, cell {cell:?}, pane {pane:?}"
+            );
+            assert!(
+                (status.x - cell.x).abs() < 1.1,
+                "status {status:?}, cell {cell:?}"
+            );
+            let expand = control(
+                &output,
+                if expanded {
+                    "Restore workspace"
+                } else {
+                    "Expand to workspace"
+                },
+            );
+            let count = control(&output, "Count matching rows");
+            assert!(
+                (expand.right() - count.right()).abs() < 1.1,
+                "expand {expand:?}, count {count:?}"
+            );
+            assert!(
+                output
+                    .shapes
+                    .iter()
+                    .any(|shape| matches!(&shape.shape,egui::Shape::Rect(rect)
+                if (rect.rect.height()-super::grid::HEADER_HEIGHT).abs()<1.1
+                    && rect.rect.width()>=pane.width()-9.0 && pane.contains_rect(rect.rect))),
+                "full-width column header"
+            );
+        }
+    }
+    ctx.set_pixels_per_point(1.0);
+    app.close();
+    wait_closed(&mut app, &ctx);
+}
+
+#[test]
 fn table_status_bar_stays_at_the_bottom_with_row_height_and_working_navigation() {
     let (_dir, ctx, mut app) = fixture(
         &[

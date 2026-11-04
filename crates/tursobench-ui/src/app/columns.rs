@@ -106,16 +106,10 @@ impl Header<'_> {
     pub fn paint(&self, ui: &egui::Ui, rect: egui::Rect, highlighted: bool) {
         let tokens = crate::appearance::Tokens::of(ui.ctx());
         let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
-        painter.rect_filled(
-            rect,
-            2.0,
-            if highlighted {
-                ui.visuals().selection.bg_fill
-            } else {
-                ui.visuals().faint_bg_color
-            },
-        );
-        let mut left = rect.left() + 7.0;
+        if highlighted {
+            painter.rect_filled(rect, 2.0, ui.visuals().selection.bg_fill);
+        }
+        let mut left = rect.left() + super::grid::CELL_INSET;
         for (show, icon) in [
             (self.primary_key > 0, Icon::Key),
             (self.foreign, Icon::Link),
@@ -148,7 +142,7 @@ impl Header<'_> {
             ),
             (
                 self.declared_type().unwrap_or("VALUE"),
-                rect.min + egui::vec2(8.0, 31.0),
+                rect.min + egui::vec2(super::grid::CELL_INSET, 31.0),
                 crate::appearance::monospace(ui.ctx(), 9.5),
                 tokens.faint,
                 0.0,
@@ -163,11 +157,6 @@ impl Header<'_> {
                 color,
             );
         }
-        painter.hline(
-            rect.x_range(),
-            rect.bottom() - 0.5,
-            egui::Stroke::new(1.0, tokens.line_strong),
-        );
         painter.vline(
             rect.right() - 0.5,
             rect.y_range(),
