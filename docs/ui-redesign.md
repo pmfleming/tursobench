@@ -84,7 +84,11 @@ counts remain explicit reads, subject to the configured statement deadline.
 Columns measure headers and up to 200 retained values, with bounded automatic
 widths. Reorder, hide, fit and resize columns without changing their schema index.
 Sorting cycles ascending, descending, off. Scroll fetches bounded pages and evicts
-older rows at the retention limit. Drafts suspend paging; stale replies cannot
+older rows at the retention limit. A fixed 31 px status bar (one 29 px data row
+plus 2 px) anchors the range/retained count at the bottom of Table data and query
+results; table browsing also has compact row-jump/count controls. It uses theme colors and a subtle top
+divider; controls stay on one line, scrolling horizontally at narrow widths.
+Drafts suspend paging; stale replies cannot
 replace a newer result. Back restores the table's filters, sort and selection.
 
 Status/state text columns automatically use pills. Priority numbers from 0–5 and

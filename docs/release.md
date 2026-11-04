@@ -22,7 +22,7 @@ issue map and reproducible scenarios are in [review remediation](review-remediat
 - Complete-table / execute-once query JSONL export; typed JSON/JSONL and mapped
   CSV/TSV imports; standard versus explicitly protected/annotated delimited files;
   lossless SQL-number validation; explicit checkpoint and coordinated verified backup.
-- Formatting and all-target Clippy with warnings denied pass. **175 regular
+- Formatting and all-target Clippy with warnings denied pass. **177 regular
   workspace tests pass** after the preferences and discovery settings changes. The manual frame
   profile was exercised separately at the remediation commit.
   Application fault tests cover commit/rollback boundaries, lost durable-COMMIT

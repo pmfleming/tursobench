@@ -1420,6 +1420,62 @@ fn sidebar_catalog_includes_views_when_map_is_incomplete_and_tools_preserve_rows
 }
 
 #[test]
+fn table_status_bar_stays_at_the_bottom_with_row_height_and_working_navigation() {
+    let (_dir, ctx, mut app) = fixture(
+        &[
+            "CREATE TABLE status_test(id INTEGER PRIMARY KEY)",
+            "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<205) INSERT INTO status_test SELECT x FROM n",
+        ],
+        false,
+    );
+    app.browse_table("status_test".into());
+    wait(&mut app, &ctx);
+    ctx.enable_accesskit();
+    for dark in [false, true] {
+        crate::appearance::theme(&ctx, dark);
+        for size in [egui::vec2(900.0, 600.0), egui::vec2(1400.0, 900.0)] {
+            frame_at(&mut app, &ctx, size, vec![]);
+            let output = frame_at(&mut app, &ctx, size, vec![]);
+            let bar = control(&output, "Table data status");
+            let pane = app
+                .workspace
+                .pane_rects
+                .iter()
+                .find(|(kind, _)| *kind == tiling::Kind::Data)
+                .unwrap()
+                .1;
+            assert!(
+                (bar.height() - super::grid::STATUS_HEIGHT).abs() < 0.1,
+                "{bar:?}"
+            );
+            assert!(
+                (bar.bottom() - (pane.bottom() - 4.0)).abs() < 1.1,
+                "bar {bar:?}, pane {pane:?}"
+            );
+            for name in ["Row number", "Go to row", "Count matching rows"] {
+                assert!(bar.contains_rect(control(&output, name)), "{name}: {bar:?}");
+            }
+        }
+    }
+    let output = frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
+    click(
+        &mut app,
+        &ctx,
+        control(&output, "Count matching rows").center(),
+    );
+    wait(&mut app, &ctx);
+    assert_eq!(app.tools.counts.get("status_test"), Some(&205));
+    app.document.tools.jump_row = 151;
+    let output = frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
+    click(&mut app, &ctx, control(&output, "Go to row").center());
+    wait(&mut app, &ctx);
+    assert_eq!(app.document.browse.as_ref().unwrap().offset, 150);
+    assert_eq!(app.document.result.rows[0], vec![Value::Integer(151)]);
+    app.close();
+    wait_closed(&mut app, &ctx);
+}
+
+#[test]
 fn explicit_counts_keep_table_rows_and_drafts_owned_by_their_original_ticket() {
     let (_dir, ctx, mut app) = fixture(
         &[

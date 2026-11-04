@@ -1,4 +1,5 @@
 pub(super) const ROW_HEIGHT: f32 = 29.0;
+pub(super) const STATUS_HEIGHT: f32 = ROW_HEIGHT + 2.0;
 use super::{
     App, View,
     icons::{self, Icon},
@@ -165,6 +166,9 @@ impl CellAppearance<'_> {
 impl App {
     pub(super) fn grid_contents(&mut self, ui: &mut egui::Ui) {
         self.update_draft_presentation();
+        if self.workspace.enabled {
+            self.grid_status_bar(ui);
+        }
         if !self.document.script_results.is_empty() {
             let mut selected = None;
             ui.collapsing("Script results and outcomes", |ui| {
@@ -239,8 +243,20 @@ impl App {
         if !ui.input(|i| i.pointer.primary_down()) {
             self.document.tools.dragging_selection = false;
         }
-        let remaining =
-            (ui.available_height() - if self.workspace.enabled { 72.0 } else { 52.0 }).max(0.0);
+        let auxiliary_rows = usize::from(
+            self.document
+                .inspect
+                .and_then(|(r, c)| self.document.result.rows.get(r)?.get(c))
+                .is_some_and(|v| matches!(v, Value::Deferred(_))),
+        ) + usize::from(self.document.tools.pages.pending.is_some())
+            + 2 * usize::from(!self.document.tools.pages.error.is_empty());
+        let remaining = (ui.available_height()
+            - if self.workspace.enabled {
+                42.0 + auxiliary_rows as f32 * ROW_HEIGHT
+            } else {
+                52.0
+            })
+        .max(0.0);
         self.document.tools.grid_height = remaining;
         #[cfg(test)]
         {
@@ -335,45 +351,8 @@ impl App {
             }
             None => {}
         }
-        if self.workspace.enabled && !self.document.result.rows.is_empty() {
-            let start = self.document.browse.as_ref().map_or(0, |b| b.offset);
-            let count = self.document.result.rows.len();
-            let range = format!("{}–{} · {} retained", start + 1, start + count, count);
-            ui.small(format!("{range} · {}", self.export_scope()))
-                .on_hover_text(
-                    "Only retained rows are exported. Scroll to load another table page.",
-                );
-        }
-        if let Some(spec) = self.document.browse.clone() {
-            let mut jump = false;
-            ui.horizontal(|ui| {
-                ui.label("Go to row");
-                ui.add(
-                    egui::DragValue::new(&mut self.document.tools.jump_row)
-                        .range(1..=i64::MAX as usize),
-                );
-                jump = ui.button("Go").clicked();
-                if ui.button("Count matching rows").clicked() {
-                    self.count_table(spec.table.clone());
-                }
-                if let Some(count) = self.document.tools.filtered_count {
-                    ui.small(format!("{count} matching rows (last count)"));
-                } else if let Some(count) = self.tools.counts.get(&spec.table) {
-                    ui.small(format!("{count} total table rows (last count)"));
-                }
-            });
-            if jump && !self.has_drafts() {
-                let mut next = spec;
-                next.offset = self.document.tools.jump_row.saturating_sub(1);
-                next.options.cursor = None;
-                next.options.reverse = false;
-                if self
-                    .submit(tursobench_db::Operation::Browse(next.clone()), View::Browse)
-                    .is_some()
-                {
-                    self.document.browse = Some(next);
-                }
-            }
+        if !self.workspace.enabled {
+            self.grid_status_contents(ui);
         }
         if let Some(cell) = self
             .document
@@ -444,6 +423,166 @@ impl App {
             icons::empty_state(ui, Icon::Data, "No rows to display");
         }
     }
+    fn grid_status_bar(&mut self, ui: &mut egui::Ui) {
+        let tokens = crate::appearance::Tokens::of(ui.ctx());
+        let bar = egui::Panel::bottom("grid-status-bar")
+            .resizable(false)
+            .exact_size(STATUS_HEIGHT)
+            .frame(
+                egui::Frame::new()
+                    .fill(tokens.raised)
+                    .inner_margin(egui::Margin::symmetric(6, 1))
+                    .corner_radius(egui::CornerRadius {
+                        sw: 6,
+                        se: 6,
+                        ..Default::default()
+                    }),
+            )
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
+                ui.spacing_mut().interact_size.y = ROW_HEIGHT;
+                ui.spacing_mut().button_padding = egui::vec2(5.0, 1.0);
+                ui.style_mut().override_font_id =
+                    Some(crate::appearance::proportional(ui.ctx(), 12.0));
+                self.grid_status_contents(ui);
+            });
+        ui.painter().hline(
+            bar.response.rect.x_range(),
+            bar.response.rect.top(),
+            egui::Stroke::new(1.0, tokens.line_soft),
+        );
+        bar.response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::Role::Status,
+                true,
+                if self.document.browse.is_some() {
+                    "Table data status"
+                } else {
+                    "Query result status"
+                },
+            )
+        });
+    }
+
+    fn grid_status_contents(&mut self, ui: &mut egui::Ui) {
+        let spec = self.document.browse.clone();
+        let mut jump = false;
+        let count_label = spec.as_ref().and_then(|b| {
+            self.document
+                .tools
+                .filtered_count
+                .map(|n| format!("{n} matching"))
+                .or_else(|| {
+                    self.tools
+                        .counts
+                        .get(&b.table)
+                        .map(|n| format!("{n} total"))
+                })
+        });
+        let font = crate::appearance::proportional(ui.ctx(), 12.0);
+        let text_width = |text: String| {
+            ui.painter()
+                .layout_no_wrap(text, font.clone(), ui.visuals().text_color())
+                .size()
+                .x
+        };
+        let actions_width = if spec.is_some() {
+            text_width(format!("Row {}", self.document.tools.jump_row))
+                + 108.0
+                + count_label
+                    .as_ref()
+                    .map_or(0.0, |s| text_width(s.clone()) + 6.0)
+        } else {
+            0.0
+        };
+        let width = ui.available_width().max(actions_width + 120.0);
+        egui::ScrollArea::horizontal()
+            .id_salt("grid-status-actions")
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                ui.set_width(width);
+                ui.horizontal(|ui| {
+                    if self.workspace.enabled {
+                        let start = spec.as_ref().map_or(0, |b| b.offset);
+                        let count = self.document.result.rows.len();
+                        ui.add_sized(
+                            [width - actions_width - 6.0, ROW_HEIGHT],
+                            egui::Label::new(
+                                egui::RichText::new(format!(
+                                    "{}–{} · {count} retained",
+                                    start + usize::from(count > 0),
+                                    start + count
+                                ))
+                                .monospace()
+                                .size(crate::appearance::text_size(ui.ctx(), 11.0))
+                                .color(ui.visuals().weak_text_color()),
+                            )
+                            .truncate(),
+                        );
+                    }
+                    if let Some(spec) = &spec {
+                        let enabled = self.ready
+                            && !self.closing
+                            && !self.document.stale
+                            && !self.has_drafts()
+                            && self.commit_ticket.is_none()
+                            && self.document.active.is_none()
+                            && self.document.tools.pages.pending.is_none();
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .add_enabled_ui(
+                                    self.ready
+                                        && !self.closing
+                                        && self.tools.count_request.is_none(),
+                                    |ui| icons::button(ui, Icon::Count, "Count matching rows", ""),
+                                )
+                                .inner
+                                .clicked()
+                            {
+                                self.count_table(spec.table.clone());
+                            }
+                            if let Some(label) = &count_label {
+                                ui.weak(label);
+                            }
+                            ui.separator();
+                            jump = ui
+                                .add_enabled_ui(enabled, |ui| {
+                                    icons::button(ui, Icon::Next, "Go to row", "")
+                                })
+                                .inner
+                                .clicked();
+                            let input = ui.add_enabled(
+                                enabled,
+                                egui::DragValue::new(&mut self.document.tools.jump_row)
+                                    .range(1..=i64::MAX as usize)
+                                    .prefix("Row "),
+                            );
+                            input.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::Role::SpinButton,
+                                    enabled,
+                                    "Row number",
+                                )
+                            });
+                        });
+                    }
+                });
+            });
+        if jump && let Some(mut next) = spec {
+            next.offset = self.document.tools.jump_row.saturating_sub(1);
+            next.options.cursor = None;
+            next.options.reverse = false;
+            next.options.tail = false;
+            if self
+                .submit(tursobench_db::Operation::Browse(next.clone()), View::Browse)
+                .is_some()
+            {
+                self.document.browse = Some(next);
+            }
+        }
+    }
+
     fn grid_header(&mut self, ui: &mut egui::Ui) {
         let mut sort = None;
         ui.horizontal(|ui| {

@@ -556,9 +556,6 @@ impl App {
             {
                 self.focus_window(result);
             }
-            if !self.document.result.rows.is_empty() {
-                ui.small(format!("{} retained rows", self.document.result.rows.len()));
-            }
             self.grid_contents(ui);
             self.switch_document(editor);
         } else {
