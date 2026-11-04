@@ -8,18 +8,21 @@ pub(crate) async fn describe(c: &Connection, name: &str) -> Result<Table, Failur
     }
     let mut r = c
         .query(
-            "SELECT type FROM sqlite_schema WHERE name = ?1 COLLATE NOCASE AND type IN ('table', 'view')",
+            "SELECT type, sql FROM sqlite_schema WHERE name = ?1 COLLATE NOCASE AND type IN ('table', 'view')",
             [name],
         )
         .await
         .map_err(failure)?;
-    let kind = r
+    let schema = r
         .next()
         .await
         .map_err(failure)?
-        .ok_or_else(|| Failure::input("Table or view no longer exists"))?
-        .get_value(0)
-        .map_err(failure)?;
+        .ok_or_else(|| Failure::input("Table or view no longer exists"))?;
+    let kind = schema.get_value(0).map_err(failure)?;
+    let has_rowid = match schema.get_value(1).map_err(failure)? {
+        turso::Value::Text(ddl) if ddl.len() <= 1024 * 1024 => crate::sql::has_rowid(&ddl),
+        _ => false,
+    };
     while r.next().await.map_err(failure)?.is_some() {}
     drop(r);
     let mut r = c
@@ -67,6 +70,7 @@ pub(crate) async fn describe(c: &Connection, name: &str) -> Result<Table, Failur
         name: name.into(),
         columns,
         is_table: kind == turso::Value::Text("table".into()),
+        has_rowid,
     })
 }
 

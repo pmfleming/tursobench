@@ -168,6 +168,8 @@ pub struct Table {
     pub name: String,
     pub columns: Vec<TableColumn>,
     pub is_table: bool,
+    /// True only when parsed schema establishes an ordinary rowid table.
+    pub has_rowid: bool,
 }
 impl Table {
     pub fn keys(&self) -> Vec<usize> {
@@ -189,6 +191,7 @@ impl Table {
     }
     pub fn editable(&self) -> bool {
         self.is_table
+            && self.has_rowid
             && !self.engine_managed()
             && self.columns.iter().any(|c| c.primary_key > 0)
             && self.columns.iter().all(|c| c.hidden == 0)

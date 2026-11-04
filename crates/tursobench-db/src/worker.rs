@@ -213,8 +213,9 @@ impl Worker<'_> {
                 (self.browse,sql,parameters.into(),Budget{rows:1,bytes:512*1024,..default})
             }
             Operation::Count(name) => (self.browse, format!("SELECT count(*) AS row_count FROM {}", quote_identifier(&name)), vec![].into(), default),
+            Operation::Diagnostic(crate::Diagnostic::ForeignKeys) => (self.browse, crate::validation::foreign_keys(self.browse).await?, vec![].into(), default),
             Operation::Diagnostic(kind) => (self.browse, kind.sql().into(), vec![].into(), default),
-            Operation::Schema => (self.browse, "SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY type, name".into(), vec![].into(), default),
+            Operation::Schema => (self.browse, "SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'view' THEN 1 ELSE 2 END, name".into(), vec![].into(), Budget {rows:10_000, bytes:8*1024*1024, cell_bytes:1024*1024}),
             Operation::Explain { sql, parameters, bytecode } => (self.editor, sql::explain_sql(&sql, bytecode)?, parameters, default),
             Operation::ExecuteBound { sql, parameters, budget } => (self.editor, sql, parameters, budget),
             Operation::Execute { sql, parameters, budget } => (self.editor, sql, parameters.into(), budget),
@@ -243,6 +244,7 @@ async fn execute(
         transaction: state(c),
         error: None,
     };
+    let mut chunk = Vec::new();
     let result = async {
         sql::validate_single(sql)?;
         sql::validate_bindings(sql, &parameters)?;
@@ -282,7 +284,7 @@ async fn execute(
         let mut rows = stmt.query(parameters).await.map_err(failure)?;
         let mut kept = 0;
         let mut bytes = 0;
-        let mut chunk = Vec::new();
+
         let mut chunk_bytes = 0;
         while let Some(row) = rows.next().await.map_err(failure)? {
             completion.rows_seen += 1;
@@ -302,7 +304,7 @@ async fn execute(
                 || bytes + size > budget.bytes.min(8 * 1024 * 1024)
                 || values
                     .iter()
-                    .any(|v| v.bytes() > budget.cell_bytes.min(64 * 1024))
+                    .any(|v| v.bytes() > budget.cell_bytes.min(1024 * 1024))
             {
                 completion.delivery = Delivery::Limited;
                 continue;
@@ -318,13 +320,13 @@ async fn execute(
                 chunk_bytes = 0;
             }
         }
-        if !chunk.is_empty() {
-            out.send(ticket, EventKind::Rows(chunk));
-        }
         completion.changed = stmt.n_change();
         Ok::<(), Failure>(())
     }
     .await;
+    if !chunk.is_empty() {
+        out.send(ticket, EventKind::Rows(chunk));
+    }
     completion.elapsed_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
     completion.error = result.err();
     completion.transaction = state(c);

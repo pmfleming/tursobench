@@ -74,6 +74,7 @@ pub(super) struct ViewTools {
     pub context: super::context::ContextReads,
     pub pages: super::paging::Pages,
     pub grid_scroll: eframe::egui::Vec2,
+    pub row_stride: f32,
     pub restore_scroll: Option<eframe::egui::Vec2>,
     pub cell_editor: results::CellEditor,
     pub selection: Range<usize>,

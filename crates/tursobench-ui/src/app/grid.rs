@@ -1,3 +1,4 @@
+pub(super) const ROW_HEIGHT: f32 = 29.0;
 use super::{
     App, View,
     icons::{self, Icon},
@@ -196,6 +197,7 @@ impl App {
         self.document.tools.context.hovered = None;
         let mut action = None;
         let editable = self.can_edit();
+        self.document.tools.row_stride = ROW_HEIGHT + ui.spacing().item_spacing.y;
         if !ui.input(|i| i.pointer.primary_down()) {
             self.document.tools.dragging_selection = false;
         }
@@ -233,24 +235,29 @@ impl App {
                     )
                     .id_salt("result-rows")
                     .max_height(remaining)
-                    .show_rows(ui, 29.0, self.document.result.rows.len(), |ui, range| {
-                        page_range = range.clone();
-                        #[cfg(test)]
-                        {
-                            self.ui.visible_rows = range
-                                .clone()
-                                .filter(|r| {
-                                    (*r + 1) as f32 * (29.0 + ui.spacing().item_spacing.y)
-                                        <= remaining
-                                })
-                                .count();
-                        }
-                        for row in range {
-                            if let Some(selected) = self.grid_row(ui, row, editable) {
-                                action = Some(selected);
+                    .show_rows(
+                        ui,
+                        ROW_HEIGHT,
+                        self.document.result.rows.len(),
+                        |ui, range| {
+                            page_range = range.clone();
+                            #[cfg(test)]
+                            {
+                                self.ui.visible_rows = range
+                                    .clone()
+                                    .filter(|r| {
+                                        (*r + 1) as f32 * (29.0 + ui.spacing().item_spacing.y)
+                                            <= remaining
+                                    })
+                                    .count();
                             }
-                        }
-                    });
+                            for row in range {
+                                if let Some(selected) = self.grid_row(ui, row, editable) {
+                                    action = Some(selected);
+                                }
+                            }
+                        },
+                    );
                 self.document.tools.grid_scroll.y = vertical.state.clamped_offset().y;
             });
         self.document.tools.grid_scroll.x = horizontal.state.clamped_offset().x;

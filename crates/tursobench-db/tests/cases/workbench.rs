@@ -17,6 +17,58 @@ fn fixture(path: &Path) {
 }
 
 #[test]
+fn foreign_key_check_detects_orphans_and_respects_parent_semantics() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("orphans.db");
+    common::create(
+        &path,
+        &[
+            "CREATE TABLE p(a INTEGER, b TEXT COLLATE NOCASE, PRIMARY KEY(a,b))",
+            "CREATE TABLE c(id INTEGER PRIMARY KEY,a TEXT,b TEXT,FOREIGN KEY(a,b) REFERENCES p)",
+            "INSERT INTO p VALUES(7,'Alpha')",
+            "INSERT INTO c VALUES(1,'007','alpha'),(2,'8','orphan'),(3,NULL,'exempt')",
+        ],
+    );
+    let mut client = Client::open(&path, Access::ReadOnly);
+    let result = client.run(Operation::Diagnostic(Diagnostic::ForeignKeys));
+    assert!(result.failure.is_none(), "{:?}", result.failure);
+    assert!(result.result.completion.as_ref().unwrap().error.is_none());
+    assert_eq!(result.result.rows.len(), 1);
+    assert_eq!(result.result.rows[0][3], Value::Integer(1));
+    assert_eq!(result.result.rows[0][4], Value::Integer(2));
+    client.close();
+}
+
+#[test]
+fn catalog_preserves_large_definitions_and_more_than_one_thousand_indexes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("catalog.db");
+    common::create(&path, &["CREATE TABLE t(id INTEGER PRIMARY KEY)"]);
+    let mut client = Client::open(&path, Access::ReadWrite);
+    for n in 0..1001 {
+        client.sql(&format!("CREATE INDEX i{n} ON t(id)"));
+    }
+    client.sql(&format!(
+        "CREATE TABLE large(id INTEGER PRIMARY KEY, payload TEXT DEFAULT '{}')",
+        "x".repeat(76_000)
+    ));
+    let result = client.run(Operation::Schema).result;
+    assert_eq!(
+        result.completion.as_ref().unwrap().delivery,
+        Delivery::Complete
+    );
+    assert!(
+        result
+            .rows
+            .iter()
+            .any(|r| r[1] == Value::Text("large".into()))
+    );
+    assert!(result.rows.iter().any(|r| r[1] == Value::Text("t".into())));
+    assert_eq!(result.rows.len(), 1003);
+    client.close();
+}
+
+#[test]
 fn native_metadata_related_lookup_and_diagnostics_preserve_readonly_bytes() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("workbench.db");
@@ -85,7 +137,7 @@ fn native_metadata_related_lookup_and_diagnostics_preserve_readonly_bytes() {
             assert_eq!(result.rows, vec![vec![Value::Text("ok".into())]]);
         }
         if diagnostic == Diagnostic::ForeignKeys {
-            assert!(result.rows.is_empty());
+            assert!(result.rows.iter().all(|r| r[3] == Value::Integer(0)));
         }
     }
     client.close();

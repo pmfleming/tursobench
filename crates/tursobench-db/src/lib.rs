@@ -9,6 +9,7 @@ mod diagram;
 mod edits;
 mod inspection;
 pub mod sql;
+mod validation;
 mod worker;
 pub use sql::validate_single;
 use std::{

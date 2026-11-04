@@ -36,6 +36,12 @@ impl App {
         let error = match &event.kind {
             EventKind::Finished(c) => {
                 self.transaction = c.transaction;
+                if c.error.is_none() && c.delivery != tursobench_core::Delivery::Complete {
+                    self.catalog_error =
+                        "Schema discovery incomplete: metadata budget or delivery limit reached"
+                            .into();
+                    self.status.clone_from(&self.catalog_error);
+                }
                 c.error.as_ref()
             }
             EventKind::Failed(error) => Some(error),

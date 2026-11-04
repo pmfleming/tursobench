@@ -223,6 +223,7 @@ mod tests {
         Table {
             name: "a\"b".into(),
             is_table: true,
+            has_rowid: true,
             columns: vec![TableColumn {
                 name: "id".into(),
                 declared_type: "INTEGER".into(),

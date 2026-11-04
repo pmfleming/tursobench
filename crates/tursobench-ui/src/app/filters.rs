@@ -378,6 +378,7 @@ mod tests {
         Table {
             name: "t".into(),
             is_table: true,
+            has_rowid: true,
             columns: [("odd \" name", "TEXT"), ("n", "INTEGER"), ("r", "REAL")]
                 .into_iter()
                 .map(|(name, ty)| tursobench_core::TableColumn {

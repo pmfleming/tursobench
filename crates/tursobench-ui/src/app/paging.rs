@@ -216,7 +216,9 @@ impl Document {
             s.cursor.0 = s.cursor.0.checked_add_signed(delta)?;
             Some(s)
         });
-        self.tools.grid_scroll.y = (self.tools.grid_scroll.y + delta as f32 * 25.0).max(0.0);
+        self.tools.grid_scroll.y = (self.tools.grid_scroll.y
+            + delta as f32 * self.tools.row_stride.max(super::grid::ROW_HEIGHT))
+        .max(0.0);
         self.tools.restore_scroll = Some(self.tools.grid_scroll);
     }
 }
@@ -229,6 +231,19 @@ mod tests {
     use super::{App, Delivery, Event, EventKind, Pending, ResultSet, Ticket};
     use eframe::egui;
     use tursobench_core::{Column, Completion, Failure, Table, TransactionState, Value};
+
+    #[test]
+    fn evicted_rows_use_the_rendered_stride_including_spacing() {
+        let mut app = App::new(&egui::Context::default());
+        app.document.tools.row_stride = 37.0;
+        app.document.tools.grid_scroll.y = 4000.0;
+        app.document.inspect = Some((120, 0));
+        app.document.rebase_rows(-100);
+        assert_eq!(app.document.tools.grid_scroll.y, 300.0);
+        assert_eq!(app.document.inspect, Some((20, 0)));
+        app.document.rebase_rows(100);
+        assert_eq!(app.document.tools.grid_scroll.y, 4000.0);
+    }
 
     #[test]
     fn rejected_pages_preserve_rows_owner_and_unknown_end() {
@@ -273,6 +288,7 @@ mod tests {
                     name: "changed".into(),
                     columns: vec![],
                     is_table: true,
+                    has_rowid: true,
                 }),
                 "Schema changed",
             ),

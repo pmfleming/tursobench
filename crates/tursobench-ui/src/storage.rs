@@ -333,15 +333,22 @@ pub struct Store {
 }
 impl Store {
     pub fn start(wake: impl Fn() + Send + 'static) -> (Self, Preferences, Option<String>) {
-        let path = if cfg!(test) {
+        let mut path = if cfg!(test) {
             Err("Preference persistence disabled in UI tests".into())
         } else {
             config_path()
         };
-        let loaded = path.as_ref().map_err(Clone::clone).and_then(|p| load(p));
+        let loaded = path
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|p| load_report(p));
         let (prefs, error) = match loaded {
-            Ok(p) => (p, None),
-            Err(e) => (Preferences::default(), Some(e)),
+            Ok(p) => p,
+            Err(e) => {
+                // Never overwrite unreadable or newer-version preferences with defaults.
+                path = Err(format!("Preference saving disabled until recovery: {e}"));
+                (Preferences::default(), Some(e))
+            }
         };
         let (tx, rx) = mpsc::sync_channel::<Preferences>(1);
         let (done, results) = mpsc::channel();
@@ -389,33 +396,119 @@ fn config_path() -> Result<PathBuf, String> {
         .ok_or("No application configuration directory available")?;
     Ok(root.join("tursobench/preferences.json"))
 }
+#[cfg(test)]
 fn load(path: &Path) -> Result<Preferences, String> {
+    load_report(path).map(|(prefs, _)| prefs)
+}
+fn load_report(path: &Path) -> Result<(Preferences, Option<String>), String> {
     if !path.exists() {
-        return Ok(Preferences::default());
+        return Ok((Preferences::default(), None));
     }
     if path.metadata().map_err(|e| e.to_string())?.len() > 2 * 1024 * 1024 {
         return Err("Preferences exceed 2 MiB".into());
     }
-    let mut p: Preferences =
+    let mut data: serde_json::Value =
         serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
+    let fields = data
+        .as_object_mut()
+        .ok_or("Preferences must be an object")?;
+    if fields
+        .get("format_version")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0)
+        > 1
+    {
+        return Err("Preferences use a newer format version".into());
+    }
+    let mut invalid = Vec::new();
+    for (key, value) in fields.clone() {
+        let candidate = serde_json::json!({key.clone(): value.clone()});
+        if serde_json::from_value::<Preferences>(candidate).is_err() {
+            invalid.push(key.clone());
+            if let Some(entries) = value.as_array() {
+                let valid = entries
+                    .iter()
+                    .filter(|entry| {
+                        serde_json::from_value::<Preferences>(
+                            serde_json::json!({key.clone(): [entry]}),
+                        )
+                        .is_ok()
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                fields.insert(key, valid.into());
+            } else {
+                fields.remove(&key);
+            }
+        }
+    }
+    let mut p: Preferences = serde_json::from_value(data).map_err(|e| e.to_string())?;
+    let warning = if invalid.is_empty() {
+        None
+    } else {
+        let mut backup =
+            tempfile::NamedTempFile::new_in(path.parent().ok_or("Missing preferences directory")?)
+                .map_err(|e| e.to_string())?;
+        backup
+            .write_all(&std::fs::read(path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        backup.as_file().sync_all().map_err(|e| e.to_string())?;
+        let (_, saved) = backup.keep().map_err(|e| e.to_string())?;
+        Some(format!(
+            "Recovered preferences; reset invalid fields {}. Original saved at {}",
+            invalid.join(", "),
+            saved.display()
+        ))
+    };
     p.migrate_legacy();
     p.normalize();
-    Ok(p)
+    Ok((p, warning))
 }
 fn save(path: &Path, prefs: &Preferences) -> Result<(), String> {
     let parent = path.parent().ok_or("Missing preferences directory")?;
     std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
-    serde_json::to_writer_pretty(&mut temp, prefs).map_err(|e| e.to_string())?;
+    let mut data = serde_json::to_value(prefs).map_err(|e| e.to_string())?;
+    data["format_version"] = 1.into();
+    serde_json::to_writer_pretty(&mut temp, &data).map_err(|e| e.to_string())?;
     temp.flush().map_err(|e| e.to_string())?;
     temp.as_file().sync_all().map_err(|e| e.to_string())?;
+    if path.exists() {
+        let mut backup = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+        backup
+            .write_all(&std::fs::read(path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        backup.as_file().sync_all().map_err(|e| e.to_string())?;
+        backup
+            .persist(path.with_extension("json.backup"))
+            .map_err(|e| e.to_string())?;
+    }
     temp.persist(path).map_err(|e| e.to_string())?;
     Ok(())
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn recovery_keeps_valid_entries_and_preserves_the_original() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prefs.json");
+        let original = r#"{"font_size":"bad","saved_queries":[{"database":"db","name":"q","sql":"SELECT 1"},{"unknown":"bad"}]}"#;
+        fs_write(&path, original);
+        let (prefs, warning) = load_report(&path).unwrap();
+        assert!(warning.unwrap().contains("Original saved at"));
+        assert_eq!(prefs.saved_queries.len(), 1);
+        assert_eq!(prefs.font_size, 14);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        save(&path, &prefs).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(path.with_extension("json.backup")).unwrap(),
+            original
+        );
+        fs_write(&path, r#"{"format_version":999}"#);
+        assert!(load_report(&path).is_err());
+    }
     #[test]
     fn font_size_migrates_clamps_and_roundtrips() {
         let dir = tempfile::tempdir().unwrap();

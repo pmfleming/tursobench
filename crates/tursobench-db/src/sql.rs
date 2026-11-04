@@ -208,6 +208,15 @@ pub fn validate_single(sql: &str) -> Result<(), Failure> {
     Ok(())
 }
 
+/// Conservatively establish physical row identity from the matching engine parser.
+pub(crate) fn has_rowid(ddl: &str) -> bool {
+    use turso_parser::ast::{Cmd, CreateTableBody, Stmt};
+    matches!(Parser::new(ddl.as_bytes()).next_cmd(),
+        Ok(Some(Cmd::Stmt(Stmt::CreateTable {
+            body: CreateTableBody::ColumnsAndConstraints { options, .. }, ..
+        }))) if !options.contains_without_rowid())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{named_template, parameter_names, selection_or_statement, validate_bindings};
@@ -241,5 +250,16 @@ mod tests {
             )
             .is_ok()
         );
+    }
+    #[test]
+    fn rowid_capability_uses_structure_not_text_matches() {
+        assert!(super::has_rowid(
+            "CREATE TABLE t(id INTEGER PRIMARY KEY, x TEXT DEFAULT 'WITHOUT ROWID')"
+        ));
+        assert!(!super::has_rowid(
+            "CREATE TABLE t(id TEXT PRIMARY KEY) WITHOUT ROWID"
+        ));
+        assert!(!super::has_rowid("CREATE VIEW t AS SELECT 1"));
+        assert!(!super::has_rowid("invalid schema"));
     }
 }

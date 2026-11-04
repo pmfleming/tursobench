@@ -855,6 +855,7 @@ mod tests {
                         name: name.into(),
                         columns: vec![],
                         is_table: true,
+                        has_rowid: true,
                     },
                     indexes: vec![],
                     foreign_keys: targets

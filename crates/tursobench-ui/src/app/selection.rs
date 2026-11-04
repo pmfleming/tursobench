@@ -274,12 +274,13 @@ impl App {
                 }
                 self.select_cell(row, cols[col], shift);
                 self.document.tools.scroll_to_cell = true;
-                let y = row as f32 * 25.0;
+                let stride = self.document.tools.row_stride.max(super::grid::ROW_HEIGHT);
+                let y = row as f32 * stride;
                 let current = self.document.tools.grid_scroll.y;
                 let next = if y < current {
                     y
-                } else if y + 25.0 > current + self.document.tools.grid_height {
-                    (y + 25.0 - self.document.tools.grid_height).max(0.0)
+                } else if y + stride > current + self.document.tools.grid_height {
+                    (y + stride - self.document.tools.grid_height).max(0.0)
                 } else {
                     current
                 };

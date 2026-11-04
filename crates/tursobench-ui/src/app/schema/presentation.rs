@@ -212,6 +212,7 @@ mod tests {
             table: Table {
                 name: "__turso_internal_test".into(),
                 is_table: true,
+                has_rowid: true,
                 columns: vec![TableColumn {
                     name: "child_id".into(),
                     declared_type: "INTEGER".into(),
