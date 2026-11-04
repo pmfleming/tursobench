@@ -116,6 +116,58 @@ pub(super) fn parse_filter(input: &str, table: &Table) -> Result<Filter, String>
     }
     Ok(Filter { column, op, value })
 }
+fn boolean_boundaries(input: &str, operator: &str) -> Vec<std::ops::Range<usize>> {
+    let bytes = input.as_bytes();
+    let mut result = Vec::new();
+    let mut i = 0;
+    let mut quote = None;
+    let mut brackets = 0i32;
+    let mut parens = 0i32;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if let Some(q) = quote {
+            if q == b'"' && brackets > 0 && b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == q {
+                if bytes.get(i + 1) == Some(&q) {
+                    i += 2;
+                    continue;
+                }
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'\'' | b'"' => {
+                quote = Some(b);
+                i += 1;
+                continue;
+            }
+            b'[' => brackets += 1,
+            b']' => brackets -= 1,
+            b'(' if brackets == 0 => parens += 1,
+            b')' if brackets == 0 => parens -= 1,
+            _ => {}
+        }
+        let word = bytes.get(i..i + operator.len());
+        let boundary = |b: u8| !b.is_ascii_alphanumeric() && b != b'_';
+        if brackets == 0
+            && parens == 0
+            && word.is_some_and(|w| w.eq_ignore_ascii_case(operator.as_bytes()))
+            && (i == 0 || boundary(bytes[i - 1]))
+            && bytes.get(i + operator.len()).is_none_or(|b| boundary(*b))
+        {
+            result.push(i..i + operator.len());
+            i += operator.len();
+        } else {
+            i += 1;
+        }
+    }
+    result
+}
 fn parse_expression(input: &str, table: &Table, depth: usize) -> Result<FilterExpr, String> {
     if depth > 8 || input.len() > 64 * 1024 {
         return Err("Expression exceeds nesting/size budget".into());
@@ -123,21 +175,7 @@ fn parse_expression(input: &str, table: &Table, depth: usize) -> Result<FilterEx
     let input = input.trim();
     let tokens = tursobench_db::sql::tokens(input);
     for operator in ["OR", "AND"] {
-        let mut nesting = 0i32;
-        let mut boundaries = Vec::new();
-        for token in &tokens {
-            let text = input[token.range.clone()].trim();
-            if text == "(" {
-                nesting += 1;
-            } else if text == ")" {
-                nesting -= 1;
-            } else if nesting == 0
-                && token.style == tursobench_db::sql::TokenStyle::Keyword
-                && text.eq_ignore_ascii_case(operator)
-            {
-                boundaries.push(token.range.clone());
-            }
-        }
+        let boundaries = boolean_boundaries(input, operator);
         if !boundaries.is_empty() {
             let mut parts = Vec::new();
             let mut start = 0;
@@ -491,6 +529,14 @@ mod tests {
     fn expressions_group_or_and_in_without_splitting_quoted_text() {
         let table = table();
         assert!(super::parse_expression("(n = 5 OR n IN [7,8]) AND r > 1.0", &table, 0).is_ok());
+        assert!(
+            super::parse_expression(
+                r#"n IN [{"type":"Blob","value":[0,255]}] OR n = 5"#,
+                &table,
+                0
+            )
+            .is_ok()
+        );
         assert!(super::parse_expression("\"odd \"\" name\" = 'x OR y'", &table, 0).is_ok());
         let mut table = table;
         table.columns[1].declared_type.clear();

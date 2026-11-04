@@ -204,7 +204,10 @@ impl Predicates<'_> {
 }
 pub(crate) fn supports_seek(table: &Table) -> bool {
     let keys = table.keys();
-    table.is_table && !keys.is_empty() && keys.iter().all(|i| table.columns[*i].not_null)
+    table.is_table
+        && !keys.is_empty()
+        && keys.len() <= 8
+        && keys.iter().all(|i| table.columns[*i].not_null)
 }
 fn order_columns(table: &Table, spec: &Browse) -> Result<Vec<(usize, bool)>, Failure> {
     let mut order = Vec::new();
@@ -361,7 +364,7 @@ pub(crate) fn browse_sql(
             ));
         } else {
             for i in 0..table.columns.len() {
-                if !order.iter().any(|(col, _)| *col == i) {
+                if !table.is_table || !order.iter().any(|(col, _)| *col == i) {
                     order.push((i, false));
                     terms.push(format!(
                         "{} COLLATE BINARY, typeof({})",
@@ -377,12 +380,23 @@ pub(crate) fn browse_sql(
         .collect::<Result<Vec<_>, _>>()?
         .join(", ");
     let offset = if seek.is_some() { 0 } else { spec.offset };
+    let limit = if spec.options.page_rows == 0 {
+        100
+    } else {
+        spec.options.page_rows
+    };
+    if spec.options.page_bytes > 4 * 1024 * 1024 {
+        return Err(Failure::input("Page byte budget exceeds 4 MiB"));
+    }
+    if limit > 100 || (spec.options.tail && (seek.is_some() || spec.options.reverse)) {
+        return Err(Failure::input("Invalid controlled page window"));
+    }
     if offset > i64::MAX as usize {
         return Err(Failure::input("Row offset exceeds engine integer range"));
     }
     Ok((
         format!(
-            "SELECT {names} FROM {} AS c{} ORDER BY {} LIMIT 100 OFFSET {offset}",
+            "SELECT {names} FROM {} AS c{} ORDER BY {} LIMIT {limit} OFFSET {offset}",
             quote_identifier(&table.name),
             where_clause(&predicates),
             terms.join(", ")

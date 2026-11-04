@@ -84,7 +84,7 @@ impl App {
                 self.tools
                     .count_request
                     .as_ref()
-                    .and_then(|(_, r)| r.current),
+                    .and_then(|request| request.result.current),
                 Target::Count,
             ),
         ] {
@@ -139,8 +139,8 @@ impl App {
             EventKind::Failed(error) => Some(error.to_string()),
             _ => None,
         };
-        if let Some((_, result)) = &mut self.tools.count_request {
-            result.apply(event);
+        if let Some(request) = &mut self.tools.count_request {
+            request.result.apply(event);
         }
         if finished {
             self.finish_count(failure);
@@ -181,7 +181,6 @@ impl App {
                 self.invalidate_views(false, ticket.request);
                 self.tools.counts.clear();
                 self.document.tools.context = Default::default();
-                self.ui.diagram.stale = true;
                 self.document.drafts = None;
                 self.document.show_preview = false;
                 self.document.inspect = None;
@@ -301,8 +300,11 @@ impl App {
     }
     fn invalidate_views(&mut self, schema: bool, source_request: u64) {
         self.tools.counts.clear();
-        self.ui.diagram.stale = true;
+        if schema {
+            self.ui.diagram.stale = true;
+        }
         for document in std::iter::once(&mut self.document).chain(self.documents.values_mut()) {
+            document.tools.filtered_count = None;
             document.tools.context = Default::default();
             document.tools.pages.pending = None;
             if schema {
@@ -319,6 +321,7 @@ impl App {
         }
         if schema {
             self.refresh_catalog();
+            self.load_diagram();
         }
     }
     fn record_completion(&mut self, ticket: Ticket, c: &Completion) {

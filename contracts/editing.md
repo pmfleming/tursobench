@@ -1,7 +1,7 @@
 # Typed staged editing
 
-Only controlled browse results for non-engine-managed base tables with an engine-reported
-primary key and no hidden/generated columns are editable. Reserved `__turso_internal_`
+Only controlled browse results for proven rowid, non-engine-managed base tables
+with an engine-reported primary key and no hidden/generated columns are editable. Reserved `__turso_internal_`
 storage is inspectable but excluded from generated edits. Views, keyless tables,
 arbitrary SQL results and partial/discarded/error results cannot be edited.
 Original row keys must be non-NULL. Custom types and WITHOUT ROWID are disabled.
@@ -9,10 +9,12 @@ Original row keys must be non-NULL. Custom types and WITHOUT ROWID are disabled.
 Drafts are local owned typed data. Rendering, clicking and focus changes issue no
 writes. The inspector stages explicit typed values. The UI requires editor autocommit
 before staging, preventing drafts from blocking the transaction controls needed to
-finish a pre-existing manual transaction. Insert JSON has one optional
+finish a pre-existing manual transaction. Typed insert fields distinguish Default/Omit,
+NULL and Value. Optional insert JSON has one optional
 value per column: JSON `null` means omit/use default; `{"type":"Null"}` means
-SQL NULL. Text remains text; blobs remain byte arrays. Non-finite reals and cells
-over 64 KiB are rejected. At most 1,000 operations and 8 MiB per batch.
+SQL NULL. Text remains text; blobs remain byte arrays. New non-finite reals and cells over 64 KiB are rejected. Original infinity values
+can be matched for updates/deletes; deferred originals require complete data.
+Bulk deletion stages unique selected rows through the same atomic path. At most 1,000 operations and 8 MiB per batch.
 
 Preview shows the exact quoted SQL and separate typed bindings. Explicit COMMIT
 is the only staged-write action. Result-changing navigation is locked until commit/discard.
@@ -33,7 +35,7 @@ Triggers run normally; their side effects follow engine semantics.
 
 Only confirmed commit clears drafts and refreshes. Rejected batches retain drafts.
 Commit failure or rollback failure reports UNKNOWN, retains drafts and disables
-further generated commits until close/reopen and manual inspection. Never retry
+further mutations until close/reopen and manual inspection. Never retry
 an uncertain outcome automatically. Closing a writable database requires explicit
 confirmation that local drafts will be discarded and editor transactions rolled
 back. The UI does not claim a rollback undoes already committed work.

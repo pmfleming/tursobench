@@ -57,10 +57,13 @@ are unsupported. The exclusive-use checkbox is an acknowledgement, not an OS loc
 - Engine-enforced read-only opening by default; read/write is explicit opt-in.
 - Searchable schema/DDL, native index/FK details, related-row navigation and read-only diagnostics.
 - Relationship-arranged schema home: tables, keys, composite/self/cyclic FKs, Map/List fallback and saved map layout.
-- Bounded 100-row scroll fetches, fitted/reorderable columns, typed token filters, cell filtering, sampled facets and cached FK previews.
+- Bounded scroll fetches, indexed/keyset paging where supported, row jumps, explicit
+  total/filtered counts, multi-column sorting, grouped AND/OR and typed IN filters,
+  cell filtering, sampled facets and cached FK previews.
 - Virtualized results, keyboard range selection and numeric summaries, inline staged edits, typed inspection and selection copy.
 - Ctrl K command/table/column search; Ctrl J SQL view with highlighting, selection execution, completion and EXPLAIN.
-- Single-statement SQL including CTEs, PRAGMAs and RETURNING; typed positional/named bindings.
+- Single statements including CTEs, PRAGMAs and RETURNING; sequential or atomic
+  run-all scripts, per-step results, convenient JSON bindings and query deadlines.
 - Native Turso FTS and experimental index methods enabled: open existing FTS
   databases, create `USING fts(...)` indexes and query with `fts_match(...)`.
   See [FTS support and validation](fts.md).
@@ -69,7 +72,9 @@ are unsupported. The exclusive-use checkbox is an acknowledgement, not an OS loc
   with optimistic conflicts. Only suitable non-engine-managed primary-key base tables are editable.
 - Typed cell editing, row cloning, draft overlays and per-cell/row/operation undo.
 - Timed searchable history, named database-scoped bookmarks, themes and keyboard help.
-- Retained-result exports: typed JSONL/JSON, annotated CSV/TSV and SQL INSERTs.
+- Large text/hex viewer with chunk navigation/search and exact-byte save.
+- Retained-result typed JSONL/JSON, standard or annotated/protected CSV/TSV and SQL
+  INSERTs; complete table/query JSONL export, mapped imports, checkpoint and backup.
 
 See the [UI guide and capability map](ui-redesign.md) for workspace navigation,
 responsive behavior, diagram limits and validation. Relationships sits above Table data;
@@ -115,16 +120,20 @@ confirmation for writable sessions and fresh access review for another database.
 - **Checks:** Storage contains database files, journal mode, page count and free
   pages; Validation contains integrity and foreign-key checks. All six actions
   are read-only. They run on the browse worker and may take time; discarding result
-  delivery does not interrupt execution. There are no repair, VACUUM, checkpoint
-  or writable PRAGMA actions.
+  delivery can interrupt supported SELECT reads; statement deadlines also apply.
+  Transfers and maintenance opens the separate import/export/checkpoint/backup panel.
+  Checkpoint and backup require writable access and editor autocommit. Backup closes
+  the source and verifies the new copy before publication.
 - **Settings:** the monitor, sun and moon select system, light and dark appearance.
   Appearance saves immediately; hover **Aa** for font information. Use the save
   icon in the header after changing query limits, timeouts or the NULL marker.
-  Busy wait applies after reopening the database; Slow ≥ controls history's slow
+  Busy wait and Query deadline apply after reopening the database; zero deadline
+  disables the statement limit. Slow ≥ controls history's slow
   filter and labels. The NULL marker changes display only. Expand Discovery for
   the [search-folder controls](database-discovery.md).
 
-Parameters use tagged JSON (cell editing also has a typed form), for example:
+Parameters accept native JSON such as `[1,"a",null]` or `{":id":42}`, and tagged
+values for explicit types/blobs (cell editing also has a typed form), for example:
 
 ```json
 [{"type":"Integer","value":42},{"type":"Null"},{"type":"Blob","value":[0,255]}]
@@ -133,22 +142,46 @@ Parameters use tagged JSON (cell editing also has a typed form), for example:
 For `:id`, use an object: `{":id":{"type":"Integer","value":42}}`.
 Named keys retain their `:`, `$` or `@` prefix; do not mix named and positional placeholders.
 
-Insert drafts use one entry per column: JSON `null` omits that column (DEFAULT);
+The insert form offers Default/Omit, NULL and typed Value per column. Optional
+insert JSON uses one entry per column: JSON `null` omits that column (DEFAULT);
 `{"type":"Null"}` explicitly inserts SQL NULL. Drafts never write until COMMIT.
 Query parameters are not persisted. History **does** store SQL literals: clear
 history if they contain sensitive information.
 
 ## Important limits
 
-“Discard results” does **not** interrupt execution or roll back writes. Queries
-are drained to completion even after the display budget is reached. Closing can
-therefore wait indefinitely for a non-yielding query. Application retention is
-bounded, but engine allocations are not: a huge cell/query can exhaust memory.
-Default query retention: 1,000 rows, 8 MiB, 64 KiB/cell. Table scroll retention has a 200-row minimum and reserves one page in flight; retained plus pending values stay within 8 MiB. Large-result completion is
-labelled Limited, not silently called complete. Table paging uses OFFSET, is not
-a snapshot, and may be slow at deep offsets. Multi-statement editor buffers can be
-executed one selection/statement at a time, but never as scripts. No arbitrary-result
-editing, keyless editing, or automatic migration/checkpoint/repair.
+Discard can interrupt a supported SELECT/EXPLAIN read; writes and RETURNING finish
+when output is discarded. A cooperative engine deadline defaults to 30 seconds.
+Neither discard nor timeout proves rollback. Unknown outcomes block further
+mutations until reopen and inspection. Engine allocations remain unbounded: a huge
+cell/query can exhaust memory even with bounded application retention.
+
+Default query retention is 1,000 rows / 8 MiB / 64 KiB per cell. Oversized values
+use bounded anonymous backing: 64 MiB/value, 256 MiB/session and 1,024 handles with
+expiration. The viewer searches its current chunk; expired/unavailable originals
+cannot be exported or used for optimistic edits. Table pages request at most
+100 rows / 512 KiB; row retention has a 200-row minimum and reserves pending work.
+Keyset paging requires a suitable non-null PK; other queries use OFFSET. Paging
+is not a snapshot, and deep OFFSET fallback can be slow. Committed writes mark
+other retained views stale; refresh before paging or staging again.
+
+Run and Ctrl+Enter use the selection/current statement; EXPLAIN uses the same
+selection. Run all offers sequential stop-on-error or atomic policy, up to 100
+statements / 1 MiB. Atomic scripts cannot contain transaction controls or join an
+existing editor transaction. See each step's outcome for prior committed effects.
+
+Shift-click a header adds another sort column. Filters support grouped AND/OR and
+IN lists with typed values; quote a numeric string to compare as text. Counts and
+row jumps are explicit. Typed inserts and bulk selection deletion remain local
+until staged COMMIT. Arbitrary query results, keyless tables, WITHOUT ROWID and
+hidden/generated columns remain ineligible for generated edits.
+
+Transfers are separate from retained-window exports. Complete query export runs
+SQL once and writes a new typed JSONL file; it never silently reruns a retained
+result. Imports preview explicit mappings/types and offer atomic or confirmed
+batch commits. Standard CSV/TSV preserves values with a normal header; choose
+spreadsheet protection explicitly if wanted. Writable opening can migrate the
+journal to WAL, as disclosed before opt-in. No automatic checkpoint or repair.
 
 This is a working preview, **not a production safety certification**. See
 [compatibility evidence and unpassed gates](../contracts/engine-compatibility.md),
@@ -167,6 +200,7 @@ bash scripts/desktop-smoke.sh  # requires Python 3, xvfb-run, timeout and Mesa
 bash scripts/discovery-smoke.sh  # startup scan with an isolated home and disposable files
 bash scripts/local-project-smoke.sh  # exact local-project schemas; synthetic data only
 bash scripts/package-linux.sh
+bash scripts/package-smoke.sh  # install/run the trusted archive in a temporary prefix
 ```
 
 The smoke test uses 100,000 disposable rows, an isolated preferences directory,

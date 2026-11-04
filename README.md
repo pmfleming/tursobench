@@ -71,6 +71,9 @@ Copy definitions directly.
 
 Execute parsed SQL with typed named or positional bindings.
 Run the buffer, selection or current statement.
+Run all offers sequential or atomic scripts with per-statement outcomes.
+Parameters accept ordinary JSON and explicit tagged types; statement deadlines
+default to 30 seconds and apply after opening the session.
 
 ```sql
 SELECT d.edit_seq, d.now_id, d.tip_id,
@@ -99,9 +102,13 @@ Editor SQL autocommits unless a transaction is open.
 `BEGIN`, `COMMIT` and `ROLLBACK` use the persistent editor connection.
 Browsing uses a separate connection and sees committed state.
 
-Export retained values as typed JSONL/JSON, annotated CSV/TSV or SQL INSERTs.
+Export retained values as typed JSONL/JSON, standard or annotated/protected CSV/TSV,
+or SQL INSERTs.
 Exports exclude staged overlays.
 They never rerun SQL or overwrite existing files.
+The separate transfer panel offers complete-table and execute-once query JSONL
+exports, mapped imports, explicit checkpoint and coordinated verified backup.
+Large values have a bounded text/hex viewer and exact-byte save.
 
 ## Run
 
@@ -127,9 +134,12 @@ Open never creates a database.
 - **Exclusive local access.** Close other clients. Back up before writes. No live multiprocess use, cloud sync or encryption.
 - **Turso only.** SQLite headers indicate possible compatibility. No alternative engine is selected.
 - **Bounded delivery.** Queries default to 1,000 rows, 8 MiB per result and 64 KiB per cell. Engine memory is not bounded.
-- **OFFSET paging.** Browsing is not snapshot-consistent. Deep offsets may be slow.
+- **Paging.** Suitable non-null keys use keyset paging; fallback deep offsets may be slow. Browsing is not snapshot-consistent.
 - **Explicit writes.** Generated edits require suitable primary-key base tables. Arbitrary results, keyless tables, `WITHOUT ROWID` tables and generated columns remain read-only.
-- **Execution continues.** Discard suppresses delivery. It does not cancel SQL or roll back writes. Close waits for execution and rollback acknowledgement.
+- **Execution outcomes.** Discard can interrupt supported reads; writes finish when output is discarded. Cooperative deadlines do not prove rollback. Close waits for execution and cleanup acknowledgement.
+
+The [review implementation record](docs/review-remediation.md) maps all findings
+and functional gaps to their stage, tests and remaining production gates.
 
 [Compatibility](contracts/engine-compatibility.md) · [Editing contract](contracts/editing.md) · [Release gates](docs/release.md)
 

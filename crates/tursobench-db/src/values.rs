@@ -9,7 +9,7 @@ use tursobench_core::{DeferredCell, Failure, LargeKind, Value};
 const TOTAL: usize = 256 * 1024 * 1024;
 const CELL: usize = 64 * 1024 * 1024;
 pub(crate) struct Depot {
-    files: VecDeque<(u64, tempfile::NamedTempFile, usize)>,
+    files: VecDeque<(u64, std::fs::File, usize)>,
     next: u64,
     used: usize,
 }
@@ -38,7 +38,8 @@ impl Depot {
                     break;
                 }
             }
-            tempfile::NamedTempFile::new()
+            // Anonymous backing is reclaimed on close, unwind and process death.
+            tempfile::tempfile()
                 .and_then(|mut file| {
                     file.write_all(data)?;
                     Ok(file)
@@ -77,12 +78,10 @@ impl Depot {
         if offset > *total as u64 {
             return Err(Failure::input("Offset exceeds value size"));
         }
-        file.as_file_mut()
-            .seek(SeekFrom::Start(offset))
+        file.seek(SeekFrom::Start(offset))
             .map_err(|e| Failure::input(e.to_string()))?;
         let mut data = vec![0; size.min(*total - offset as usize)];
-        file.as_file_mut()
-            .read_exact(&mut data)
+        file.read_exact(&mut data)
             .map_err(|e| Failure::input(e.to_string()))?;
         Ok((data, *total as u64))
     }
@@ -98,11 +97,9 @@ impl Depot {
             .unwrap_or(Path::new("."));
         let mut output =
             tempfile::NamedTempFile::new_in(parent).map_err(|e| Failure::input(e.to_string()))?;
-        file.as_file_mut()
-            .seek(SeekFrom::Start(0))
+        file.seek(SeekFrom::Start(0))
             .map_err(|e| Failure::input(e.to_string()))?;
-        std::io::copy(file.as_file_mut(), &mut output)
-            .map_err(|e| Failure::input(e.to_string()))?;
+        std::io::copy(file, &mut output).map_err(|e| Failure::input(e.to_string()))?;
         output
             .as_file()
             .sync_all()
@@ -111,5 +108,45 @@ impl Depot {
             .persist_noclobber(path)
             .map_err(|e| Failure::input(e.to_string()))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn handle(value: Value) -> u64 {
+        let Value::Deferred(cell) = value else {
+            panic!("expected deferred value")
+        };
+        cell.handle.unwrap()
+    }
+    #[test]
+    fn resource_limits_expire_handles_without_substituting_values() {
+        let mut depot = Depot::default();
+        let first = handle(depot.defer(Value::Blob(vec![7; CELL])));
+        for _ in 0..4 {
+            depot.defer(Value::Blob(vec![8; CELL]));
+        }
+        assert_eq!(depot.used, TOTAL);
+        assert!(depot.read(first, 0, 1).is_err());
+        let oversized = depot.defer(Value::Blob(vec![0; CELL + 1]));
+        assert!(
+            matches!(oversized, Value::Deferred(cell) if cell.handle.is_none() && cell.bytes == (CELL + 1) as u64)
+        );
+        assert_eq!(depot.used, TOTAL);
+        drop(depot);
+
+        let mut depot = Depot::default();
+        let first = handle(depot.defer(Value::Text("first".into())));
+        let mut last = 0;
+        for _ in 0..1024 {
+            last = handle(depot.defer(Value::Blob(vec![1])));
+        }
+        assert_eq!(depot.files.len(), 1024);
+        assert_eq!(depot.used, 1024);
+        assert!(depot.read(first, 0, 1).is_err());
+        assert_eq!(depot.read(last, 0, 1).unwrap().0, vec![1]);
+        assert!(depot.read(last, 2, 1).is_err());
+        assert!(depot.read(last, 0, 65537).is_err());
     }
 }

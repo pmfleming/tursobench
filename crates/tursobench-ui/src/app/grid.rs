@@ -164,6 +164,7 @@ impl CellAppearance<'_> {
 }
 impl App {
     pub(super) fn grid_contents(&mut self, ui: &mut egui::Ui) {
+        self.update_draft_presentation();
         if !self.document.script_results.is_empty() {
             let mut selected = None;
             ui.collapsing("Script results and outcomes", |ui| {
@@ -355,8 +356,10 @@ impl App {
                 if ui.button("Count matching rows").clicked() {
                     self.count_table(spec.table.clone());
                 }
-                if let Some(count) = self.tools.counts.get(&spec.table) {
+                if let Some(count) = self.document.tools.filtered_count {
                     ui.small(format!("{count} matching rows (last count)"));
+                } else if let Some(count) = self.tools.counts.get(&spec.table) {
+                    ui.small(format!("{count} total table rows (last count)"));
                 }
             });
             if jump && !self.has_drafts() {
@@ -572,17 +575,9 @@ impl App {
     fn grid_row(&mut self, ui: &mut egui::Ui, row: usize, editable: bool) -> Option<GridAction> {
         let mut action = None;
         ui.horizontal(|ui| {
-            let values = &self.document.result.rows[row];
-            let deleted = self
-                .document
-                .drafts
-                .as_ref()
-                .is_some_and(|d| d.deleted(values));
-            let modified = self
-                .document
-                .drafts
-                .as_ref()
-                .is_some_and(|d| (0..values.len()).any(|c| d.displayed(values, c).is_some()));
+            let overlay = self.document.tools.draft_ui.rows.get(&row);
+            let deleted = overlay.is_some_and(|r| r.deleted);
+            let modified = overlay.is_some_and(|r| !r.updates.is_empty());
             let offset = self.document.browse.as_ref().map_or(0, |b| b.offset);
             let marker = if deleted {
                 "D"
@@ -651,9 +646,11 @@ impl App {
         );
         let staged = self
             .document
-            .drafts
-            .as_ref()
-            .and_then(|d| d.displayed(values, col));
+            .tools
+            .draft_ui
+            .rows
+            .get(&row)
+            .and_then(|r| r.updates.get(&col));
         let displayed = staged.unwrap_or(value);
         let (rect, response) = ui.allocate_exact_size(
             egui::vec2(self.document.tools.columns.widths[col], 29.0),

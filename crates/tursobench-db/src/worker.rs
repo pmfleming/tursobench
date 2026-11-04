@@ -404,6 +404,7 @@ impl Worker<'_> {
                     out: &output,
                     access: self.access,
                     depot: &mut self.depot,
+                    tail: false,
                 },
             )
             .await;
@@ -574,6 +575,7 @@ impl Worker<'_> {
                 "Prior outcome UNKNOWN; reopen before executing writes",
             ));
         }
+        let tail_mode = matches!(&operation,Operation::Browse(spec) if spec.options.tail);
         let default = Budget::default();
         let count_references = matches!(&operation, Operation::ReferenceCount { .. });
         let (connection, sql, parameters, budget) = match operation {
@@ -600,7 +602,7 @@ impl Worker<'_> {
                 let table=describe(self.browse,&spec.table).await?;
                 let relation=crate::browse::relationship(self.browse,&table,&spec).await?;
                 let (mut text,parameters)=browse_sql(&table,spec,relation)?;
-                let end=text.rfind(" LIMIT 100 OFFSET ").ok_or_else(||Failure::input("Invalid controlled export query"))?;text.truncate(end);
+                let end=text.rfind(" LIMIT ").ok_or_else(||Failure::input("Invalid controlled export query"))?;text.truncate(end);
                 return self.export(ticket,path,text,parameters.into(),false).await.map(Some);
             }
             Operation::ExportQuery{path,sql,parameters}=>return self.export(ticket,path,sql,parameters,true).await.map(Some),
@@ -624,9 +626,11 @@ impl Worker<'_> {
             Operation::Browse(spec) => {
                 let table = describe(self.browse, &spec.table).await?;
                 let relation=crate::browse::relationship(self.browse,&table,&spec).await?;
+                let rows=if spec.options.page_rows==0 {100}else{spec.options.page_rows};
+                let bytes=if spec.options.page_bytes==0 {4*1024*1024}else{spec.options.page_bytes};
                 let (sql, parameters) = browse_sql(&table, spec,relation)?;
                 self.output.send(ticket, EventKind::Table(table));
-                (self.browse, sql, parameters.into(), Budget {rows:100,bytes:4*1024*1024,page:true,..default})
+                (self.browse, sql, parameters.into(), Budget {rows,bytes,page:true,..default})
             }
             Operation::Lookup { table: name, keys } => {
                 let table = describe(self.browse, &name).await?;
@@ -674,6 +678,7 @@ impl Worker<'_> {
                 out: self.output,
                 access: self.access,
                 depot: &mut self.depot,
+                tail: tail_mode,
             },
         )
         .await;
@@ -687,6 +692,7 @@ struct ExecutionContext<'a> {
     out: &'a Output,
     access: Access,
     depot: &'a mut crate::values::Depot,
+    tail: bool,
 }
 async fn execute(
     c: &Connection,
@@ -696,7 +702,12 @@ async fn execute(
     budget: Budget,
     context: ExecutionContext<'_>,
 ) -> Completion {
-    let ExecutionContext { out, access, depot } = context;
+    let ExecutionContext {
+        out,
+        access,
+        depot,
+        tail,
+    } = context;
     let started = std::time::Instant::now();
     let stoppable = sql::stoppable_read(sql);
     if stoppable {
@@ -718,6 +729,7 @@ async fn execute(
         error: None,
     };
     let mut chunk = Vec::new();
+    let mut suffix = std::collections::VecDeque::<Vec<Value>>::new();
     let result = async {
         sql::validate_single(sql)?;
         if stoppable && out.discarded(ticket) {
@@ -804,6 +816,26 @@ async fn execute(
                 }
             }
             let size = values.iter().map(Value::bytes).sum::<usize>();
+            if tail {
+                while !suffix.is_empty()
+                    && (bytes + size > budget.bytes || suffix.len() >= budget.rows.min(100))
+                {
+                    bytes -= suffix
+                        .pop_front()
+                        .unwrap()
+                        .iter()
+                        .map(Value::bytes)
+                        .sum::<usize>();
+                    completion.page_has_more = Some(true);
+                }
+                if size > budget.bytes {
+                    completion.delivery = Delivery::Limited;
+                    continue;
+                }
+                bytes += size;
+                suffix.push_back(values);
+                continue;
+            }
             if kept >= budget.rows.min(10_000)
                 || bytes + size > budget.bytes.min(8 * 1024 * 1024)
                 || values
@@ -831,12 +863,24 @@ async fn execute(
                 chunk_bytes = 0;
             }
         }
+        if budget.page && kept >= budget.rows {
+            completion.page_has_more = Some(true);
+        }
         completion.changed = stmt.n_change();
         Ok::<(), Failure>(())
     }
     .await;
     if stoppable {
         *out.discard.active_read.lock().unwrap() = None;
+    }
+    let mut suffix_bytes = 0;
+    for values in suffix {
+        suffix_bytes += values.iter().map(Value::bytes).sum::<usize>();
+        chunk.push(values);
+        if chunk.len() >= 64 || suffix_bytes >= 64 * 1024 {
+            out.send(ticket, EventKind::Rows(std::mem::take(&mut chunk)));
+            suffix_bytes = 0;
+        }
     }
     if !chunk.is_empty() {
         out.send(ticket, EventKind::Rows(chunk));

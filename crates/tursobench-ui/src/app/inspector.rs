@@ -201,6 +201,7 @@ impl App {
                     )
                 {
                     d.revert_cell(original, col);
+                    self.document.draft_revision = self.document.draft_revision.wrapping_add(1);
                 }
                 if ui.button("Revert row draft").clicked()
                     && let (Some(d), Some(original)) = (
@@ -209,6 +210,7 @@ impl App {
                     )
                 {
                     d.revert_row(original);
+                    self.document.draft_revision = self.document.draft_revision.wrapping_add(1);
                 }
                 if icons::control(ui, Icon::Trash, "Stage row deletion", "", false, true).clicked()
                 {

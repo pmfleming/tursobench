@@ -20,7 +20,12 @@ threshold are also stored. Preferences use a private temporary file, flush/sync,
 then atomic replacement in the application directory. Saves run on a background
 worker with coalescing. This is best-effort convenience storage, not durable draft
 recovery; abrupt process shutdown can lose the most recent preference change.
-Invalid/oversized preferences produce a visible error and safe defaults.
+Preferences carry format version 1 and have a 2 MiB input/output limit. Valid
+fields/array entries survive malformed peers; recovery preserves the original
+and saves a separate copy. Each valid save retains a previous-file backup.
+Unreadable or newer-format startup data disables automatic persistence. Runtime
+corruption/newer data also refuses replacement, preserving the previous backup.
+These failures produce a visible warning/error and safe defaults where needed.
 
 The `discovery` preference stores the startup toggle, added search folders,
 exclusions, recent successful opens (absolute path and last-open time), and cached
@@ -126,8 +131,8 @@ in flight; SQL's exact row setting is unchanged.
 
 Ctrl C on a grid selection produces plain TSV in visible column order, with
 quoted tabs/newlines/quotes and preserved empty fields, capped at 2 MiB. It copies
-stored engine values, not draft overlays. Ctrl Shift C and exports retain the
-existing annotated/typed format and canonical result column order. Numeric
+stored engine values, not draft overlays. Ctrl Shift C uses standard TSV in canonical result column order. Export offers
+standard, annotated and protected variants explicitly. Numeric
 selection summaries preserve integer sum/min/max exactly and label approximate
 averages or mixed-real aggregates.
 
@@ -157,7 +162,7 @@ mode commits every 1,000 rows or 8 MiB and reports earlier confirmed commits.
 
 ## Deferred values and maintenance
 
-Oversized result cells use session-owned temporary backing, with a chunk viewer
+Oversized result cells use session-owned anonymous temporary backing, with a chunk viewer
 and exact-byte save action. Retained exports/copies reject deferred cells rather
 than fabricating full values. Backing is capped at 64 MiB/value, 256 MiB/session
 and 1,024 files with FIFO expiration; engine incoming allocations are not bounded.

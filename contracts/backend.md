@@ -1,142 +1,153 @@
 # Backend service contract
 
-`core` owns values, identities and events; `db` owns Turso and the matching parser.
-`Session::open` starts one named worker. Canonicalization, schema validation and
-all engine calls happen there. Existing nonempty regular UTF-8 paths only.
-The preflight check is not protection against a malicious concurrent path swap.
-Use trusted paths not being modified by another program.
+`core` owns values, identities and events; `db` owns Turso 0.8.3 and its matching
+parser. A session uses a dedicated named worker and current-thread Tokio runtime.
+The GUI holds no engine handles. Persistent editor and browse connections are
+serialized; generated edits and imports use fresh configured connections. Browse
+reads see committed state, independently of the editor's manual transaction.
 
-Turso's `fts` Cargo feature and experimental index-method builder flag are enabled.
-The same database capability configuration applies to read-only/read-write opens
-and all managed connection lanes. Native `USING fts(...)` indexes and `fts_match`
-queries are supported; other experimental flags remain disabled. Index creation
-and writes still require engine-enforced read/write access. The browser has typed AND filters; use the SQL editor for full-text queries.
+## File access and lifecycle
 
-A session has persistent serialized editor and browse connections. All commands
-carry database/session/request/generation identities. Request numbers must be
-monotonically increasing from 1. ResultSet rejects events with a different ticket.
-Open/close events use request 0. GUI must not forget active transactions when
-replacing query results. Browse/schema cannot see editor uncommitted changes.
+Open accepts existing, nonempty regular UTF-8 paths. Canonicalization and engine
+calls run on the worker. Read-only is the default and engine-enforced. Both modes
+require exclusive use; the acknowledgement does not lock out unrelated writers.
+Trusted paths must not be swapped concurrently. Writable opening first performs
+read-only schema preflight and explicitly discloses possible DELETE-to-WAL journal
+migration. Read-only execution rejects ATTACH and VACUUM, including INTO.
 
-Command queue: 32 requests, bounded additionally to 16 MiB of pending payloads. Event queue: 8. Submit never blocks GUI. Worker blocks under
-backpressure; discard and disconnect release row-delivery pressure. Chunks flush
-at 64 rows or 64 KiB (one row may exceed chunk target). Retention is capped at
-10,000 rows, 8 MiB, 64 KiB/cell, 512 columns, 1 MiB metadata; defaults 1,000 rows.
-Limits include owned value size but not all allocator overhead. Engine internal
-allocations and one incoming row are not bounded. No untrusted-file guarantee.
+FTS Cargo support and `experimental_index_method(true)` apply to every managed
+open; other experimental flags remain off. Native FTS has dedicated coverage;
+this is not qualification of every possible experimental index method.
+Foreign keys are enabled and verified when connections are configured. Editor SQL
+can change its own connection-local PRAGMAs; generated write lanes reconfigure
+foreign keys independently.
 
-At a delivery limit, SELECT/EXPLAIN reads stop stepping; discard and close can
-interrupt the active read through the patched public wrapper. Writes, including
-RETURNING, still drain when delivery is limited/discarded. All managed connections
-have a configurable engine statement deadline (default 30 s, zero disables),
-independent of lock busy timeout. Deadline errors report actual transaction state,
-not an assumed rollback. Prior committed statements are never undone by timeout. No SQL rewriting
-for arbitrary queries. Completion reports Complete/Limited/Discarded independently
-of error and observed autocommit. An error is never displayed as full success.
-The UI keeps the last 100 execution outcomes, including replaced/discarded queries,
-so a late write/error is not silently hidden when the current result changes.
+Commands/events carry database/session/request/generation identities. Pending
+request IDs must be unique; callers normally increment from 1. Open/close and
+committed invalidations use request zero. Results reject mismatching tickets.
+The scheduler accepts 32 requests and at most 16 MiB aggregate pending payload.
+Submission never blocks the GUI. Obsolete queued reads can be skipped; editor
+ordering is preserved and pending catalog refreshes coalesce. The event queue has
+8 slots with backpressure. Discard/disconnect release row-delivery pressure.
 
-Closing waits for the active operation, rejects queued work, explicitly rolls
-back transactions, and reports cleanup errors. The UI must consume events until
-Closed; dropping Session is best-effort cleanup, not a rollback acknowledgement.
-No timeout or discard is proof of rollback. Busy timeout defaults to 250 ms,
-configurable from 0–5000 ms at open, without retry. Submissions after close begins
-are rejected, and queued commands are checked again before execution.
+Close rejects queued/new work, interrupts an active stoppable read, waits for
+remaining work, explicitly rolls back, and drops connections, database and deferred
+backing before acknowledging Closed. Cleanup failure is reported. Dropping a
+Session is best effort; worker disconnection is UNKNOWN, not an acknowledgement.
+Native window close waits for cleanup; it does not silently dismiss a failure.
+Changing access requires acknowledged close and reopen.
 
-Read/write mode is opt-in before open. Changing mode requires close (with explicit
-rollback confirmation for writable sessions), waiting for Closed, then reopening.
-Closed is emitted after connection/database handles are dropped. Foreign keys are
-enabled and verified on connection setup. Editor SQL deliberately remains powerful;
-users can change connection-local PRAGMAs themselves. Generated edit connections
-will always re-enable/verify foreign keys independently. Editor transaction state
-is reported even on browse completions; browse state never overwrites it. Unexpected
-worker disconnection is an unknown outcome, not a successful close. Native window
-close waits for acknowledged cleanup and stays open on cleanup failure.
-Single-statement validation uses Turso 0.8.3's parser, including trigger bodies;
-multiple statements and malformed suffixes are rejected before execution. The UI
-can extract one selection/current statement with the same parser, but never submits
-a script. Named JSON objects require exact prefixed keys; positional arrays must
-match the required slot count. Missing/extra and mixed-style bindings are rejected
-before preparing the statement. Driver values remain typed, never interpolated.
-Completion elapsed milliseconds cover worker execution and delivery/backpressure,
-not queue wait or an isolated engine benchmark.
+## Execution and outcomes
 
-Table browsing uses a separate connection and controlled generated SELECTs: 100
-rows/page, typed AND filters (`IS` / `IS NOT`, `<`, `>`, `<=`, `>=`, literal substring LIKE,
-IS NULL / IS NOT NULL), quoted identifiers,
-column sorting followed by primary-key and full-row tie breakers. Filters are capped at 32 predicates / 1 MiB of values. LIKE escapes backslash,
-percent and underscore; equality preserves NULL and typed bindings. Full-row
-suffixes handle nullable primary keys; binary text collation and storage-class
-tie breakers distinguish case and numeric storage types. Tables without a primary
-key sort by all columns; identical duplicate rows are indistinguishable and not
-editable. Paging currently uses bounded OFFSET (maximum 1,000,000), not keyset;
-it may be slower at deep offsets. Concurrent local editor commits can shift page
-boundaries: no snapshot consistency is promised. Every page is labelled as a
-page, never a complete table. Views are read-only. Hidden/generated columns are
-rejected rather than guessed. Schema discovery is itself budgeted and may be limited.
+Single executions use matching-parser validation; malformed suffixes/multiple
+statements fail before execution. Cursor/selection execution uses token boundaries
+that preserve comments, strings and trigger/CASE bodies, allowing a valid statement
+past an unrelated syntax error. Run, Ctrl+Enter and EXPLAIN share that selection.
+EXPLAIN accepts SELECT/INSERT/UPDATE/DELETE and never executes the original SQL
+as a fallback. Typed bindings accept positional/named native JSON and tagged
+scalars; names include their prefix and missing/extra/mixed bindings are rejected.
+Deferred display values are not valid bindings.
 
-Metadata inspection returns a separate ticketed `Inspection`, never replacing the
-current row result. Native `index_list`/`index_info`/`foreign_key_list` are used;
-individual metadata queries are capped at 512 rows/1 MiB, index lists at 128 and
-combined index details at 1 MiB. Table descriptors and resolved FK details are each
-capped at 1 MiB; table names at 64 KiB. Implicit FK columns resolve to the parent's ordered
-PK; ambiguous/unresolved metadata is not guessed. Related-row SELECTs validate and
-quote target columns, bind all key parts, and retain at most 100 rows. Their scope
-is a lookup, not a complete table; normal staged-edit identity checks still apply.
+Scripts prevalidate at most 100 statements / 1 MiB, provide per-step results and
+stop on runtime failure. Sequential mode reports prior committed effects. Atomic
+mode requires editor autocommit and rejects embedded transaction controls; commit
+or rollback uncertainty remains UNKNOWN. Named parameters are scoped per step;
+nonempty positional script bindings are rejected. Cached script results share
+8 MiB; selecting one may use another bounded 8 MiB display copy.
 
-`Operation::Diagram` returns a separate ticketed `SchemaDiagram` on the browse lane;
-it never replaces retained rows or draft identity. Catalog discovery excludes reserved
-`sqlite_*` objects but includes Turso engine-managed tables. At most 512 tables and
-8 MiB owned metadata (container/string capacities included, allocator overhead and
-temporary/engine allocations excluded) are retained. Limits are explicit, and failed
-per-table inspections remain error nodes rather than disappearing. Native inspection
-limits and FK resolution rules still apply. The operation performs no table scans or
-writes. Tests cover committed schema isolation during uncommitted editor DDL. This is
-an explicit cached metadata read, not a schema-change monitor or new connection lane.
+SELECT/EXPLAIN delivery stops at limits; discard/close can interrupt the active
+read through the pinned wrapper patch. Writes/RETURNING finish when output is
+limited or discarded. Every configured connection has a cooperative engine
+statement deadline (default 30 s, zero disables, maximum 1 h). Busy timeout defaults
+to 250 ms, range 0–5000 ms, with no application retries. Settings apply on reopen.
+Neither interruption nor timeout proves rollback. Completions report delivery
+(Complete/Limited/Discarded), execution error and observed transaction state
+separately. Already decoded buffered rows are flushed on a later execution error.
+The UI keeps 100 outcomes, including replaced operations. Unknown application-owned
+transaction outcomes block further mutations until close/reopen and inspection.
+Elapsed time includes execution, delivery and backpressure, excluding queue wait.
 
-Count and diagnostic commands use the browse lane, not the editor transaction.
-Diagnostics are a fixed read-only list (database list, journal mode, page count,
-freelist count, integrity check, FK check), not arbitrary writable PRAGMA text.
-The EXPLAIN helper accepts parsed SELECT/INSERT/UPDATE/DELETE only; DDL, PRAGMAs,
-transaction commands and scripts are rejected. It prepares only the prefixed
-EXPLAIN statement and never executes the source statement as a fallback. These
-operations still obey drain/discard/close semantics; expensive counts/checks are
-explicit user actions, not automatically scheduled scans.
+Committed writes emit `Invalidated { schema, source_request }`. Manual writes wait
+until commit; full rollback clears pending invalidation. Other retained tiles show
+stale rows and require refresh before paging/staging. Schema changes refresh the
+catalog/diagram and invalidate inspection metadata. Drafts remain owned by their
+original view; arbitrary editor SQL is never rerun automatically.
 
-Catalog discovery is retained separately in the UI and does not overwrite table
-or SQL rows. Reverse-reference lookups re-inspect the child and reject changed FK
-definitions before executing. They bind every non-NULL parent-key component and
-use EXISTS with parent columns on the left of comparisons, preserving parent
-collation/affinity without duplicating child rows. The result remains a bounded
-100-row lookup. No background counts or new connection lane are introduced.
+## Budgets and large values
 
-## v4 browse windows and auxiliary context
+Query defaults are 1,000 rows / 8 MiB / 64 KiB per cell, with 10,000-row maximum,
+512 columns and 1 MiB column metadata. Chunks flush at 64 rows or 64 KiB; one row
+can exceed the chunk target. Budgets estimate owned data, not allocator overhead.
+Engine allocations and one incoming row are unbounded; there is no hostile-file,
+hard memory, hard deadline or hard shutdown guarantee.
 
-Controlled Browse requests retain at most 100 rows / 4 MiB each, with the existing
-64 KiB cell cap. UI scroll windows reserve one 100-row page and 4 MiB in flight;
-retained plus pending browse values remain within 8 MiB. Effective browse row
-retention is clamp(configured rows, 200, 10000), with 100 rows reserved in flight.
-Query retention settings are unchanged. Page events have distinct tickets and
-are merged only into the matching primary owner, with complete delivery and
-unchanged table/column metadata. Drafts pause page fetch/eviction. Readouts and
-exports describe the retained window, not the complete table.
+Oversized text/blob cells are typed Deferred handles, with original kind/length.
+Private anonymous files back at most 64 MiB/value, 256 MiB/session and 1,024 files,
+with FIFO expiration. Unsupported sizes/storage failures remain explicitly
+unavailable. The OS reclaims anonymous backing on process termination on Linux.
+Viewer requests read at most 64 KiB (UI 16 KiB), search the current chunk and save
+exact bytes with atomic no-overwrite publication. Deferred originals cannot be
+staged or exported as fabricated text. Original SQL is never rerun to obtain them.
+Catalog discovery has an independent 10,000-object / 8 MiB budget; tables/views
+come first, truncation is visible, and DDL over 16 KiB loads separately on demand.
 
-`Peek` validates the current child FK definition before a bound parent lookup,
-retaining at most one row / 512 KiB. `ReferenceCount` validates the relationship
-and uses the same parent-side affinity/collation EXISTS predicates as References,
-without the 100-row lookup LIMIT. Both have auxiliary owners in the UI; completion
-still reports actual editor transaction state. Count is an explicit full scan,
-not an automatically scheduled operation. Context caches are bounded independently
-and invalidated on primary navigation, schema refresh and writes.
+## Browsing, filtering and metadata
 
-Turso 0.8.3's public Connection exposes no interruption/progress API. Row/byte
-budgets and busy timeout do not bound scan execution. Automatic counts remain
-deferred until isolated cancellable execution is implemented and verified. No
-new execution-timeout or rollback guarantee is introduced by the redesign.
+Controlled Browse defaults to 100 rows / 4 MiB. The desktop requests at most
+100 rows / 512 KiB, reducing row count at low retention settings. Retention has a
+200-row minimum and reserves 100 rows in flight; retained plus pending values stay
+within 8 MiB. Byte-limited pages carry an explicit continuation flag. Forward and
+reverse paging advance by actual delivered row counts; OFFSET reverse paging
+retains a bounded suffix to avoid skipping wide rows. Eviction shares the rendered
+row stride and preserves the visible start. Drafts pause paging/eviction.
 
+Ordering uses selected columns plus proven PK/rowid ties. Non-null PKs of up to
+8 columns support NULL-aware forward/reverse keyset predicates; other cases use
+checked i64-range OFFSET without a hidden million-row clamp. Views and ambiguous
+identities retain conservative full-row binary/storage-class ordering. Deferred
+cursor values fall back to OFFSET. No snapshot is promised across page requests;
+committed changes invalidate cursors. Views, keyless/engine-managed tables,
+WITHOUT ROWID and hidden/generated columns remain ineligible for generated edits.
 
-Committed SQL emits `Invalidated { schema, source_request }` under session request
-zero. Manual transaction writes are invalidated on commit, not before; full
-rollback clears pending invalidation. Retained views show a stale marker and
-require refresh for paging/staging. Read-only execution rejects ATTACH and VACUUM,
-including VACUUM INTO; file-output maintenance requires a writable session.
+Filters bind typed values, quote identifiers and escape substring LIKE literals.
+Alongside flat predicates, AND/OR groups and typed IN lists have depth 8, 128-node,
+1,000-binding and 1 MiB limits. Shift-header selection adds sort columns. Row jumps
+are explicit offsets; total and filtered counts are explicit reads. Filtered counts
+belong to a particular view/result identity, never the global unfiltered total.
+
+Inspection uses supported index/FK metadata with bounded delivery: 512 rows /
+1 MiB per metadata query, 128 indexes, 1 MiB combined index details, table/FK
+metadata each 1 MiB and names at most 64 KiB. Implicit parent keys resolve through
+the ordered PK; ambiguity or truncation fails rather than guessing. Incoming
+reference predicates use parent affinity/collation. An indexed IN alternative is
+used only for matching declared types and BINARY parent collation. Previews retain
+100 rows and probe one more to report Limited; full views use normal paging/counts.
+Peek retains one row / 512 KiB and validates current relationship metadata.
+
+Diagram reads retain at most 512 tables / 8 MiB owned metadata, excluding
+allocator/engine/temporary overhead. Reserved sqlite objects are excluded; native
+engine-managed tables remain inspectable. Failed table inspections remain error
+nodes. No row scans or writes are needed. Catalog, diagram and auxiliary context
+have separate owners and cannot replace primary rows/draft identity.
+
+Fixed read-only diagnostics cover files, journal mode, page/free counts, integrity
+and FK checks. FK validation generates metadata-driven parent-governed anti-joins,
+reports per-constraint violations and checked coverage, and errors on incomplete
+metadata (limits 1,000 tables / 256 FKs / 1 MiB generated SQL). Expensive checks and
+counts are explicit actions; supported statement deadlines still apply.
+
+## Transfers and explicit maintenance
+
+Retained export keeps its labelled window/scope. Complete-table and execute-once
+query export stream original values to typed JSONL v2, with exact terminal count,
+private staging and atomic no-overwrite publication. Output failure does not stop
+a write halfway: execution outcome and file publication are reported separately.
+Imports provide bounded previews, explicit mapping/types, prepared inserts and
+atomic or opt-in 1,000-row / 8 MiB commit batches. Earlier confirmed batches are
+reported after later failure. See `docs/data-formats.md` for record/decoded limits.
+
+Writable-only checkpoint requires editor autocommit and validates native completion
+status. Backup checkpoints, closes all source handles, refuses remaining WAL data,
+verifies integrity on a private closed-file copy and publishes a new destination.
+It never copies a live main file. These operations are explicit, never automatic
+repair. Transfer state is bound to its original session.

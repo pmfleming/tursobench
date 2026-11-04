@@ -253,6 +253,14 @@ impl App {
         }
     }
     fn submit(&mut self, operation: Operation, view: View) -> Option<Ticket> {
+        let operation = match operation {
+            Operation::Browse(mut spec) => {
+                spec.options.page_rows = paging::fetch_rows(self.preferences.row_limit);
+                spec.options.page_bytes = paging::PAGE_BYTES;
+                Operation::Browse(spec)
+            }
+            other => other,
+        };
         if self.has_drafts() || self.commit_ticket.is_some() {
             self.status =
                 "Commit or discard staged edits before navigating or executing SQL".into();
@@ -289,6 +297,7 @@ impl App {
                 self.document.tools.pages = Default::default();
                 self.document.tools.grid_selection = None;
                 self.document.tools.inline = None;
+                self.document.tools.filtered_count = None;
                 self.document.script_results.clear();
                 self.document.script_message.clear();
                 self.document.stale = false;

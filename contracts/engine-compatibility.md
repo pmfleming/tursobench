@@ -57,13 +57,14 @@ Observed on Linux x86_64, Rust 1.95.0:
 - Bounded application retention and queues, not a hard process memory limit.
   Engine allocates a complete row before delivery; hostile huge values/queries
   can exhaust memory. Use trusted files/SQL only until process isolation exists.
-- Single statements only, validated with the matching Turso parser. No scripts.
+- Single executions and bounded scripts use matching-parser validation. Scripts
+  have explicit sequential/atomic policies and preserve partial/unknown outcomes.
 - Generated edit transactions use a separate clean connection. Any error triggers
   explicit rollback; failed rollback is reported as unknown, never success.
 
 ## Unpassed release gates
 
-Fault-injected I/O commit/rollback failure, resource exhaustion, multiprocess
+Physical engine I/O commit/rollback failure, process OOM and multiprocess
 writer stress, old tursotui-engine fixtures, full file-format coverage, and
 cross-platform behavior are **not validated**. No old engine compatibility claim.
 Generated columns, WITHOUT ROWID, custom types, sync, encryption and experimental
@@ -71,3 +72,14 @@ features other than index methods are disabled. Only native FTS index methods
 have been qualified here; enabling the flag is not a blanket compatibility claim
 for every possible index method. Existing live application stores were not used. This implementation is a Linux preview,
 not a production-safety certification. New evidence must update this document.
+
+## Review remediation evidence
+
+The eight-stage implementation and reproducible performance/fault scenarios are
+recorded in `docs/review-remediation.md`. Deterministic commit/rollback boundary
+failures (including a lost acknowledgement after durable COMMIT), output writer
+failure, worker unwind, oversized input and bounded spool exhaustion are tested.
+These exercise application outcome handling; they do not simulate every native
+storage syscall failure or certify total process-resource safety. Full-table/query
+transfers, typed imports, native checkpoint and coordinated close/verified backup
+are exercised on disposable files. No live external application stores were used.

@@ -45,6 +45,9 @@ impl App {
             .as_ref()
             .filter(|i| i.table.name == name)
             .or_else(|| {
+                if self.ui.diagram.stale {
+                    return None;
+                }
                 self.ui
                     .diagram
                     .data

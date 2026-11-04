@@ -65,17 +65,18 @@ remain session-only; use Saved queries to keep them across restarts.
 The cache retains at most 16 document buffers. Background results route to their
 exact request owner. Idle hidden table/result buffers can be evicted, while drafts,
 editors and pending requests are retained. All panes share one database session
-and transaction. Delivery discard does not interrupt SQL or roll back writes.
+and transaction. Discard can interrupt supported SELECT/EXPLAIN reads; writes finish when output
+is discarded. Neither interruption nor deadlines prove rollback.
 
 ## Table data and edits
 
 Filters generate bound predicates against the **whole table**, before fetching the
-first matching 100-row page. They never filter only the loaded rows. Type
+first matching bounded page. They never filter only the loaded rows. Type
 `column op value` and Enter; quoted identifiers/text, exact integers, reals, NULL,
 blobs and AND chips retain their existing semantics. Invalid input leaves the
 previous result intact. Header funnels offer sampled values; their labelled
 sample counts are not whole-table distributions. Exact table and relationship
-counts remain explicit full scans because the engine has no execution interrupt.
+counts remain explicit reads, subject to the configured statement deadline.
 
 Columns measure headers and up to 200 retained values, with bounded automatic
 widths. Reorder, hide, fit and resize columns without changing their schema index.

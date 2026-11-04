@@ -6,6 +6,11 @@ implementations. This is a feature comparison, not an endorsement of
 its older engine-compatibility statements. No reference code/tests were copied.
 **Turso 0.8.3 remains the only engine.** Other engines are not future work.
 
+> This is the earlier feature-comparison snapshot. The subsequent
+> [eight-stage remediation](review-remediation.md) supersedes its script, insert,
+> reference paging, transfer and cancellation limitations; current behavior is in
+> [the guide](guide.md) and [backend contract](../contracts/backend.md).
+
 ## Gap assessment and changes
 
 | Area | TursoBench after this review | Remaining difference / deliberate boundary |

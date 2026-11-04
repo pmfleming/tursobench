@@ -45,7 +45,14 @@ impl Value {
                 }
             }
             serde_json::Value::Object(_) => {
-                serde_json::from_value(value).map_err(|e| Failure::input(e.to_string()))?
+                let parsed: Self =
+                    serde_json::from_value(value).map_err(|e| Failure::input(e.to_string()))?;
+                if matches!(parsed, Self::Deferred(_)) {
+                    return Err(Failure::input(
+                        "Deferred cells are display handles, not input values",
+                    ));
+                }
+                parsed
             }
             _ => {
                 return Err(Failure::input(
@@ -67,10 +74,11 @@ impl Value {
         match self {
             Self::Null => "NULL".into(),
             Self::Integer(n) => n.to_string(),
-            Self::Real(n) => n.to_string(),
+            Self::Real(n) => format!("{n:?}"),
             Self::Text(s) => {
-                let mut p: String = s.chars().take(100).collect();
-                if s.chars().count() > 100 {
+                let mut chars = s.chars();
+                let mut p: String = chars.by_ref().take(100).collect();
+                if chars.next().is_some() {
                     p.push('…');
                 }
                 p
@@ -382,6 +390,9 @@ pub struct BrowseOptions {
     /// Original retained row used to seek in the same filter/order generation.
     pub cursor: Option<Vec<Value>>,
     pub reverse: bool,
+    pub tail: bool,
+    pub page_rows: usize,
+    pub page_bytes: usize,
     pub relation: Option<Box<(ForeignKey, Vec<Value>)>>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]

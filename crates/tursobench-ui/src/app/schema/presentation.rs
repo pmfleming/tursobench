@@ -87,7 +87,7 @@ impl Structure<'_> {
                     copy_definition(ui, ddl, "Copy definition");
                     code_view(ui, ddl, 2);
                 } else {
-                    ui.weak("Engine-generated definition");
+                    ui.weak("DDL not retained; select the object to load its definition");
                 }
             });
         }

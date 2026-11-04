@@ -190,26 +190,30 @@ fn parser_not_semicolon_splitting() {
         assert!(validate_single(&sql).is_err(), "{sql:.40}");
     }
 }
+
+#[test]
+fn mid_result_engine_error_keeps_the_unsent_successful_rows() {
+    let (_dir, path) = fixture();
+    let s = common::opened(&path, Access::ReadOnly);
+    let result = run(
+        &s,
+        1,
+        "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<100) SELECT x,json_extract(CASE WHEN x=70 THEN 'bad' ELSE '{}' END,'$') FROM n",
+        Budget::default(),
+    );
+    assert!(result.completion.unwrap().error.is_some());
+    assert_eq!(result.rows.len(), 69);
+    assert_eq!(result.rows[68][0], Value::Integer(69));
+    s.close();
+    assert!(matches!(
+        common::event(&s).kind,
+        EventKind::Closed { rollback: Ok(()) }
+    ));
+}
 #[test]
 fn real_readonly_bounded_results_and_cleanup() {
     let (_dir, path) = fixture();
-    use std::sync::{
-        Arc, Barrier,
-        atomic::{AtomicBool, Ordering},
-    };
-    let gate = Arc::new(Barrier::new(2));
-    let armed = Arc::new(AtomicBool::new(false));
-    let s = Session::open(path, Access::ReadOnly, true, {
-        let gate = gate.clone();
-        let armed = armed.clone();
-        move || {
-            if armed.swap(false, Ordering::AcqRel) {
-                gate.wait();
-            }
-        }
-    })
-    .unwrap();
-    assert!(matches!(common::event(&s).kind, EventKind::Opened));
+    let s = common::opened(&path, Access::ReadOnly);
     let r = run(&s, 1, "SELECT * FROM items ORDER BY id", Budget::default());
     assert_eq!(r.rows.len(), 2);
     assert_eq!(r.rows[1][1], Value::Null);
@@ -291,6 +295,35 @@ fn real_readonly_bounded_results_and_cleanup() {
         .result;
         assert_eq!(r.completion.unwrap().error.unwrap().kind, ErrorKind::Input);
     }
+    s.close();
+    assert!(matches!(
+        common::event(&s).kind,
+        EventKind::Closed { rollback: Ok(()) }
+    ));
+
+    // Use a fresh session and acknowledge the open wake before arming. Receiving
+    // an event alone does not mean its wake callback has returned.
+    use std::sync::{
+        Arc, Barrier,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+    let gate = Arc::new(Barrier::new(2));
+    let armed = Arc::new(AtomicBool::new(false));
+    let (woke, wake_done) = mpsc::channel();
+    let s = Session::open(path, Access::ReadOnly, true, {
+        let gate = gate.clone();
+        let armed = armed.clone();
+        move || {
+            if armed.swap(false, Ordering::AcqRel) {
+                gate.wait();
+            }
+            let _ = woke.send(());
+        }
+    })
+    .unwrap();
+    assert!(matches!(common::event(&s).kind, EventKind::Opened));
+    wake_done.recv_timeout(Duration::from_secs(5)).unwrap();
     // Hold the worker inside the wake callback after its terminal event is visible.
     // Reusing the ID must succeed even before that callback returns.
     armed.store(true, Ordering::Release);

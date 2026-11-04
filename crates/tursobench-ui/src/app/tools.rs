@@ -35,6 +35,11 @@ pub(super) struct NavigationEntry {
     pub scroll: eframe::egui::Vec2,
     pub window_rows: usize,
 }
+pub(super) struct CountRequest {
+    pub name: String,
+    pub result: tursobench_core::ResultSet,
+    pub owner: Option<(u64, Option<Ticket>)>,
+}
 #[derive(Default)]
 pub(super) struct Tools {
     pub transfers: super::transfers::State,
@@ -43,7 +48,7 @@ pub(super) struct Tools {
     pub back: Vec<NavigationEntry>,
     pub result_return: Option<NavigationEntry>,
     pub counts: BTreeMap<String, i64>,
-    pub count_request: Option<(String, tursobench_core::ResultSet)>,
+    pub count_request: Option<CountRequest>,
     pub help: bool,
     pub history_search: String,
     pub bookmark_search: String,
@@ -57,6 +62,8 @@ pub(super) struct Tools {
 #[derive(Default)]
 pub(super) struct ViewTools {
     pub large: super::large_values::Viewer,
+    pub filtered_count: Option<i64>,
+    pub draft_ui: super::editing::Presentation,
     pub sql_focus: Option<eframe::egui::Id>,
     pub filter_focus: bool,
     pub filter_error: String,

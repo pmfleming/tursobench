@@ -722,15 +722,17 @@ impl App {
                 .on_hover_text("Bound related-row lookup. Not a complete table.");
             return;
         };
-        if let Some(n) = self.tools.counts.get(&b.table) {
+        if let Some(n) = self.document.tools.filtered_count {
+            ui.small(format!("of {n} matching"));
+        } else if let Some(n) = self.tools.counts.get(&b.table) {
             ui.small(format!("of {n} total"));
         } else if icons::control(ui, Icon::Count, "?", "", false, true)
-            .on_hover_text("Count all table rows (full scan), independent of filters")
+            .on_hover_text("Count matching rows (explicit scan)")
             .clicked()
         {
             self.count_table(b.table.clone());
         }
-        ui.small(format!("{}–{}",b.offset+usize::from(!self.document.result.rows.is_empty()),b.offset+self.document.result.rows.len())).on_hover_text("100 rows per fetch · retained window · OFFSET is not a snapshot · scroll back to reload evicted pages");
+        ui.small(format!("{}–{}",b.offset+usize::from(!self.document.result.rows.is_empty()),b.offset+self.document.result.rows.len())).on_hover_text("Up to 100 rows per fetch · retained window · paging is not a snapshot · scroll back to reload evicted pages");
     }
     pub(super) fn refresh_table(&mut self) {
         if self.document.view != View::Browse || self.document.ui.nav != Nav::Table {

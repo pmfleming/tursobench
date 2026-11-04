@@ -12,7 +12,12 @@ use tursobench_db::{Operation, Request};
 use tools::{Destination, NavigationEntry};
 impl App {
     pub(super) fn finish_count(&mut self, failure: Option<String>) {
-        let Some((name, result)) = self.tools.count_request.take() else {
+        let Some(tools::CountRequest {
+            name,
+            result,
+            owner,
+        }) = self.tools.count_request.take()
+        else {
             return;
         };
         if result
@@ -22,7 +27,21 @@ impl App {
             && let Some(Value::Integer(n)) = result.rows.first().and_then(|r| r.first())
         {
             self.status = format!("{name}: {n} rows · explicit full scan");
-            self.tools.counts.insert(name, *n);
+            if let Some((id, ticket)) = owner {
+                let document = if self.document.id == id {
+                    Some(&mut self.document)
+                } else {
+                    self.documents.get_mut(&id)
+                };
+                if let Some(document) = document
+                    && document.result.current == ticket
+                    && !document.stale
+                {
+                    document.tools.filtered_count = Some(*n);
+                }
+            } else {
+                self.tools.counts.insert(name, *n);
+            }
         } else {
             self.status = failure.map_or_else(
                 || format!("Count failed or incomplete: {:?}", result.completion),
@@ -109,7 +128,17 @@ impl App {
             Ok(()) => {
                 let mut result = tursobench_core::ResultSet::default();
                 result.start(ticket);
-                self.tools.count_request = Some((name, result));
+                let filtered = self.document.browse.as_ref().is_some_and(|b| {
+                    b.table == name
+                        && (!b.filters.is_empty()
+                            || b.options.predicate.is_some()
+                            || b.options.relation.is_some())
+                });
+                self.tools.count_request = Some(tools::CountRequest {
+                    name,
+                    result,
+                    owner: filtered.then_some((self.document.id, self.document.result.current)),
+                });
                 self.status =
                     "Counting rows; full scan, discard interrupts SELECT reads; writes finish normally".into();
             }
@@ -441,6 +470,7 @@ impl App {
     }
     pub(super) fn restore_browse_selection(&mut self) {
         if self.document.tools.pages.restore_rows > self.document.result.rows.len()
+            && !self.document.tools.pages.capacity_reached
             && self.document.tools.pages.end.is_none()
         {
             return;

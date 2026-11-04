@@ -79,6 +79,42 @@ pub(crate) async fn export(
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(io)?;
+    let mut writer = BufWriter::new(&mut temp);
+    let mut outcome = stream(c, text, parameters, scope, &mut writer, cancel).await?;
+    drop(writer);
+    if outcome.error.is_none() {
+        let result = (|| {
+            temp.as_file().sync_all().map_err(io)?;
+            temp.persist_noclobber(path).map_err(io)?;
+            Ok::<_, Failure>(())
+        })();
+        if let Err(e) = result {
+            outcome.error = Some(e);
+        }
+    }
+    outcome.message = if let Some(e) = &outcome.error {
+        format!(
+            "Export not published. Statement finished: {}; transaction {:?}. {e}",
+            outcome.executed, outcome.transaction
+        )
+    } else {
+        format!(
+            "Exported {} complete rows to {}",
+            outcome.rows,
+            path.display()
+        )
+    };
+    Ok(outcome)
+}
+
+async fn stream(
+    c: &Connection,
+    text: &str,
+    parameters: Bindings,
+    scope: &str,
+    mut writer: &mut impl Write,
+    cancel: impl Fn() -> bool,
+) -> Result<TransferOutcome, Failure> {
     let mut stmt = c.prepare(text).await.map_err(failure)?;
     let columns = stmt.columns();
     if columns.len() > 512
@@ -110,7 +146,6 @@ pub(crate) async fn export(
         message: String::new(),
         executed: false,
     };
-    let mut writer = BufWriter::new(&mut temp);
     line(
         &mut writer,
         &json!({"record":"header","format":"tursobench-typed-jsonl","version":2,"engine":"turso-0.8.3","scope":scope,"rows_expected":null,"columns":columns.iter().map(|c|json!({"name":c.name(),"declared_type":c.decl_type()})).collect::<Vec<_>>()}),
@@ -168,29 +203,6 @@ pub(crate) async fn export(
             outcome.error = Some(e);
         }
     }
-    drop(writer);
-    if outcome.error.is_none() {
-        let result = (|| {
-            temp.as_file().sync_all().map_err(io)?;
-            temp.persist_noclobber(path).map_err(io)?;
-            Ok::<_, Failure>(())
-        })();
-        if let Err(e) = result {
-            outcome.error = Some(e);
-        }
-    }
-    outcome.message = if let Some(e) = &outcome.error {
-        format!(
-            "Export not published. Statement finished: {}; transaction {:?}. {e}",
-            outcome.executed, outcome.transaction
-        )
-    } else {
-        format!(
-            "Exported {} complete rows to {}",
-            outcome.rows,
-            path.display()
-        )
-    };
     Ok(outcome)
 }
 
@@ -320,5 +332,36 @@ pub(crate) fn decode(value: &Json) -> Result<Value, Failure> {
         _ => Err(Failure::input(
             "Unknown typed cell; deferred values cannot be imported",
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    struct FullDisk(usize);
+    impl Write for FullDisk {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if self.0 == 0 {
+                return Err(std::io::Error::other("injected disk full"));
+            }
+            let count = self.0.min(bytes.len());
+            self.0 -= count;
+            Ok(count)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    #[test]
+    fn output_failure_drains_returning_and_header_failure_does_not_execute() {
+        tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap().block_on(async{
+            let dir=tempfile::tempdir().unwrap();let db=turso::Builder::new_local(dir.path().join("full.db").to_str().unwrap()).build().await.unwrap();let c=db.connect().unwrap();
+            c.execute("CREATE TABLE t(id INTEGER PRIMARY KEY)",()).await.unwrap();
+            let sql="WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<1000) INSERT INTO t SELECT x FROM n RETURNING id";
+            let outcome=stream(&c,sql,vec![].into(),"complete-query-result",&mut FullDisk(512),||false).await.unwrap();
+            assert!(outcome.error.is_some());assert!(outcome.executed);assert_eq!(outcome.changed,1000);assert_eq!(outcome.transaction,TransactionState::Autocommit);
+            assert!(stream(&c,"INSERT INTO t VALUES(1001)",vec![].into(),"complete-query-result",&mut FullDisk(0),||false).await.is_err());
+            let mut rows=c.query("SELECT count(*) FROM t",()).await.unwrap();assert_eq!(rows.next().await.unwrap().unwrap().get_value(0).unwrap(),turso::Value::Integer(1000));
+        });
     }
 }

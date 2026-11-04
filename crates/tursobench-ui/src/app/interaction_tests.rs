@@ -157,10 +157,17 @@ fn byte_limited_pages_continue_and_reverse_without_a_false_end() {
     assert!(app.document.tools.pages.end.is_none());
     app.request_page(false);
     wait(&mut app, &ctx);
-    assert_eq!(
-        app.document.result.rows[0][0],
-        Value::Integer(first as i64 + 1)
+    assert!(
+        app.document
+            .result
+            .rows
+            .iter()
+            .any(|r| r[0] == Value::Integer(first as i64 + 1))
     );
+    while app.document.browse.as_ref().unwrap().offset == 0 {
+        app.request_page(false);
+        wait(&mut app, &ctx);
+    }
     app.request_page(true);
     wait(&mut app, &ctx);
     assert!(
@@ -200,6 +207,221 @@ fn bulk_selection_deletion_is_staged_until_an_explicit_commit() {
     app.document.show_insert = false;
     app.close();
     wait_closed(&mut app, &ctx);
+}
+
+#[test]
+fn worker_termination_preserves_drafts_and_reports_unknown_cleanup() {
+    let (_dir, ctx, mut app) = fixture(
+        &[
+            "CREATE TABLE t(id INTEGER PRIMARY KEY,value TEXT)",
+            "INSERT INTO t VALUES(1,'before')",
+        ],
+        true,
+    );
+    app.browse_table("t".into());
+    wait(&mut app, &ctx);
+    app.stage_cell(0, 1, Value::Text("draft".into()));
+    let old = app.session.take().unwrap();
+    old.close();
+    assert!(matches!(
+        old.events
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .kind,
+        EventKind::Closed { rollback: Ok(()) }
+    ));
+    drop(old);
+    // An actual worker unwind drops the event sender without a Closed ack.
+    let session = tursobench_db::Session::open(
+        app.path.clone().into(),
+        tursobench_core::Access::ReadWrite,
+        true,
+        || panic!("injected worker termination"),
+    )
+    .unwrap();
+    assert!(matches!(
+        session
+            .events
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .kind,
+        EventKind::Opened
+    ));
+    app.commit_ticket = Some(session.ticket(1, 0));
+    app.commit_owner = Some(app.document.id);
+    app.session = Some(session);
+    app.closing = true;
+    app.quit = true;
+    wait_closed(&mut app, &ctx);
+    assert!(!app.ready && !app.quit && !app.closing);
+    assert_eq!(app.transaction, TransactionState::Unknown);
+    assert!(app.uncertain_edit && app.has_drafts());
+    assert!(app.status.contains("UNKNOWN"));
+    assert!(!app.can_edit());
+    assert_staged(&app, 0, 1, Value::Text("draft".into()));
+}
+
+#[test]
+#[ignore = "manual frame profile; run with --ignored --exact and --nocapture"]
+fn profile_one_thousand_staged_edits() {
+    let (_dir, ctx, mut app) = fixture(
+        &[
+            "CREATE TABLE t(id INTEGER PRIMARY KEY,value TEXT)",
+            "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<1000) INSERT INTO t SELECT x,'original' FROM n",
+        ],
+        true,
+    );
+    app.preferences.row_limit = 2000;
+    app.browse_table("t".into());
+    wait(&mut app, &ctx);
+    while app.document.result.rows.len() < 1000 {
+        app.request_page(false);
+        wait(&mut app, &ctx);
+    }
+    app.document.drafts = Some(tursobench_core::DraftBatch {
+        table: app.document.table.clone().unwrap(),
+        edits: app
+            .document
+            .result
+            .rows
+            .iter()
+            .map(|row| tursobench_core::Edit::Update {
+                original: row.clone(),
+                changes: vec![(1, Value::Text("changed".into()))],
+            })
+            .collect(),
+    });
+    for (label, review, frames) in [("grid", false, 20), ("review", true, 3)] {
+        app.document.show_preview = review;
+        frame(&mut app, &ctx, vec![]);
+        let start = Instant::now();
+        for _ in 0..frames {
+            frame(&mut app, &ctx, vec![]);
+        }
+        println!(
+            "{}",
+            serde_json::json!({"profile":label,"drafts":1000,"frames":frames,"mean_ms":start.elapsed().as_secs_f64()*1000.0/f64::from(frames)})
+        );
+    }
+    for cached in [false, true] {
+        let start = Instant::now();
+        for _ in 0..1000 {
+            for r in 980..1000 {
+                for col in 0..2 {
+                    if cached {
+                        std::hint::black_box(
+                            app.document
+                                .tools
+                                .draft_ui
+                                .rows
+                                .get(&r)
+                                .and_then(|r| r.updates.get(&col)),
+                        );
+                    } else {
+                        std::hint::black_box(
+                            app.document
+                                .drafts
+                                .as_ref()
+                                .unwrap()
+                                .displayed(&app.document.result.rows[r], col),
+                        );
+                    }
+                }
+            }
+        }
+        println!(
+            "{}",
+            serde_json::json!({"profile":"tail_draft_lookups","cached":cached,"elapsed_ms":start.elapsed().as_secs_f64()*1000.0})
+        );
+    }
+    app.document.drafts = None;
+    app.close();
+    wait_closed(&mut app, &ctx);
+}
+
+#[test]
+fn filtered_counts_belong_to_their_view_and_ignore_replaced_requests() {
+    let (_dir, ctx, mut app) = fixture(
+        &[
+            "CREATE TABLE t(id INTEGER PRIMARY KEY)",
+            "INSERT INTO t VALUES(1),(2),(3),(4),(5)",
+        ],
+        false,
+    );
+    app.browse_table("t".into());
+    wait(&mut app, &ctx);
+    let owner = app.document.id;
+    app.add_filter(tursobench_core::Filter {
+        column: 0,
+        op: tursobench_core::FilterOp::Less,
+        value: Value::Integer(3),
+    });
+    wait(&mut app, &ctx);
+    app.count_table("t".into());
+    wait(&mut app, &ctx);
+    assert_eq!(app.document.tools.filtered_count, Some(2));
+    assert!(!app.tools.counts.contains_key("t"));
+    app.open_sql_window(false);
+    app.count_table("t".into());
+    wait(&mut app, &ctx);
+    assert_eq!(app.tools.counts.get("t"), Some(&5));
+    assert_eq!(
+        app.document_ref(owner).unwrap().tools.filtered_count,
+        Some(2)
+    );
+    app.focus_window(owner);
+    app.count_table("t".into());
+    app.add_filter(tursobench_core::Filter {
+        column: 0,
+        op: tursobench_core::FilterOp::Greater,
+        value: Value::Integer(1),
+    });
+    wait(&mut app, &ctx);
+    assert!(app.document.tools.filtered_count.is_none());
+    app.close();
+    wait_closed(&mut app, &ctx);
+}
+
+#[test]
+fn keyless_byte_limited_pages_and_deferred_sort_values_can_scroll_back() {
+    for (key, size) in [("", 25000), ("PRIMARY KEY", 50000)] {
+        let create = format!("CREATE TABLE t(id INTEGER {key},value TEXT)");
+        let insert = format!(
+            "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<301) INSERT INTO t SELECT x,hex(zeroblob({size})) FROM n"
+        );
+        let (_dir, ctx, mut app) = fixture(&[&create, &insert], false);
+        app.preferences.row_limit = 200;
+        app.browse_table("t".into());
+        wait(&mut app, &ctx);
+        if size == 50000 {
+            app.document.browse.as_mut().unwrap().sort = Some(1);
+            app.reload();
+            wait(&mut app, &ctx);
+        }
+        while app.document.tools.pages.end.is_none() {
+            app.request_page(false);
+            wait(&mut app, &ctx);
+        }
+        assert!(app.document.browse.as_ref().unwrap().offset > 100);
+        while app.document.browse.as_ref().unwrap().offset > 0 {
+            let before = app.document.browse.as_ref().unwrap().offset;
+            app.request_page(true);
+            wait(&mut app, &ctx);
+            assert!(
+                app.document.tools.pages.error.is_empty(),
+                "{}",
+                app.document.tools.pages.error
+            );
+            let offset = app.document.browse.as_ref().unwrap().offset;
+            assert!(offset < before);
+            assert_eq!(
+                app.document.result.rows[0][0],
+                Value::Integer(offset as i64 + 1)
+            );
+        }
+        app.close();
+        wait_closed(&mut app, &ctx);
+    }
 }
 
 #[test]

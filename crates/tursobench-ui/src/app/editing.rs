@@ -66,7 +66,89 @@ impl InsertField {
         });
     }
 }
+#[derive(Default)]
+pub(super) struct RowPresentation {
+    pub deleted: bool,
+    pub updates: std::collections::BTreeMap<usize, Value>,
+}
+#[derive(Default)]
+pub(super) struct Presentation {
+    signature: Option<(u64, Option<tursobench_core::Ticket>, usize, usize)>,
+    pub rows: std::collections::BTreeMap<usize, RowPresentation>,
+    review: Option<Result<Vec<tursobench_core::BoundEdit>, tursobench_core::Failure>>,
+    selected: usize,
+    parameter_index: Option<usize>,
+    parameters: String,
+}
+fn row_hash(row: &[Value]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    row.len().hash(&mut h);
+    for value in row {
+        std::mem::discriminant(value).hash(&mut h);
+        match value {
+            Value::Null => {}
+            Value::Integer(n) => n.hash(&mut h),
+            Value::Real(n) => (if *n == 0.0 { 0 } else { n.to_bits() }).hash(&mut h),
+            Value::Text(s) => s.hash(&mut h),
+            Value::Blob(b) => b.hash(&mut h),
+            Value::Deferred(c) => {
+                c.handle.hash(&mut h);
+                c.bytes.hash(&mut h);
+            }
+        }
+    }
+    h.finish()
+}
 impl App {
+    pub(super) fn update_draft_presentation(&mut self) {
+        let Some(draft) = &self.document.drafts else {
+            self.document.tools.draft_ui = Presentation::default();
+            return;
+        };
+        let signature = (
+            self.document.draft_revision,
+            self.document.result.current,
+            self.document.result.rows.len(),
+            draft.edits.len(),
+        );
+        if self.document.tools.draft_ui.signature == Some(signature) {
+            return;
+        }
+        let mut edits = std::collections::HashMap::<u64, Vec<&Edit>>::new();
+        for edit in &draft.edits {
+            if let Edit::Update { original, .. } | Edit::Delete { original } = edit {
+                edits.entry(row_hash(original)).or_default().push(edit);
+            }
+        }
+        let mut model = Presentation {
+            signature: Some(signature),
+            review: Some(draft.preview()),
+            selected: self.document.tools.draft_ui.selected,
+            ..Default::default()
+        };
+        for (row, values) in self.document.result.rows.iter().enumerate() {
+            if let Some(edits) = edits.get(&row_hash(values)) {
+                let mut entry = RowPresentation::default();
+                for edit in edits {
+                    match edit {
+                        Edit::Update { original, changes } if original == values => {
+                            for (col, value) in changes {
+                                entry.updates.entry(*col).or_insert_with(|| value.clone());
+                            }
+                        }
+                        Edit::Delete { original } if original == values => entry.deleted = true,
+                        _ => {}
+                    }
+                }
+                if entry.deleted || !entry.updates.is_empty() {
+                    model.rows.insert(row, entry);
+                }
+            }
+        }
+        self.document.tools.draft_ui = model;
+    }
+
     pub(super) fn has_drafts(&self) -> bool {
         self.document.has_drafts() || self.documents.values().any(|d| d.has_drafts())
     }
@@ -125,6 +207,7 @@ impl App {
         f(&mut draft);
         match draft.preview() {
             Ok(_) => {
+                self.document.draft_revision = self.document.draft_revision.wrapping_add(1);
                 self.document.drafts = Some(draft);
                 self.status = "Staged locally. Preview and explicitly commit to write.".into();
             }
@@ -227,6 +310,7 @@ impl App {
                                 );
                             }
                             if self.document.insert_use_json {
+                                ui.small("JSON null omits a column; {\"type\":\"Null\"} inserts SQL NULL.");
                                 ui.add(
                                     egui::TextEdit::multiline(&mut self.document.insert_json)
                                         .code_editor()
@@ -280,6 +364,7 @@ impl App {
             self.document.show_insert = open;
         }
         if self.document.show_preview {
+            self.update_draft_presentation();
             let mut open = true;
             egui::Window::new("Review staged atomic transaction").frame(crate::app::presentation::window_frame(ctx)).default_pos(ctx.content_rect().center()-egui::vec2(280.0,180.0))
                 .open(&mut open).default_width(760.0).max_width((ctx.content_rect().width()-40.0).max(280.0))
@@ -288,28 +373,33 @@ impl App {
                     let mut remove = None;
                     if let Some(draft) = &self.document.drafts {
                         ui.strong(format!("{} · {} staged operations",draft.table.name,draft.edits.len()));
-                        match draft.preview() {
-                            Ok(statements) => {
-                                egui::ScrollArea::vertical().max_height((ctx.content_rect().height()-260.0).clamp(120.0,480.0)).show(ui,|ui| {
-                                    for (i, statement) in statements.iter().enumerate() {
-                                        ui.horizontal_wrapped(|ui| {
-                                            ui.strong(format!("Operation {}",i+1));
-                                            if ui.add_enabled(self.commit_ticket.is_none(),egui::Button::new("Remove operation")).clicked() { remove = Some(i); }
-                                        });
-                                        edit_diff(ui,&draft.table,&draft.edits[i]);
-                                        let mut sql = statement.sql.as_str();
+                        let model=&mut self.document.tools.draft_ui;
+                        match &model.review {
+                            Some(Ok(statements))=>{
+                                egui::ScrollArea::vertical().id_salt("review-operations").max_height(150.0).show_rows(ui,29.0,statements.len(),|ui,range|{
+                                    for i in range {ui.push_id(i,|ui|{ui.horizontal(|ui|{
+                                        if ui.selectable_label(model.selected==i,format!("Operation {}",i+1)).clicked(){model.selected=i;}
+                                        if ui.add_enabled(self.commit_ticket.is_none(),egui::Button::new("Remove operation")).clicked(){remove=Some(i);}
+                                    });});}
+                                });
+                                model.selected=model.selected.min(statements.len().saturating_sub(1));
+                                if let Some(statement)=statements.get(model.selected){
+                                    if model.parameter_index!=Some(model.selected){model.parameters=crate::export::bindings_text(&statement.parameters);model.parameter_index=Some(model.selected);}
+                                    egui::ScrollArea::vertical().id_salt("review-details").max_height((ctx.content_rect().height()-420.0).clamp(80.0,300.0)).show(ui,|ui|{
+                                        edit_diff(ui,&draft.table,&draft.edits[model.selected]);
+                                        let mut sql=statement.sql.as_str();
                                         ui.add(egui::TextEdit::multiline(&mut sql).code_editor().interactive(false).desired_width(ui.available_width()).desired_rows(2));
                                         ui.small("Exact typed bindings (including original-value predicates):");
-                                        let mut parameters=serde_json::to_string(&statement.parameters).unwrap_or_default();
+                                        let mut parameters=model.parameters.as_str();
                                         ui.add(egui::TextEdit::multiline(&mut parameters).code_editor().interactive(false).desired_width(ui.available_width()).desired_rows(2));
-                                        ui.separator();
-                                    }
-                                });
+                                    });
+                                }
                             }
-                            Err(error) => { ui.colored_label(ui.visuals().error_fg_color,error.to_string()); }
+                            Some(Err(error))=>{ui.colored_label(ui.visuals().error_fg_color,error.to_string());}
+                            None=>{}
                         }
                     }
-                    if let Some(index) = remove && let Some(draft) = &mut self.document.drafts { draft.edits.remove(index); }
+                    if let Some(index) = remove && let Some(draft) = &mut self.document.drafts { draft.edits.remove(index); self.document.draft_revision=self.document.draft_revision.wrapping_add(1); }
                     if self.uncertain_edit { ui.colored_label(ui.visuals().error_fg_color,"UNKNOWN outcome — close/reopen and inspect; never automatically retry."); }
                     if self.commit_ticket.is_some() { ui.label("Committing — awaiting the actual outcome…"); }
                     if presentation::footer(ui, |ui| ui.add_enabled(self.can_edit() && self.has_drafts(),presentation::action(ui,"COMMIT staged edits to database",Intent::Pending))).inner.clicked() { self.commit_drafts(); }

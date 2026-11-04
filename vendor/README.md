@@ -1,4 +1,14 @@
-# Scoped FTS compression dependency patch
+# Pinned dependency patches
+
+## Turso Rust wrapper
+
+`turso/` contains the published **0.8.3** Rust wrapper with two public forwarding
+methods for existing SDK interruption and statement deadlines. The engine is
+unchanged. Source archive hash, upstream revision, scope and MIT license provenance
+are recorded in [turso/PATCH.md](turso/PATCH.md). Remove this patch when an allowed
+upstream wrapper exposes equivalent APIs and passes the compatibility suite.
+
+## FTS compression dependency
 
 `tantivy-sstable/` contains the published `tantivy-sstable` **0.7.0** crate's
 unchanged Rust sources, tests and benchmarks. It is used by Turso 0.8.3's

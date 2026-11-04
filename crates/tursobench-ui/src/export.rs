@@ -315,6 +315,9 @@ fn line(writer: &mut impl Write, value: &Json) -> Result<(), String> {
     serde_json::to_writer(&mut *writer, value).map_err(|e| e.to_string())?;
     writer.write_all(b"\n").map_err(|e| e.to_string())
 }
+pub fn bindings_text(values: &[Value]) -> String {
+    serde_json::to_string(&values.iter().map(encode).collect::<Vec<_>>()).unwrap_or_default()
+}
 fn encode(value: &Value) -> Json {
     match value {
         Value::Null => json!({"type":"null"}),

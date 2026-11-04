@@ -72,9 +72,10 @@ Verified API facts in the published crate:
 | Triggers and strict tables are always enabled | Do not inherit old experimental-feature assumptions. |
 | Custom types, multiprocess WAL, and other features have experimental flags | Make capabilities explicit and validate them before enabling them. |
 
-No public interruption API was found in the inspected Rust `Connection` and
-`Statement` interfaces. Cancellation semantics remain a spike item, not a promised
-feature. Source inspection is not proof of runtime behavior.
+The published wrapper exposes no public interruption API. The review remediation
+adds a narrowly scoped pinned wrapper patch forwarding existing SDK interrupt and
+deadline methods; real-engine cancellation/reuse tests pass. See
+`vendor/turso/PATCH.md` and `docs/review-remediation.md` for current evidence.
 
 Initial dependency policy: use `turso = "=0.8.3"`, commit `Cargo.lock`, and select
 Cargo features explicitly after the spike. Do not silently track later releases.
@@ -172,7 +173,8 @@ test and maintain this Turso-only application.
   overwrite another writer's changes.
 - Keep drafts on failed commits. Clear them only after confirmed success.
 - Validate constraints and operation ordering without disabling foreign-key safety.
-- Do not automatically migrate/checkpoint/repair user files. Test old-engine files
+- Do not automatically checkpoint/repair user files. Disclose the engine's possible
+  writable-open journal migration before opt-in. Test old-engine files
   on copies and document compatibility limits.
 - Concurrent access by another process is a release gate, particularly because
   multiprocess WAL is experimental in this API. Do not assume SQLite tooling and
@@ -299,7 +301,10 @@ Implementation does **not** mean all original acceptance gates are satisfied.
 See `docs/release.md` for exercised tests, measurements, scope reductions and
 outstanding production gates, and `contracts/engine-compatibility.md` for runtime
 evidence. In particular, live multiprocess access is unsupported, file/engine
-memory safety is not certified, cancellation does not interrupt execution,
-paging uses OFFSET, and fault-injected transaction failures, legacy-engine
-fixtures, complete license review and cross-host reproducibility remain open.
+memory safety is not certified, and legacy-engine fixtures, physical engine I/O
+fault injection, complete license review and cross-host reproducibility remain open.
+The eight-stage review remediation adds verified cooperative read interruption,
+query deadlines, indexed/keyset browsing, large-value viewing, scripts, typed/bulk
+edits, complete transfers and coordinated backup. See
+[the implementation record](docs/review-remediation.md) for coverage and limits.
 No stable production release or support for another database engine is claimed.

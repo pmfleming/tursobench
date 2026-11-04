@@ -3,6 +3,10 @@ use std::collections::VecDeque;
 use tursobench_core::{Delivery, Event, EventKind, ResultSet, Ticket};
 use tursobench_db::{Operation, Request};
 
+pub(super) const PAGE_BYTES: usize = 512 * 1024;
+pub(super) fn fetch_rows(limit: usize) -> usize {
+    ((limit.clamp(200, 10000) - 100) / 3).clamp(1, 100)
+}
 #[derive(Default)]
 pub(super) struct Pages {
     pub pending: Option<Pending>,
@@ -10,6 +14,7 @@ pub(super) struct Pages {
     pub end: Option<usize>,
     pub error: String,
     pub restore_rows: usize,
+    pub capacity_reached: bool,
     pub retry_previous: bool,
 }
 pub(super) struct Pending {
@@ -18,6 +23,7 @@ pub(super) struct Pending {
     offset: usize,
     previous: bool,
     reverse: bool,
+    tail: bool,
     error: String,
 }
 impl App {
@@ -45,13 +51,14 @@ impl App {
         let Some(mut spec) = self.document.browse.clone() else {
             return;
         };
+        let fetch_rows = fetch_rows(self.preferences.row_limit);
         let pages = &mut self.document.tools.pages;
         let end = spec.offset + self.document.result.rows.len();
         if previous {
             if spec.offset == 0 {
                 return;
             }
-            spec.offset = spec.offset.saturating_sub(100);
+            spec.offset = spec.offset.saturating_sub(fetch_rows);
         } else {
             if pages.end.is_some_and(|last| end >= last) {
                 return;
@@ -60,8 +67,34 @@ impl App {
         }
         let seek = self.document.table.as_ref().is_some_and(|table| {
             let keys = table.keys();
-            table.is_table && !keys.is_empty() && keys.iter().all(|i| table.columns[*i].not_null)
+            table.is_table
+                && !keys.is_empty()
+                && keys.len() <= 8
+                && keys.iter().all(|i| table.columns[*i].not_null)
         });
+        let cursor = if previous {
+            self.document.result.rows.first()
+        } else {
+            self.document.result.rows.last()
+        };
+        let seek = seek
+            && cursor.is_some_and(|row| {
+                !row.iter()
+                    .any(|v| matches!(v, tursobench_core::Value::Deferred(_)))
+            });
+        spec.options.tail = previous && !seek;
+        spec.options.page_rows = if spec.options.tail {
+            self.document
+                .browse
+                .as_ref()
+                .unwrap()
+                .offset
+                .min(fetch_rows)
+        } else {
+            fetch_rows
+        };
+        spec.options.page_bytes = PAGE_BYTES;
+        let tail = spec.options.tail;
         spec.options.cursor = if seek {
             if previous {
                 self.document.result.rows.first().cloned()
@@ -96,6 +129,7 @@ impl App {
                     offset,
                     previous,
                     reverse,
+                    tail,
                     error: String::new(),
                 });
                 pages.error.clear();
@@ -112,7 +146,25 @@ impl App {
         } else if start <= 20 && delta > 0.0 {
             self.request_page(true);
         } else if end + 20 >= self.document.result.rows.len() && delta <= 0.0 {
-            self.request_page(false);
+            let keep = self.preferences.row_limit.clamp(200, 10000) - 100;
+            let rows_needed = (self.document.result.rows.len()
+                + fetch_rows(self.preferences.row_limit))
+            .saturating_sub(keep);
+            let bytes_needed = retained_bytes(&self.document.result)
+                .saturating_add(PAGE_BYTES)
+                .saturating_sub(4 * 1024 * 1024);
+            let before = self
+                .document
+                .result
+                .rows
+                .iter()
+                .take(start)
+                .flatten()
+                .map(tursobench_core::Value::bytes)
+                .sum::<usize>();
+            if start >= rows_needed && before >= bytes_needed {
+                self.request_page(false);
+            }
         }
     }
     pub(super) fn page_event(&mut self, event: Event) {
@@ -155,9 +207,11 @@ impl App {
         }
         if page.reverse {
             page.result.rows.reverse();
-            if let Some(browse) = &self.document.browse {
-                page.offset = browse.offset.saturating_sub(page.result.rows.len());
-            }
+        }
+        if (page.reverse || page.tail)
+            && let Some(browse) = &self.document.browse
+        {
+            page.offset = browse.offset.saturating_sub(page.result.rows.len());
         }
         self.document
             .append_page(page, self.preferences.row_limit.clamp(200, 10_000) - 100);
@@ -202,39 +256,65 @@ impl Document {
         self.trim_pages(page.previous, keep);
     }
     fn trim_pages(&mut self, previous: bool, keep: usize) {
-        let Some(browse) = self.browse.as_mut() else {
-            return;
-        };
-        let mut delta = 0isize;
-        // Reserve one 100-row / 4 MiB page for in-flight delivery. The table
-        // window has a 200-row minimum; SQL retains the user's exact row limit.
-        while self.tools.pages.chunks.len() > 1
-            && (self.result.rows.len() > keep || retained_bytes(&self.result) > 4 * 1024 * 1024)
-        {
-            if previous {
-                let Some(n) = self.tools.pages.chunks.pop_back() else {
-                    break;
-                };
-                self.result.rows.truncate(self.result.rows.len() - n);
-                if self
-                    .inspect
-                    .is_some_and(|(r, _)| r >= self.result.rows.len())
-                {
-                    self.inspect = None;
-                    self.tools.detail = None;
-                    self.tools.grid_selection = None;
-                }
+        let row_excess = self.result.rows.len().saturating_sub(keep);
+        let byte_excess = retained_bytes(&self.result).saturating_sub(4 * 1024 * 1024);
+        let mut count = 0;
+        let mut bytes = 0;
+        for i in 0..self.result.rows.len() {
+            if count >= row_excess && bytes >= byte_excess {
+                break;
+            }
+            let row = if previous {
+                self.result.rows.len() - 1 - i
             } else {
-                let Some(n) = self.tools.pages.chunks.pop_front() else {
-                    break;
-                };
-                self.result.rows.drain(..n);
-                browse.offset += n;
-                delta -= n as isize;
+                i
+            };
+            bytes += self.result.rows[row]
+                .iter()
+                .map(tursobench_core::Value::bytes)
+                .sum::<usize>();
+            count += 1;
+        }
+        if count == 0 {
+            return;
+        }
+        self.tools.pages.capacity_reached = true;
+        let mut remaining = count;
+        while remaining > 0 {
+            let chunk = if previous {
+                self.tools.pages.chunks.back_mut()
+            } else {
+                self.tools.pages.chunks.front_mut()
+            };
+            let Some(chunk) = chunk else {
+                break;
+            };
+            let n = remaining.min(*chunk);
+            *chunk -= n;
+            remaining -= n;
+            if *chunk == 0 {
+                if previous {
+                    self.tools.pages.chunks.pop_back();
+                } else {
+                    self.tools.pages.chunks.pop_front();
+                }
             }
         }
-        if delta != 0 {
-            self.rebase_rows(delta);
+        if previous {
+            self.result.rows.truncate(self.result.rows.len() - count);
+            let len = self.result.rows.len();
+            self.inspect = self.inspect.filter(|(r, _)| *r < len);
+            self.tools.detail = self.tools.detail.filter(|r| *r < len);
+            self.tools.grid_selection = self
+                .tools
+                .grid_selection
+                .filter(|s| s.anchor.0 < len && s.cursor.0 < len);
+        } else {
+            self.result.rows.drain(..count);
+            if let Some(browse) = self.browse.as_mut() {
+                browse.offset += count;
+            }
+            self.rebase_rows(-(count as isize));
         }
     }
     fn rebase_rows(&mut self, delta: isize) {
@@ -353,6 +433,7 @@ mod tests {
                 offset: 1,
                 previous: false,
                 reverse: false,
+                tail: false,
                 error: String::new(),
             });
             // A late completion cannot consume or alter the current pending page.

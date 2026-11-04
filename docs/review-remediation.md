@@ -20,7 +20,7 @@ delivery and remaining work; it is not a production-readiness claim.
   persistence for unreadable or newer-version files.
 - Flush successfully decoded partial rows when a later engine error occurs.
 
-## Remaining stages
+## Delivery sequence
 
 2. File access safety and result freshness.
 3. Execution lifecycle, scheduling and verified cancellation/deadlines.
@@ -166,3 +166,139 @@ quoted multiline CSV/NULL/blob values, execute INSERT RETURNING only once, and
 restore recent WAL data from a verified backup. A 512-value floating-point probe
 checks accepted SQL spellings against actual engine result bits. Unknown script,
 import and generated-commit outcomes block further mutations until reopen.
+
+
+## Stage 8 — profiling, hardening and qualification
+
+Draft presentation indexes original rows once per draft revision/result identity,
+then uses per-row overlays. SQL preview is revision-cached; the review list is
+virtualized and formats bindings only for the selected operation. Value previews
+inspect at most 101 characters. These changes preserve original typed values and
+perform no database writes during rendering.
+
+Final hardening also covers filtered-count ownership and late replies, automatic
+schema-diagram refresh, bracket-aware grouped IN parsing, adaptive small-window
+paging, exact row eviction and reverse suffix delivery for wide/keyless/deferred
+cursor rows. Preference reads/saves are capped at 2 MiB, including files changed
+while running; corrupt/newer data cannot replace the original or previous backup.
+Anonymous large-value backing is reclaimed by the OS on Linux process termination.
+
+Fault coverage includes real engine transactions with injected failures before
+COMMIT, after durable COMMIT acknowledgement, and during rollback; uncertain
+outcomes retain drafts and prevent retry. A deterministic failing output writer
+verifies INSERT RETURNING finishes exactly once and a failed header prevents
+execution. An actual worker unwind verifies disconnection reports UNKNOWN, retains
+local drafts and cancels automatic window exit. Spool tests exhaust the 256 MiB
+quota and 1,024 handles, reject >64 MiB values and fail expired handles safely.
+Other regressions retain a 69-row valid prefix after a decode/query error and
+traverse 301 wide/keyless rows in both directions without skipping a short page.
+The terminal-event callback test now acknowledges the prior wake before arming its
+barrier, removing a test-side race discovered by the full verification run.
+
+Final validation: **174 regular workspace tests**, formatting, warning-free
+all-target Clippy, debug desktop smoke, startup-discovery smoke and all four
+local-project fixture/desktop smokes pass. The manual 1,000-draft profile also
+passes. The release archive is rebuilt, extracted, checksum-verified and installed
+to a disposable prefix; its installed binary passes the 100,000-row native smoke.
+No push, public release or external database write is part of this work.
+
+### Performance evidence
+
+On this Linux x86_64 Nix host, debug egui frames with 1,000 staged updates and a
+1400×900 viewport, after one warm-up frame:
+
+| Scenario | Baseline | Final |
+| --- | ---: | ---: |
+| Grid, mean of 20 frames | 4.82 ms | 4.54 ms |
+| Review dialog, mean of 3 frames | 118.71 ms | 5.34 ms |
+
+The baseline is stage 7 with the same manual fixture/profile added; final timings
+include revision caching and virtualized review. Review improves about 22× in
+this scenario. The small whole-grid difference is not a general performance claim.
+A separate final-code microbenchmark compares the old linear draft lookup with
+the cached path on the last 20 rows × 2 columns, repeated 1,000 times: 398.89 ms
+versus 6.66 ms. It isolates lookup cost and is not a whole-frame speedup.
+
+The disposable `review_bench` example creates 1M small rows, an integer PK and a
+name index. Release-build medians of seven warm-cache SQL runs (100 returned rows,
+no GUI/transport), comparing the former all-column sorter with the supported
+minimal ordering/keyset SQL:
+
+| Query | Legacy sorter | Indexed alternative |
+| --- | ---: | ---: |
+| First page | 261.60 ms | 0.023 ms |
+| Sort on indexed name | 272.94 ms | 0.032 ms |
+| Offset 500,000 | 308.99 ms | 6.60 ms |
+| Seek after key 500,000 | — | 0.025 ms |
+
+These are single-host observations with deliberately favorable indexed fixtures,
+not universal latency guarantees. Real worker integration tests separately check
+EXPLAIN plans, paging, NULL/collation semantics and reference traversal.
+
+Reproduce in the pinned Nix development shell (or prefix each command with
+`nix-shell --run`):
+
+```sh
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --locked -p tursobench-ui app::interaction_tests::profile_one_thousand_staged_edits -- --ignored --exact --nocapture --test-threads=1
+cargo run --release --locked -p tursobench-db --example review_bench
+cargo build --locked -p tursobench-ui
+bash scripts/desktop-smoke.sh
+bash scripts/discovery-smoke.sh
+bash scripts/local-project-smoke.sh
+bash scripts/package-linux.sh
+bash scripts/package-smoke.sh
+```
+
+Local verification logs are ignored artifacts under `target/review-stage8-*.log`;
+benchmark/profile sources and semantic regressions are tracked. The source is the
+reproducible evidence, not a promise that local timing logs exist on another host.
+
+### Finding and gap closure map
+
+| Original finding | Delivery |
+| --- | --- |
+| High #1 FK false all-clear | Stage 1 supported anti-joins, coverage/errors |
+| High #2 oversized cells / wide-page dead end | Stages 5/8 deferred originals and byte-aware continuation |
+| High #3 invisible catalog truncation | Stages 1/5 independent catalog budget and lazy DDL |
+| High #4 full-table sort per page | Stage 4 minimal indexed ordering/keyset paths |
+| High #5 scroll row-height mismatch | Stages 1/8 shared stride and visible-row retention |
+| Medium #6 draining reads / queue saturation | Stage 3 verified early stop, cancellation, deadlines and bounded scheduler |
+| Medium #7 numeric filters on untyped/view columns | Stage 4 explicit typed literals |
+| Medium #8 stale rows/catalog/diagram | Stages 2/8 committed invalidation and schema refresh |
+| Medium #9 reference truncation / child-index avoidance | Stage 4 accurate preview limit, paged full views and safe indexed predicates |
+| Medium #10 hidden million-row clamp | Stage 4 checked offsets / explicit range errors |
+| Medium #11 cursor/Explain buffer handling | Stage 6 shared token-aware selection |
+| Medium #12 WITHOUT ROWID editability | Stage 1 shared proven-rowid eligibility |
+| Medium #13 writable-open WAL changes | Stage 2 preflight, explicit disclosure and corrected contract |
+| Medium #14 no protection against external writer | Stage 2 prominent exclusive-use requirement; no false locking claim |
+| Medium #15 preference overwrite | Stages 1/8 tolerant recovery, versioning, backups and bounded safe saves |
+| Low read-only file creation / original infinity / partial rows | Stages 2/6/1, with fault regression in 8 |
+| Low CSV metadata/protection and REAL/SQL fidelity/type names | Stage 7 standard formats, explicit variants, exact checked decimals and parsed declarations |
+| Low repeated draft/review/string work | Stage 8 measured indexing/caching/virtualization and bounded preview |
+| Large-data gaps | Stages 5/7 viewer, complete table/query exports and mapped imports |
+| Navigation gaps | Stage 4 row jump, total/filtered counts, multi-sort, grouped OR/IN |
+| SQL gaps | Stages 3/6 deadlines, scripts and convenient JSON parameters |
+| Editing gaps | Stage 6 typed insert form and staged bulk selection deletion |
+| Maintenance gaps | Stage 7 explicit checkpoint and coordinated verified backup |
+
+### Qualification still required before production distribution
+
+The implementation work is complete; external release qualification remains
+explicit. Deterministic transaction/output failures are not physical storage
+syscall/disk-full certification. Engine OOM/resource safety, old-engine fixtures,
+multiprocess writers, additional desktop/platform baselines, portal dialogs and
+cross-host binary reproducibility are not qualified here.
+
+A fresh audit exits successfully with four unsuppressed upstream warnings: LRU
+panic safety RUSTSEC-2026-0253 and D-Bus maintenance RUSTSEC-2026-0370/0371/0372.
+The fixed LRU release is outside the pinned engine's dependency range; migration
+needs separate compatibility review. Immutable-source notice collection still
+finds five missing license texts and fabricates none. These dependency/licensing
+items require maintainer review before public distribution. See `release.md` for
+exact packages and the audit's crates.io-index refresh warning. This completion
+does not claim a stable production release or support for another engine.
+
+Stage commits: 1 `50e9e9f`, 2 `962bd71`, 3 `14700b5`, 4 `a8600db`, 5 `ecda9ff`,
+6 `34dbcc8`, 7 `ae9a1ea`; the final stage is the commit containing this record.

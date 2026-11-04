@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, SyncSender, TrySendError},
 };
@@ -403,6 +403,18 @@ fn config_path() -> Result<PathBuf, String> {
 fn load(path: &Path) -> Result<Preferences, String> {
     load_report(path).map(|(prefs, _)| prefs)
 }
+fn read_preferences(path: &Path) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .map_err(|e| e.to_string())?
+        .take(2 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() > 2 * 1024 * 1024 {
+        return Err("Preferences exceed 2 MiB".into());
+    }
+    Ok(bytes)
+}
 fn load_report(path: &Path) -> Result<(Preferences, Option<String>), String> {
     if !path.exists() {
         return Ok((Preferences::default(), None));
@@ -410,9 +422,9 @@ fn load_report(path: &Path) -> Result<(Preferences, Option<String>), String> {
     if path.metadata().map_err(|e| e.to_string())?.len() > 2 * 1024 * 1024 {
         return Err("Preferences exceed 2 MiB".into());
     }
+    let original = read_preferences(path)?;
     let mut data: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
+        serde_json::from_slice(&original).map_err(|e| e.to_string())?;
     let fields = data
         .as_object_mut()
         .ok_or("Preferences must be an object")?;
@@ -453,9 +465,7 @@ fn load_report(path: &Path) -> Result<(Preferences, Option<String>), String> {
         let mut backup =
             tempfile::NamedTempFile::new_in(path.parent().ok_or("Missing preferences directory")?)
                 .map_err(|e| e.to_string())?;
-        backup
-            .write_all(&std::fs::read(path).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
+        backup.write_all(&original).map_err(|e| e.to_string())?;
         backup.as_file().sync_all().map_err(|e| e.to_string())?;
         let (_, saved) = backup.keep().map_err(|e| e.to_string())?;
         Some(format!(
@@ -476,12 +486,18 @@ fn save(path: &Path, prefs: &Preferences) -> Result<(), String> {
     data["format_version"] = 1.into();
     serde_json::to_writer_pretty(&mut temp, &data).map_err(|e| e.to_string())?;
     temp.flush().map_err(|e| e.to_string())?;
+    if temp.as_file().metadata().map_err(|e| e.to_string())?.len() > 2 * 1024 * 1024 {
+        return Err("Preferences exceed 2 MiB; existing file preserved".into());
+    }
     temp.as_file().sync_all().map_err(|e| e.to_string())?;
     if path.exists() {
+        let original = read_preferences(path)?;
+        let existing:serde_json::Value=serde_json::from_slice(&original).map_err(|e|format!("Preferences changed to unreadable JSON; original and previous backup preserved: {e}"))?;
+        if !existing.is_object() || existing["format_version"].as_u64().is_some_and(|n| n > 1) {
+            return Err("Preferences changed to an unsupported format; original preserved".into());
+        }
         let mut backup = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
-        backup
-            .write_all(&std::fs::read(path).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
+        backup.write_all(&original).map_err(|e| e.to_string())?;
         backup.as_file().sync_all().map_err(|e| e.to_string())?;
         backup
             .persist(path.with_extension("json.backup"))
@@ -493,6 +509,44 @@ fn save(path: &Path, prefs: &Preferences) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn runtime_corruption_does_not_overwrite_the_file_or_previous_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prefs.json");
+        let prefs = Preferences::default();
+        save(&path, &prefs).unwrap();
+        save(&path, &prefs).unwrap();
+        let backup = std::fs::read(path.with_extension("json.backup")).unwrap();
+        fs_write(&path, "{broken");
+        assert!(save(&path, &prefs).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{broken");
+        assert_eq!(
+            std::fs::read(path.with_extension("json.backup")).unwrap(),
+            backup
+        );
+        fs_write(&path, r#"{"format_version":999}"#);
+        assert!(save(&path, &prefs).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            r#"{"format_version":999}"#
+        );
+        assert_eq!(
+            std::fs::read(path.with_extension("json.backup")).unwrap(),
+            backup
+        );
+    }
+    #[test]
+    fn oversized_preferences_never_replace_a_loadable_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prefs.json");
+        let mut prefs = Preferences::default();
+        save(&path, &prefs).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        prefs.null_display = "x".repeat(2 * 1024 * 1024);
+        assert!(save(&path, &prefs).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(load(&path).is_ok());
+    }
     #[test]
     fn recovery_keeps_valid_entries_and_preserves_the_original() {
         let dir = tempfile::tempdir().unwrap();
