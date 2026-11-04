@@ -366,7 +366,9 @@ impl App {
             ui.spacing_mut().item_spacing.x = 3.0;
             ui.style_mut().override_font_id = Some(crate::appearance::proportional(ui.ctx(), icons::RIBBON_TEXT_SIZE));
             ui.spacing_mut().interact_size.y = icons::RIBBON_BUTTON_SIZE;
-            let controls_width = 2.0 * icons::RIBBON_BUTTON_SIZE + 20.0;
+            let show_restore = !self.workspace.minimized.is_empty() || self.workspace.expanded.is_some();
+            let controls_width = 2.0 * icons::RIBBON_BUTTON_SIZE + 20.0
+                + if show_restore { icons::RIBBON_BUTTON_SIZE + ui.spacing().item_spacing.x } else { 0.0 };
             let remaining = (ui.available_width() - controls_width).max(0.0);
             let title_size = ui.painter().layout_no_wrap(
                 kind.label().into(),
@@ -430,16 +432,6 @@ impl App {
                                         "Review staged edits",
                                     );
                                 }
-                                if !self.workspace.minimized.is_empty()
-                                    || self.workspace.expanded.is_some()
-                                {
-                                    self.ribbon_action(
-                                        ui,
-                                        Action::Retile,
-                                        Icon::RestoreTiles,
-                                        "Restore all tiles",
-                                    );
-                                }
                                 if available && self.action_enabled(Action::Discard)
                                     && ui
                                         .add(
@@ -467,6 +459,9 @@ impl App {
                 },
             );
             ui.separator();
+            if show_restore {
+                self.ribbon_action(ui, Action::Retile, Icon::RestoreTiles, "Restore all tiles");
+            }
             let minimize = icons::ribbon_button(ui, Icon::Minimize, "Minimize to header", "", None);
             let expand = icons::ribbon_button(
                 ui,
@@ -730,6 +725,7 @@ mod tests {
         let ctx = egui::Context::default();
         ctx.enable_accesskit();
         let mut app = App::new(&ctx);
+        app.workspace.expanded = Some(Kind::Map);
         let mut time = 0.0;
         let mut render = |app: &mut App, events| {
             time += 0.1;
@@ -750,9 +746,12 @@ mod tests {
             output
         };
         render(&mut app, vec![]);
-        render(&mut app, vec![]);
+        let output = render(&mut app, vec![]);
+        let restore = crate::app::test_ui::control(&output, "Restore all tiles");
         let (_, minimize, expand) = app.workspace.controls[0];
-        let pointer = egui::pos2(minimize.left() - 30.0, minimize.center().y);
+        assert!(restore.right() <= minimize.left());
+        assert!(minimize.left() - restore.right() <= 6.0);
+        let pointer = egui::pos2(restore.left() - 30.0, minimize.center().y);
         render(
             &mut app,
             vec![
@@ -777,6 +776,10 @@ mod tests {
         );
         // The scrollbar reveal animation can shift vertical alignment by a fraction of a point.
         for (before, after) in [
+            (
+                restore,
+                crate::app::test_ui::control(&output, "Restore all tiles"),
+            ),
             (minimize, app.workspace.controls[0].1),
             (expand, app.workspace.controls[0].2),
         ] {
