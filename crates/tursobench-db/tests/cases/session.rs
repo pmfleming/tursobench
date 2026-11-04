@@ -321,7 +321,8 @@ fn real_readonly_bounded_results_and_cleanup() {
         }
     })
     .unwrap();
-    assert!(matches!(common::event(&s).kind, EventKind::Opened(_)));
+    let opened = common::event(&s);
+    assert!(matches!(opened.kind, EventKind::Opened(_)), "{opened:?}");
     wake_done.recv_timeout(Duration::from_secs(5)).unwrap();
     // Hold the worker inside the wake callback after its terminal event is visible.
     // Reusing the ID must succeed even before that callback returns.

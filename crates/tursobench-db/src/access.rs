@@ -9,9 +9,72 @@ use std::{fs::File, path::Path};
 use tursobench_core::{ErrorKind, Failure};
 
 pub(crate) struct Admission {
-    _main: File,
-    _lifetime: Option<File>,
-    pub(crate) reservation: Option<File>,
+    _main: HeldLock,
+    _lifetime: Option<HeldLock>,
+    pub(crate) reservation: Option<HeldLock>,
+}
+
+pub(crate) struct HeldLock(File);
+
+impl Drop for HeldLock {
+    fn drop(&mut self) {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::AsRawFd;
+            let mut region: libc::flock = unsafe { std::mem::zeroed() };
+            region.l_type = libc::F_UNLCK as _;
+            region.l_whence = libc::SEEK_SET as _;
+            // Explicitly unlock the entire description before closing it. A
+            // concurrent fork can inherit this OFD until exec; close alone
+            // would leave its locks held after our close acknowledgement.
+            loop {
+                // SAFETY: initialized flock and valid owned descriptor.
+                if unsafe { libc::fcntl(self.0.as_raw_fd(), libc::F_OFD_SETLK, &mut region) } == 0
+                    || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+                {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn admission_releases_locks_even_with_inherited_descriptors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("admission.db");
+        std::fs::write(&path, b"fixture").unwrap();
+        let admission = Admission::acquire(&path).unwrap();
+        // dup and fork share the same open file description. A concurrent
+        // process spawn can retain these descriptors until its exec completes.
+        let inherited_main = admission._main.0.try_clone().unwrap();
+        let inherited_reservation = admission
+            .reservation
+            .as_ref()
+            .unwrap()
+            .0
+            .try_clone()
+            .unwrap();
+        drop(admission);
+        let main = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        assert!(
+            lock(main, true).unwrap().is_some(),
+            "main admission lock survived close"
+        );
+        assert!(
+            reserve(&path).unwrap().is_some(),
+            "reservation survived close"
+        );
+        drop((inherited_main, inherited_reservation));
+    }
 }
 
 fn io_failure(e: std::io::Error) -> Failure {
@@ -154,13 +217,16 @@ fn process_name(pid: u32) -> String {
     format!("{name} ({pid})")
 }
 
-#[cfg(target_os = "linux")]
-pub(crate) fn lock(file: &File, exclusive: bool) -> Result<bool, Failure> {
+fn lock(file: File, exclusive: bool) -> Result<Option<HeldLock>, Failure> {
     lock_region(file, exclusive, 0)
 }
 
 #[cfg(target_os = "linux")]
-fn lock_region(file: &File, exclusive: bool, length: libc::off_t) -> Result<bool, Failure> {
+fn lock_region(
+    file: File,
+    exclusive: bool,
+    length: libc::off_t,
+) -> Result<Option<HeldLock>, Failure> {
     use std::os::fd::AsRawFd;
     let mut region: libc::flock = unsafe { std::mem::zeroed() };
     region.l_type = if exclusive {
@@ -172,26 +238,26 @@ fn lock_region(file: &File, exclusive: bool, length: libc::off_t) -> Result<bool
     region.l_len = length;
     // l_start=0, l_len=0: the entire file, including future growth.
     // SAFETY: valid descriptor and initialized flock; F_OFD_SETLK does not retain
-    // the pointer. Closing this owned descriptor releases only this OFD lock.
+    // the pointer. HeldLock explicitly releases this description's locks.
     if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_OFD_SETLK, &mut region) } == 0 {
-        return Ok(true);
+        return Ok(Some(HeldLock(file)));
     }
     let error = std::io::Error::last_os_error();
     if matches!(error.raw_os_error(), Some(libc::EAGAIN | libc::EACCES)) {
-        Ok(false)
+        Ok(None)
     } else {
         Err(io_failure(error))
     }
 }
 
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn lock(_: &File, _: bool) -> Result<bool, Failure> {
+fn lock_region(_: File, _: bool, _: i64) -> Result<Option<HeldLock>, Failure> {
     Err(Failure::input(
         "Coordinated database access is currently supported on Linux only",
     ))
 }
 
-pub(crate) fn reserve(path: &Path) -> Result<Option<File>, Failure> {
+pub(crate) fn reserve(path: &Path) -> Result<Option<HeldLock>, Failure> {
     let mut name = path.as_os_str().to_owned();
     name.push("-tshm");
     let file = std::fs::OpenOptions::new()
@@ -201,7 +267,7 @@ pub(crate) fn reserve(path: &Path) -> Result<Option<File>, Failure> {
         .truncate(false)
         .open(std::path::PathBuf::from(name))
         .map_err(io_failure)?;
-    Ok(lock(&file, true)?.then_some(file))
+    lock(file, true)
 }
 
 impl Admission {
@@ -224,10 +290,10 @@ impl Admission {
                 ));
             }
         }
-        if !lock(&main, false)? {
+        let Some(main) = lock(main, false)? else {
             return Err(Failure { kind: ErrorKind::Busy, message:
                 "Database is locked by another application. Close its legacy connection or reopen it with compatible multiprocess WAL support.".into() });
-        }
+        };
         let reservation = reserve(path)?;
         let lifetime = if reservation.is_none() {
             let mut name = path.as_os_str().to_owned();
@@ -237,11 +303,10 @@ impl Admission {
                 .write(true)
                 .open(std::path::PathBuf::from(name))
                 .map_err(io_failure)?;
-            #[cfg(target_os = "linux")]
-            if !lock_region(&file, false, 1)? {
+            let Some(file) = lock_region(file, false, 1)? else {
                 return Err(Failure { kind: ErrorKind::Busy, message:
                     "Another read-only session is protecting this database. Close it before starting shared access.".into() });
-            }
+            };
             Some(file)
         } else {
             None

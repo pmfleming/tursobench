@@ -83,6 +83,10 @@ joining shared WAL. Read-only database/WAL/FTS content remains unchanged, but a
 coordination sidecar may be created and is intentionally retained to avoid
 unlink/recreate races. The directory and coordination file must be writable.
 
+Admission locks are explicitly unlocked before their descriptors close. A
+concurrent process spawn can inherit a descriptor until exec; closing only the
+parent's descriptor would otherwise let a lock outlive the close acknowledgement.
+
 Bounded asynchronous Linux process diagnostics compare device/inode identities
 for the database and sidecars, report names/PIDs and acknowledge incomplete
 visibility. They never decide admission. File locks, not process enumeration,
