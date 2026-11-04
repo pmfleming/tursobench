@@ -1,11 +1,51 @@
 # UI screenshots
 
-## Current README — real session database
+## Current README — native Wayland
+
+The `current/` images were captured on 2026-11-04 from the native Wayland app,
+using the current code after `584edac`, headless Weston/Mesa, the desktop GTK
+palette and isolated preferences. All seven images are 1800 × 1000. They are
+application screenshots, without compositing or retouching.
+
+The source is the same self-contained, offline Scratchpad `session.db` snapshot
+used for the earlier demo below. Its SHA-256 is
+`366a9d5388bb5fc64e1fa438566a838a89c2cab6017a7f99dfc1d3d7cbfc12de`.
+The capture script checks that the source has no pending WAL data, copies it into
+a temporary directory and verifies matching hashes. The live Scratchpad database
+is never opened. The source snapshot remains unchanged; no database is committed.
+
+- `workspace-dark.png`: all five tiles, with real browsing and linked SQL results.
+- `table-data.png`: expanded `document_history` metadata browsing.
+- `relationships.png`: the ten-table graph and its declared foreign keys.
+- `structure.png`: original DDL, declared types, indexes and key actions.
+- `sql-results.png`: the README history/snapshot join and twelve result rows.
+- `edit-review.png`: an increment to `edit_seq` staged on the temporary copy;
+  the preview shows its diff, SQL and typed bindings. No edit is committed.
+- `database-chooser.png`: explicit read-only access and current opening controls.
+
+The first five scenes use engine-enforced read-only access. The edit scene
+reopens only the disposable copy writable, stages one metadata change, then
+closes without committing it. The final scene returns to the chooser.
+
+Reproduce using a closed, checkpointed copy with the same session schema:
+
+```sh
+nix develop -c bash scripts/capture-readme.sh /path/to/offline/session.db
+# Optional second argument selects the image output directory.
+```
+
+The README banner is authored in `../tursobench-banner.svg`, rendered to PNG at
+2400 × 600 with Inkscape. It embeds the current canonical app icon and the chosen
+Joyce quotation; it restores the earlier emerald header treatment. The previous
+banner and screenshots remain as historical references.
+
+## Earlier README — real session database
 
 The `sessions/` images were captured on 2026-11-03 from the native TursoBench
 application on this NixOS laptop. The captured binary is the v8 build from
-`9a89c23`. The images use the current GTK palette and system fonts. Every image is 1600 × 1000. Both dark and light workspaces are shown
-explicitly in the README.
+`9a89c23`. The images use the desktop GTK palette and system fonts. Every image
+is 1600 × 1000. These images predate the current opening, shared-access and native
+Wayland updates.
 
 The data comes from the local Scratchpad `session.db`, not a synthetic fixture.
 The active database and its WAL were copied after consecutive byte-identical
@@ -95,7 +135,7 @@ colors. Screenshot capture is opt-in: set `TURSOBENCH_CAPTURE_DIR`, isolate
 `XDG_CONFIG_HOME`, and run `--smoke-test` against a disposable 100,000-row fixture
 under Xvfb with a 3440 × 1440 screen. Normal smoke runs do not save screenshots.
 
-The README header embeds the current transparent [app logo](../../../packaging/tursobench.png).
+The README banner embeds the current transparent [app logo](../../../packaging/tursobench.png).
 Its source and generation provenance are recorded in
 [packaging/icon-source.txt](../../../packaging/icon-source.txt).
 

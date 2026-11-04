@@ -2,7 +2,7 @@ TursoBench app icon
 
 Canonical runtime asset: tursobench.png (512 × 512, transparent PNG).
 tursobench.svg embeds the same PNG for icon-theme compatibility; it is not a vector tracing.
-The README header embeds the canonical PNG in docs/assets/tursobench-banner-v6.svg.
+The README header embeds the canonical PNG in docs/assets/tursobench-banner.svg (current); tursobench-banner-v6.svg is historical.
 
 Approved project icon going forward: icon-options/13-transparent.png (1254 × 1254).
 Earlier design reference: icon-options/12-taller-database.png.

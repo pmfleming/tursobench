@@ -3,6 +3,8 @@ use eframe::egui;
 use tursobench_core::{ErrorKind, Value, quote_identifier};
 
 use std::time::{Duration, Instant};
+mod readme;
+
 pub(super) struct Smoke {
     stage: u8,
     capture_dir: Option<std::path::PathBuf>,
@@ -13,6 +15,7 @@ pub(super) struct Smoke {
     table: String,
     project_fixture: bool,
     scene: usize,
+    readme: bool,
 }
 impl Smoke {
     pub(super) fn new() -> Self {
@@ -26,6 +29,7 @@ impl Smoke {
             start: Instant::now(),
             project_fixture: table.is_some(),
             scene: 0,
+            readme: std::env::var_os("TURSOBENCH_README_CAPTURE").is_some(),
             table: table.unwrap_or_else(|| "items".into()),
         }
     }
@@ -65,6 +69,9 @@ impl App {
                 smoke.stage, self.status
             );
             std::process::exit(1);
+        }
+        if matches!(smoke.stage, 50..=56) && self.smoke_readme(ctx, &mut smoke) {
+            return;
         }
         match smoke.stage {
             0 => {
@@ -147,7 +154,12 @@ impl App {
                     self.browse_table(smoke.table.clone());
                     self.retile();
                     self.preferences.appearance = Some(crate::appearance::Mode::Dark);
-                    smoke.stage = 20;
+                    if smoke.readme {
+                        self.start_readme_capture();
+                        smoke.stage = 50;
+                    } else {
+                        smoke.stage = 20;
+                    }
                 } else {
                     smoke.stage = 8;
                 }

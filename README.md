@@ -1,17 +1,7 @@
 <p align="center">
-  <img src="packaging/tursobench.png" alt="TursoBench app icon" width="88">
-</p>
-
-<h1 align="center">TursoBench</h1>
-
-<p align="center">
-  <em>“These heavy sands are language tide and wind have silted here”</em><br>
-  <sub>— James Joyce, <em>Ulysses</em> (“Proteus”)</sub>
-</p>
-
-<p align="center">
-  <strong>A native workbench for local Turso databases.</strong><br>
-  Rust 1.95 · egui 0.37 · Turso 0.8.3 · Linux preview
+  <a href="packaging/tursobench.png">
+    <img src="docs/assets/tursobench-banner.png" alt="TursoBench — a native workbench for local Turso databases. “These heavy sands are language tide and wind have silted here” — James Joyce, Ulysses, “Proteus”." width="1200">
+  </a>
 </p>
 
 <p align="center">
@@ -25,31 +15,34 @@
 
 TursoBench opens existing local files through Turso.
 Connections default to engine-enforced read-only access.
-Writes require explicit read/write access.
+Writes require explicit read/write access. Compatible local peers can share a database.
+
+Rust 1.95 · egui 0.37 · Turso 0.8.3 · Native Wayland · Linux preview
 
 Independent project. Not affiliated with the Turso team.
 
 ## Workspace
 
 Five fixed tiles share one database session.
-Each tile has direct actions, horizontal ribbon scrolling and workspace expansion.
-Minimize tiles without discarding filters, selections or drafts.
+Resize the dividers. Expand a tile or minimize it to a header.
+Keep table browsing, typed records, structure, relationships and SQL together.
+External commits refresh clean views while drafts and SQL results stay retained.
 
-![Native dark workspace.](docs/assets/ui/sessions/workspace-dark.png)
+![Native Wayland workspace with real session data.](docs/assets/ui/current/workspace-dark.png)
 
-Screenshots use a read-only snapshot of a local session database.
-[Capture provenance](docs/assets/ui/README.md#current-readme--real-session-database).
+Screenshots use an offline copy of the same local session database as the earlier demo.
+[Capture provenance](docs/assets/ui/README.md#current-readme--native-wayland).
 
 ## Browse and inspect
 
 ### Table data
 
 Browse virtualized rows in 100-row fetches.
-Apply bound filters and column sorting.
-Resize columns. Select ranges. Inspect typed records.
-Follow foreign keys to related rows.
+Combine typed filters, grouped expressions and column sorting.
+Resize or hide columns. Select ranges. Inspect typed records.
+Follow foreign keys and incoming references to related rows.
 
-![Expanded table browsing.](docs/assets/ui/sessions/table-data.png)
+![Expanded document-history browsing.](docs/assets/ui/current/table-data.png)
 
 ### Relationships
 
@@ -57,7 +50,7 @@ Inspect declared foreign-key edges and key labels.
 Pan, zoom and arrange the graph.
 Node positions persist between sessions.
 
-![Native relationship diagram.](docs/assets/ui/sessions/relationships.png)
+![Session database relationships.](docs/assets/ui/current/relationships.png)
 
 ### Structure
 
@@ -65,13 +58,14 @@ Read original DDL, declared types and constraints.
 Inspect composite keys, indexes and foreign-key actions.
 Copy definitions directly.
 
-![Native structure inspector.](docs/assets/ui/sessions/structure.png)
+![Expanded structure inspector.](docs/assets/ui/current/structure.png)
 
 ## SQL and results
 
 Execute parsed SQL with typed named or positional bindings.
 Run the buffer, selection or current statement.
 Run all offers sequential or atomic scripts with per-statement outcomes.
+Keep separate query documents, linked results, history and saved queries.
 Parameters accept ordinary JSON and explicit tagged types; statement deadlines
 default to 30 seconds and apply after opening the session.
 
@@ -84,7 +78,7 @@ ORDER BY s.bytes DESC
 LIMIT 12;
 ```
 
-![SQL editor with linked query results.](docs/assets/ui/sessions/sql-results.png)
+![SQL editor with linked query results.](docs/assets/ui/current/sql-results.png)
 
 Syntax highlighting, completion and EXPLAIN are available.
 CTEs, PRAGMAs and `RETURNING` are supported.
@@ -98,6 +92,8 @@ Review diffs, SQL and exact bindings.
 Commit applies an atomic batch with original-value conflict checks.
 Failed commits retain drafts.
 
+![Staged metadata change, SQL and typed bindings.](docs/assets/ui/current/edit-review.png)
+
 Editor SQL autocommits unless a transaction is open.
 `BEGIN`, `COMMIT` and `ROLLBACK` use the persistent editor connection.
 Browsing uses a separate connection and sees committed state.
@@ -105,14 +101,14 @@ Browsing uses a separate connection and sees committed state.
 Export retained values as typed JSONL/JSON, standard or annotated/protected CSV/TSV,
 or SQL INSERTs.
 Exports exclude staged overlays.
-They never rerun SQL or overwrite existing files.
+Retained-result exports never rerun SQL or overwrite existing files.
 The separate transfer panel offers complete-table and execute-once query JSONL
 exports, mapped imports, explicit checkpoint and coordinated verified backup.
 Large values have a bounded text/hex viewer and exact-byte save.
 
 Preferences, history and layouts use an application-owned local Turso database
-at `~/.config/tursobench/preferences.db` (or under `XDG_CONFIG_HOME`). Existing
-JSON preferences are not imported. [Storage details](docs/data-formats.md).
+at `~/.config/tursobench/preferences.db` (or under `XDG_CONFIG_HOME`).
+[Storage details](docs/data-formats.md).
 
 ## Run
 
@@ -129,23 +125,20 @@ cargo run --locked -p tursobench-ui -- /path/to/session.db
 ```
 
 Omit the path to open the chooser.
-The default Linux build requires native Wayland and OpenGL/EGL; Hyprland is the
-primary development desktop. X11 is an opt-in compatibility build:
-
-```sh
-cargo run --locked -p tursobench-ui --no-default-features --features x11
-```
-
-Enable `--features x11` with the defaults to build both backends; Wayland takes
-priority when available. The default preview package uses Wayland only.
+The default Linux build requires native Wayland and OpenGL/EGL.
+Hyprland is the primary development desktop.
+X11 is an [opt-in compatibility build](docs/guide.md).
 Use the desktop file picker or enter a path directly.
 Open never creates a database.
+Search discovered or recent files, choose access and review blocking failures inline.
+
+![Read-only database opening and compatibility review.](docs/assets/ui/current/database-chooser.png)
 
 ## Current limits
 
-- **Coordinated local access.** Shared readers and serialized writers are qualified with compatible Turso 0.8.3 SDK peers using experimental multiprocess WAL on Linux. Legacy writers are rejected. A standalone read-only session blocks writers until closed. See [shared access](docs/shared-access.md) for setup and limits. Cloud sync and encryption remain unsupported.
+- **Shared local access.** Compatible Turso 0.8.3 peers can share readers and serialized writers on Linux. Legacy writers are rejected; standalone read-only access blocks writers until closed. [Protocol and limits](docs/shared-access.md). Cloud sync and encryption remain unsupported.
 - **Turso only.** SQLite headers indicate possible compatibility. No alternative engine is selected.
-- **Bounded delivery.** Queries default to 1,000 rows, 8 MiB per result and 64 KiB per cell. Engine memory is not bounded.
+- **Bounded delivery.** Queries default to 1,000 rows, 8 MiB per result and 64 KiB per inline cell. Larger values use bounded deferred storage. Engine memory is not bounded.
 - **Paging.** Suitable non-null keys use keyset paging; fallback deep offsets may be slow. Browsing is not snapshot-consistent.
 - **Explicit writes.** Generated edits require suitable primary-key base tables. Arbitrary results, keyless tables, `WITHOUT ROWID` tables and generated columns remain read-only.
 - **Execution outcomes.** Discard can interrupt supported reads; writes finish when output is discarded. Cooperative deadlines do not prove rollback. Close waits for execution and cleanup acknowledgement.
