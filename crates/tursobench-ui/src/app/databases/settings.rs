@@ -49,7 +49,8 @@ impl App {
         ui.separator();
 
         ui.push_id("search-folders", |ui| {
-            section_heading(ui, "Search folders", self.preferences.discovery.roots.len());
+            let roots = super::search_roots(&self.preferences.discovery);
+            section_heading(ui, "Search folders", roots.len());
             let (add, browse) = folder_input(
                 ui,
                 &mut self.databases.folder_input,
@@ -64,18 +65,21 @@ impl App {
                 self.add_search_folder(PathBuf::from(&self.databases.folder_input));
             }
             let mut remove = None;
-            for (index, path) in self.preferences.discovery.roots.iter().enumerate() {
-                ui.push_id(path, |ui| {
-                    if folder_row(ui, path, "Remove search folder") {
-                        remove = Some(index);
+            egui::ScrollArea::vertical()
+                .id_salt("search-folder-list")
+                .max_height(180.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    for root in &roots {
+                        ui.push_id(&root.path, |ui| {
+                            if folder_row(ui, &root.path, "Remove search folder") {
+                                remove = Some(root.path.clone());
+                            }
+                        });
                     }
                 });
-            }
-            if let Some(index) = remove {
-                self.preferences.discovery.roots.remove(index);
-                self.databases.cancel();
-                self.databases.pending_folder = None;
-                self.store.save(&self.preferences);
+            if let Some(path) = remove {
+                self.remove_search_folder(path);
             }
         });
         ui.add_space(6.0);
@@ -266,11 +270,46 @@ mod tests {
     }
 
     #[test]
+    fn default_folders_are_listed_and_removal_survives_preference_reload() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut app = App::new(&ctx);
+        let roots = super::super::search_roots(&app.preferences.discovery);
+        assert!(!roots.is_empty());
+        frame(&mut app, &ctx, vec![], 420.0);
+        let output = crate::app::test_ui::render(&ctx, egui::vec2(420.0, 600.0), vec![], |ui| {
+            app.discovery_settings_ui(ui)
+        });
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == roots[0].path.to_string_lossy())));
+        // Isolate a default root so its removal control is unambiguous.
+        app.preferences.discovery.removed_roots =
+            roots.iter().skip(1).map(|r| r.path.clone()).collect();
+        let nodes = frame(&mut app, &ctx, vec![], 420.0);
+        click(&mut app, &ctx, nodes["Remove search folder"]);
+        app.preferences.discovery.normalize();
+        let saved = serde_json::to_string(&app.preferences.discovery).unwrap();
+        let restored = serde_json::from_str(&saved).unwrap();
+        assert!(super::super::search_roots(&restored).is_empty());
+        assert!(super::super::request(&restored, None).roots.is_empty());
+        app.preferences.discovery = restored;
+        app.add_search_folder(roots[0].path.clone());
+        let restored = super::super::search_roots(&app.preferences.discovery);
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].path, roots[0].path);
+        assert!(restored[0].explicit);
+    }
+
+    #[test]
     fn folder_controls_support_keyboard_addition_and_pointer_removal() {
         let ctx = egui::Context::default();
         ctx.enable_accesskit();
         let mut app = App::new(&ctx);
         app.preferences.discovery.roots.clear();
+        app.preferences.discovery.removed_roots =
+            super::super::search_roots(&app.preferences.discovery)
+                .into_iter()
+                .map(|r| r.path)
+                .collect();
         app.preferences.discovery.excluded.clear();
         app.path = "/work/selected.db".into();
         app.exclusive = true;

@@ -42,10 +42,20 @@ dialog containing all search-folder controls and search feedback. **At startup**
 automatic discovery. The refresh icon reruns the configured search and becomes a
 stop control while searching. Icon buttons have tooltips and accessible names.
 
-Under **Search folders**, use the folder icon to pick a location, or enter an
+**Search folders** lists the effective search locations: default application,
+home/development and launch folders, recent-file parent folders, and folders you
+add. Duplicate paths appear once, preserving their search depth and explicit
+opt-in rules. Excluded roots are omitted. The list scrolls independently.
+
+Use the folder icon to pick a location, or enter an
 absolute path and press **Enter** or **+** to save and search it. Under **Excluded**,
 enter a path and press **Enter** or **+** to exclude it. The **×** on each folder
-row removes that entry; it never deletes files. Refresh after removing an
+row removes that search location; it never deletes files. Removed defaults and
+recent-parent roots stay removed across refresh/restart; add a path again to
+restore it. Up to 128 root removals are remembered. Other configured parent roots
+can still search their children; use **Excluded** to prevent every search under a
+path. Cached/recent files remain remembered and can still be checked directly.
+Refresh after removing an
 exclusion. Long paths show in full on hover. The footer shows header, folder,
 unavailable and skipped counts with labels on hover; **Limit reached** means
 only part of the configured locations was searched.

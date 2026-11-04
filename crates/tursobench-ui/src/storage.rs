@@ -23,6 +23,7 @@ pub struct RecentDatabase {
 pub struct DiscoveryPreferences {
     pub enabled: bool,
     pub roots: Vec<PathBuf>,
+    pub removed_roots: Vec<PathBuf>,
     pub excluded: Vec<PathBuf>,
     pub recent: Vec<RecentDatabase>,
     pub cached: Vec<CachedDatabase>,
@@ -32,6 +33,7 @@ impl Default for DiscoveryPreferences {
         Self {
             enabled: true,
             roots: vec![],
+            removed_roots: vec![],
             excluded: vec![],
             recent: vec![],
             cached: vec![],
@@ -54,6 +56,7 @@ impl DiscoveryPreferences {
     }
     pub fn normalize(&mut self) {
         normalize_paths(&mut self.roots, 32, 32 * 1024, false);
+        normalize_paths(&mut self.removed_roots, 128, 512 * 1024, false);
         normalize_paths(&mut self.excluded, 64, 32 * 1024, true);
         let mut seen = HashSet::new();
         let mut bytes = 0;

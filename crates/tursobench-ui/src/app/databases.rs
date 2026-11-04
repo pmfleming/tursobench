@@ -161,7 +161,6 @@ impl Chooser {
 }
 
 fn request(prefs: &DiscoveryPreferences, folder: Option<PathBuf>) -> Request {
-    let mut roots = Vec::new();
     let known: Vec<_> = prefs
         .recent
         .iter()
@@ -169,50 +168,82 @@ fn request(prefs: &DiscoveryPreferences, folder: Option<PathBuf>) -> Request {
         .chain(prefs.cached.iter().map(|e| e.path.clone()))
         .filter(|p| folder.as_ref().is_none_or(|root| p.starts_with(root)))
         .collect();
-    if let Some(path) = folder {
-        roots.push(Root {
+    let roots = if let Some(path) = folder {
+        vec![Root {
             path,
             depth: 5,
             extensionless: true,
             explicit: true,
-        });
+        }]
     } else {
-        // Explicit folders and recent parents get the first slice of the budget.
-        for path in &prefs.roots {
-            roots.push(Root {
-                path: path.clone(),
-                depth: 5,
-                extensionless: true,
-                explicit: true,
-            });
-        }
-        for recent in &prefs.recent {
-            if let Some(parent) = recent.path.parent().filter(|p| p.parent().is_some()) {
-                roots.push(Root {
-                    path: parent.into(),
-                    depth: 1,
-                    extensionless: true,
-                    explicit: false,
-                });
-            }
-        }
-        let home = std::env::var_os("HOME").map(PathBuf::from);
-        let cwd = std::env::current_dir().ok();
-        let data = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from);
-        let state = std::env::var_os("XDG_STATE_HOME").map(PathBuf::from);
-        roots.extend(discovery::default_roots(
-            home.as_deref(),
-            cwd.as_deref(),
-            data.as_deref(),
-            state.as_deref(),
-        ));
-    }
+        search_roots(prefs)
+    };
     Request {
         roots,
         known,
         excluded: prefs.excluded.clone(),
         ..Default::default()
     }
+}
+
+fn search_roots(prefs: &DiscoveryPreferences) -> Vec<Root> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let cwd = std::env::current_dir().ok();
+    let data = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from);
+    let state = std::env::var_os("XDG_STATE_HOME").map(PathBuf::from);
+    configured_roots(
+        prefs,
+        discovery::default_roots(
+            home.as_deref(),
+            cwd.as_deref(),
+            data.as_deref(),
+            state.as_deref(),
+        ),
+    )
+}
+
+/// The settings list and the worker use exactly the same roots and policies.
+fn configured_roots(prefs: &DiscoveryPreferences, defaults: Vec<Root>) -> Vec<Root> {
+    let added = prefs.roots.iter().map(|path| Root {
+        path: path.clone(),
+        depth: 5,
+        extensionless: true,
+        explicit: true,
+    });
+    let recent = prefs.recent.iter().filter_map(|entry| {
+        entry
+            .path
+            .parent()
+            .filter(|p| p.parent().is_some())
+            .map(|path| Root {
+                path: path.into(),
+                depth: 1,
+                extensionless: true,
+                explicit: false,
+            })
+    });
+    let mut roots = Vec::<Root>::new();
+    let mut positions = std::collections::BTreeMap::<PathBuf, usize>::new();
+    for mut root in added.chain(recent).chain(defaults) {
+        let Some(path) = normalized_absolute(&root.path) else {
+            continue;
+        };
+        if prefs.removed_roots.contains(&path) || prefs.excluded.iter().any(|p| path.starts_with(p))
+        {
+            continue;
+        }
+        root.path = path;
+        if let Some(&index) = positions.get(&root.path) {
+            let previous = &mut roots[index];
+            previous.depth = previous.depth.max(root.depth);
+            previous.extensionless |= root.extensionless;
+            previous.explicit |= root.explicit;
+        } else {
+            positions.insert(root.path.clone(), roots.len());
+            roots.push(root);
+        }
+    }
+    roots
 }
 
 impl App {
@@ -418,6 +449,10 @@ impl App {
                 Some("That folder is excluded. Remove its exclusion before searching it.".into());
             return;
         }
+        self.preferences
+            .discovery
+            .removed_roots
+            .retain(|p| p != &path);
         if !self.preferences.discovery.roots.contains(&path) {
             self.preferences.discovery.roots.insert(0, path.clone());
         }
@@ -427,6 +462,22 @@ impl App {
         self.databases.pending_folder = Some(path);
         self.databases.folder_input.clear();
         self.databases.message = None;
+    }
+
+    fn remove_search_folder(&mut self, path: PathBuf) {
+        let prefs = &mut self.preferences.discovery;
+        if !prefs.removed_roots.contains(&path) {
+            if prefs.removed_roots.len() >= 128 || path.as_os_str().len() > 4096 {
+                self.databases.message =
+                    Some("Search-folder removal limit reached; use an exclusion instead.".into());
+                return;
+            }
+            prefs.removed_roots.insert(0, path.clone());
+        }
+        prefs.roots.retain(|p| p != &path);
+        self.databases.cancel();
+        self.databases.pending_folder = None;
+        self.store.save(&self.preferences);
     }
 
     fn add_exclusion(&mut self, path: PathBuf) {
@@ -473,6 +524,38 @@ mod tests {
         sync::mpsc,
         time::{Duration, Instant},
     };
+
+    #[test]
+    fn search_roots_merge_policies_and_respect_saved_removals_and_exclusions() {
+        let mut prefs = DiscoveryPreferences::default();
+        prefs.roots.push("/work/added".into());
+        prefs.record_open("/work/projects/current.db".into(), 1);
+        prefs.record_open("/work/projects/other.db".into(), 2);
+        prefs.removed_roots.push("/work/removed".into());
+        prefs.excluded.push("/work/private".into());
+        let defaults = [
+            "/work/projects",
+            "/work/added",
+            "/work/removed",
+            "/work/private/nested",
+        ]
+        .into_iter()
+        .map(|path| super::Root {
+            path: path.into(),
+            depth: 3,
+            extensionless: false,
+            explicit: false,
+        })
+        .collect();
+        let roots = super::configured_roots(&prefs, defaults);
+        assert_eq!(roots.len(), 2);
+        assert_eq!(roots[0].path, Path::new("/work/added"));
+        assert!(roots[0].explicit && roots[0].extensionless);
+        assert_eq!(roots[0].depth, 5);
+        assert_eq!(roots[1].path, Path::new("/work/projects"));
+        assert_eq!(roots[1].depth, 3);
+        assert!(roots[1].extensionless && !roots[1].explicit);
+    }
 
     fn found(path: &str) -> Event {
         Event::Found(Candidate {

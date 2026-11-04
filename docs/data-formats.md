@@ -36,6 +36,7 @@ are not persisted. Settings, discovery state, inspector visibility, workspace an
 diagram layouts share the same snapshot. Loading saved SQL clears its bindings.
 
 The `discovery` preference stores the startup toggle, added search folders,
+removed default/recent-parent roots (up to 128 paths / 512 KiB),
 exclusions, recent successful opens (absolute path and last-open time), and cached
 candidates (absolute path, size and optional modification time). Limits are 32
 search folders / 32 KiB, 64 exclusions / 32 KiB, 50 recent files / 64 KiB and 200

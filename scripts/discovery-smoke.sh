@@ -107,15 +107,25 @@ before = snapshot()
 run_until(discovered, 15)
 assert snapshot() == before, "discovery changed a fixture or created a sidecar"
 
-# A persisted opt-out must suppress actual startup traversal and cache writes.
+# Removing all listed default folders must survive restart while discovery is on.
 prefs = read_preferences()
-prefs["discovery"].update(enabled=False, cached=[])
+defaults = [data, state, project, home]
+defaults += [home / name for name in ("Projects", "projects", "Code", "code", "Developer", "Development", "src")]
+prefs["discovery"].update(removed_roots=[str(path) for path in defaults], cached=[])
 write_preferences(prefs)
 start = time.monotonic()
-def disabled():
+def no_cached_results():
     assert not read_preferences()["discovery"]["cached"]
     return time.monotonic() - start > 3
-run_until(disabled, 15)
+run_until(no_cached_results, 15)
 assert snapshot() == before
-print("STARTUP DISCOVERY SMOKE OK: projects, extensionless app data, exclusions, stale cache, opt-out, no writes")
+
+# A persisted opt-out must suppress actual startup traversal and cache writes.
+prefs = read_preferences()
+prefs["discovery"].update(enabled=False, cached=[], removed_roots=[])
+write_preferences(prefs)
+start = time.monotonic()
+run_until(no_cached_results, 15)
+assert snapshot() == before
+print("STARTUP DISCOVERY SMOKE OK: projects, extensionless app data, exclusions, stale cache, removed defaults, opt-out, no writes")
 PY

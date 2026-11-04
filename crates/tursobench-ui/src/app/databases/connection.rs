@@ -370,13 +370,43 @@ mod tests {
         click(&mut app, &ctx, settings);
         let texts = frame(&mut app, &ctx, vec![], egui::vec2(1280.0, 720.0));
         assert!(app.databases.settings_open);
+        assert!(texts.iter().any(|text| text == "Search folders"));
+        // The default folder list makes this dialog scrollable. Feedback remains
+        // accessible below it, independently of the file access controls.
+        let settings_rect = ctx
+            .memory(|memory| memory.area_rect(egui::Id::unique("database-search-settings")))
+            .unwrap();
+        frame(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(egui::pos2(
+                    settings_rect.center().x,
+                    settings_rect.bottom() - 20.0,
+                )),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -1000.0),
+                    phase: egui::TouchPhase::Move,
+                    source: egui::MouseWheelSource::Unknown,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            egui::vec2(1280.0, 720.0),
+        );
+        for _ in 0..10 {
+            frame(&mut app, &ctx, vec![], egui::vec2(1280.0, 720.0));
+        }
+        let texts = frame(&mut app, &ctx, vec![], egui::vec2(1280.0, 720.0));
         for visible in [
-            "Search folders",
             "Folder excluded.",
             "Limit reached",
             "Search worker disconnected",
         ] {
-            assert!(texts.iter().any(|text| text == visible), "{visible}");
+            assert!(
+                texts.iter().any(|text| text == visible),
+                "{visible}: {texts:?}"
+            );
         }
         assert_eq!(app.path, "/work/example.db");
         assert!(app.exclusive && app.writable);
