@@ -242,98 +242,7 @@ impl App {
                 });
                 smoke.stage = 60;
             }
-            60 if self.database.document.active.is_none() => {
-                assert!(
-                    self.database
-                        .document
-                        .result
-                        .completion
-                        .as_ref()
-                        .is_some_and(|c| c.error.is_none()),
-                    "{}",
-                    self.database.status
-                );
-                assert!(self.database.document.profile.is_some());
-                assert!(!self.database.document.result.rows.is_empty());
-                // Render the profile before closing on the following frame.
-                smoke.stage = 61;
-            }
-            61 => {
-                self.submit(
-                    tursobench_db::Operation::Admin(None),
-                    super::View::Diagnostics,
-                );
-                smoke.stage = 62;
-            }
-            62 if self.database.document.active.is_none() => {
-                assert!(
-                    self.database
-                        .document
-                        .result
-                        .rows
-                        .iter()
-                        .any(|r| r[0] == Value::Text("Main file bytes".into()))
-                );
-                smoke.stage = 63;
-            }
-            63 => {
-                if let Some(path) = std::env::var_os("TURSOBENCH_SECOND_DB") {
-                    smoke.first_workspace = Some(self.database.id);
-                    self.request_database(ctx, path.into());
-                    smoke.stage = 64;
-                } else {
-                    self.close();
-                    smoke.stage = 5;
-                }
-            }
-            64 => {
-                if self.databases.inspection.kind(&self.database.path)
-                    == crate::discovery::DatabaseKind::LikelySqlite
-                {
-                    self.databases.inspection.override_sqlite = true;
-                }
-                self.open(ctx);
-                if self.database.session.is_some() {
-                    smoke.stage = 65;
-                }
-            }
-            65 if self.database.ready
-                && self.database.catalog_ticket.is_none()
-                && self.database.ui.diagram.ticket.is_none() =>
-            {
-                self.run_text("SELECT count(*) FROM items".into(), None);
-                smoke.stage = 66;
-            }
-            66 if self.database.document.active.is_none() => {
-                assert_eq!(
-                    self.database.document.result.rows,
-                    vec![vec![Value::Integer(100)]]
-                );
-                let second = self.database.id;
-                self.select_workspace(smoke.first_workspace.unwrap());
-                assert!(self.database.ready);
-                self.select_workspace(second);
-                self.comparison.open = true;
-                self.comparison.source = smoke.first_workspace.unwrap();
-                self.comparison.target = second;
-                self.capture_schema(self.comparison.source);
-                self.capture_schema(second);
-                smoke.stage = 69;
-            }
-            69 if self.comparison_ready() => smoke.stage = 70,
-            70 => {
-                self.comparison.open = false;
-                smoke.stage = 67;
-            }
-            67 => {
-                self.close();
-                smoke.stage = 68;
-            }
-            68 if self.database.session.is_none() => {
-                self.select_workspace(smoke.first_workspace.unwrap());
-                self.close();
-                smoke.stage = 5;
-            }
+            60..=70 => self.smoke_workbench(ctx, &mut smoke),
             5 if self.database.session.is_none() => {
                 assert!(
                     self.database.status.contains("cleanup confirmed"),
@@ -434,6 +343,103 @@ impl App {
         self.smoke = Some(smoke);
         // Automated smoke mode only; normal rendering is event-driven.
         ctx.request_repaint_after(Duration::from_millis(25));
+    }
+    fn smoke_workbench(&mut self, ctx: &egui::Context, smoke: &mut Smoke) {
+        match smoke.stage {
+            60 if self.database.document.active.is_none() => {
+                assert!(
+                    self.database
+                        .document
+                        .result
+                        .completion
+                        .as_ref()
+                        .is_some_and(|c| c.error.is_none()),
+                    "{}",
+                    self.database.status
+                );
+                assert!(self.database.document.profile.is_some());
+                assert!(!self.database.document.result.rows.is_empty());
+                // Render the profile before closing on the following frame.
+                smoke.stage = 61;
+            }
+            61 => {
+                self.submit(
+                    tursobench_db::Operation::Admin(None),
+                    super::View::Diagnostics,
+                );
+                smoke.stage = 62;
+            }
+            62 if self.database.document.active.is_none() => {
+                assert!(
+                    self.database
+                        .document
+                        .result
+                        .rows
+                        .iter()
+                        .any(|r| r[0] == Value::Text("Main file bytes".into()))
+                );
+                smoke.stage = 63;
+            }
+            63 => {
+                if let Some(path) = std::env::var_os("TURSOBENCH_SECOND_DB") {
+                    smoke.first_workspace = Some(self.database.id);
+                    self.request_database(ctx, path.into());
+                    smoke.stage = 64;
+                } else {
+                    self.close();
+                    smoke.stage = 5;
+                }
+            }
+            64 => {
+                if self.databases.inspection.kind(&self.database.path)
+                    == crate::discovery::DatabaseKind::LikelySqlite
+                {
+                    self.databases.inspection.override_sqlite = true;
+                }
+                self.open(ctx);
+                if self.database.session.is_some() {
+                    smoke.stage = 65;
+                }
+            }
+            65 if self.database.ready
+                && self.database.catalog_ticket.is_none()
+                && self.database.ui.diagram.ticket.is_none() =>
+            {
+                self.run_text("SELECT count(*) FROM items".into(), None);
+                smoke.stage = 66;
+            }
+            66 if self.database.document.active.is_none() => {
+                assert_eq!(
+                    self.database.document.result.rows,
+                    vec![vec![Value::Integer(100)]]
+                );
+                let second = self.database.id;
+                self.select_workspace(smoke.first_workspace.unwrap());
+                assert!(self.database.ready);
+                self.select_workspace(second);
+                self.comparison.open = true;
+                self.comparison.source = smoke.first_workspace.unwrap();
+                self.comparison.target = second;
+                self.capture_schema(self.comparison.source);
+                self.capture_schema(second);
+                smoke.stage = 69;
+            }
+            69 if self.comparison_ready() => smoke.stage = 70,
+            70 => {
+                self.comparison.open = false;
+                smoke.stage = 67;
+            }
+            67 => {
+                self.close();
+                smoke.stage = 68;
+            }
+            68 if self.database.session.is_none() => {
+                self.select_workspace(smoke.first_workspace.unwrap());
+                self.close();
+                smoke.stage = 5;
+            }
+            _ => {}
+        }
     }
     fn prepare_visual_scene(&mut self, scene: usize) {
         self.preferences.appearance = Some(crate::appearance::Mode::Dark);

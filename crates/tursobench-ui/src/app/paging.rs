@@ -354,14 +354,14 @@ mod tests {
     #[test]
     fn evicted_rows_use_the_rendered_stride_including_spacing() {
         let mut app = App::new(&egui::Context::default());
-        app.document.tools.row_stride = 37.0;
-        app.document.tools.grid_scroll.y = 4000.0;
-        app.document.inspect = Some((120, 0));
-        app.document.rebase_rows(-100);
-        assert_eq!(app.document.tools.grid_scroll.y, 300.0);
-        assert_eq!(app.document.inspect, Some((20, 0)));
-        app.document.rebase_rows(100);
-        assert_eq!(app.document.tools.grid_scroll.y, 4000.0);
+        app.database.document.tools.row_stride = 37.0;
+        app.database.document.tools.grid_scroll.y = 4000.0;
+        app.database.document.inspect = Some((120, 0));
+        app.database.document.rebase_rows(-100);
+        assert_eq!(app.database.document.tools.grid_scroll.y, 300.0);
+        assert_eq!(app.database.document.inspect, Some((20, 0)));
+        app.database.document.rebase_rows(100);
+        assert_eq!(app.database.document.tools.grid_scroll.y, 4000.0);
     }
 
     #[test]
@@ -423,14 +423,14 @@ mod tests {
                 "Column metadata",
             ),
         ] {
-            app.document.result = ResultSet {
+            app.database.document.result = ResultSet {
                 current: Some(owner),
                 columns: vec![column("id", None)],
                 rows: vec![vec![Value::Integer(7)]],
                 ..Default::default()
             };
-            app.document.tools.pages = Default::default();
-            app.document.tools.pages.pending = Some(Pending {
+            app.database.document.tools.pages = Default::default();
+            app.database.document.tools.pages.pending = Some(Pending {
                 result: ResultSet {
                     current: Some(ticket),
                     columns: vec![column("id", None)],
@@ -449,21 +449,24 @@ mod tests {
                 ticket: owner,
                 kind: completion(Delivery::Complete, None),
             });
-            assert!(app.document.tools.pages.pending.is_some());
+            assert!(app.database.document.tools.pages.pending.is_some());
             app.page_event(Event { ticket, kind });
             app.page_event(Event {
                 ticket,
                 kind: completion(Delivery::Complete, None),
             });
-            assert!(app.document.tools.pages.pending.is_none());
+            assert!(app.database.document.tools.pages.pending.is_none());
             assert!(
-                app.document.tools.pages.error.contains(expected),
+                app.database.document.tools.pages.error.contains(expected),
                 "{expected}: {}",
-                app.document.tools.pages.error
+                app.database.document.tools.pages.error
             );
-            assert_eq!(app.document.result.rows, vec![vec![Value::Integer(7)]]);
-            assert_eq!(app.document.result.current, Some(owner));
-            assert_eq!(app.document.tools.pages.end, None);
+            assert_eq!(
+                app.database.document.result.rows,
+                vec![vec![Value::Integer(7)]]
+            );
+            assert_eq!(app.database.document.result.current, Some(owner));
+            assert_eq!(app.database.document.tools.pages.end, None);
         }
     }
 }

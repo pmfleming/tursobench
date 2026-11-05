@@ -26,9 +26,7 @@ pub(super) enum Icon {
     Moon,
     Close,
     Disconnect,
-    Popout,
     Lock,
-    Edit,
     Fit,
     Arrange,
     RestoreTiles,
@@ -445,11 +443,6 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
             line(&arc);
             line(&[(12., 2.), (12., 12.)]);
         }
-        Popout => {
-            line(&[(14., 3.), (21., 3.), (21., 10.)]);
-            line(&[(10., 14.), (21., 3.)]);
-            line(&[(10., 4.), (3., 4.), (3., 21.), (20., 21.), (20., 14.)]);
-        }
         Lock => {
             box_(4., 11., 16., 11.);
             line(&[
@@ -461,14 +454,6 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
                 (16., 11.),
             ]);
         }
-        Edit => line(&[
-            (4., 20.),
-            (6., 14.),
-            (17., 3.),
-            (21., 7.),
-            (10., 18.),
-            (4., 20.),
-        ]),
         Fit => {
             for (x, y, dx, dy) in [
                 (3., 3., 5., 5.),

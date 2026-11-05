@@ -171,9 +171,9 @@ mod tests {
         }
         for (result, message) in cases {
             let mut app = App::new(&ctx);
-            app.path = "previous.db".into();
+            app.database.path = "previous.db".into();
 
-            app.writable = true;
+            app.database.writable = true;
             let (tx, rx) = mpsc::sync_channel(1);
             app.picker = Some(rx);
             app.poll_picker();
@@ -184,17 +184,21 @@ mod tests {
             drop(tx);
             app.poll_picker();
             assert!(app.picker.is_none());
-            assert!(app.status.contains(message), "{}", app.status);
-            assert_eq!(app.path, "previous.db");
-            assert!(app.writable);
-            app.document.ui.nav = shell::Nav::Result;
+            assert!(
+                app.database.status.contains(message),
+                "{}",
+                app.database.status
+            );
+            assert_eq!(app.database.path, "previous.db");
+            assert!(app.database.writable);
+            app.database.document.ui.nav = shell::Nav::Result;
             let (tx, rx) = mpsc::sync_channel(1);
             app.picker = Some(rx);
             tx.send(Ok(Some("retry.db".into()))).unwrap();
             app.poll_picker();
-            assert_eq!(app.path, "retry.db");
-            assert!(!app.writable);
-            assert_eq!(app.document.ui.nav, shell::Nav::Databases);
+            assert_eq!(app.database.path, "retry.db");
+            assert!(!app.database.writable);
+            assert_eq!(app.database.document.ui.nav, shell::Nav::Databases);
         }
     }
 
@@ -221,17 +225,17 @@ mod tests {
     #[test]
     fn pending_picker_blocks_opening_the_previous_path() {
         let (ctx, mut app) = crate::app::test_ui::app();
-        app.path = "previous.db".into();
+        app.database.path = "previous.db".into();
 
         let (tx, rx) = mpsc::sync_channel(1);
         app.picker = Some(rx);
         app.open(&ctx);
-        assert!(app.session.is_none());
-        assert!(app.status.contains("Finish choosing a file"));
+        assert!(app.database.session.is_none());
+        assert!(app.database.status.contains("Finish choosing a file"));
         // Ctrl+O or another button click must not replace an in-flight picker.
         app.choose_file(&ctx);
         tx.send(Ok(Some("selected.db".into()))).unwrap();
         app.poll_picker();
-        assert_eq!(app.path, "selected.db");
+        assert_eq!(app.database.path, "selected.db");
     }
 }

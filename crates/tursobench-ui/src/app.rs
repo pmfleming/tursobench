@@ -1,6 +1,4 @@
-use tursobench_core::{
-    Access, Browse, ConnectionSettings, ResultSet, SchemaObject, Ticket, TransactionState,
-};
+use tursobench_core::{Access, Browse, ConnectionSettings, Ticket, TransactionState};
 mod admin;
 mod columns;
 mod commands;
@@ -50,76 +48,7 @@ enum View {
     Explain,
     Diagnostics,
 }
-pub struct DatabaseWorkspace {
-    id: u64,
-    recovery: recovery::State,
-    pending_database: Option<std::path::PathBuf>,
-    path: String,
-    tools: tools::Tools,
-    document: document::Document,
-    workspace: workspace::Workspace,
-    documents: std::collections::BTreeMap<u64, document::Document>,
-    commit_owner: Option<u64>,
-    ui: shell::UiState,
-    export_job: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
-    writable: bool,
-    coordination: Option<tursobench_core::Coordination>,
-    confirm_close: bool,
-    pending_access: Option<bool>,
-    session: Option<Session>,
-    ready: bool,
-    closing: bool,
-    sequence: u64,
-    generation: u64,
-    schema: Vec<SchemaObject>,
-    catalog: ResultSet,
-    catalog_ticket: Option<Ticket>,
-    catalog_error: String,
-    catalog_refresh_pending: bool,
-    diagram_refresh_pending: bool,
-    status: String,
-    activity: std::collections::VecDeque<String>,
-    transaction: TransactionState,
-    commit_ticket: Option<Ticket>,
-    uncertain_edit: bool,
-}
-impl DatabaseWorkspace {
-    fn new(ctx: &egui::Context, id: u64) -> Self {
-        Self {
-            id,
-            recovery: recovery::State::new(ctx),
-            pending_database: Default::default(),
-            path: Default::default(),
-            tools: Default::default(),
-            document: Default::default(),
-            workspace: Default::default(),
-            documents: Default::default(),
-            commit_owner: Default::default(),
-            ui: shell::UiState::new(ctx),
-            export_job: Default::default(),
-            writable: Default::default(),
-            coordination: Default::default(),
-            confirm_close: Default::default(),
-            pending_access: Default::default(),
-            session: Default::default(),
-            ready: Default::default(),
-            closing: Default::default(),
-            sequence: Default::default(),
-            generation: Default::default(),
-            schema: Default::default(),
-            catalog: Default::default(),
-            catalog_ticket: Default::default(),
-            catalog_error: Default::default(),
-            catalog_refresh_pending: Default::default(),
-            diagram_refresh_pending: Default::default(),
-            status: Default::default(),
-            activity: Default::default(),
-            transaction: TransactionState::Autocommit,
-            commit_ticket: Default::default(),
-            uncertain_edit: Default::default(),
-        }
-    }
-}
+use sessions::DatabaseWorkspace;
 pub struct App {
     comparison: schema_compare::State,
     database: DatabaseWorkspace,
@@ -140,17 +69,6 @@ pub struct App {
     first_cell_rect: Option<egui::Rect>,
     #[cfg(test)]
     fk_cell_rect: Option<egui::Rect>,
-}
-impl std::ops::Deref for App {
-    type Target = DatabaseWorkspace;
-    fn deref(&self) -> &Self::Target {
-        &self.database
-    }
-}
-impl std::ops::DerefMut for App {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.database
-    }
 }
 
 impl App {
@@ -282,15 +200,14 @@ impl App {
                 self.database.workspace = Default::default();
                 self.database.document = document::Document::default();
                 self.database.commit_owner = None;
-                self.database.document.result = ResultSet::default();
+                self.database.document.result = Default::default();
                 self.database.schema.clear();
-                self.database.catalog = ResultSet::default();
+                self.database.catalog = Default::default();
                 self.database.catalog_ticket = None;
                 self.database.catalog_error.clear();
                 self.database.ui.diagram = Default::default();
                 self.database.document.ui.table_view = shell::TableView::Data;
                 self.database.ui.unfolded = None;
-                self.database.document.ui.inspector_initialized = false;
                 self.database.tools.counts.clear();
                 self.database.tools.count_request = None;
                 self.database.document.ui.sql_open = false;
@@ -379,6 +296,7 @@ impl App {
                 self.database.document.tools.filtered_count = None;
                 self.database.document.profile = None;
                 self.database.document.script_results.clear();
+                self.database.document.selected_script = None;
                 self.database.document.script_message.clear();
                 self.database.document.stale = false;
                 self.database.document.external_refresh = false;
@@ -774,7 +692,7 @@ mod test_ui {
         let start = Instant::now();
         loop {
             app.poll_database_inspection(ctx);
-            if app.databases.inspection.ready(&app.path) {
+            if app.databases.inspection.ready(&app.database.path) {
                 break;
             }
             assert!(start.elapsed() < Duration::from_secs(5));
@@ -787,19 +705,19 @@ mod test_ui {
     #[test]
     fn renders_empty_and_large_cells_without_engine() {
         let (ctx, mut app) = crate::app::test_ui::app();
-        app.document.ui.nav = shell::Nav::Table;
-        app.document.result.columns = vec![Column {
+        app.database.document.ui.nav = shell::Nav::Table;
+        app.database.document.result.columns = vec![Column {
             name: "data".into(),
             declared_type: None,
         }];
-        app.document.result.rows = vec![
+        app.database.document.result.rows = vec![
             vec![Value::Text("λ".repeat(30000))],
             vec![Value::Blob(vec![0; 64000])],
         ];
-        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.render(ui));
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.grid_contents(ui));
         output.textures_delta.clear();
-        assert!(app.session.is_none());
-        assert!(app.document.active.is_none());
+        assert!(app.database.session.is_none());
+        assert!(app.database.document.active.is_none());
         assert!(app.first_cell_rect.is_some());
     }
 }

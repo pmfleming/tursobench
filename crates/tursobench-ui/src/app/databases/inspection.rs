@@ -144,8 +144,8 @@ mod tests {
         };
         app.set_database_path(path.to_str().unwrap().into());
         app.poll_database_inspection(&ctx);
-        assert!(!app.databases.inspection.ready(&app.path));
-        assert!(!app.databases.inspection.allows_open(&app.path));
+        assert!(!app.databases.inspection.ready(&app.database.path));
+        assert!(!app.databases.inspection.allows_open(&app.database.path));
         assert!(!app.databases.inspection.override_sqlite);
         assert_eq!(
             app.databases.inspection.path, "previous.db",
@@ -155,17 +155,17 @@ mod tests {
         let started = std::time::Instant::now();
         loop {
             app.poll_database_inspection(&ctx);
-            if app.databases.inspection.ready(&app.path) {
+            if app.databases.inspection.ready(&app.database.path) {
                 break;
             }
             assert!(started.elapsed() < std::time::Duration::from_secs(5));
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         assert_eq!(
-            app.databases.inspection.kind(&app.path),
+            app.databases.inspection.kind(&app.database.path),
             DatabaseKind::LikelyTurso
         );
         assert!(!app.databases.inspection.override_sqlite);
-        assert!(app.session.is_none());
+        assert!(app.database.session.is_none());
     }
 }

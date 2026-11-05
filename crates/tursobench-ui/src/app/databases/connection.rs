@@ -240,15 +240,15 @@ mod tests {
 
         inspect(&mut app, &ctx);
         assert_eq!(
-            app.databases.inspection.kind(&app.path),
+            app.databases.inspection.kind(&app.database.path),
             DatabaseKind::LikelySqlite
         );
         let texts = frame(&mut app, &ctx, vec![], egui::vec2(1280.0, 720.0));
         assert!(texts.iter().any(|t| t.contains("Likely SQLite")));
         assert!(!app.databases.open_enabled);
         app.open(&ctx);
-        assert!(app.session.is_none());
-        assert!(app.status.contains("override"));
+        assert!(app.database.session.is_none());
+        assert!(app.database.status.contains("override"));
         let checkbox = app.databases.override_rect.unwrap().center();
         click(&mut app, &ctx, checkbox);
         assert!(app.databases.inspection.override_sqlite);
@@ -260,22 +260,22 @@ mod tests {
         );
         app.open(&ctx);
         let started = std::time::Instant::now();
-        while !app.ready
-            || app.document.active.is_some()
-            || app.catalog_ticket.is_some()
-            || app.ui.diagram.ticket.is_some()
+        while !app.database.ready
+            || app.database.document.active.is_some()
+            || app.database.catalog_ticket.is_some()
+            || app.database.ui.diagram.ticket.is_some()
         {
             app.poll(&ctx);
             assert!(
                 started.elapsed() < std::time::Duration::from_secs(5),
                 "{}",
-                app.status
+                app.database.status
             );
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
-        assert!(app.schema.iter().any(|t| t.name == "example"));
+        assert!(app.database.schema.iter().any(|t| t.name == "example"));
         app.close();
-        while app.session.is_some() {
+        while app.database.session.is_some() {
             app.poll(&ctx);
             assert!(started.elapsed() < std::time::Duration::from_secs(5));
             std::thread::sleep(std::time::Duration::from_millis(2));
@@ -285,7 +285,7 @@ mod tests {
         assert!(!app.databases.inspection.override_sqlite);
         app.set_database_path(path.to_str().unwrap().into());
         inspect(&mut app, &ctx);
-        assert!(!app.databases.inspection.allows_open(&app.path));
+        assert!(!app.databases.inspection.allows_open(&app.database.path));
     }
 
     #[test]
@@ -299,12 +299,12 @@ mod tests {
         assert!(!app.databases.open_enabled);
         let open = app.databases.open_rect.unwrap().center();
         click(&mut app, &ctx, open);
-        assert!(app.session.is_none());
+        assert!(app.database.session.is_none());
 
         inspect(&mut app, &ctx);
         frame(&mut app, &ctx, vec![], egui::vec2(1280.0, 720.0));
         assert!(app.databases.open_enabled);
-        assert!(!app.writable);
+        assert!(!app.database.writable);
         let (_tx, rx) = std::sync::mpsc::sync_channel(1);
         app.picker = Some(rx);
         frame(&mut app, &ctx, vec![], egui::vec2(1280.0, 720.0));
@@ -315,17 +315,17 @@ mod tests {
         click(&mut app, &ctx, edit);
         assert!(app.databases.editing_path);
         assert!(ctx.memory(|m| m.has_focus(egui::Id::unique("database-path"))));
-        app.writable = true;
+        app.database.writable = true;
         frame(
             &mut app,
             &ctx,
             vec![egui::Event::Text("x".into())],
             egui::vec2(1280.0, 720.0),
         );
-        assert_ne!(app.path, path.to_str().unwrap());
-        assert!(!app.writable);
+        assert_ne!(app.database.path, path.to_str().unwrap());
+        assert!(!app.database.writable);
         assert!(!app.databases.open_enabled);
-        assert!(app.session.is_none());
+        assert!(app.database.session.is_none());
     }
 
     #[test]
@@ -333,7 +333,7 @@ mod tests {
         let (ctx, mut app) = crate::app::test_ui::app();
         app.set_database_path("/work/example.db".into());
 
-        app.writable = true;
+        app.database.writable = true;
         app.databases.message = Some("Folder excluded.".into());
         app.databases.summary = Some(crate::discovery::Summary {
             limited: true,
@@ -395,9 +395,9 @@ mod tests {
                 "{visible}: {texts:?}"
             );
         }
-        assert_eq!(app.path, "/work/example.db");
-        assert!(app.writable);
-        assert!(app.session.is_none());
+        assert_eq!(app.database.path, "/work/example.db");
+        assert!(app.database.writable);
+        assert!(app.database.session.is_none());
     }
 
     #[test]
@@ -425,7 +425,7 @@ mod tests {
             let start = std::time::Instant::now();
             loop {
                 app.poll_database_inspection(&ctx);
-                if app.databases.inspection.allows_open(&app.path) {
+                if app.databases.inspection.allows_open(&app.database.path) {
                     break;
                 }
                 assert!(start.elapsed() < std::time::Duration::from_secs(5));
@@ -452,7 +452,7 @@ mod tests {
         let (ctx, mut app) = crate::app::test_ui::app();
         app.set_database_path(path.to_string_lossy().into_owned());
         inspect(&mut app, &ctx);
-        assert!(app.databases.inspection.allows_open(&app.path));
+        assert!(app.databases.inspection.allows_open(&app.database.path));
         app.open(&ctx);
         let start = std::time::Instant::now();
         while app.databases.open_failure.is_none() {
@@ -460,12 +460,12 @@ mod tests {
             assert!(
                 start.elapsed() < std::time::Duration::from_secs(5),
                 "{}",
-                app.status
+                app.database.status
             );
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         let reason = app.databases.open_failure.as_ref().unwrap().message.clone();
-        app.status = "Unrelated status change".into();
+        app.database.status = "Unrelated status change".into();
         let texts = frame(&mut app, &ctx, vec![], egui::vec2(960.0, 640.0));
         assert!(texts.iter().any(|t| t == "Couldn’t open database"));
         assert!(texts.iter().any(|t| t == &reason));
@@ -490,7 +490,7 @@ mod tests {
                 app.databases = Chooser::default();
                 app.set_database_path("/work/recent.db".into());
                 app.databases.entries.push(Entry {
-                    path: app.path.clone().into(),
+                    path: app.database.path.clone().into(),
                     state: State::Remembered,
                     size: None,
                     last_opened: Some(1),
@@ -514,9 +514,9 @@ mod tests {
                 let texts = frame(&mut app, &ctx, vec![], size);
                 let open = app.databases.open_rect.unwrap();
                 assert!(
-                    app.ui.workspace_rect.contains_rect(open),
+                    app.database.ui.workspace_rect.contains_rect(open),
                     "{width}x{height}: {open:?}, workspace {:?}",
-                    app.ui.workspace_rect
+                    app.database.ui.workspace_rect
                 );
                 assert!(app.databases.search_rect.unwrap().width() <= 800.0);
                 assert!(app.databases.row_rects.len() < 10);

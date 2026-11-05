@@ -9,6 +9,7 @@ use eframe::egui;
 
 pub(super) enum Command {
     Table(String, Option<String>),
+    Definition(String),
     Map,
     List,
     Sql,
@@ -30,7 +31,7 @@ pub(super) enum Command {
     CopyResults,
 }
 
-fn fuzzy(label: &str, query: &str) -> bool {
+pub(super) fn fuzzy(label: &str, query: &str) -> bool {
     let lower = label.to_lowercase();
     let mut chars = lower.chars();
     query
@@ -38,6 +39,52 @@ fn fuzzy(label: &str, query: &str) -> bool {
         .chars()
         .filter(|c| !c.is_whitespace())
         .all(|wanted| chars.by_ref().any(|c| c == wanted))
+}
+
+pub(super) struct ObjectRef<'a> {
+    kind: &'a str,
+    name: &'a str,
+    column: Option<&'a str>,
+}
+impl ObjectRef<'_> {
+    pub(super) fn label(&self) -> String {
+        match self.column {
+            Some(column) => format!("{}.{} · column", self.name, column),
+            None => format!("{} · {}", self.name, self.kind),
+        }
+    }
+    pub(super) fn command(&self) -> Command {
+        match self.kind {
+            "table" | "view" => Command::Table(self.name.into(), self.column.map(str::to_owned)),
+            _ => Command::Definition(self.name.into()),
+        }
+    }
+}
+pub(super) fn objects<'a>(
+    schema: &'a [tursobench_core::SchemaObject],
+    graph: Option<&'a tursobench_core::SchemaDiagram>,
+) -> impl Iterator<Item = ObjectRef<'a>> {
+    let tables = schema.iter().map(|o| ObjectRef {
+        kind: &o.kind,
+        name: &o.name,
+        column: None,
+    });
+    let columns = graph
+        .into_iter()
+        .flat_map(|g| &g.tables)
+        .filter_map(|node| {
+            node.inspection
+                .as_ref()
+                .map(|info| (&node.name, &info.table))
+        })
+        .flat_map(|(name, table)| {
+            table.columns.iter().map(move |c| ObjectRef {
+                kind: "table",
+                name,
+                column: Some(&c.name),
+            })
+        });
+    tables.chain(columns)
 }
 
 impl App {
@@ -342,37 +389,28 @@ impl App {
             ("Keyboard shortcuts and help · F1".into(), Command::Help),
         ];
         items.extend(
-            self.database
-                .schema
-                .iter()
-                .filter(|o| o.kind == "table" || o.kind == "view")
-                .map(|o| {
-                    (
-                        format!("{} · {}", o.name, o.kind),
-                        Command::Table(o.name.clone(), None),
-                    )
-                }),
+            objects(
+                &self.database.schema,
+                self.database.ui.diagram.data.as_ref(),
+            )
+            .filter(|o| {
+                matches!(o.kind, "table" | "view")
+                    && (o.column.is_none() || !self.database.ui.palette_query.is_empty())
+            })
+            .map(|o| (o.label(), o.command())),
         );
-        if !self.database.ui.palette_query.is_empty()
-            && let Some(graph) = &self.database.ui.diagram.data
-        {
-            for node in &graph.tables {
-                if let Some(info) = &node.inspection {
-                    items.extend(info.table.columns.iter().map(|c| {
-                        (
-                            format!("{}.{} · column", node.name, c.name),
-                            Command::Table(node.name.clone(), Some(c.name.clone())),
-                        )
-                    }));
-                }
-            }
-        }
         items.retain(|(label, _)| fuzzy(label, &self.database.ui.palette_query));
         items.truncate(80);
         items
     }
     pub(super) fn execute_command(&mut self, ctx: &egui::Context, action: Command) {
         match action {
+            Command::Definition(name) => {
+                self.submit(
+                    tursobench_db::Operation::Definition(name),
+                    View::Diagnostics,
+                );
+            }
             Command::Table(name, column) => {
                 let before = self.database.document.result.current;
                 self.activate_table(name.clone());

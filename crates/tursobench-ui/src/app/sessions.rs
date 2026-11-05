@@ -1,7 +1,79 @@
 //! Database state moves between workspaces; result buffers are never cloned.
-use super::{App, DatabaseWorkspace, shell};
+use super::{App, document, recovery, shell, tools, workspace};
 use eframe::egui;
 use std::path::{Path, PathBuf};
+use tursobench_core::{ResultSet, SchemaObject, Ticket, TransactionState};
+use tursobench_db::Session;
+pub(super) struct DatabaseWorkspace {
+    pub(super) id: u64,
+    pub(super) recovery: recovery::State,
+    pub(super) pending_database: Option<std::path::PathBuf>,
+    pub(super) path: String,
+    pub(super) tools: tools::Tools,
+    pub(super) document: document::Document,
+    pub(super) workspace: workspace::Workspace,
+    pub(super) documents: std::collections::BTreeMap<u64, document::Document>,
+    pub(super) commit_owner: Option<u64>,
+    pub(super) ui: shell::UiState,
+    pub(super) export_job: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
+    pub(super) writable: bool,
+    pub(super) coordination: Option<tursobench_core::Coordination>,
+    pub(super) confirm_close: bool,
+    pub(super) pending_access: Option<bool>,
+    pub(super) session: Option<Session>,
+    pub(super) ready: bool,
+    pub(super) closing: bool,
+    pub(super) sequence: u64,
+    pub(super) generation: u64,
+    pub(super) schema: Vec<SchemaObject>,
+    pub(super) catalog: ResultSet,
+    pub(super) catalog_ticket: Option<Ticket>,
+    pub(super) catalog_error: String,
+    pub(super) catalog_refresh_pending: bool,
+    pub(super) diagram_refresh_pending: bool,
+    pub(super) status: String,
+    pub(super) activity: std::collections::VecDeque<String>,
+    pub(super) transaction: TransactionState,
+    pub(super) commit_ticket: Option<Ticket>,
+    pub(super) uncertain_edit: bool,
+}
+impl DatabaseWorkspace {
+    pub(super) fn new(ctx: &egui::Context, id: u64) -> Self {
+        Self {
+            id,
+            recovery: recovery::State::new(ctx),
+            pending_database: Default::default(),
+            path: Default::default(),
+            tools: Default::default(),
+            document: Default::default(),
+            workspace: Default::default(),
+            documents: Default::default(),
+            commit_owner: Default::default(),
+            ui: shell::UiState::new(ctx),
+            export_job: Default::default(),
+            writable: Default::default(),
+            coordination: Default::default(),
+            confirm_close: Default::default(),
+            pending_access: Default::default(),
+            session: Default::default(),
+            ready: Default::default(),
+            closing: Default::default(),
+            sequence: Default::default(),
+            generation: Default::default(),
+            schema: Default::default(),
+            catalog: Default::default(),
+            catalog_ticket: Default::default(),
+            catalog_error: Default::default(),
+            catalog_refresh_pending: Default::default(),
+            diagram_refresh_pending: Default::default(),
+            status: Default::default(),
+            activity: Default::default(),
+            transaction: TransactionState::Autocommit,
+            commit_ticket: Default::default(),
+            uncertain_edit: Default::default(),
+        }
+    }
+}
 const MAX_DATABASES: usize = 4;
 fn same_file(a: &Path, b: &Path) -> bool {
     if a == b {
@@ -18,15 +90,6 @@ fn same_file(a: &Path, b: &Path) -> bool {
         .ok()
         .zip(std::fs::canonicalize(b).ok())
         .is_some_and(|(a, b)| a == b)
-}
-fn fuzzy(label: &str, query: &str) -> bool {
-    let lower = label.to_lowercase();
-    let mut chars = lower.chars();
-    query
-        .to_lowercase()
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .all(|c| chars.by_ref().any(|v| v == c))
 }
 impl App {
     fn swap_workspace(&mut self, id: u64) -> bool {
@@ -241,76 +304,37 @@ impl App {
                 egui::ScrollArea::vertical()
                     .max_height(400.0)
                     .show(ui, |ui| {
-                        let mut shown = 0;
-                        for d in std::iter::once(&self.database).chain(self.parked.values()) {
-                            for object in &d.schema {
-                                let label = format!(
-                                    "{} · {} · {}",
-                                    Path::new(&d.path)
-                                        .file_name()
-                                        .unwrap_or_default()
-                                        .to_string_lossy(),
-                                    object.kind,
-                                    object.name
-                                );
-                                if shown < 100 && fuzzy(&label, &self.object_search) {
-                                    shown += 1;
-                                    if ui.button(label).clicked() {
-                                        chosen = Some((
-                                            d.id,
-                                            object.kind.clone(),
-                                            object.name.clone(),
-                                            None,
-                                        ));
-                                    }
-                                }
-                            }
-                            if let Some(graph) = &d.ui.diagram.data {
-                                for table in &graph.tables {
-                                    if let Some(info) = &table.inspection {
-                                        for column in &info.table.columns {
-                                            let label = format!(
-                                                "{} · {}.{}",
-                                                Path::new(&d.path)
-                                                    .file_name()
-                                                    .unwrap_or_default()
-                                                    .to_string_lossy(),
-                                                table.name,
-                                                column.name
-                                            );
-                                            if shown < 100 && fuzzy(&label, &self.object_search) {
-                                                shown += 1;
-                                                if ui.button(label).clicked() {
-                                                    chosen = Some((
-                                                        d.id,
-                                                        "table".into(),
-                                                        table.name.clone(),
-                                                        Some(column.name.clone()),
-                                                    ));
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                        let matches = std::iter::once(&self.database)
+                            .chain(self.parked.values())
+                            .flat_map(|d| {
+                                let file = Path::new(&d.path)
+                                    .file_name()
+                                    .unwrap_or_default()
+                                    .to_string_lossy();
+                                super::commands::objects(&d.schema, d.ui.diagram.data.as_ref()).map(
+                                    move |object| {
+                                        (d.id, format!("{file} · {}", object.label()), object)
+                                    },
+                                )
+                            });
+                        let mut matches = matches.filter(|(_, label, _)| {
+                            super::commands::fuzzy(label, &self.object_search)
+                        });
+                        for (id, label, object) in matches.by_ref().take(100) {
+                            if ui.button(label).clicked() {
+                                chosen = Some((id, object.command()));
                             }
                         }
-                        if shown == 100 {
+                        if matches.next().is_some() {
                             ui.weak("First 100 matches; refine the search.");
                         }
                     });
             });
         self.object_search_open = open;
-        if let Some((id, kind, name, column)) = chosen {
+        if let Some((id, command)) = chosen {
             self.select_workspace(id);
             if self.database.id == id {
-                if kind == "table" || kind == "view" {
-                    self.execute_command(ctx, super::commands::Command::Table(name, column));
-                } else {
-                    self.submit(
-                        tursobench_db::Operation::Definition(name),
-                        super::View::Diagnostics,
-                    );
-                }
+                self.execute_command(ctx, command);
                 self.object_search_open = false;
             }
         }

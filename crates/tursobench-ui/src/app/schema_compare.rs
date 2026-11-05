@@ -201,76 +201,206 @@ impl App {
         let choices: Vec<_> = std::iter::once(&self.database)
             .chain(self.parked.values())
             .filter(|w| w.ready && !w.closing)
-            .map(|w| (w.id, w.path.clone()))
+            .map(|w| Choice {
+                id: w.id,
+                path: &w.path,
+                capture: &w.tools.snapshot,
+            })
             .collect();
-        if !choices.iter().any(|(id, _)| *id == self.comparison.source) {
-            self.comparison.source = choices.first().map_or(0, |c| c.0);
+        match self.comparison.show(ctx, &choices) {
+            Some(Action::Capture) => {
+                self.comparison.result = None;
+                self.comparison.error.clear();
+                self.capture_schema(self.comparison.source);
+                self.capture_schema(self.comparison.target);
+            }
+            Some(Action::Draft {
+                target,
+                sql,
+                expected,
+            }) => {
+                self.open_migration(target, sql, expected);
+                self.comparison.open = false;
+            }
+            None => {}
         }
-        if !choices.iter().any(|(id, _)| *id == self.comparison.target) {
-            self.comparison.target = choices
+    }
+}
+struct Choice<'a> {
+    id: u64,
+    path: &'a str,
+    capture: &'a Capture,
+}
+enum Action {
+    Capture,
+    Draft {
+        target: u64,
+        sql: String,
+        expected: Arc<SchemaSnapshot>,
+    },
+}
+impl Capture {
+    fn show(&self, ui: &mut egui::Ui, path: &str) {
+        if self.ticket.is_some() {
+            ui.label(format!("Capturing {path}…"));
+        }
+        if self.stale {
+            ui.label(format!("{path}: snapshot stale; refresh"));
+        }
+        if !self.error.is_empty() {
+            ui.colored_label(ui.visuals().error_fg_color, &self.error);
+        }
+    }
+}
+fn choose(ui: &mut egui::Ui, label: &str, selected: &mut u64, choices: &[Choice<'_>]) {
+    let path = choices
+        .iter()
+        .find(|c| c.id == *selected)
+        .map_or("Choose…", |c| c.path);
+    egui::ComboBox::from_id_salt(label)
+        .selected_text(format!("{label}: {path}"))
+        .show_ui(ui, |ui| {
+            for c in choices {
+                ui.selectable_value(selected, c.id, c.path);
+            }
+        });
+}
+impl State {
+    fn show(&mut self, ctx: &egui::Context, choices: &[Choice<'_>]) -> Option<Action> {
+        if !choices.iter().any(|c| c.id == self.source) {
+            self.source = choices.first().map_or(0, |c| c.id);
+        }
+        if !choices.iter().any(|c| c.id == self.target) {
+            self.target = choices
                 .iter()
-                .find(|(id, _)| *id != self.comparison.source)
-                .map_or(0, |c| c.0);
+                .find(|c| c.id != self.source)
+                .map_or(0, |c| c.id);
         }
-        let mut open = true;
-        let mut refresh = false;
-        let mut draft = None;
-        egui::Window::new("Schema comparison").open(&mut open).default_width(760.0).default_height(520.0).show(ctx, |ui| {
-            ui.label("Compare committed main schemas. Added/removed refer to changes needed in the target to match the desired schema.");
-            if choices.len() < 2 { ui.label("Open a second database workspace to compare schemas."); return; }
-            for (label, selected) in [("Desired schema", &mut self.comparison.source), ("Target database", &mut self.comparison.target)] {
-                egui::ComboBox::from_id_salt(label).selected_text(format!("{label}: {}", choices.iter().find(|c| c.0 == *selected).map_or("Choose…", |c| c.1.as_str()))).show_ui(ui, |ui| {
-                    for (id,path) in &choices { ui.selectable_value(selected,*id,path); }
-                });
-            }
-            let pending = choices.iter().any(|(id,_)| self.comparison_workspace(*id).is_some_and(|w| w.tools.snapshot.ticket.is_some()));
-            refresh = ui.add_enabled(self.comparison.source != self.comparison.target && !pending && self.comparison.job.is_none(),egui::Button::new("Capture / refresh both schemas")).clicked();
-            for id in [self.comparison.source,self.comparison.target] {
-                if let Some(w) = self.comparison_workspace(id) {
-                    if w.tools.snapshot.ticket.is_some() { ui.label(format!("Capturing {}…",w.path)); }
-                    if w.tools.snapshot.stale { ui.label(format!("{}: snapshot stale; refresh",w.path)); }
-                    if !w.tools.snapshot.error.is_empty() { ui.colored_label(ui.visuals().error_fg_color, &w.tools.snapshot.error); }
-                }
-            }
-            if !self.comparison.error.is_empty() { ui.label(&self.comparison.error); }
-            if self.comparison.job.is_some() { ui.spinner(); }
-            ui.horizontal(|ui| { ui.label("Filter objects"); ui.text_edit_singleline(&mut self.comparison.filter); ui.checkbox(&mut self.comparison.identical,"Show identical"); });
-            // Choice widgets can invalidate a previous result within this frame.
-            let Some(result) = self.comparison.result.as_ref().filter(|r| self.comparison_matches(r)) else { return; };
-            let changed = result.differences.iter().filter(|d|d.status!=Status::Identical).count();
-            ui.label(format!("{changed} changed objects / {} total · definitions compared literally",result.differences.len()));
-            let query = self.comparison.filter.to_lowercase();
-            let rows: Vec<_> = result.differences.iter().filter(|d| (self.comparison.identical || d.status!=Status::Identical) && d.name.to_lowercase().contains(&query)).collect();
-            if rows.len() > 200 { ui.label("Showing first 200 matches; narrow the filter."); }
-            egui::ScrollArea::vertical().max_height(420.0).show(ui,|ui| {
-                for d in rows.into_iter().take(200) {
-                    ui.collapsing(format!("{:?} · {} {}",d.status,d.kind,d.name),|ui| {
-                        for detail in &d.details { ui.label(detail); }
-                        for (label,snapshot) in [("Target DDL",&result.current),("Desired DDL",&result.desired)] {
-                            if let Some(ddl) = snapshot.objects.iter().find(|o|o.kind==d.kind && o.name==d.name).and_then(|o|o.ddl.as_ref()) {
-                                ui.collapsing(label, |ui| { if ui.button("Copy definition").clicked() { ui.ctx().copy_text(ddl.clone()); } ui.monospace(ddl.chars().take(16_384).collect::<String>()); if ddl.len()>16_384 { ui.label("Display truncated; Copy definition retains the full SQL."); } });
-                            }
-                        }
-                        if let Some(guidance) = &d.guidance { ui.label(guidance); }
-                        if let Some(sql) = &d.migration {
-                            ui.monospace(sql.chars().take(16_384).collect::<String>());
-                            if ui.button("Open guarded migration draft in target editor").clicked() { draft=Some((result.target,sql.clone(),result.current.clone())); }
+        let mut open = self.open;
+        let mut action = None;
+        egui::Window::new("Schema comparison")
+            .open(&mut open)
+            .default_width(760.0)
+            .default_height(520.0)
+            .show(ctx, |ui| action = self.controls(ui, choices));
+        self.open = open;
+        action
+    }
+    fn controls(&mut self, ui: &mut egui::Ui, choices: &[Choice<'_>]) -> Option<Action> {
+        ui.label("Compare committed main schemas. Added/removed refer to changes needed in the target to match the desired schema.");
+        if choices.len() < 2 {
+            ui.label("Open a second database workspace to compare schemas.");
+            return None;
+        }
+        choose(ui, "Desired schema", &mut self.source, choices);
+        choose(ui, "Target database", &mut self.target, choices);
+        let pending = choices.iter().any(|c| c.capture.ticket.is_some());
+        if ui
+            .add_enabled(
+                self.source != self.target && !pending && self.job.is_none(),
+                egui::Button::new("Capture / refresh both schemas"),
+            )
+            .clicked()
+        {
+            return Some(Action::Capture);
+        }
+        for c in choices
+            .iter()
+            .filter(|c| c.id == self.source || c.id == self.target)
+        {
+            c.capture.show(ui, c.path);
+        }
+        if !self.error.is_empty() {
+            ui.label(&self.error);
+        }
+        if self.job.is_some() {
+            ui.spinner();
+        }
+        ui.horizontal(|ui| {
+            ui.label("Filter objects");
+            ui.text_edit_singleline(&mut self.filter);
+            ui.checkbox(&mut self.identical, "Show identical");
+        });
+        let result = self
+            .result
+            .as_ref()
+            .filter(|r| r.source == self.source && r.target == self.target)?;
+        let action = result.show(ui, &self.filter, self.identical);
+        ui.label("Drafts run only on explicit execution in read/write mode. Target schema is checked inside the transaction. Migration drafts are session-only; refresh comparison after reopening.");
+        action
+    }
+}
+impl Compared {
+    fn show(&self, ui: &mut egui::Ui, filter: &str, identical: bool) -> Option<Action> {
+        let changed = self
+            .differences
+            .iter()
+            .filter(|d| d.status != Status::Identical)
+            .count();
+        ui.label(format!(
+            "{changed} changed objects / {} total · definitions compared literally",
+            self.differences.len()
+        ));
+        let query = filter.to_lowercase();
+        let mut matches = self.differences.iter().filter(|d| {
+            (identical || d.status != Status::Identical) && d.name.to_lowercase().contains(&query)
+        });
+        let mut action = None;
+        egui::ScrollArea::vertical()
+            .max_height(420.0)
+            .show(ui, |ui| {
+                for d in matches.by_ref().take(200) {
+                    ui.collapsing(format!("{:?} · {} {}", d.status, d.kind, d.name), |ui| {
+                        if let Some(sql) = self.difference(ui, d) {
+                            action = Some(Action::Draft {
+                                target: self.target,
+                                sql,
+                                expected: self.current.clone(),
+                            });
                         }
                     });
                 }
+                if matches.next().is_some() {
+                    ui.label("Showing first 200 matches; narrow the filter.");
+                }
             });
-            ui.label("Drafts run only on explicit execution in read/write mode. Target schema is checked inside the transaction. Migration drafts are session-only; refresh comparison after reopening.");
-        });
-        self.comparison.open = open;
-        if refresh {
-            self.comparison.result = None;
-            self.comparison.error.clear();
-            self.capture_schema(self.comparison.source);
-            self.capture_schema(self.comparison.target);
+        action
+    }
+    fn difference(&self, ui: &mut egui::Ui, d: &Difference) -> Option<String> {
+        for detail in &d.details {
+            ui.label(detail);
         }
-        if let Some((target, sql, expected)) = draft {
-            self.open_migration(target, sql, expected);
-            self.comparison.open = false;
+        for (label, snapshot) in [
+            ("Target DDL", &self.current),
+            ("Desired DDL", &self.desired),
+        ] {
+            if let Some(ddl) = snapshot
+                .objects
+                .iter()
+                .find(|o| o.kind == d.kind && o.name == d.name)
+                .and_then(|o| o.ddl.as_deref())
+            {
+                ui.collapsing(label, |ui| {
+                    if ui.button("Copy definition").clicked() {
+                        ui.ctx().copy_text(ddl.to_owned());
+                    }
+                    sql_preview(ui, ddl);
+                });
+            }
         }
+        if let Some(guidance) = &d.guidance {
+            ui.label(guidance);
+        }
+        let sql = d.migration.as_ref()?;
+        sql_preview(ui, sql);
+        ui.button("Open guarded migration draft in target editor")
+            .clicked()
+            .then(|| sql.clone())
+    }
+}
+fn sql_preview(ui: &mut egui::Ui, sql: &str) {
+    ui.monospace(sql.chars().take(16_384).collect::<String>());
+    if sql.chars().count() > 16_384 {
+        ui.label("Display truncated; Copy definition retains the full SQL.");
     }
 }

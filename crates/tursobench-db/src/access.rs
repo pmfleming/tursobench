@@ -20,21 +20,8 @@ impl Drop for HeldLock {
     fn drop(&mut self) {
         #[cfg(target_os = "linux")]
         {
-            use std::os::fd::AsRawFd;
-            let mut region: libc::flock = unsafe { std::mem::zeroed() };
-            region.l_type = libc::F_UNLCK as _;
-            region.l_whence = libc::SEEK_SET as _;
-            // Explicitly unlock the entire description before closing it. A
-            // concurrent fork can inherit this OFD until exec; close alone
-            // would leave its locks held after our close acknowledgement.
-            loop {
-                // SAFETY: initialized flock and valid owned descriptor.
-                if unsafe { libc::fcntl(self.0.as_raw_fd(), libc::F_OFD_SETLK, &mut region) } == 0
-                    || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
-                {
-                    break;
-                }
-            }
+            // Unlock before close: a fork/dup may still own the same description.
+            let _ = flock(&self.0, libc::F_OFD_SETLK, libc::F_UNLCK, 0);
         }
     }
 }
@@ -191,16 +178,35 @@ fn owns_posix_lock(target: &std::fs::Metadata) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-fn conflicting_reader(file: &File, length: libc::off_t) -> Result<Option<i32>, Failure> {
+fn flock(
+    file: &File,
+    command: i32,
+    mode: i32,
+    length: libc::off_t,
+) -> std::io::Result<libc::flock> {
     use std::os::fd::AsRawFd;
-    let mut region: libc::flock = unsafe { std::mem::zeroed() };
-    region.l_type = libc::F_RDLCK as _;
-    region.l_whence = libc::SEEK_SET as _;
-    region.l_len = length;
-    // SAFETY: initialized flock, valid borrowed descriptor; GETLK only queries.
-    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_OFD_GETLK, &mut region) } == -1 {
-        return Err(io_failure(std::io::Error::last_os_error()));
+    let mut region = libc::flock {
+        l_type: mode as _,
+        l_whence: libc::SEEK_SET as _,
+        l_start: 0,
+        l_len: length,
+        l_pid: 0,
+    };
+    loop {
+        // SAFETY: file owns a valid descriptor, region is initialized, and
+        // F_OFD_GETLK/F_OFD_SETLK do not retain its pointer after this call.
+        if unsafe { libc::fcntl(file.as_raw_fd(), command, &mut region) } != -1 {
+            return Ok(region);
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error);
+        }
     }
+}
+#[cfg(target_os = "linux")]
+fn conflicting_reader(file: &File, length: libc::off_t) -> Result<Option<i32>, Failure> {
+    let region = flock(file, libc::F_OFD_GETLK, libc::F_RDLCK, length).map_err(io_failure)?;
     Ok((region.l_type != libc::F_UNLCK as libc::c_short).then_some(region.l_pid))
 }
 
@@ -227,26 +233,15 @@ fn lock_region(
     exclusive: bool,
     length: libc::off_t,
 ) -> Result<Option<HeldLock>, Failure> {
-    use std::os::fd::AsRawFd;
-    let mut region: libc::flock = unsafe { std::mem::zeroed() };
-    region.l_type = if exclusive {
+    let mode = if exclusive {
         libc::F_WRLCK
     } else {
         libc::F_RDLCK
-    } as _;
-    region.l_whence = libc::SEEK_SET as _;
-    region.l_len = length;
-    // l_start=0, l_len=0: the entire file, including future growth.
-    // SAFETY: valid descriptor and initialized flock; F_OFD_SETLK does not retain
-    // the pointer. HeldLock explicitly releases this description's locks.
-    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_OFD_SETLK, &mut region) } == 0 {
-        return Ok(Some(HeldLock(file)));
-    }
-    let error = std::io::Error::last_os_error();
-    if matches!(error.raw_os_error(), Some(libc::EAGAIN | libc::EACCES)) {
-        Ok(None)
-    } else {
-        Err(io_failure(error))
+    };
+    match flock(&file, libc::F_OFD_SETLK, mode, length) {
+        Ok(_) => Ok(Some(HeldLock(file))),
+        Err(e) if matches!(e.raw_os_error(), Some(libc::EAGAIN | libc::EACCES)) => Ok(None),
+        Err(e) => Err(io_failure(e)),
     }
 }
 

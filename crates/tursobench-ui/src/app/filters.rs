@@ -6,28 +6,95 @@ use eframe::egui;
 use tursobench_core::{Browse, Filter, FilterExpr, FilterOp, Table, Value};
 use tursobench_db::Operation;
 
+/// Decode one SQL-quoted token, leaving its suffix for the grammar to validate.
+fn quoted(input: &str, quote: char) -> Result<(String, &str), String> {
+    let mut chars = input[quote.len_utf8()..].char_indices().peekable();
+    let mut value = String::new();
+    while let Some((i, c)) = chars.next() {
+        if c != quote {
+            value.push(c);
+            continue;
+        }
+        if chars.peek().is_some_and(|(_, c)| *c == quote) {
+            chars.next();
+            value.push(quote);
+        } else {
+            return Ok((value, &input[i + 2 * quote.len_utf8()..]));
+        }
+    }
+    Err("Unclosed quoted name or value".into())
+}
+fn filter_operator(rest: &str) -> Result<(FilterOp, &str), String> {
+    let lower = rest.to_ascii_lowercase();
+    match lower.as_str() {
+        "is null" => return Ok((FilterOp::IsNull, "")),
+        "is not null" => return Ok((FilterOp::IsNotNull, "")),
+        _ => {}
+    }
+    let (token, op) = [
+        ("!=", FilterOp::NotEqual),
+        ("≠", FilterOp::NotEqual),
+        ("<=", FilterOp::LessOrEqual),
+        (">=", FilterOp::GreaterOrEqual),
+        ("=", FilterOp::Equal),
+        ("<", FilterOp::Less),
+        (">", FilterOp::Greater),
+        ("contains ", FilterOp::Contains),
+    ]
+    .into_iter()
+    .find(|(t, _)| lower.starts_with(t))
+    .ok_or("Expected =, !=, <, >, <=, >=, contains, is null or is not null")?;
+    Ok((op, rest[token.len()..].trim()))
+}
+fn filter_value(value: &str, op: FilterOp, declared_type: &str) -> Result<Value, String> {
+    if op.unary() {
+        return Ok(Value::Null);
+    }
+    if value.is_empty() {
+        return Err("Enter a value; use '' for empty text".into());
+    }
+    if value.starts_with('\'') {
+        let (text, rest) = quoted(value, '\'')?;
+        return if rest.is_empty() {
+            Ok(Value::Text(text))
+        } else {
+            Err("Escape a quote as two quotes".into())
+        };
+    }
+    if value.eq_ignore_ascii_case("null") {
+        return Ok(Value::Null);
+    }
+    if (value.starts_with("x'") || value.starts_with("X'")) && value.ends_with('\'') {
+        return CellKind::Blob.parse(&value[2..value.len() - 1]);
+    }
+    if op == FilterOp::Contains {
+        return Ok(Value::Text(value.into()));
+    }
+    let ty = declared_type.to_ascii_uppercase();
+    if ty.contains("INT") {
+        return CellKind::Integer.parse(value);
+    }
+    if ["REAL", "FLOA", "DOUB"].iter().any(|t| ty.contains(t)) {
+        return CellKind::Real.parse(value);
+    }
+    if ty.contains("NUM") || ty.contains("DEC") {
+        return CellKind::Integer
+            .parse(value)
+            .or_else(|_| CellKind::Real.parse(value));
+    }
+    if let Ok(n) = value.parse::<i64>() {
+        return Ok(Value::Integer(n));
+    }
+    if value.contains(['.', 'e', 'E']) && value.parse::<f64>().is_ok() {
+        return CellKind::Real.parse(value);
+    }
+    Ok(Value::Text(value.into()))
+}
 /// This grammar produces bound predicates, never SQL text.
 pub(super) fn parse_filter(input: &str, table: &Table) -> Result<Filter, String> {
     let input = input.trim();
-    let (name, rest) = if let Some(s) = input.strip_prefix('"') {
-        let mut name = String::new();
-        let mut iter = s.char_indices().peekable();
-        let mut end = None;
-        while let Some((i, c)) = iter.next() {
-            if c == '"' {
-                if iter.peek().is_some_and(|(_, c)| *c == '"') {
-                    iter.next();
-                    name.push('"');
-                } else {
-                    end = Some(i + 2);
-                    break;
-                }
-            } else {
-                name.push(c);
-            }
-        }
-        let end = end.ok_or("Unclosed quoted column name")?;
-        (name, &input[end..])
+    let (name, rest) = if input.starts_with('"') {
+        quoted(input, '"')?
     } else {
         let end = input
             .find(|c: char| c.is_whitespace() || "=!<>≠".contains(c))
@@ -39,78 +106,8 @@ pub(super) fn parse_filter(input: &str, table: &Table) -> Result<Filter, String>
         .iter()
         .position(|c| c.name.eq_ignore_ascii_case(&name))
         .ok_or_else(|| format!("Unknown column: {name}"))?;
-    let rest = rest.trim();
-    let lower = rest.to_lowercase();
-    let (op, value) = if lower == "is null" {
-        (FilterOp::IsNull, "")
-    } else if lower == "is not null" {
-        (FilterOp::IsNotNull, "")
-    } else {
-        let (token, op) = [
-            ("!=", FilterOp::NotEqual),
-            ("≠", FilterOp::NotEqual),
-            ("<=", FilterOp::LessOrEqual),
-            (">=", FilterOp::GreaterOrEqual),
-            ("=", FilterOp::Equal),
-            ("<", FilterOp::Less),
-            (">", FilterOp::Greater),
-            ("contains ", FilterOp::Contains),
-        ]
-        .into_iter()
-        .find(|(t, _)| lower.starts_with(t))
-        .ok_or("Expected =, !=, <, >, <=, >=, contains, is null or is not null")?;
-        (op, rest[token.len()..].trim())
-    };
-    if op.unary() {
-        return Ok(Filter {
-            column,
-            op,
-            value: Value::Null,
-        });
-    }
-    if value.is_empty() {
-        return Err("Enter a value; use '' for empty text".into());
-    }
-    let value = if value.starts_with('\'') {
-        if !value.ends_with('\'') || value.len() < 2 {
-            return Err("Unclosed text value".into());
-        }
-        let body = &value[1..value.len() - 1];
-        let mut out = String::new();
-        let mut chars = body.chars();
-        while let Some(c) = chars.next() {
-            if c == '\'' && chars.next() != Some('\'') {
-                return Err("Escape a quote as two quotes".into());
-            }
-            out.push(c);
-        }
-        Value::Text(out)
-    } else if value.eq_ignore_ascii_case("null") {
-        Value::Null
-    } else if (value.starts_with("x'") || value.starts_with("X'")) && value.ends_with('\'') {
-        CellKind::Blob.parse(&value[2..value.len() - 1])?
-    } else if op == FilterOp::Contains {
-        Value::Text(value.into())
-    } else {
-        let ty = table.columns[column].declared_type.to_uppercase();
-        if ty.contains("INT") {
-            CellKind::Integer.parse(value)?
-        } else if ["REAL", "FLOA", "DOUB"].iter().any(|t| ty.contains(t)) {
-            CellKind::Real.parse(value)?
-        } else if ty.contains("NUM") || ty.contains("DEC") {
-            CellKind::Integer
-                .parse(value)
-                .or_else(|_| CellKind::Real.parse(value))?
-        } else {
-            if let Ok(n) = value.parse::<i64>() {
-                Value::Integer(n)
-            } else if value.contains(['.', 'e', 'E']) && value.parse::<f64>().is_ok() {
-                CellKind::Real.parse(value)?
-            } else {
-                Value::Text(value.into())
-            }
-        }
-    };
+    let (op, raw) = filter_operator(rest.trim())?;
+    let value = filter_value(raw, op, &table.columns[column].declared_type)?;
     if op == FilterOp::Contains && !matches!(value, Value::Text(_)) {
         return Err("Contains requires text".into());
     }

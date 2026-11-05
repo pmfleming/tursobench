@@ -1,6 +1,51 @@
 //! A view owns its buffers and interaction state. Switching moves ownership, never clones rows.
-use super::{App, View, shell, tools};
-use tursobench_core::{Browse, DraftBatch, Inspection, ResultSet, Table, Ticket};
+use super::{App, View, results, shell, tools};
+use tursobench_core::{Browse, DraftBatch, Inspection, ResultSet, SchemaObject, Table, Ticket};
+
+use std::{collections::BTreeMap, ops::Range};
+
+#[derive(Default)]
+pub(super) struct ViewTools {
+    pub large: super::large_values::Viewer,
+    pub filtered_count: Option<i64>,
+    pub draft_ui: super::editing::Presentation,
+    pub sql_focus: Option<eframe::egui::Id>,
+    pub filter_focus: bool,
+    pub filter_error: String,
+    pub filter_editor: Option<super::filters::FilterEditor>,
+    pub ddl: Option<SchemaObject>,
+    pub inspection: Option<Inspection>,
+    pub inspection_ticket: Option<Ticket>,
+    pub inspection_error: String,
+    pub related: Option<tools::Destination>,
+    pub restore_navigation: Option<tools::NavigationEntry>,
+    pub context: super::context::ContextReads,
+    pub pages: super::paging::Pages,
+    pub grid_scroll: eframe::egui::Vec2,
+    pub row_stride: f32,
+    pub jump_row: usize,
+    pub advanced_filter: String,
+    pub restore_scroll: Option<eframe::egui::Vec2>,
+    pub cell_editor: results::CellEditor,
+    pub selection: Range<usize>,
+    pub complete: bool,
+    pub detail: Option<usize>,
+    pub summary_cache: Option<super::selection::SummaryCache>,
+    pub grid_selection: Option<super::selection::Selection>,
+    pub grid_height: f32,
+    pub grid_focus: Option<eframe::egui::Id>,
+    pub dragging_selection: bool,
+    pub scroll_to_cell: bool,
+    pub record_scroll_to: Option<usize>,
+    pub inline: Option<super::selection::InlineEdit>,
+    pub columns: super::columns::Columns,
+    pub column_scope: String,
+    pub column_layouts: BTreeMap<String, super::columns::Columns>,
+    pub highlight_column: Option<(String, String)>,
+    pub scroll_to_column: bool,
+    pub format: crate::export::Format,
+    pub export_table: String,
+}
 
 pub(super) struct Document {
     pub migration: Option<std::sync::Arc<tursobench_core::SchemaSnapshot>>,
@@ -14,12 +59,13 @@ pub(super) struct Document {
     pub kind: super::tiling::Kind,
     pub object: Option<String>,
     pub source: Option<u64>,
-    pub tools: tools::ViewTools,
+    pub tools: ViewTools,
     pub ui: shell::ViewUi,
     pub discard_ticket: Option<Ticket>,
     pub active: Option<Ticket>,
     pub view: View,
     pub result: ResultSet,
+    pub selected_script: Option<usize>,
     pub script_results: Vec<tursobench_core::ScriptResult>,
     pub script_message: String,
     pub table: Option<Table>,
@@ -50,7 +96,7 @@ impl Default for Document {
             kind: Default::default(),
             object: None,
             source: None,
-            tools: tools::ViewTools {
+            tools: ViewTools {
                 export_table: "exported_rows".into(),
                 ..Default::default()
             },
@@ -59,6 +105,7 @@ impl Default for Document {
             discard_ticket: None,
             view: View::Query,
             result: Default::default(),
+            selected_script: None,
             script_results: vec![],
             script_message: String::new(),
             table: None,
@@ -78,6 +125,28 @@ impl Default for Document {
     }
 }
 impl Document {
+    pub fn push_script_result(&mut self, result: tursobench_core::ScriptResult) {
+        self.script_results.push(result);
+        self.select_script_result(self.script_results.len() - 1);
+    }
+    pub fn select_script_result(&mut self, index: usize) {
+        if index >= self.script_results.len() {
+            return;
+        }
+        // The visible payload has one owner. Park it in its script slot before
+        // moving another statement into the ordinary result/export/grid path.
+        if let Some(previous) = self.selected_script {
+            self.swap_script_payload(previous);
+        }
+        self.swap_script_payload(index);
+        self.result.completion = Some(self.script_results[index].completion.clone());
+        self.selected_script = Some(index);
+    }
+    fn swap_script_payload(&mut self, index: usize) {
+        let result = &mut self.script_results[index];
+        std::mem::swap(&mut self.result.columns, &mut result.columns);
+        std::mem::swap(&mut self.result.rows, &mut result.rows);
+    }
     pub fn browse_inspection(&self) -> Option<&Inspection> {
         self.tools.inspection.as_ref().filter(|info| {
             self.view == View::Browse

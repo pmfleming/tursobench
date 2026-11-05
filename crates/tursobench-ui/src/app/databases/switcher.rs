@@ -249,9 +249,9 @@ mod tests {
                 ctx.enable_accesskit();
                 crate::appearance::theme(&ctx, dark);
                 let mut app = App::new(&ctx);
-                app.ready = true;
-                app.writable = true;
-                app.path = "/work/current.db".into();
+                app.database.ready = true;
+                app.database.writable = true;
+                app.database.path = "/work/current.db".into();
                 for path in ["/work/current.db", "/work/other.db"] {
                     app.preferences.discovery.record_open(path.into(), 1);
                 }
@@ -316,7 +316,7 @@ mod tests {
                         crate::app::test_ui::pointer(close.center(), pressed),
                     );
                 }
-                assert!(app.confirm_close);
+                assert!(app.database.confirm_close);
             }
         }
     }
@@ -326,12 +326,12 @@ mod tests {
         for dark in [false, true] {
             let (ctx, mut app) = crate::app::test_ui::app();
             crate::appearance::theme(&ctx, dark);
-            app.ready = true;
-            app.writable = true;
-            app.path = "/work/current/session.db".into();
+            app.database.ready = true;
+            app.database.writable = true;
+            app.database.path = "/work/current/session.db".into();
             app.preferences
                 .discovery
-                .record_open(app.path.clone().into(), 1);
+                .record_open(app.database.path.clone().into(), 1);
             let long_path = format!("/work/{}snapshot/session.db", "long-parent/".repeat(20));
             app.preferences
                 .discovery
@@ -372,10 +372,10 @@ mod tests {
                 &ctx,
                 vec![key_event(egui::Key::Enter, true, egui::Modifiers::NONE)],
             );
-            assert!(app.pending_database.is_none());
-            assert!(!app.confirm_close);
-            assert_eq!(app.path, long_path);
-            assert!(!app.closing);
+            assert!(app.database.pending_database.is_none());
+            assert!(!app.database.confirm_close);
+            assert_eq!(app.database.path, long_path);
+            assert!(!app.database.closing);
         }
     }
 }

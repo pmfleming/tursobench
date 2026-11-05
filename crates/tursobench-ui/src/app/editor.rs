@@ -1,7 +1,6 @@
 use super::{
     App, View,
     icons::{self, Icon},
-    ribbon::Action,
 };
 use eframe::egui;
 use tursobench_core::{Bindings, Budget};
@@ -42,14 +41,14 @@ fn completions_and_highlighting_preserve_unicode_and_quoted_text() {
     output.textures_delta.clear();
     ctx.enable_accesskit();
     let mut app = App::new(&ctx);
-    app.document.ui.params_open = true;
+    app.database.document.ui.params_open = true;
     let draw = |app: &mut App, events| {
         render(&ctx, egui::vec2(800.0, 500.0), events, |ui| {
             app.editor_ui(ui)
         })
     };
     for sql in ["SELECT :id, @name, :id", "SELECT ?1", "SELECT 1"] {
-        app.document.sql = sql.into();
+        app.database.document.sql = sql.into();
         draw(&mut app, vec![]);
         let output = draw(&mut app, vec![]);
         let pos = control(&output, "Generate NULL bindings").center();
@@ -57,9 +56,10 @@ fn completions_and_highlighting_preserve_unicode_and_quoted_text() {
             draw(&mut app, pointer(pos, pressed));
         }
         if sql.contains('?') {
-            assert!(app.status.contains("Positional parameters"));
+            assert!(app.database.status.contains("Positional parameters"));
         } else {
-            let Bindings::Named(values) = Bindings::parse_json(&app.document.params).unwrap()
+            let Bindings::Named(values) =
+                Bindings::parse_json(&app.database.document.params).unwrap()
             else {
                 panic!("Expected named bindings")
             };
@@ -307,74 +307,9 @@ impl App {
         });
         response
     }
-    fn editor_toolbar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 3.0;
-            if ui
-                .add_enabled(self.action_enabled(Action::Run), egui::Button::new("Run"))
-                .on_hover_text("Run one statement · Ctrl Enter")
-                .clicked()
-            {
-                self.dispatch_action(Action::Run, ui.ctx());
-            }
-            self.run_all_menu(ui, false);
-            if icons::button(ui, Icon::Explain, "Explain query plan", "").clicked() {
-                self.run_current(Some(false));
-            }
-            if icons::control(
-                ui,
-                Icon::Parameters,
-                "Typed parameters",
-                "",
-                self.database.document.ui.params_open,
-                false,
-            )
-            .clicked()
-            {
-                self.database.document.ui.params_open = !self.database.document.ui.params_open;
-            }
-            if icons::control(
-                ui,
-                Icon::Complete,
-                "Complete",
-                "Ctrl Space",
-                self.database.document.tools.complete,
-                false,
-            )
-            .clicked()
-            {
-                self.database.document.tools.complete = !self.database.document.tools.complete;
-            }
-            if icons::control(
-                ui,
-                Icon::Fit,
-                "Expand SQL editor",
-                "",
-                self.database.document.ui.sql_expanded,
-                false,
-            )
-            .clicked()
-            {
-                self.database.document.ui.sql_expanded = !self.database.document.ui.sql_expanded;
-            }
-            if icons::button(ui, Icon::Close, "Close SQL editor", "Ctrl J").clicked() {
-                self.database.document.ui.sql_open = false;
-            }
-            if icons::button(ui, Icon::Structure, "Explain bytecode", "").clicked() {
-                self.run_current(Some(true));
-            }
-            if icons::button(ui, Icon::Saved, "Bookmark editor SQL", "Ctrl S").clicked() {
-                self.dispatch_action(Action::SaveSql, ui.ctx());
-            }
-        });
-    }
-
     pub(super) fn editor_ui(&mut self, ui: &mut egui::Ui) {
         if self.database.document.migration.is_some() {
             ui.label("Guarded migration · Run all is atomic · target schema must match the comparison · session-only draft");
-        }
-        if !self.database.workspace.enabled {
-            self.editor_toolbar(ui);
         }
         let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, width: f32| {
             highlighted(ui, text.as_str(), width)

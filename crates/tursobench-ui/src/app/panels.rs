@@ -635,7 +635,7 @@ mod tests {
             ctx.global_style().text_styles[&egui::TextStyle::Body].size,
             15.0
         );
-        assert!(app.document.tools.columns.refit);
+        assert!(app.database.document.tools.columns.refit);
         let larger = crate::appearance::monospace(&ctx, 12.0).size;
         assert!(larger > 12.0);
         for mode in [Mode::Light, Mode::Dark, Mode::System] {
@@ -657,7 +657,7 @@ mod tests {
         for dark in [false, true] {
             let (ctx, mut app) = crate::app::test_ui::app();
             crate::appearance::theme(&ctx, dark);
-            app.tools.database_scope = "/work/current.db".into();
+            app.database.tools.database_scope = "/work/current.db".into();
             app.preferences.row_limit = 10_000;
             app.preferences.busy_timeout_ms = 5000;
             app.preferences.slow_query_ms = 60_000;
@@ -712,17 +712,17 @@ mod tests {
         assert_eq!(super::sql_preview(&"λ".repeat(32_768)), "λ".repeat(120));
         assert_eq!(super::sql_preview(&"x ".repeat(25)), "x ".repeat(23) + "x");
         let (ctx, mut app) = crate::app::test_ui::app();
-        app.tools.database_scope = "/work/current.db".into();
+        app.database.tools.database_scope = "/work/current.db".into();
         app.preferences
             .record_query("/work/other.db", "SELECT 'other'", Some(900), false);
         app.preferences
             .record_query("/work/current.db", "SELECT 'fast'", Some(10), false);
         app.preferences
             .record_query("/work/current.db", "SELECT 'slow'", Some(900), false);
-        app.document.params = "[42]".into();
-        let sequence = app.sequence;
+        app.database.document.params = "[42]".into();
+        let sequence = app.database.sequence;
         click(&mut app, &ctx, ToolPanel::History, "Slow queries only");
-        assert!(app.tools.slow_only);
+        assert!(app.database.tools.slow_only);
         let output = frame(&mut app, &ctx, ToolPanel::History, 240.0, vec![]);
         assert_eq!(
             crate::app::test_ui::nodes(&output)
@@ -732,10 +732,10 @@ mod tests {
             1
         );
         click(&mut app, &ctx, ToolPanel::History, "Load history query");
-        assert_eq!(app.document.sql, "SELECT 'slow'");
-        assert_eq!(app.document.params, "[]");
-        assert_eq!(app.sequence, sequence);
-        assert!(app.document.active.is_none());
+        assert_eq!(app.database.document.sql, "SELECT 'slow'");
+        assert_eq!(app.database.document.params, "[]");
+        assert_eq!(app.database.sequence, sequence);
+        assert!(app.database.document.active.is_none());
         click(&mut app, &ctx, ToolPanel::History, "Delete history entry");
         assert_eq!(app.preferences.query_history.len(), 2);
         assert!(
@@ -777,14 +777,14 @@ mod tests {
                 "SELECT 'λ legacy'"
             ]
         );
-        app.tools.history_search = "Λ LEGACY".into();
+        app.database.tools.history_search = "Λ LEGACY".into();
         let output = frame(&mut app, &ctx, ToolPanel::History, 240.0, vec![]);
         for badge in ["Failed", "Legacy"] {
             assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == badge)));
         }
         click(&mut app, &ctx, ToolPanel::History, "Load history query");
-        assert_eq!(app.document.sql, "SELECT 'λ legacy'");
-        assert_eq!(app.sequence, sequence);
+        assert_eq!(app.database.document.sql, "SELECT 'λ legacy'");
+        assert_eq!(app.database.sequence, sequence);
         click(&mut app, &ctx, ToolPanel::History, "Delete history entry");
         assert!(
             app.preferences
@@ -792,8 +792,8 @@ mod tests {
                 .iter()
                 .all(|entry| !entry.database.is_empty())
         );
-        app.document.sql = "SELECT 'saved'".into();
-        app.tools.bookmark_name = "Example".into();
+        app.database.document.sql = "SELECT 'saved'".into();
+        app.database.tools.bookmark_name = "Example".into();
         app.preferences
             .bookmark("/work/other.db", "Other", "SELECT 'other'");
         click(&mut app, &ctx, ToolPanel::Saved, "Save current SQL");
@@ -802,12 +802,12 @@ mod tests {
             "/work/current.db"
         );
         assert_eq!(app.preferences.saved_queries[0].name, "Example");
-        app.document.sql.clear();
-        app.document.params = "[42]".into();
+        app.database.document.sql.clear();
+        app.database.document.params = "[42]".into();
         click(&mut app, &ctx, ToolPanel::Saved, "Load saved query");
-        assert_eq!(app.document.sql, "SELECT 'saved'");
-        assert_eq!(app.document.params, "[]");
-        assert!(app.document.active.is_none());
+        assert_eq!(app.database.document.sql, "SELECT 'saved'");
+        assert_eq!(app.database.document.params, "[]");
+        assert!(app.database.document.active.is_none());
         click(&mut app, &ctx, ToolPanel::Saved, "Delete saved query");
         assert_eq!(app.preferences.saved_queries.len(), 1);
         assert_eq!(app.preferences.saved_queries[0].database, "/work/other.db");

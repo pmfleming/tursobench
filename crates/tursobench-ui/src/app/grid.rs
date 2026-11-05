@@ -166,15 +166,7 @@ impl CellAppearance<'_> {
     }
 }
 impl App {
-    pub(super) fn grid_contents(&mut self, ui: &mut egui::Ui) {
-        self.profile_header(ui);
-        if self.explain_panel(ui) {
-            return;
-        }
-        self.update_draft_presentation();
-        if self.database.workspace.enabled {
-            self.grid_status_bar(ui);
-        }
+    fn script_results_ui(&mut self, ui: &mut egui::Ui) {
         if !self.database.document.script_results.is_empty() {
             let mut selected = None;
             ui.collapsing("Script results and outcomes", |ui| {
@@ -184,7 +176,11 @@ impl App {
                         .button(format!(
                             "Statement {} · {} retained rows · {} changes · {}",
                             result.index + 1,
-                            result.rows.len(),
+                            if self.database.document.selected_script == Some(i) {
+                                self.database.document.result.rows.len()
+                            } else {
+                                result.rows.len()
+                            },
                             result.completion.changed,
                             if result.completion.error.is_some() {
                                 "ERROR"
@@ -199,12 +195,20 @@ impl App {
                 }
             });
             if let Some(i) = selected {
-                let result = &self.database.document.script_results[i];
-                self.database.document.result.columns = result.columns.clone();
-                self.database.document.result.rows = result.rows.clone();
-                self.database.document.result.completion = Some(result.completion.clone());
+                self.database.document.select_script_result(i);
             }
         }
+    }
+    pub(super) fn grid_contents(&mut self, ui: &mut egui::Ui) {
+        self.profile_header(ui);
+        if self.explain_panel(ui) {
+            return;
+        }
+        self.update_draft_presentation();
+        if self.database.workspace.enabled {
+            self.grid_status_bar(ui);
+        }
+        self.script_results_ui(ui);
         if self.database.document.stale {
             ui.colored_label(
                 ui.visuals().warn_fg_color,

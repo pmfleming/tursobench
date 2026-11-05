@@ -792,11 +792,11 @@ mod tests {
     #[test]
     fn narrow_ribbon_scrolls_to_a_direct_action_and_keeps_window_controls_fixed() {
         let (ctx, mut app) = crate::app::test_ui::app();
-        app.workspace.expanded = Some(Kind::Map);
+        app.database.workspace.expanded = Some(Kind::Map);
         let mut time = 0.0;
         let mut render = |app: &mut App, events| {
             time += 0.1;
-            app.workspace.controls.clear();
+            app.database.workspace.controls.clear();
             let mut output = ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
@@ -815,7 +815,7 @@ mod tests {
         render(&mut app, vec![]);
         let output = render(&mut app, vec![]);
         let restore = crate::app::test_ui::control(&output, "Restore all tiles");
-        let (_, minimize, expand) = app.workspace.controls[0];
+        let (_, minimize, expand) = app.database.workspace.controls[0];
         assert!(restore.right() <= minimize.left());
         assert!(minimize.left() - restore.right() <= 6.0);
         let pointer = egui::pos2(restore.left() - 30.0, minimize.center().y);
@@ -847,19 +847,19 @@ mod tests {
                 restore,
                 crate::app::test_ui::control(&output, "Restore all tiles"),
             ),
-            (minimize, app.workspace.controls[0].1),
-            (expand, app.workspace.controls[0].2),
+            (minimize, app.database.workspace.controls[0].1),
+            (expand, app.database.workspace.controls[0].2),
         ] {
             assert_eq!(before.left(), after.left());
             assert_eq!(before.size(), after.size());
             assert!((before.top() - after.top()).abs() < 1.0);
         }
-        assert!(!app.ui.diagram.show_system);
+        assert!(!app.database.ui.diagram.show_system);
         for pressed in [true, false] {
             render(&mut app, crate::app::test_ui::pointer(target, pressed));
         }
         assert!(
-            app.ui.diagram.show_system,
+            app.database.ui.diagram.show_system,
             "visible ribbon button must dispatch its action without a popup"
         );
     }

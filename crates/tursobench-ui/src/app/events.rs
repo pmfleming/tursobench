@@ -416,12 +416,7 @@ impl App {
             return;
         }
         match event.kind {
-            EventKind::ScriptResult(result) => {
-                self.database.document.result.columns = result.columns.clone();
-                self.database.document.result.rows = result.rows.clone();
-                self.database.document.result.completion = Some(result.completion.clone());
-                self.database.document.script_results.push(result);
-            }
+            EventKind::ScriptResult(result) => self.database.document.push_script_result(result),
             EventKind::ScriptOutcome {
                 atomic,
                 rolled_back,

@@ -1,3 +1,108 @@
+# Post-parity quality refactor — 2026-11-05
+
+Baseline: `b8fc358`, after the eight functional-parity stages. This review uses
+fresh local RustQualityLens measurements over 94 authored Rust source modules,
+including first-party tests/examples and the engine spike, excluding vendored
+code. Earlier sections below describe older baselines and are retained as history.
+
+| Measurement | Before | After |
+| --- | ---: | ---: |
+| Maximum cognitive complexity | 92 | 54 |
+| Sum of cognitive complexity | 5,742 | 5,415 |
+| Maximum cyclomatic complexity | 77 | 58 |
+| Sum of cyclomatic complexity | 6,187 | 6,090 |
+| Sum of function Halstead effort | 43,859,856 | 41,822,601 |
+| Duplicated source lines | 2,461 | 2,284 |
+| Sum of module locality risk ↓ | 345.75 | 342.75 |
+| Mean observed module leverage ↑ | 25.32 | 25.32 |
+| First-party physical Rust lines | 38,164 | 37,859 |
+| Literal `.clone()` call sites | 448 | 425 |
+| Observed panic paths, including tests | 478 | 468 |
+| Wildcard imports | 27 | 26 |
+| Test/helper function lines | 10,600 | 10,596 |
+| Unsafe blocks | 6 | 1 |
+| Deref / DerefMut implementations | 2 | 0 |
+| Executed workspace tests | 211 | 206 |
+| Lines coverage (%) | 82.93 | 83.49 |
+| Regions coverage (%) | 82.29 | 82.91 |
+| Functions coverage (%) | 84.62 | 85.17 |
+
+The changes address the following findings:
+
+- **Complex control flow:** SQL completion now separates lexical scopes, aliases,
+  CTE projection and candidate selection. Filter parsing shares quote decoding
+  and separates operator/value admission. Schema-comparison state renders its own
+  controls and bounded differences; the application routes actions. The native
+  smoke state machine separates its workbench scenario from the core journey.
+- **Ownership and locality:** database state belongs to the session module;
+  per-view tool state belongs to its document. The implicit `App` dereference
+  facade is gone. Palette and cross-database search share object enumeration and
+  fuzzy matching, borrowing metadata and allocating commands only when selected.
+  These improve actual reuse, but the advisory mean module-leverage score remains
+  unchanged. Aggregate locality risk falls; the shared `App` hub still exists.
+- **Copies and escape hatches:** script outcomes move row/column buffers between
+  their retained slot and the visible result instead of cloning payloads. The
+  small completion record still clones. Linux advisory locking uses one checked,
+  documented `fcntl` boundary, preserving explicit unlock and retrying interrupted
+  calls; unsafe zero-initialization is gone. No lint suppression was added.
+- **Dead paths:** remove the legacy single-pane renderer, editor toolbar, layout
+  model and unused icons. Opened sessions always initialize the tiled workspace;
+  chooser/opening/disconnected handling remains. Persisted inspector preferences
+  remain readable for compatibility with existing configuration files.
+- **Tests:** merge overlapping completion, layout/status and close/session
+  scenarios; share fixtures, result access and bounded polling helpers. Retained
+  journeys exercise the actual F7 comparison/capture/generated-migration flow and
+  switch script outcomes repeatedly while checking retained rows, errors and
+  sequential/atomic effects. Completion cases cover scope isolation, CTEs, quoting,
+  Unicode and cursor limits. Lone double-quote/backtick cases first reproduced a
+  slice panic, then passed after matching complete quote pairs. Existing lock,
+  multiprocess, rollback, draft and stale-snapshot assertions remain.
+
+Line coverage changes from 21,547/25,983 to
+21,496/25,746. Removing unreachable code reduces the
+coverage denominator as well as adding exercised paths; this is not a claim that
+more absolute lines execute. Test/helper volume counts the union of function
+spans in test modules, integration-test paths and catalogued tests, including
+helpers but excluding imports/constants and inter-function blank lines. The
+reduction in this stricter volume measure is small; five fewer test functions
+execute. One manual profiling test remains ignored.
+
+Validation passes: formatting, workspace/all-target Clippy with warnings denied,
+206 workspace tests, workspace build, engine spike, native Wayland desktop smoke,
+startup-discovery smoke and all four local-project schema/desktop smoke cases.
+The spike's pre-existing fault-injected commit/rollback and old-engine fixture
+checks remain unvalidated. No comparative runtime benchmark or mutation suite
+was run; the reproduced parser regression supplies a focused failing-before /
+passing-after check. Full-batch draft validation still clones staged values.
+
+Measurement limits: coverage has complete line/region/function evidence but no
+branch data. Syntax reports are marked partial because `desktop.rs` contains an
+unexpanded `compile_error!` item. Semantic dependency identity resolves
+1,493/1,520 collected references; architecture scores are advisory and this
+resolution percentage is not proof of complete dependency inventory. No missing
+measurement was treated as a passing quality gate.
+
+Reproduction and evidence:
+
+- Tool checkout: `Projects/rust-quality-lens`, commit
+  `d137d8d8f219b4ee788935aff27115374626d2f8`; the frozen `rqlens` binary SHA-256 is
+  `a9a7f6ac89b7f3a060d26a3b179b6fbed5f9338b8eb4815f93a5beecc0da53a3`.
+- Both runs use the same Rust source roots, analyzer, compiler and scoring models.
+  `rqlens.toml` now fingerprints UI assets and smoke scripts and allows 120 seconds
+  for offline semantic identity. The preserved baseline configuration omitted
+  `contracts` from extra fingerprint inputs; the final config restores it. No
+  contracts changed, and measured Rust scope is identical.
+- Rust 1.95.0, cargo-llvm-cov 0.8.5 and LLVM coverage tools 22.1.5 run in the Nix
+  development environment. Provide `cargo-llvm-cov` on PATH and set `LLVM_COV` and
+  `LLVM_PROFDATA` to the matching LLVM tools before running
+  `target/quality-refactor-20261105/rqlens measure all --config rqlens.toml`.
+- Ignored local artifacts in `target/quality-refactor-20261105/`: `before/`,
+  `after/`, source inventories, baseline/final configs, `compare.py`,
+  `comparison.json`, the frozen tool, environment and validation logs.
+  `python3 target/quality-refactor-20261105/compare.py` recomputes the table inputs.
+
+---
+
 # Five follow-up improvements — 2026-11-05
 
 Baseline: `14ee484`, the completed quality review below. Each improvement is

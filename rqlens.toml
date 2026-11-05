@@ -2,11 +2,12 @@ project_name = "tursobench"
 project_root = "."
 source_roots = ["crates", "tools/engine-spike/src"]
 output_dir = "target/analysis"
-fingerprint_inputs = ["tests/fixtures", "contracts"]
+fingerprint_inputs = ["tests/fixtures", "contracts", "crates/tursobench-ui/assets", "scripts"]
 
 [rust]
 identity_resolution = "auto"
 identity_offline = true
+identity_timeout_seconds = 120
 
 [verification]
 workspace = true

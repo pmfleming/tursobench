@@ -160,50 +160,51 @@ mod tests {
     #[test]
     fn recovery_restores_only_sql_and_cursor_without_execution() {
         let (ctx, mut app) = crate::app::test_ui::app();
-        app.tools.database_scope = "/tmp/recovery-test.db".into();
+        app.database.tools.database_scope = "/tmp/recovery-test.db".into();
         app.initialize_workspace();
-        app.ready = true;
+        app.database.ready = true;
         app.open_sql_window(false);
-        app.document.sql = "SELECT :secret, 'λ'".into();
-        app.document.params = "{\":secret\":123}".into();
-        app.document.tools.selection = 2..5;
-        app.document.migration = Some(std::sync::Arc::new(tursobench_core::SchemaSnapshot {
-            version: 0,
-            objects: vec![],
-        }));
+        app.database.document.sql = "SELECT :secret, 'λ'".into();
+        app.database.document.params = "{\":secret\":123}".into();
+        app.database.document.tools.selection = 2..5;
+        app.database.document.migration =
+            Some(std::sync::Arc::new(tursobench_core::SchemaSnapshot {
+                version: 0,
+                objects: vec![],
+            }));
         assert!(
             app.recovery_documents()
                 .iter()
-                .all(|d| d.sql != app.document.sql)
+                .all(|d| d.sql != app.database.document.sql)
         );
-        app.document.migration = None;
+        app.database.document.migration = None;
         app.save_recovery();
         // Wait for the worker acknowledgement, not a fixed scheduling delay.
         let until = Instant::now() + Duration::from_secs(5);
         while app
             .recovery_store
-            .documents(&app.tools.database_scope)
+            .documents(&app.database.tools.database_scope)
             .is_empty()
         {
             assert!(Instant::now() < until);
             app.recovery_store.poll();
             std::thread::yield_now();
         }
-        app.documents.clear();
-        app.document = Default::default();
-        app.workspace = Default::default();
+        app.database.documents.clear();
+        app.database.document = Default::default();
+        app.database.workspace = Default::default();
         app.initialize_workspace();
         app.restore_sql();
         app.open_sql_window(false);
-        assert_eq!(app.document.sql, "SELECT :secret, 'λ'");
-        assert_eq!(app.document.restore_cursor, Some(2..5));
-        assert_eq!(app.document.params, "[]");
-        assert!(app.document.active.is_none());
-        assert!(app.session.is_none());
-        assert!(!app.writable);
+        assert_eq!(app.database.document.sql, "SELECT :secret, 'λ'");
+        assert_eq!(app.database.document.restore_cursor, Some(2..5));
+        assert_eq!(app.database.document.params, "[]");
+        assert!(app.database.document.active.is_none());
+        assert!(app.database.session.is_none());
+        assert!(!app.database.writable);
         app.recovery_store.clear();
-        app.recovery.cleared = true;
-        app.recovery.observed = app.recovery_documents();
+        app.database.recovery.cleared = true;
+        app.database.recovery.observed = app.recovery_documents();
         app.save_recovery();
         app.poll_recovery(&ctx);
     }

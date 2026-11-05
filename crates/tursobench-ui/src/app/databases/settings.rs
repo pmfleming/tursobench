@@ -307,9 +307,9 @@ mod tests {
             .extend(roots.into_iter().map(|r| r.path));
         app.preferences.discovery.roots.clear();
         app.preferences.discovery.excluded.clear();
-        app.path = "/work/selected.db".into();
+        app.database.path = "/work/selected.db".into();
 
-        app.writable = true;
+        app.database.writable = true;
 
         for (input, path) in [
             ("Search folder path", "/work/projects"),
@@ -344,9 +344,9 @@ mod tests {
         }
         assert!(app.preferences.discovery.roots.is_empty());
         assert!(app.preferences.discovery.excluded.is_empty());
-        assert_eq!(app.path, "/work/selected.db");
-        assert!(app.writable);
-        assert!(app.session.is_none());
+        assert_eq!(app.database.path, "/work/selected.db");
+        assert!(app.database.writable);
+        assert!(app.database.session.is_none());
     }
 
     #[test]

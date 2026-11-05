@@ -596,9 +596,9 @@ mod tests {
     #[test]
     fn search_and_results_support_shelllist_arrow_keys_and_explicit_selection() {
         let (ctx, mut app) = crate::app::test_ui::app();
-        app.path = "/explicit/database.db".into();
+        app.database.path = "/explicit/database.db".into();
 
-        app.writable = true;
+        app.database.writable = true;
         for path in ["/work/a.db", "/work/missing.db", "/work/b.db"] {
             app.discovery_event(found(path));
         }
@@ -620,12 +620,12 @@ mod tests {
             app.databases.highlighted.as_deref(),
             Some(Path::new("/work/b.db"))
         );
-        assert_eq!(app.path, "/explicit/database.db");
-        assert!(app.writable);
+        assert_eq!(app.database.path, "/explicit/database.db");
+        assert!(app.database.writable);
         key(&mut app, &ctx, egui::Key::Enter);
-        assert_eq!(app.path, "/work/b.db");
-        assert!(!app.writable);
-        assert!(app.session.is_none() && app.picker.is_none());
+        assert_eq!(app.database.path, "/work/b.db");
+        assert!(!app.database.writable);
+        assert!(app.database.session.is_none() && app.picker.is_none());
         key(&mut app, &ctx, egui::Key::ArrowUp);
         assert!(app.databases.navigating);
         key(&mut app, &ctx, egui::Key::ArrowUp);
@@ -654,8 +654,8 @@ mod tests {
         assert!(app.databases.row_rects.is_empty());
         key(&mut app, &ctx, egui::Key::ArrowDown);
         key(&mut app, &ctx, egui::Key::Enter);
-        assert!(app.path.is_empty());
-        assert!(app.session.is_none() && app.picker.is_none());
+        assert!(app.database.path.is_empty());
+        assert!(app.database.session.is_none() && app.picker.is_none());
     }
 
     #[test]
@@ -688,7 +688,7 @@ mod tests {
             Some(Path::new("/work/030.db"))
         );
         assert_eq!(app.databases.list_offset, offset);
-        assert!(app.path.is_empty());
+        assert!(app.database.path.is_empty());
     }
     #[test]
     fn typing_and_enter_in_one_frame_selects_the_new_filtered_result() {
@@ -705,8 +705,8 @@ mod tests {
             ],
             900.0,
         );
-        assert_eq!(app.path, "/work/clipboard.db");
-        assert!(app.session.is_none());
+        assert_eq!(app.database.path, "/work/clipboard.db");
+        assert!(app.database.session.is_none());
     }
 
     #[test]
@@ -740,26 +740,26 @@ mod tests {
     fn incremental_discoveries_never_replace_paths_consent_or_row_order() {
         let (_ctx, mut app) = crate::app::test_ui::app();
         assert!(app.databases.job.is_none());
-        app.path = "/explicit/command-line.db".into();
+        app.database.path = "/explicit/command-line.db".into();
 
-        app.writable = true;
+        app.database.writable = true;
         app.discovery_event(found("/work/z-last.db"));
         app.discovery_event(found("/work/a-first.db"));
         app.discovery_event(found("/work/z-last.db"));
-        assert_eq!(app.path, "/explicit/command-line.db");
-        assert!(app.writable);
+        assert_eq!(app.database.path, "/explicit/command-line.db");
+        assert!(app.database.writable);
         assert_eq!(app.databases.entries.len(), 2);
         assert_eq!(app.databases.entries[0].path, Path::new("/work/z-last.db"));
         app.select_database(Path::new("/work/a-first.db"));
-        assert_eq!(app.path, "/work/a-first.db");
-        assert!(!app.writable);
-        assert!(app.session.is_none());
-        app.writable = true;
+        assert_eq!(app.database.path, "/work/a-first.db");
+        assert!(!app.database.writable);
+        assert!(app.database.session.is_none());
+        app.database.writable = true;
         let (tx, rx) = mpsc::sync_channel(1);
         app.picker = Some(rx);
         app.select_database(Path::new("/work/z-last.db"));
-        assert_eq!(app.path, "/work/a-first.db");
-        assert!(app.writable);
+        assert_eq!(app.database.path, "/work/a-first.db");
+        assert!(app.database.writable);
         drop(tx);
     }
 
@@ -795,7 +795,7 @@ mod tests {
         let (_ctx, mut app) = crate::app::test_ui::app();
         app.discovery_event(found("/data/custom-browser/History"));
         app.discovery_event(found("/data/custom-browser/Cookies"));
-        app.tools.database_scope = "/data/custom-browser/History".into();
+        app.database.tools.database_scope = "/data/custom-browser/History".into();
         app.record_database_open();
         for path in [
             "/data/custom-browser/History",
@@ -817,9 +817,9 @@ mod tests {
         let (ctx, mut app) = crate::app::test_ui::app();
         app.discovery_event(found("/work/agenda.db"));
         app.discovery_event(found("/other/clipboard.db"));
-        app.document.ui.nav = shell::Nav::Result;
+        app.database.document.ui.nav = shell::Nav::Result;
         app.choose_file(&ctx);
-        assert_eq!(app.document.ui.nav, shell::Nav::Databases);
+        assert_eq!(app.database.document.ui.nav, shell::Nav::Databases);
         assert!(app.picker.is_none());
         frame(&mut app, &ctx, vec![], 900.0);
         assert!(ctx.memory(|m| m.focused().is_some()));
@@ -838,9 +838,9 @@ mod tests {
         assert_eq!(browse.center().y, search.center().y);
         assert!(row.top() > search.bottom());
         click(&mut app, &ctx, row.center());
-        assert_eq!(app.path, "/work/agenda.db");
-        assert!(!app.writable);
-        assert!(app.session.is_none() && app.picker.is_none());
+        assert_eq!(app.database.path, "/work/agenda.db");
+        assert!(!app.database.writable);
+        assert!(app.database.session.is_none() && app.picker.is_none());
         // Large candidate lists render only the visible rows.
         app.databases.filter.clear();
         for i in 0..500 {
@@ -867,16 +867,16 @@ mod tests {
         header[..16].copy_from_slice(b"SQLite format 3\0");
         std::fs::write(&database, header).unwrap();
         let (ctx, mut app) = crate::app::test_ui::app();
-        app.path = "selected.db".into();
+        app.database.path = "selected.db".into();
 
-        app.writable = true;
+        app.database.writable = true;
         app.databases.picking_folder = true;
         let (tx, rx) = mpsc::sync_channel(1);
         app.picker = Some(rx);
         tx.send(Ok(Some(temp.path().into()))).unwrap();
         app.poll_picker();
-        assert_eq!(app.path, "selected.db");
-        assert!(app.writable);
+        assert_eq!(app.database.path, "selected.db");
+        assert!(app.database.writable);
         assert!(
             app.preferences
                 .discovery
@@ -912,7 +912,7 @@ mod tests {
         assert!(app.preferences.discovery.roots.is_empty());
         app.set_database_path("/work/selected.db".into());
         assert!(app.preferences.discovery.recent.is_empty());
-        app.tools.database_scope = "/work/selected.db".into();
+        app.database.tools.database_scope = "/work/selected.db".into();
         app.record_database_open();
         assert_eq!(app.preferences.discovery.recent.len(), 1);
         assert_eq!(
