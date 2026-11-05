@@ -877,6 +877,11 @@ impl<'a> Worker<'a> {
             Operation::BackupAndClose(_) => return Err(Failure::input("Backup must be coordinated by the session owner")),
             Operation::Script { sql, parameters, atomic, budget } => return self.script(ticket, sql, parameters, atomic, budget).await.map(Some),
             Operation::Close => return Ok(None),
+            Operation::Profile(request) => {
+                let table = describe(self.browse, &request.table).await?;
+                let stddev = self.browse.prepare("SELECT stddev(1)").await.is_ok();
+                Query::new(self.browse, crate::profile::query(&table, &request, stddev)?, vec![].into(), default)
+            },
             Operation::Diagram => return diagram::load(self.browse).await.map(EventKind::Diagram).map(Some),
             Operation::Inspect(name) => return inspection::inspect(self.browse, &name).await.map(EventKind::Inspection).map(Some),
             Operation::CommitEdits(batch) => return Ok(Some(self.commit_edits(ticket, batch).await)),

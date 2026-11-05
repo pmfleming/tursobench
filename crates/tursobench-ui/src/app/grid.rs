@@ -167,6 +167,7 @@ impl CellAppearance<'_> {
 }
 impl App {
     pub(super) fn grid_contents(&mut self, ui: &mut egui::Ui) {
+        self.profile_header(ui);
         if self.explain_panel(ui) {
             return;
         }

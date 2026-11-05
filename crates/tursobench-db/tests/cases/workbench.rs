@@ -806,3 +806,57 @@ fn suggested_index_executes_and_is_not_suggested_twice() {
     );
     client.close();
 }
+
+#[test]
+fn profiles_exact_sampled_and_keyless_values_without_writing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("profile.db");
+    common::create(
+        &path,
+        &[
+            "CREATE TABLE items(value)",
+            "INSERT INTO items VALUES(1),(3),(NULL),('abc')",
+            "CREATE TABLE empty(value TEXT)",
+        ],
+    );
+    let before = snapshot(dir.path());
+    let mut client = Client::open(&path, Access::ReadOnly);
+    for (table, sample, rows, nulls) in [
+        ("items", None, 4, 1),
+        ("items", Some(2), 2, 0),
+        ("empty", None, 0, 0),
+    ] {
+        let reply = client.run(Operation::Profile(tursobench_db::profile::Request {
+            table: table.into(),
+            column: None,
+            sample_rows: sample,
+        }));
+        assert!(reply.failure.is_none(), "{:?}", reply.failure);
+        assert!(
+            reply.result.completion.as_ref().unwrap().error.is_none(),
+            "{:?}",
+            reply.result.completion
+        );
+        for (metric, expected) in [("rows", rows), ("nulls", nulls)] {
+            let row = reply
+                .result
+                .rows
+                .iter()
+                .find(|r| r[1] == Value::Text(metric.into()))
+                .unwrap();
+            assert_eq!(row[2], Value::Integer(expected));
+        }
+    }
+    assert!(
+        client
+            .run(Operation::Profile(tursobench_db::profile::Request {
+                table: "items".into(),
+                column: Some("missing".into()),
+                sample_rows: None
+            }))
+            .failure
+            .is_some()
+    );
+    client.close();
+    assert_eq!(before, snapshot(dir.path()));
+}

@@ -22,6 +22,7 @@ mod large_values;
 mod paging;
 mod panels;
 mod presentation;
+mod profile;
 mod recovery;
 mod results;
 mod ribbon;
@@ -315,6 +316,7 @@ impl App {
                 self.document.tools.grid_selection = None;
                 self.document.tools.inline = None;
                 self.document.tools.filtered_count = None;
+                self.document.profile = None;
                 self.document.script_results.clear();
                 self.document.script_message.clear();
                 self.document.stale = false;
@@ -577,6 +579,7 @@ impl App {
         self.shell(ui);
         self.large_value_ui(ui.ctx());
         self.transfer_ui(ui.ctx());
+        self.profile_ui(ui.ctx());
     }
 }
 impl eframe::App for App {

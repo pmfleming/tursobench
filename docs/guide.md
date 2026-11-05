@@ -274,3 +274,17 @@ simple ascending ORDER BY), the tree can offer an index draft using cached metad
 Existing ordinary indexes are checked. Complex joins, expressions and collations
 remain manual. Open a draft in the editor to review and execute explicitly, then
 compare plans; suggestions do not establish a runtime improvement.
+
+### Data profiling
+
+Checks → Data profiling opens table/column selection. Generate an exact profile or
+an explicitly labeled prefix sample (default first 10,000 rows, up to 100,000).
+Choose one column or all visible columns on tables up to 24 columns wide. Results
+include actual rows examined, NULLs, distinct non-null values, completeness, min/max,
+numeric counts/average/floating-point sum, text lengths and top-five frequencies.
+Standard deviation is shown only when supported; otherwise its row explains that
+limitation. Mixed-type aggregates use numeric/text values as labeled. Empty-table
+ratios are NULL. Samples are not random and cannot establish whole-table uniqueness.
+Profiles use committed browse state, deadlines, discard and normal result budgets;
+changes mark retained profiles stale. Refresh explicitly. Sampling bounds retained
+source rows, not engine memory; exact distinct/frequency scans may be expensive.

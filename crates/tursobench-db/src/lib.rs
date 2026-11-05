@@ -15,6 +15,7 @@ mod edits;
 mod imports;
 mod inspection;
 pub mod preferences;
+pub mod profile;
 pub mod sql;
 mod transfers;
 mod validation;
@@ -72,6 +73,7 @@ impl DeliveryControl {
 }
 
 pub enum Operation {
+    Profile(profile::Request),
     ExportQuery {
         path: PathBuf,
         sql: String,
@@ -155,6 +157,7 @@ impl Operation {
         let values = |v: &[Value]| v.iter().map(Value::bytes).sum::<usize>();
         std::mem::size_of::<Self>()
             + match self {
+                Self::Profile(r) => r.table.len() + r.column.as_ref().map_or(0, String::len),
                 Self::Execute {
                     sql, parameters, ..
                 } => sql.len() + values(parameters),

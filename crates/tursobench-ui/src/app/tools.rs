@@ -42,6 +42,7 @@ pub(super) struct CountRequest {
 }
 #[derive(Default)]
 pub(super) struct Tools {
+    pub profile: super::profile::State,
     pub transfers: super::transfers::State,
     pub schema_filter: String,
     pub tree_focus: Option<eframe::egui::Id>,

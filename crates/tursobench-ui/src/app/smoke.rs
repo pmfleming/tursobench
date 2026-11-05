@@ -209,6 +209,46 @@ impl App {
                         .kind,
                     ErrorKind::ReadOnly
                 );
+                let column = self
+                    .ui
+                    .diagram
+                    .data
+                    .as_ref()
+                    .unwrap()
+                    .tables
+                    .iter()
+                    .find(|t| t.name == smoke.table)
+                    .unwrap()
+                    .inspection
+                    .as_ref()
+                    .unwrap()
+                    .table
+                    .columns[0]
+                    .name
+                    .clone();
+                self.run_profile(tursobench_db::profile::Request {
+                    table: smoke.table.clone(),
+                    column: Some(column),
+                    sample_rows: Some(100),
+                });
+                smoke.stage = 60;
+            }
+            60 if self.document.active.is_none() => {
+                assert!(
+                    self.document
+                        .result
+                        .completion
+                        .as_ref()
+                        .is_some_and(|c| c.error.is_none()),
+                    "{}",
+                    self.status
+                );
+                assert!(self.document.profile.is_some());
+                assert!(!self.document.result.rows.is_empty());
+                // Render the profile before closing on the following frame.
+                smoke.stage = 61;
+            }
+            61 => {
                 self.close();
                 smoke.stage = 5;
             }
@@ -223,7 +263,7 @@ impl App {
                     smoke.stage = 40;
                 } else {
                     eprintln!(
-                        "DESKTOP SMOKE PASSED: open, schema, page, diagram, typed query, read-only rejection, close; elapsed {:?}",
+                        "DESKTOP SMOKE PASSED: open, schema, page, diagram, typed query, read-only rejection, profile, close; elapsed {:?}",
                         smoke.start.elapsed()
                     );
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);

@@ -158,3 +158,13 @@ single-table index drafts checked against cached indexes. Analysis uses the exis
 bound, non-mutating backend operation. Real-engine tests execute an index draft,
 verify its use and suppress repeat advice. Plan-shape tests, workspace Clippy/tests,
 engine spike, build and all three native smoke scripts passed (2026-11-05).
+
+## Stage 5 delivery
+
+Profiles now provide exact or explicitly labeled prefix-sampled column statistics,
+NULL/completeness/distinctness, numeric/text metrics and top-value frequency bars.
+They use the bounded, cancellable browse execution path; changes mark them stale.
+Wide tables select a column; unsupported stddev is an explicit diagnostic row.
+Real-engine tests cover exact/sample/keyless/empty inputs, read-only preservation and
+unsupported aggregates. Workspace checks, engine spike, build and all native smoke
+scripts passed; desktop smoke now executes and renders profiling (2026-11-05).
