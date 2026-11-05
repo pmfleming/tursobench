@@ -207,6 +207,7 @@ pub(super) async fn worker(
         return;
     }
     let mut worker = Worker {
+        path: &source_path,
         db: &_db,
         editor: &editor,
         browse: &browse,
@@ -361,6 +362,7 @@ enum ReferenceRead {
 }
 
 struct Worker<'a> {
+    path: &'a std::path::Path,
     db: &'a turso::Database,
     editor: &'a Connection,
     browse: &'a Connection,
@@ -877,6 +879,15 @@ impl<'a> Worker<'a> {
             Operation::BackupAndClose(_) => return Err(Failure::input("Backup must be coordinated by the session owner")),
             Operation::Script { sql, parameters, atomic, budget } => return self.script(ticket, sql, parameters, atomic, budget).await.map(Some),
             Operation::Close => return Ok(None),
+            Operation::Admin(change) => {
+                if change.is_some() && self.uncertain { return Err(Failure::input("Prior outcome UNKNOWN; reopen before changing settings")); }
+                let started = std::time::Instant::now();
+                let rows = crate::admin::rows(self.editor,self.browse,self.path,self.access,change).await?;
+                let count = rows.len();
+                self.output.send(ticket,EventKind::Columns(["Setting","Scope","Effective value"].map(|name| Column {name:name.into(),declared_type:None}).into()));
+                self.output.send(ticket,EventKind::Rows(rows));
+                return Ok(Some(EventKind::Finished(Completion { elapsed_ms:started.elapsed().as_millis() as u64, delivery:Delivery::Complete,rows_seen:count as u64, page_has_more:None,changed:0,transaction:state(self.editor),error:None })));
+            },
             Operation::Profile(request) => {
                 let table = describe(self.browse, &request.table).await?;
                 let stddev = self.browse.prepare("SELECT stddev(1)").await.is_ok();

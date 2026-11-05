@@ -325,6 +325,12 @@ impl App {
 
     pub(super) fn diagnostics_ui(&mut self, ui: &mut egui::Ui) {
         if ui
+            .add_enabled(self.ready, egui::Button::new("PRAGMA dashboard…"))
+            .clicked()
+        {
+            self.tools.admin.open = true;
+        }
+        if ui
             .add_enabled(self.ready, egui::Button::new("Data profiling…"))
             .clicked()
         {

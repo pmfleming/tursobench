@@ -42,6 +42,7 @@ pub(super) struct CountRequest {
 }
 #[derive(Default)]
 pub(super) struct Tools {
+    pub admin: super::admin::State,
     pub profile: super::profile::State,
     pub transfers: super::transfers::State,
     pub schema_filter: String,

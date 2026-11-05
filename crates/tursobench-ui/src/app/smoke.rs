@@ -249,6 +249,23 @@ impl App {
                 smoke.stage = 61;
             }
             61 => {
+                self.submit(
+                    tursobench_db::Operation::Admin(None),
+                    super::View::Diagnostics,
+                );
+                smoke.stage = 62;
+            }
+            62 if self.document.active.is_none() => {
+                assert!(
+                    self.document
+                        .result
+                        .rows
+                        .iter()
+                        .any(|r| r[0] == Value::Text("Main file bytes".into()))
+                );
+                smoke.stage = 63;
+            }
+            63 => {
                 self.close();
                 smoke.stage = 5;
             }
@@ -263,7 +280,7 @@ impl App {
                     smoke.stage = 40;
                 } else {
                     eprintln!(
-                        "DESKTOP SMOKE PASSED: open, schema, page, diagram, typed query, read-only rejection, profile, close; elapsed {:?}",
+                        "DESKTOP SMOKE PASSED: open, schema, page, diagram, typed query, read-only rejection, profile, admin, close; elapsed {:?}",
                         smoke.start.elapsed()
                     );
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);

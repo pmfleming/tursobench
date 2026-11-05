@@ -1,6 +1,7 @@
 use tursobench_core::{
     Access, Browse, ConnectionSettings, ResultSet, SchemaObject, Ticket, TransactionState,
 };
+mod admin;
 mod columns;
 mod commands;
 mod context;
@@ -580,6 +581,7 @@ impl App {
         self.large_value_ui(ui.ctx());
         self.transfer_ui(ui.ctx());
         self.profile_ui(ui.ctx());
+        self.admin_ui(ui.ctx());
     }
 }
 impl eframe::App for App {

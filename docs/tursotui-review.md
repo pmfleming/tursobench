@@ -168,3 +168,12 @@ Wide tables select a column; unsupported stddev is an explicit diagnostic row.
 Real-engine tests cover exact/sample/keyless/empty inputs, read-only preservation and
 unsupported aggregates. Workspace checks, engine spike, build and all native smoke
 scripts passed; desktop smoke now executes and renders profiling (2026-11-05).
+
+## Stage 6 delivery
+
+The administration dashboard reports editor/browse/database PRAGMAs and file/WAL
+sizes, retaining per-setting unsupported errors. Typed bounded timeout/cache changes
+require writable autocommit and read back effective settings on the correct lanes.
+Tests prove read-only preservation/rejection, scope isolation and transaction/range
+rejection. Workspace checks, engine spike, build and all native smoke scripts passed;
+native smoke now executes profiling and the administration dashboard (2026-11-05).

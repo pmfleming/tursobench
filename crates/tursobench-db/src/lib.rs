@@ -7,6 +7,7 @@ mod access;
 mod browse;
 mod observe;
 pub use access::{ProcessUsage, check_access, processes_using};
+pub mod admin;
 pub mod advice;
 pub mod completion;
 mod connection;
@@ -73,6 +74,7 @@ impl DeliveryControl {
 }
 
 pub enum Operation {
+    Admin(Option<admin::Change>),
     Profile(profile::Request),
     ExportQuery {
         path: PathBuf,

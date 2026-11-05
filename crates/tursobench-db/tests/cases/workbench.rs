@@ -860,3 +860,62 @@ fn profiles_exact_sampled_and_keyless_values_without_writing() {
     client.close();
     assert_eq!(before, snapshot(dir.path()));
 }
+
+#[test]
+fn admin_settings_readback_is_scoped_and_readonly_changes_are_rejected() {
+    use tursobench_db::admin::Change;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("admin.db");
+    common::create(&path, &["CREATE TABLE t(id INTEGER)"]);
+    let before = snapshot(dir.path());
+    let mut client = Client::open(&path, Access::ReadOnly);
+    let dashboard = client.run(Operation::Admin(None));
+    assert!(dashboard.failure.is_none());
+    assert!(
+        dashboard
+            .result
+            .rows
+            .iter()
+            .any(|r| r[0] == Value::Text("Main file bytes".into()))
+    );
+    assert!(
+        client
+            .run(Operation::Admin(Some(Change::EditorBusyTimeout(123))))
+            .failure
+            .is_some()
+    );
+    client.close();
+    assert_eq!(before, snapshot(dir.path()));
+    let mut client = Client::open(&path, Access::ReadWrite);
+    let dashboard = client.run(Operation::Admin(Some(Change::EditorBusyTimeout(123))));
+    assert!(dashboard.failure.is_none(), "{:?}", dashboard.failure);
+    let timeouts: Vec<_> = dashboard
+        .result
+        .rows
+        .iter()
+        .filter(|r| r[0] == Value::Text("busy_timeout".into()))
+        .collect();
+    assert_eq!(timeouts[0][2], Value::Integer(123));
+    assert_ne!(timeouts[1][2], Value::Integer(123));
+    assert!(
+        client
+            .run(Operation::Admin(Some(Change::EditorCacheKiB(1024))))
+            .failure
+            .is_none()
+    );
+    assert!(
+        client
+            .run(Operation::Admin(Some(Change::EditorCacheKiB(0))))
+            .failure
+            .is_some()
+    );
+    client.sql("BEGIN");
+    assert!(
+        client
+            .run(Operation::Admin(Some(Change::EditorBusyTimeout(99))))
+            .failure
+            .is_some()
+    );
+    client.sql("ROLLBACK");
+    client.close();
+}

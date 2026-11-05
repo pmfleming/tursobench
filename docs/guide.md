@@ -288,3 +288,14 @@ ratios are NULL. Samples are not random and cannot establish whole-table uniquen
 Profiles use committed browse state, deadlines, discard and normal result budgets;
 changes mark retained profiles stale. Refresh explicitly. Sampling bounds retained
 source rows, not engine memory; exact distinct/frequency scans may be expensive.
+
+### Administration dashboard
+
+Checks → PRAGMA dashboard reads effective editor/browse/database settings and main,
+WAL and coordination-file sizes. Unsupported settings remain visible with individual
+errors. Refresh explicitly; sizes are a filesystem snapshot, not a consistent backup.
+The bounded editor busy timeout (0–5000 ms) and cache size (64–65536 KiB) controls
+require writable access and editor autocommit. Apply reads effective settings back;
+values reset on reopen and do not change saved connection defaults. Busy timeout is
+editor-local; cache capacity can affect the shared pager. Foreign-key enforcement is
+not disabled. Checkpoint and verified backup reuse the existing maintenance panel.
