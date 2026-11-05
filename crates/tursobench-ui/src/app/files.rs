@@ -27,26 +27,26 @@ fn start_picker(
 
 impl App {
     pub(super) fn set_database_path(&mut self, path: String) {
-        if self.path != path {
-            self.path = path;
+        if self.database.path != path {
+            self.database.path = path;
             self.databases.open_failure = None;
 
-            self.writable = false;
+            self.database.writable = false;
             self.databases.inspection.override_sqlite = false;
         }
     }
 
     pub(super) fn choose_file(&mut self, ctx: &egui::Context) {
-        if self.picker.is_some() || self.session.is_some() {
+        if self.picker.is_some() || self.database.session.is_some() {
             return;
         }
-        self.document.ui.nav = shell::Nav::Databases;
+        self.database.document.ui.nav = shell::Nav::Databases;
         self.databases.focus_filter = true;
         ctx.request_repaint();
     }
 
     pub(super) fn browse_file(&mut self, ctx: &egui::Context) {
-        if self.picker.is_some() || self.session.is_some() {
+        if self.picker.is_some() || self.database.session.is_some() {
             return;
         }
         self.databases.picking_folder = false;
@@ -57,10 +57,10 @@ impl App {
         }) {
             Ok(rx) => {
                 self.picker = Some(rx);
-                self.status = "Waiting for file selection…".into();
+                self.database.status = "Waiting for file selection…".into();
             }
             Err(error) => {
-                self.status = format!(
+                self.database.status = format!(
                     "Could not start the file chooser: {error}. Enter the database path manually."
                 );
             }
@@ -116,26 +116,27 @@ impl App {
         }
         self.databases.focus_filter = true;
         match result {
-            Ok(Some(path)) if self.session.is_none() => {
+            Ok(Some(path)) if self.database.session.is_none() => {
                 if let Some(path) = path.to_str() {
                     self.set_database_path(path.to_owned());
-                    self.document.ui.nav = shell::Nav::Databases;
-                    self.status = "File selected. Review access before opening.".into();
+                    self.database.document.ui.nav = shell::Nav::Databases;
+                    self.database.status = "File selected. Review access before opening.".into();
                 } else {
-                    self.status =
+                    self.database.status =
                         "Only UTF-8 database paths are supported; no lossy path substitution"
                             .into();
                 }
             }
             Ok(Some(_)) => {
-                self.status = "File selection ignored because a database is already open".into();
+                self.database.status =
+                    "File selection ignored because a database is already open".into();
             }
             Ok(None) => {
                 // rfd reports both cancellation and some backend failures as None.
-                self.status = "No file selected. If the dialog did not appear, enter the database path manually.".into();
+                self.database.status = "No file selected. If the dialog did not appear, enter the database path manually.".into();
             }
             Err(error) => {
-                self.status = format!(
+                self.database.status = format!(
                     "Could not choose a file: {error}. Enter the database path manually or try again."
                 );
             }

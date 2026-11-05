@@ -48,40 +48,44 @@ impl Document {
 }
 impl App {
     pub(super) fn load_diagram(&mut self) {
-        if !self.ready || self.closing || self.ui.diagram.ticket.is_some() {
+        if !self.database.ready
+            || self.database.closing
+            || self.database.ui.diagram.ticket.is_some()
+        {
             return;
         }
-        let Some(session) = &self.session else {
+        let Some(session) = &self.database.session else {
             return;
         };
-        self.sequence += 1;
-        let ticket = session.ticket(self.sequence, self.generation);
+        self.database.sequence += 1;
+        let ticket = session.ticket(self.database.sequence, self.database.generation);
         match session.submit(Request {
             ticket,
             operation: Operation::Diagram,
         }) {
             Ok(()) => {
-                self.ui.diagram.ticket = Some(ticket);
-                self.ui.diagram.error.clear();
+                self.database.ui.diagram.ticket = Some(ticket);
+                self.database.ui.diagram.error.clear();
             }
-            Err(e) => self.ui.diagram.error = e.to_string(),
+            Err(e) => self.database.ui.diagram.error = e.to_string(),
         }
     }
 
     fn event_target(&self, ticket: Ticket) -> Option<(Option<u64>, Target)> {
-        let session = self.session.as_ref()?;
+        let session = self.database.session.as_ref()?;
         if ticket.session != session.id || ticket.database != session.id {
             return None;
         }
-        if self.commit_ticket == Some(ticket) {
-            return Some((self.commit_owner, Target::Commit));
+        if self.database.commit_ticket == Some(ticket) {
+            return Some((self.database.commit_owner, Target::Commit));
         }
         for (current, target) in [
-            (self.catalog_ticket, Target::Catalog),
-            (self.tools.transfers.ticket, Target::Transfer),
-            (self.ui.diagram.ticket, Target::Diagram),
+            (self.database.catalog_ticket, Target::Catalog),
+            (self.database.tools.transfers.ticket, Target::Transfer),
+            (self.database.ui.diagram.ticket, Target::Diagram),
             (
-                self.tools
+                self.database
+                    .tools
                     .count_request
                     .as_ref()
                     .and_then(|request| request.result.current),
@@ -93,8 +97,8 @@ impl App {
             }
         }
         Some(
-            std::iter::once(&self.document)
-                .chain(self.documents.values())
+            std::iter::once(&self.database.document)
+                .chain(self.database.documents.values())
                 .find_map(|document| {
                     document
                         .event_target(ticket)
@@ -107,7 +111,7 @@ impl App {
         let Some((owner, target)) = self.event_target(event.ticket) else {
             return;
         };
-        let previous = self.document.id;
+        let previous = self.database.document.id;
         let routed = owner.is_some_and(|id| id != previous && self.switch_document(id));
         match target {
             Target::Transfer => self.transfer_event(event.kind),
@@ -133,13 +137,13 @@ impl App {
     fn count_event(&mut self, event: Event) {
         let finished = matches!(event.kind, EventKind::Finished(_) | EventKind::Failed(_));
         if let EventKind::Finished(c) = &event.kind {
-            self.transaction = c.transaction;
+            self.database.transaction = c.transaction;
         }
         let failure = match &event.kind {
             EventKind::Failed(error) => Some(error.to_string()),
             _ => None,
         };
-        if let Some(request) = &mut self.tools.count_request {
+        if let Some(request) = &mut self.database.tools.count_request {
             request.result.apply(event);
         }
         if finished {
@@ -149,27 +153,27 @@ impl App {
     fn diagram_event(&mut self, kind: EventKind) {
         match kind {
             EventKind::Diagram(graph) => {
-                let first_load = self.ui.diagram.data.is_none();
-                self.ui.diagram.loaded(graph);
+                let first_load = self.database.ui.diagram.data.is_none();
+                self.database.ui.diagram.loaded(graph);
                 if first_load
                     && let Some(layout) = self
                         .preferences
                         .map_layouts
                         .iter()
-                        .find(|l| l.database == self.tools.database_scope)
+                        .find(|l| l.database == self.database.tools.database_scope)
                 {
-                    self.ui.diagram.restore(layout);
+                    self.database.ui.diagram.restore(layout);
                 }
             }
             EventKind::Failed(e) => {
-                self.ui.diagram.ticket = None;
-                self.ui.diagram.error = e.to_string();
-                self.ui.diagram.stale = true;
+                self.database.ui.diagram.ticket = None;
+                self.database.ui.diagram.error = e.to_string();
+                self.database.ui.diagram.stale = true;
             }
             _ => {}
         }
-        if self.diagram_refresh_pending {
-            self.diagram_refresh_pending = false;
+        if self.database.diagram_refresh_pending {
+            self.database.diagram_refresh_pending = false;
             self.load_diagram();
         }
     }
@@ -178,92 +182,92 @@ impl App {
             "Request {} staged commit: {outcome:?}",
             ticket.request
         ));
-        self.commit_ticket = None;
-        self.commit_owner = None;
+        self.database.commit_ticket = None;
+        self.database.commit_owner = None;
         match outcome {
             CommitOutcome::Committed { operations } => {
                 self.invalidate_views(false, ticket.request);
-                self.tools.counts.clear();
-                self.document.tools.context = Default::default();
-                self.document.drafts = None;
-                self.document.show_preview = false;
-                self.document.inspect = None;
+                self.database.tools.counts.clear();
+                self.database.document.tools.context = Default::default();
+                self.database.document.drafts = None;
+                self.database.document.show_preview = false;
+                self.database.document.inspect = None;
                 self.reload();
-                self.status = format!("Committed {operations} staged operations; refreshing page");
+                self.database.status =
+                    format!("Committed {operations} staged operations; refreshing page");
             }
             CommitOutcome::Rejected(e) => {
-                self.status = format!("No edits committed; drafts retained: {e}")
+                self.database.status = format!("No edits committed; drafts retained: {e}")
             }
             CommitOutcome::Unknown(e) => {
-                self.uncertain_edit = true;
-                self.status = format!("UNKNOWN outcome; drafts retained. Do not retry: {e}");
+                self.database.uncertain_edit = true;
+                self.database.status =
+                    format!("UNKNOWN outcome; drafts retained. Do not retry: {e}");
             }
         }
     }
     fn opened(&mut self) {
         self.initialize_workspace();
-        self.ready = true;
+        self.database.ready = true;
         self.record_database_open();
         self.refresh_catalog();
-        self.document.ui.nav = shell::Nav::Overview;
+        self.database.document.ui.nav = shell::Nav::Overview;
         self.load_diagram();
         self.restore_workspace();
         self.restore_sql();
     }
     fn closed(&mut self, ctx: &egui::Context, rollback: Result<(), Failure>) {
-        self.tools.transfers.disconnected();
-        let reopen = if rollback.is_ok() && !self.uncertain_edit && !self.quit {
-            self.pending_access.take()
+        self.database.tools.transfers.disconnected();
+        let reopen = if rollback.is_ok() && !self.database.uncertain_edit && !self.quit {
+            self.database.pending_access.take()
         } else {
-            self.pending_access = None;
+            self.database.pending_access = None;
             None
         };
-        self.catalog_ticket = None;
-        self.tools.count_request = None;
-        self.tools.pending_history.clear();
-        self.document.tools.inspection_ticket = None;
-        self.ui.diagram.ticket = None;
-        self.ui.diagram.stale = true;
+        self.database.catalog_ticket = None;
+        self.database.tools.count_request = None;
+        self.database.tools.pending_history.clear();
+        self.database.document.tools.inspection_ticket = None;
+        self.database.ui.diagram.ticket = None;
+        self.database.ui.diagram.stale = true;
         if rollback.is_err() {
             self.quit = false;
-            self.transaction = TransactionState::Unknown;
+            self.database.transaction = TransactionState::Unknown;
         }
-        self.status = match rollback {
-            Ok(()) if self.uncertain_edit => "Closed; editor cleanup confirmed, but the earlier staged commit outcome remains UNKNOWN".into(),
+        self.database.status = match rollback {
+            Ok(()) if self.database.uncertain_edit => "Closed; editor cleanup confirmed, but the earlier staged commit outcome remains UNKNOWN".into(),
             Ok(()) => "Closed; transaction cleanup confirmed".into(),
             Err(e) => format!("Close outcome uncertain: {e}"),
         };
-        self.session = None;
-        self.document.ui.nav = shell::Nav::Databases;
-        self.ready = false;
-        self.document.active = None;
-        self.closing = false;
-        if let Some(path) = self
-            .pending_database
-            .take()
-            .filter(|_| self.transaction != TransactionState::Unknown && !self.uncertain_edit)
-        {
+        self.database.session = None;
+        self.database.document.ui.nav = shell::Nav::Databases;
+        self.database.ready = false;
+        self.database.document.active = None;
+        self.database.closing = false;
+        if let Some(path) = self.database.pending_database.take().filter(|_| {
+            self.database.transaction != TransactionState::Unknown && !self.database.uncertain_edit
+        }) {
             self.set_database_path(path.to_string_lossy().into_owned());
-            self.document.ui.nav = shell::Nav::Databases;
+            self.database.document.ui.nav = shell::Nav::Databases;
         }
         if let Some(writable) = reopen {
-            self.writable = writable;
+            self.database.writable = writable;
             self.open(ctx);
         }
-        if self.quit && self.export_job.is_none() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        if self.quit && self.database.export_job.is_none() {
+            self.continue_quit(ctx);
         }
     }
     fn inspection_event(&mut self, kind: EventKind) {
         match kind {
             EventKind::Inspection(info) => {
-                self.document.tools.inspection = Some(info);
-                self.document.tools.inspection_ticket = None;
-                self.document.tools.inspection_error.clear();
+                self.database.document.tools.inspection = Some(info);
+                self.database.document.tools.inspection_ticket = None;
+                self.database.document.tools.inspection_error.clear();
             }
             EventKind::Failed(e) => {
-                self.document.tools.inspection_ticket = None;
-                self.document.tools.inspection_error = e.to_string();
+                self.database.document.tools.inspection_ticket = None;
+                self.database.document.tools.inspection_error = e.to_string();
             }
             _ => {}
         }
@@ -272,21 +276,21 @@ impl App {
         self.record_history(ticket, None, true);
         self.log_outcome(format!("Request {} ERROR: {e}", ticket.request));
         if ticket.request == 0 {
-            self.status = e.to_string();
+            self.database.status = e.to_string();
             self.databases.open_failure = Some(e);
-            self.session = None;
-            self.ready = false;
-            self.document.active = None;
-            self.closing = false;
-            self.confirm_close = false;
+            self.database.session = None;
+            self.database.ready = false;
+            self.database.document.active = None;
+            self.database.closing = false;
+            self.database.confirm_close = false;
             // Failed opens never send Closed: there is no live session left
             // to acknowledge a pending close or application exit.
-            if self.quit && self.export_job.is_none() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            if self.quit && self.database.export_job.is_none() {
+                self.continue_quit(ctx);
             }
-        } else if self.document.active == Some(ticket) {
-            self.status = e.to_string();
-            self.document.active = None;
+        } else if self.database.document.active == Some(ticket) {
+            self.database.status = e.to_string();
+            self.database.document.active = None;
         }
     }
     fn session_event(&mut self, ctx: &egui::Context, event: Event) {
@@ -296,9 +300,9 @@ impl App {
                 source_request,
             } => self.invalidate_views(schema, source_request),
             EventKind::Opened(coordination) if event.ticket.request == 0 => {
-                self.coordination = Some(coordination);
+                self.database.coordination = Some(coordination);
                 self.opened();
-                self.status = format!("Connected · {}", coordination.label());
+                self.database.status = format!("Connected · {}", coordination.label());
             }
             EventKind::Closed { rollback } if event.ticket.request == 0 => {
                 self.closed(ctx, rollback)
@@ -309,18 +313,20 @@ impl App {
         }
     }
     fn invalidate_views(&mut self, schema: bool, source_request: u64) {
-        self.tools.counts.clear();
-        if let Some(request) = self.tools.count_request.take()
+        self.database.tools.counts.clear();
+        if let Some(request) = self.database.tools.count_request.take()
             && let Some(ticket) = request.result.current
-            && let Some(session) = &self.session
+            && let Some(session) = &self.database.session
         {
             session.discard_results(ticket.request);
         }
         if schema {
-            self.ui.diagram.stale = true;
-            self.diagram_refresh_pending |= self.ui.diagram.ticket.is_some();
+            self.database.ui.diagram.stale = true;
+            self.database.diagram_refresh_pending |= self.database.ui.diagram.ticket.is_some();
         }
-        for document in std::iter::once(&mut self.document).chain(self.documents.values_mut()) {
+        for document in
+            std::iter::once(&mut self.database.document).chain(self.database.documents.values_mut())
+        {
             if source_request == 0 {
                 document.external_refresh = document.view == View::Browse;
                 if schema && document.kind == super::tiling::Kind::Structure {
@@ -348,12 +354,12 @@ impl App {
         }
     }
     pub(super) fn refresh_external_views(&mut self) {
-        if !self.requests_enabled() || self.transaction != TransactionState::Autocommit {
+        if !self.requests_enabled() || self.database.transaction != TransactionState::Autocommit {
             return;
         }
-        let previous = self.document.id;
-        let ids: Vec<_> = std::iter::once(&self.document)
-            .chain(self.documents.values())
+        let previous = self.database.document.id;
+        let ids: Vec<_> = std::iter::once(&self.database.document)
+            .chain(self.database.documents.values())
             .filter(|d| {
                 d.view == View::Browse
                     && d.external_refresh
@@ -367,22 +373,24 @@ impl App {
                 continue;
             }
             // Reload table/related reads only. Arbitrary SQL is never replayed.
-            if self.document.browse.is_some() || self.document.tools.related.is_some() {
+            if self.database.document.browse.is_some()
+                || self.database.document.tools.related.is_some()
+            {
                 let navigation = self.navigation_entry();
                 self.reload();
-                if self.document.active.is_some() {
-                    self.document.external_refresh = false;
-                    self.document.tools.restore_navigation = navigation;
+                if self.database.document.active.is_some() {
+                    self.database.document.external_refresh = false;
+                    self.database.document.tools.restore_navigation = navigation;
                 }
             } else {
-                self.document.external_refresh = false;
+                self.database.document.external_refresh = false;
             }
         }
         self.switch_document(previous);
     }
     fn record_completion(&mut self, ticket: Ticket, c: &Completion) {
         if c.transaction == TransactionState::Unknown {
-            self.uncertain_edit = true;
+            self.database.uncertain_edit = true;
         }
         self.record_history(ticket, Some(c.elapsed_ms), c.error.is_some());
         self.log_outcome(format!(
@@ -390,25 +398,25 @@ impl App {
             ticket.request,
             completion_summary(c)
         ));
-        self.transaction = c.transaction;
+        self.database.transaction = c.transaction;
     }
     fn result_event(&mut self, ctx: &egui::Context, event: Event) {
-        if self.document.discard_ticket == Some(event.ticket)
+        if self.database.document.discard_ticket == Some(event.ticket)
             && matches!(event.kind, EventKind::Rows(_) | EventKind::Columns(_))
         {
             return;
         }
         match event.kind {
             EventKind::ScriptResult(result) => {
-                self.document.result.columns = result.columns.clone();
-                self.document.result.rows = result.rows.clone();
-                self.document.result.completion = Some(result.completion.clone());
-                self.document.script_results.push(result);
+                self.database.document.result.columns = result.columns.clone();
+                self.database.document.result.rows = result.rows.clone();
+                self.database.document.result.completion = Some(result.completion.clone());
+                self.database.document.script_results.push(result);
             }
             EventKind::ScriptOutcome {
                 atomic,
                 rolled_back,
-            } => self.document.script_message = if rolled_back {
+            } => self.database.document.script_message = if rolled_back {
                 "Atomic script rolled back; displayed results are from that attempt"
             } else if atomic {
                 "Atomic script finished; inspect the final completion status"
@@ -417,23 +425,23 @@ impl App {
             }
             .into(),
             EventKind::Table(table) => {
-                self.document.tools.export_table = table.name.clone();
+                self.database.document.tools.export_table = table.name.clone();
                 self.request_inspection(table.name.clone());
-                self.document.table = Some(table);
+                self.database.document.table = Some(table);
             }
             EventKind::Failed(e) => self.failed(ctx, event.ticket, e),
             EventKind::Finished(c) => {
                 self.record_completion(event.ticket, &c);
-                self.status = format!("{} ms · {}", c.elapsed_ms, completion_summary(&c));
-                self.document.active = None;
-                self.document.result.completion = Some(c);
+                self.database.status = format!("{} ms · {}", c.elapsed_ms, completion_summary(&c));
+                self.database.document.active = None;
+                self.database.document.result.completion = Some(c);
                 self.browse_completed();
             }
             kind => {
                 if matches!(kind, EventKind::Columns(_)) {
-                    self.status = "Running…".into();
+                    self.database.status = "Running…".into();
                 }
-                self.document.result.apply(Event {
+                self.database.document.result.apply(Event {
                     ticket: event.ticket,
                     kind,
                 });
@@ -441,16 +449,23 @@ impl App {
         }
     }
     fn browse_completed(&mut self) {
-        if self.document.view == View::Browse
-            && let Some(browse) = &self.document.browse
-            && self.document.result.rows.len() < 100
-            && self.document.result.completion.as_ref().is_some_and(|c| {
-                c.delivery == tursobench_core::Delivery::Complete
-                    && c.error.is_none()
-                    && c.page_has_more != Some(true)
-            })
+        if self.database.document.view == View::Browse
+            && let Some(browse) = &self.database.document.browse
+            && self.database.document.result.rows.len() < 100
+            && self
+                .database
+                .document
+                .result
+                .completion
+                .as_ref()
+                .is_some_and(|c| {
+                    c.delivery == tursobench_core::Delivery::Complete
+                        && c.error.is_none()
+                        && c.page_has_more != Some(true)
+                })
         {
-            self.document.tools.pages.end = Some(browse.offset + self.document.result.rows.len());
+            self.database.document.tools.pages.end =
+                Some(browse.offset + self.database.document.result.rows.len());
         }
         self.restore_browse_selection();
     }

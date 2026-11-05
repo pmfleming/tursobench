@@ -392,7 +392,7 @@ impl App {
     }
 
     pub(super) fn record_database_open(&mut self) {
-        let Some(path) = normalized_absolute(Path::new(&self.tools.database_scope)) else {
+        let Some(path) = normalized_absolute(Path::new(&self.database.tools.database_scope)) else {
             return;
         };
         let time = SystemTime::now()
@@ -418,14 +418,15 @@ impl App {
     }
 
     fn select_database(&mut self, path: &Path) {
-        if self.picker.is_some() || self.session.is_some() {
+        if self.picker.is_some() || self.database.session.is_some() {
             return;
         }
         if let Some(path) = path.to_str() {
             self.set_database_path(path.into());
-            self.status = "Database selected. Review access before opening.".into();
+            self.database.status = "Database selected. Review access before opening.".into();
         } else {
-            self.status = "Only UTF-8 database paths are supported by the Turso engine".into();
+            self.database.status =
+                "Only UTF-8 database paths are supported by the Turso engine".into();
         }
     }
 

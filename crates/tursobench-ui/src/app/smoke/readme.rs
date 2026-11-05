@@ -15,15 +15,15 @@ const SCENES: &[&str] = &[
 impl App {
     pub(super) fn start_readme_capture(&mut self) {
         self.create_window(Kind::Sql, None, None, false).unwrap();
-        self.document.sql = "SELECT d.edit_seq, d.now_id, d.tip_id,\n       s.bytes, length(s.digest) AS digest_bytes\nFROM document_history AS d\nJOIN snapshots AS s ON s.id = d.temp_id\nORDER BY s.bytes DESC\nLIMIT 12;".into();
-        self.document.params = "[]".into();
+        self.database.document.sql = "SELECT d.edit_seq, d.now_id, d.tip_id,\n       s.bytes, length(s.digest) AS digest_bytes\nFROM document_history AS d\nJOIN snapshots AS s ON s.id = d.temp_id\nORDER BY s.bytes DESC\nLIMIT 12;".into();
+        self.database.document.params = "[]".into();
         self.run_sql();
     }
 
     pub(super) fn smoke_readme(&mut self, ctx: &egui::Context, smoke: &mut Smoke) -> bool {
         match smoke.stage {
-            50 if self.document.active.is_none()
-                && self.documents.values().all(|d| d.active.is_none()) =>
+            50 if self.database.document.active.is_none()
+                && self.database.documents.values().all(|d| d.active.is_none()) =>
             {
                 self.retile();
                 self.focus_pane(Kind::Data);
@@ -63,7 +63,7 @@ impl App {
                         return false;
                     }
                     _ => {
-                        assert!(self.session.is_none());
+                        assert!(self.database.session.is_none());
                         eprintln!(
                             "README CAPTURE PASSED: {} native Wayland scenes",
                             SCENES.len()
@@ -74,33 +74,35 @@ impl App {
                 }
                 smoke.stage = 51;
             }
-            53 if self.session.is_none() => {
-                self.writable = true;
+            53 if self.database.session.is_none() => {
+                self.database.writable = true;
                 self.open(ctx);
                 smoke.stage = 54;
             }
-            54 if self.ready
-                && self.catalog_ticket.is_none()
-                && self.ui.diagram.ticket.is_none() =>
+            54 if self.database.ready
+                && self.database.catalog_ticket.is_none()
+                && self.database.ui.diagram.ticket.is_none() =>
             {
                 self.browse_table(smoke.table.clone());
                 self.load_diagram();
                 smoke.stage = 55;
             }
-            55 if self.document.active.is_none()
-                && self.document.tools.inspection_ticket.is_none()
-                && self.ui.diagram.ticket.is_none() =>
+            55 if self.database.document.active.is_none()
+                && self.database.document.tools.inspection_ticket.is_none()
+                && self.database.ui.diagram.ticket.is_none() =>
             {
                 self.focus_pane(Kind::Data);
-                assert!(!self.document.result.rows.is_empty());
+                assert!(!self.database.document.result.rows.is_empty());
                 let column = self
+                    .database
                     .document
                     .result
                     .columns
                     .iter()
                     .position(|c| c.name == "edit_seq")
                     .unwrap();
-                let tursobench_core::Value::Integer(value) = self.document.result.rows[0][column]
+                let tursobench_core::Value::Integer(value) =
+                    self.database.document.result.rows[0][column]
                 else {
                     panic!("The session capture requires integer edit_seq metadata");
                 };
@@ -110,12 +112,12 @@ impl App {
                     tursobench_core::Value::Integer(value.saturating_add(1)),
                 );
                 assert!(self.has_drafts());
-                self.document.show_preview = true;
+                self.database.document.show_preview = true;
                 smoke.stage = 51;
             }
-            56 if self.session.is_none() => {
-                self.writable = false;
-                self.document.ui.nav = shell::Nav::Databases;
+            56 if self.database.session.is_none() => {
+                self.database.writable = false;
+                self.database.document.ui.nav = shell::Nav::Databases;
                 smoke.stage = 51;
             }
             _ => {}

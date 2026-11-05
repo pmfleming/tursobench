@@ -37,6 +37,7 @@ impl InlineEdit {
 impl App {
     pub(super) fn select_cell(&mut self, row: usize, column: usize, extend: bool) {
         if self
+            .database
             .document
             .result
             .rows
@@ -47,42 +48,45 @@ impl App {
             return;
         }
         let anchor = self
+            .database
             .document
             .tools
             .grid_selection
-            .filter(|s| extend && s.ticket == self.document.result.current)
+            .filter(|s| extend && s.ticket == self.database.document.result.current)
             .map_or((row, column), |s| s.anchor);
-        self.document.tools.grid_selection = Some(Selection {
-            ticket: self.document.result.current,
+        self.database.document.tools.grid_selection = Some(Selection {
+            ticket: self.database.document.result.current,
             anchor,
             cursor: (row, column),
         });
-        let open = self.document.ui.inspector_open;
+        let open = self.database.document.ui.inspector_open;
         self.open_cell(row, column);
-        self.document.ui.inspector_open = open;
-        self.document.tools.detail = Some(row);
-        self.document.ui.inspector = shell::DetailMode::Record;
+        self.database.document.ui.inspector_open = open;
+        self.database.document.tools.detail = Some(row);
+        self.database.document.ui.inspector = shell::DetailMode::Record;
     }
     fn selection_bounds(&self) -> Option<(std::ops::Range<usize>, &[usize])> {
         let s = self
+            .database
             .document
             .tools
             .grid_selection
-            .filter(|s| s.ticket == self.document.result.current)?;
+            .filter(|s| s.ticket == self.database.document.result.current)?;
         let rows = s.anchor.0.min(s.cursor.0)
             ..s.anchor
                 .0
                 .max(s.cursor.0)
                 .saturating_add(1)
-                .min(self.document.result.rows.len());
+                .min(self.database.document.result.rows.len());
         if rows.is_empty() {
             return None;
         }
-        let columns = &self.document.tools.columns;
+        let columns = &self.database.document.tools.columns;
         let position = |column| {
-            (column < self.document.result.columns.len() && !columns.hidden.contains(&column))
-                .then(|| columns.order.iter().position(|&c| c == column))
-                .flatten()
+            (column < self.database.document.result.columns.len()
+                && !columns.hidden.contains(&column))
+            .then(|| columns.order.iter().position(|&c| c == column))
+            .flatten()
         };
         let (a, b) = (position(s.anchor.1)?, position(s.cursor.1)?);
         Some((rows, &columns.order[a.min(b)..=a.max(b)]))
@@ -91,8 +95,14 @@ impl App {
         self.selection_bounds().is_some_and(|(rows, cols)| {
             rows.contains(&row)
                 && cols.contains(&column)
-                && column < self.document.result.columns.len()
-                && !self.document.tools.columns.hidden.contains(&column)
+                && column < self.database.document.result.columns.len()
+                && !self
+                    .database
+                    .document
+                    .tools
+                    .columns
+                    .hidden
+                    .contains(&column)
         })
     }
     pub(super) fn selected_cells(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
@@ -104,8 +114,8 @@ impl App {
                         .iter()
                         .copied()
                         .filter(move |c| {
-                            *c < self.document.result.columns.len()
-                                && !self.document.tools.columns.hidden.contains(c)
+                            *c < self.database.document.result.columns.len()
+                                && !self.database.document.tools.columns.hidden.contains(c)
                         })
                         .map(move |c| (row, c))
                 })
@@ -119,12 +129,12 @@ impl App {
                 text.push(if previous == r { '\t' } else { '\n' });
             }
             last = Some(r);
-            if matches!(self.document.result.rows[r][c], Value::Deferred(_)) {
+            if matches!(self.database.document.result.rows[r][c], Value::Deferred(_)) {
                 return Err(
                     "Selection contains deferred cells; save the full value instead".into(),
                 );
             }
-            let cell = crate::export::cell_text(&self.document.result.rows[r][c]);
+            let cell = crate::export::cell_text(&self.database.document.result.rows[r][c]);
             if cell.contains(['\t', '\n', '\r', '"']) {
                 text.push('"');
                 text.push_str(&cell.replace('"', "\"\""));
@@ -140,36 +150,45 @@ impl App {
     }
     pub(super) fn selection_summary(&mut self) -> &str {
         let Some(selection) = self
+            .database
             .document
             .tools
             .grid_selection
-            .filter(|s| s.ticket == self.document.result.current)
+            .filter(|s| s.ticket == self.database.document.result.current)
         else {
             return "";
         };
-        let rows = self.document.result.rows.len();
-        let cached = self.document.tools.summary_cache.as_ref().is_some_and(|c| {
-            c.selection == selection
-                && c.rows == rows
-                && c.visible.iter().copied().eq(self
-                    .document
-                    .tools
-                    .columns
-                    .visible(self.document.result.columns.len()))
-        });
+        let rows = self.database.document.result.rows.len();
+        let cached = self
+            .database
+            .document
+            .tools
+            .summary_cache
+            .as_ref()
+            .is_some_and(|c| {
+                c.selection == selection
+                    && c.rows == rows
+                    && c.visible.iter().copied().eq(self
+                        .database
+                        .document
+                        .tools
+                        .columns
+                        .visible(self.database.document.result.columns.len()))
+            });
         if !cached {
             let text = summarize(
                 self.selected_cells()
-                    .filter_map(|(r, c)| self.document.result.rows.get(r)?.get(c)),
+                    .filter_map(|(r, c)| self.database.document.result.rows.get(r)?.get(c)),
             );
-            self.document.tools.summary_cache = Some(SummaryCache {
+            self.database.document.tools.summary_cache = Some(SummaryCache {
                 selection,
                 visible: self.visible_columns(),
                 rows,
                 text,
             });
         }
-        self.document
+        self.database
+            .document
             .tools
             .summary_cache
             .as_ref()
@@ -180,10 +199,11 @@ impl App {
             self.open_cell(row, column);
             return;
         }
-        let Some(original) = self.document.result.rows.get(row) else {
+        let Some(original) = self.database.document.result.rows.get(row) else {
             return;
         };
         let Some(value) = self
+            .database
             .document
             .drafts
             .as_ref()
@@ -196,7 +216,7 @@ impl App {
             self.open_cell(row, column);
             return;
         };
-        self.document.tools.inline = Some(InlineEdit {
+        self.database.document.tools.inline = Some(InlineEdit {
             row,
             column,
             editor,
@@ -205,24 +225,28 @@ impl App {
     }
 
     pub(super) fn grid_keys(&mut self, ctx: &egui::Context) {
-        if self.document.tools.inline.is_some()
-            || !matches!(self.document.ui.nav, shell::Nav::Table | shell::Nav::Result)
-            || self.document.ui.table_view != shell::TableView::Data
+        if self.database.document.tools.inline.is_some()
+            || !matches!(
+                self.database.document.ui.nav,
+                shell::Nav::Table | shell::Nav::Result
+            )
+            || self.database.document.ui.table_view != shell::TableView::Data
             || egui::Popup::is_any_open(ctx)
-            || self.ui.palette_open
+            || self.database.ui.palette_open
         {
             return;
         }
-        if self.document.tools.grid_focus.is_none()
-            || ctx.memory(|m| m.focused()) != self.document.tools.grid_focus
+        if self.database.document.tools.grid_focus.is_none()
+            || ctx.memory(|m| m.focused()) != self.database.document.tools.grid_focus
         {
             return;
         }
         let Some(s) = self
+            .database
             .document
             .tools
             .grid_selection
-            .filter(|s| s.ticket == self.document.result.current)
+            .filter(|s| s.ticket == self.database.document.result.current)
         else {
             return;
         };
@@ -233,7 +257,7 @@ impl App {
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::C)) {
             match self.selection_tsv() {
                 Ok(text) => ctx.copy_text(text),
-                Err(error) => self.status = error,
+                Err(error) => self.database.status = error,
             }
             return;
         }
@@ -269,7 +293,7 @@ impl App {
                     .cursor
                     .0
                     .saturating_add_signed(dr)
-                    .min(self.document.result.rows.len().saturating_sub(1));
+                    .min(self.database.document.result.rows.len().saturating_sub(1));
                 let col = c.saturating_add_signed(dc).min(cols.len() - 1);
                 if key == egui::Key::PageDown && row == s.cursor.0 {
                     self.request_page(false);
@@ -278,20 +302,25 @@ impl App {
                     self.request_page(true);
                 }
                 self.select_cell(row, cols[col], shift);
-                self.document.tools.scroll_to_cell = true;
-                let stride = self.document.tools.row_stride.max(super::grid::ROW_HEIGHT);
+                self.database.document.tools.scroll_to_cell = true;
+                let stride = self
+                    .database
+                    .document
+                    .tools
+                    .row_stride
+                    .max(super::grid::ROW_HEIGHT);
                 let y = row as f32 * stride;
-                let current = self.document.tools.grid_scroll.y;
+                let current = self.database.document.tools.grid_scroll.y;
                 let next = if y < current {
                     y
-                } else if y + stride > current + self.document.tools.grid_height {
-                    (y + stride - self.document.tools.grid_height).max(0.0)
+                } else if y + stride > current + self.database.document.tools.grid_height {
+                    (y + stride - self.database.document.tools.grid_height).max(0.0)
                 } else {
                     current
                 };
                 if next != current {
-                    self.document.tools.restore_scroll =
-                        Some(egui::vec2(self.document.tools.grid_scroll.x, next));
+                    self.database.document.tools.restore_scroll =
+                        Some(egui::vec2(self.database.document.tools.grid_scroll.x, next));
                 }
                 break;
             }

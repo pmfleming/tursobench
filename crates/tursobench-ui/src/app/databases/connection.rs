@@ -20,7 +20,7 @@ impl App {
                         ui.heading("Open database");
                         ui.add_space(12.0);
 
-                        if self.path.is_empty() {
+                        if self.database.path.is_empty() {
                             let edit = ui.link("Enter a path…");
                             #[cfg(test)]
                             {
@@ -40,10 +40,10 @@ impl App {
                         if self.has_drafts() {
                             ui.colored_label(ui.visuals().error_fg_color, "Drafts retained after disconnect. Inspect the uncertain outcome before discarding or retrying.");
                             if ui.button("Review retained drafts…").clicked() {
-                                self.document.show_preview = true;
+                                self.database.document.show_preview = true;
                             }
                             if ui.button("Discard retained local drafts").clicked() {
-                                self.document.drafts = None;
+                                self.database.document.drafts = None;
                             }
                         }
                 });
@@ -77,14 +77,14 @@ impl App {
             .inner_margin(12.0)
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                let path = Path::new(&self.path);
+                let path = Path::new(&self.database.path);
                 ui.add(
                     egui::Label::new(egui::RichText::new(
                         path.file_name().unwrap_or(path.as_os_str()).to_string_lossy(),
                     ).strong()).truncate(),
                 );
-                ui.add(egui::Label::new(&self.path).truncate())
-                    .on_hover_text(&self.path);
+                ui.add(egui::Label::new(&self.database.path).truncate())
+                    .on_hover_text(&self.database.path);
                 let edit = ui.link(if self.databases.editing_path { "Done" } else { "Edit path…" });
                 #[cfg(test)]
                 {
@@ -99,7 +99,7 @@ impl App {
                 let inspection = &mut self.databases.inspection;
                 #[cfg(test)]
                 { self.databases.override_rect = None; }
-                if inspection.ready(&self.path) && inspection.kind(&self.path) == crate::discovery::DatabaseKind::LikelySqlite {
+                if inspection.ready(&self.database.path) && inspection.kind(&self.database.path) == crate::discovery::DatabaseKind::LikelySqlite {
                     ui.horizontal_wrapped(|ui| {
                             ui.weak("Likely SQLite");
                             let response = ui.checkbox(&mut inspection.override_sqlite, "Open with Turso anyway");
@@ -109,26 +109,26 @@ impl App {
                     });
                 }
                 ui.add_space(8.0);
-                let writable = self.writable;
+                let writable = self.database.writable;
                 ui.horizontal_wrapped(|ui| {
                     ui.scope(|ui| {
-                        if self.writable {
+                        if self.database.writable {
                             let color = crate::appearance::Tokens::of(ui.ctx()).pending;
                             ui.visuals_mut().selection.bg_fill = color.gamma_multiply(0.13);
                             ui.visuals_mut().selection.stroke.color = color;
                         }
                         ui.horizontal(|ui| {
-                            ui.selectable_value(&mut self.writable, false, "Read only");
-                            ui.selectable_value(&mut self.writable, true, "Read and write");
+                            ui.selectable_value(&mut self.database.writable, false, "Read only");
+                            ui.selectable_value(&mut self.database.writable, true, "Read and write");
                         });
                     });
                 });
-                if self.writable != writable { self.databases.open_failure = None; }
-                if self.writable {
+                if self.database.writable != writable { self.databases.open_failure = None; }
+                if self.database.writable {
                     ui.small(egui::RichText::new("Opening for writes may change the file. Back up first.").color(ui.visuals().warn_fg_color));
                 }
                 let issue = self.databases.open_failure.as_ref()
-                    .or_else(|| self.databases.inspection.blocked(&self.path));
+                    .or_else(|| self.databases.inspection.blocked(&self.database.path));
                 if let Some(error) = issue {
                     let title = if self.databases.open_failure.is_some() { "Couldn’t open database" }
                         else if error.kind == tursobench_core::ErrorKind::Busy { "Database in use" }
@@ -140,13 +140,13 @@ impl App {
                             ui.colored_label(color, egui::RichText::new(title).strong());
                             ui.add(egui::Label::new(&error.message).wrap());
                         });
-                } else if !self.databases.inspection.ready(&self.path) {
+                } else if !self.databases.inspection.ready(&self.database.path) {
                     ui.horizontal(|ui| { ui.spinner(); ui.weak("Checking file…"); });
                 }
                 ui.add_space(8.0);
-                let enabled = !self.path.is_empty()
+                let enabled = !self.database.path.is_empty()
                     && self.picker.is_none()
-                    && self.databases.inspection.allows_open(&self.path)
+                    && self.databases.inspection.allows_open(&self.database.path)
                     && !self.has_drafts();
                 let response = ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let response = ui.add_enabled(enabled, crate::app::presentation::action(ui,
@@ -169,7 +169,7 @@ impl App {
     }
 
     fn database_path_ui(&mut self, ui: &mut egui::Ui, focus: bool) {
-        let mut path = self.path.clone();
+        let mut path = self.database.path.clone();
         let response = ui.add(
             egui::TextEdit::singleline(&mut path)
                 .id(egui::Id::unique("database-path"))

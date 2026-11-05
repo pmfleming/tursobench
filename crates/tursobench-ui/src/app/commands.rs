@@ -42,38 +42,38 @@ fn fuzzy(label: &str, query: &str) -> bool {
 
 impl App {
     fn dismiss_surface(&mut self, ctx: &egui::Context) {
-        if self.document.tools.inline.take().is_some() {
+        if self.database.document.tools.inline.take().is_some() {
             return;
         }
         if egui::Popup::is_any_open(ctx) {
             egui::Popup::close_all(ctx);
         } else {
             // Close only the topmost surface, preserving Escape's priority.
-            let was_confirming_close = self.confirm_close;
+            let was_confirming_close = self.database.confirm_close;
             let mut surfaces = vec![
-                &mut self.ui.palette_open,
-                &mut self.ui.access_dialog,
-                &mut self.confirm_close,
-                &mut self.document.show_insert,
-                &mut self.document.show_preview,
-                &mut self.ui.export_open,
-                &mut self.ui.outcomes,
-                &mut self.tools.help,
-                &mut self.document.ui.filter_open,
+                &mut self.database.ui.palette_open,
+                &mut self.database.ui.access_dialog,
+                &mut self.database.confirm_close,
+                &mut self.database.document.show_insert,
+                &mut self.database.document.show_preview,
+                &mut self.database.ui.export_open,
+                &mut self.database.ui.outcomes,
+                &mut self.database.tools.help,
+                &mut self.database.document.ui.filter_open,
             ];
-            if !self.workspace.enabled {
+            if !self.database.workspace.enabled {
                 surfaces.extend([
-                    &mut self.document.ui.inspector_open,
-                    &mut self.document.ui.sql_open,
+                    &mut self.database.document.ui.inspector_open,
+                    &mut self.database.document.ui.sql_open,
                 ]);
             }
             if let Some(surface) = surfaces.into_iter().find(|open| **open) {
                 *surface = false;
             } else {
-                self.workspace.expanded = None;
+                self.database.workspace.expanded = None;
             }
-            if was_confirming_close && !self.confirm_close {
-                self.pending_database = None;
+            if was_confirming_close && !self.database.confirm_close {
+                self.database.pending_database = None;
                 self.quit = false;
             }
         }
@@ -91,49 +91,49 @@ impl App {
             self.open_palette();
             return;
         }
-        if self.ui.palette_open {
+        if self.database.ui.palette_open {
             return;
         }
-        if self.workspace.enabled && self.workspace.active == Kind::Sql
-            || !self.workspace.enabled && self.document.ui.sql_open
+        if self.database.workspace.enabled && self.database.workspace.active == Kind::Sql
+            || !self.database.workspace.enabled && self.database.document.ui.sql_open
         {
             if consumed(Modifiers::CTRL | Modifiers::SHIFT, Key::Enter) {
-                if self.workspace.enabled {
+                if self.database.workspace.enabled {
                     self.focus_pane(Kind::Sql);
                 }
                 self.run_current(None);
             } else if consumed(Modifiers::CTRL, Key::Enter) {
-                if self.workspace.enabled {
+                if self.database.workspace.enabled {
                     self.focus_pane(Kind::Sql);
                 }
                 self.run_sql();
             }
             if consumed(Modifiers::CTRL, Key::Space) {
-                if self.workspace.enabled {
+                if self.database.workspace.enabled {
                     self.focus_pane(Kind::Sql);
                 }
-                self.document.tools.complete = true;
+                self.database.document.tools.complete = true;
             }
             if consumed(Modifiers::CTRL, Key::S) {
-                if self.workspace.enabled {
+                if self.database.workspace.enabled {
                     self.focus_pane(Kind::Sql);
                 }
-                self.ui.sidebar = ToolPanel::Saved;
+                self.database.ui.sidebar = ToolPanel::Saved;
             }
         }
         if consumed(Modifiers::NONE, Key::F5) {
-            if self.document.ui.sql_open
-                && self.document.tools.sql_focus.is_some()
-                && ctx.memory(|m| m.focused()) == self.document.tools.sql_focus
+            if self.database.document.ui.sql_open
+                && self.database.document.tools.sql_focus.is_some()
+                && ctx.memory(|m| m.focused()) == self.database.document.tools.sql_focus
             {
                 self.run_sql();
-            } else if self.tools.tree_focus.is_some()
-                && ctx.memory(|m| m.focused()) == self.tools.tree_focus
-                || self.document.ui.nav == Nav::Overview
+            } else if self.database.tools.tree_focus.is_some()
+                && ctx.memory(|m| m.focused()) == self.database.tools.tree_focus
+                || self.database.document.ui.nav == Nav::Overview
             {
                 self.refresh_catalog();
                 self.load_diagram();
-            } else if self.document.view == View::Browse {
+            } else if self.database.document.view == View::Browse {
                 self.refresh_table();
             }
         }
@@ -162,8 +162,10 @@ impl App {
             }
             // Earlier shortcuts in this frame may have changed the active document.
             let enabled = match command {
-                Command::Filter => self.document.ui.nav == Nav::Table,
-                Command::CopyResults => matches!(self.document.ui.nav, Nav::Table | Nav::Result),
+                Command::Filter => self.database.document.ui.nav == Nav::Table,
+                Command::CopyResults => {
+                    matches!(self.database.document.ui.nav, Nav::Table | Nav::Result)
+                }
                 _ => true,
             };
             if enabled {
@@ -171,11 +173,11 @@ impl App {
             }
         }
         if consumed(Modifiers::NONE, Key::F1) {
-            self.tools.help = !self.tools.help;
+            self.database.tools.help = !self.database.tools.help;
         }
         if !ctx.egui_wants_keyboard_input()
             && self.requests_enabled()
-            && self.document.ui.nav == Nav::Table
+            && self.database.document.ui.nav == Nav::Table
         {
             let delta = if consumed(Modifiers::NONE, Key::PageDown) {
                 100
@@ -185,7 +187,7 @@ impl App {
                 0
             };
             if delta != 0
-                && let Some(b) = self.document.browse.as_mut()
+                && let Some(b) = self.database.document.browse.as_mut()
             {
                 b.offset = b.offset.saturating_add_signed(delta).min(1_000_000);
                 self.reload();
@@ -193,43 +195,43 @@ impl App {
         }
     }
     pub(super) fn access_dialog(&mut self, ctx: &egui::Context) {
-        if !self.ui.access_dialog {
+        if !self.database.ui.access_dialog {
             return;
         }
         let mut open = true;
-        egui::Window::new(if self.writable { "Reopen read-only?" } else { "Enable editing?" }).frame(crate::app::presentation::window_frame(ctx)).default_pos(ctx.content_rect().center()-egui::vec2(280.0,180.0))
+        egui::Window::new(if self.database.writable { "Reopen read-only?" } else { "Enable editing?" }).frame(crate::app::presentation::window_frame(ctx)).default_pos(ctx.content_rect().center()-egui::vec2(280.0,180.0))
             .open(&mut open).anchor(egui::Align2::LEFT_BOTTOM, [12.0,-48.0]).max_width((ctx.content_rect().width()-40.0).min(520.0)).collapsible(false).show(ctx, |ui| {
                 presentation::notice(ui, super::icons::Icon::Lock, Intent::Pending,"The current session will close and roll back any open transaction before reopening. Local drafts will be discarded. Committed writes are not undone.");
-                if !self.writable { ui.label("Back up the closed database with its WAL state before editing. SQL writes autocommit unless you BEGIN; grid edits are staged for review."); }
+                if !self.database.writable { ui.label("Back up the closed database with its WAL state before editing. SQL writes autocommit unless you BEGIN; grid edits are staged for review."); }
                 ui.label("File locks and shared WAL coordination will be checked again when reopening.");
-                if presentation::footer(ui, |ui| ui.add_enabled(self.ready && !self.closing && self.commit_ticket.is_none() && !self.uncertain_edit,
+                if presentation::footer(ui, |ui| ui.add_enabled(self.database.ready && !self.database.closing && self.database.commit_ticket.is_none() && !self.database.uncertain_edit,
                     presentation::action(ui,"Close cleanly and reopen",Intent::Pending))).inner.clicked() {
-                    self.pending_access = Some(!self.writable);
-                    self.ui.access_dialog = false;
+                    self.database.pending_access = Some(!self.database.writable);
+                    self.database.ui.access_dialog = false;
                     self.close();
                 }
             });
-        self.ui.access_dialog &= open;
+        self.database.ui.access_dialog &= open;
     }
     pub(super) fn open_palette(&mut self) {
-        if self.session.is_none() && self.document.ui.nav == Nav::Databases {
+        if self.database.session.is_none() && self.database.document.ui.nav == Nav::Databases {
             self.databases.focus_filter = true;
             return;
         }
-        self.ui.palette_open = true;
-        self.ui.palette_focus = true;
-        self.ui.palette_query.clear();
-        self.ui.palette_index = 0;
+        self.database.ui.palette_open = true;
+        self.database.ui.palette_focus = true;
+        self.database.ui.palette_query.clear();
+        self.database.ui.palette_index = 0;
     }
     pub(super) fn toggle_sql(&mut self) {
-        if self.workspace.enabled {
+        if self.database.workspace.enabled {
             self.open_sql_window(false);
             return;
         }
-        self.document.ui.sql_open = !self.document.ui.sql_open;
+        self.database.document.ui.sql_open = !self.database.document.ui.sql_open;
     }
     pub(super) fn command_palette(&mut self, ctx: &egui::Context) {
-        if !self.ui.palette_open {
+        if !self.database.ui.palette_open {
             return;
         }
         let mut open = true;
@@ -243,36 +245,36 @@ impl App {
             .default_width(580.0)
             .show(ctx, |ui| {
                 let search = ui.add(
-                    egui::TextEdit::singleline(&mut self.ui.palette_query)
+                    egui::TextEdit::singleline(&mut self.database.ui.palette_query)
                         .id_salt("command-search")
                         .hint_text("Table, column, or action…")
                         .desired_width(ui.available_width()),
                 );
-                if self.ui.palette_focus {
+                if self.database.ui.palette_focus {
                     search.request_focus();
-                    self.ui.palette_focus = false;
+                    self.database.ui.palette_focus = false;
                 }
                 if search.changed() {
-                    self.ui.palette_index = 0;
+                    self.database.ui.palette_index = 0;
                 }
                 let mut items = self.palette_items();
                 let mut chosen_index = None;
-                self.ui.palette_index = self.ui.palette_index.min(items.len().saturating_sub(1));
+                self.database.ui.palette_index = self.database.ui.palette_index.min(items.len().saturating_sub(1));
                 if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)) {
-                    self.ui.palette_index =
-                        (self.ui.palette_index + 1).min(items.len().saturating_sub(1));
+                    self.database.ui.palette_index =
+                        (self.database.ui.palette_index + 1).min(items.len().saturating_sub(1));
                 }
                 if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)) {
-                    self.ui.palette_index = self.ui.palette_index.saturating_sub(1);
+                    self.database.ui.palette_index = self.database.ui.palette_index.saturating_sub(1);
                 }
                 if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
-                    chosen_index = Some(self.ui.palette_index);
+                    chosen_index = Some(self.database.ui.palette_index);
                 }
                 egui::ScrollArea::vertical()
                     .max_height((ctx.content_rect().height() - 240.0).max(100.0))
                     .show(ui, |ui| {
                         for (index, (label, _)) in items.iter().enumerate() {
-                            let selected = index == self.ui.palette_index;
+                            let selected = index == self.database.ui.palette_index;
                             let response = ui.add_sized([ui.available_width(),32.0],egui::Button::new(label).selected(selected).frame_when_inactive(false));
                             if selected {
                                 response.scroll_to_me(Some(egui::Align::Center));
@@ -290,9 +292,9 @@ impl App {
                     ui.small("Up/Down choose · Enter open · Esc close. Column search uses loaded map metadata.");
                 });
             });
-        self.ui.palette_open = open;
+        self.database.ui.palette_open = open;
         if let Some(action) = chosen {
-            self.ui.palette_open = false;
+            self.database.ui.palette_open = false;
             self.execute_command(ctx, action);
         }
     }
@@ -340,7 +342,8 @@ impl App {
             ("Keyboard shortcuts and help · F1".into(), Command::Help),
         ];
         items.extend(
-            self.schema
+            self.database
+                .schema
                 .iter()
                 .filter(|o| o.kind == "table" || o.kind == "view")
                 .map(|o| {
@@ -350,8 +353,8 @@ impl App {
                     )
                 }),
         );
-        if !self.ui.palette_query.is_empty()
-            && let Some(graph) = &self.ui.diagram.data
+        if !self.database.ui.palette_query.is_empty()
+            && let Some(graph) = &self.database.ui.diagram.data
         {
             for node in &graph.tables {
                 if let Some(info) = &node.inspection {
@@ -364,24 +367,30 @@ impl App {
                 }
             }
         }
-        items.retain(|(label, _)| fuzzy(label, &self.ui.palette_query));
+        items.retain(|(label, _)| fuzzy(label, &self.database.ui.palette_query));
         items.truncate(80);
         items
     }
     pub(super) fn execute_command(&mut self, ctx: &egui::Context, action: Command) {
         match action {
             Command::Table(name, column) => {
-                let before = self.document.result.current;
+                let before = self.database.document.result.current;
                 self.activate_table(name.clone());
-                if self.document.result.current != before
-                    || self.document.view == super::View::Browse
-                        && self.document.table.as_ref().is_some_and(|t| t.name == name)
+                if self.database.document.result.current != before
+                    || self.database.document.view == super::View::Browse
+                        && self
+                            .database
+                            .document
+                            .table
+                            .as_ref()
+                            .is_some_and(|t| t.name == name)
                 {
-                    self.document.ui.nav = Nav::Table;
-                    self.document.ui.table_view = TableView::Data;
-                    self.document.tools.highlight_column = column.map(|column| (name, column));
-                    self.document.tools.scroll_to_column =
-                        self.document.tools.highlight_column.is_some();
+                    self.database.document.ui.nav = Nav::Table;
+                    self.database.document.ui.table_view = TableView::Data;
+                    self.database.document.tools.highlight_column =
+                        column.map(|column| (name, column));
+                    self.database.document.tools.scroll_to_column =
+                        self.database.document.tools.highlight_column.is_some();
                 }
             }
             Command::List => {
@@ -389,32 +398,33 @@ impl App {
             }
             Command::Map => {
                 self.overview();
-                self.ui.sidebar = ToolPanel::Schema;
+                self.database.ui.sidebar = ToolPanel::Schema;
 
-                if self.ui.diagram.data.is_none() {
+                if self.database.ui.diagram.data.is_none() {
                     self.load_diagram();
                 }
             }
             Command::Data => {
-                if self.workspace.enabled
+                if self.database.workspace.enabled
                     && let Some(name) = self
+                        .database
                         .document
                         .object
                         .clone()
-                        .or_else(|| self.ui.diagram.selected.clone())
+                        .or_else(|| self.database.ui.diagram.selected.clone())
                 {
                     self.browse_table(name);
                 }
-                self.document.ui.table_view = TableView::Data;
+                self.database.document.ui.table_view = TableView::Data;
             }
             Command::Structure => {
-                if self.workspace.enabled {
+                if self.database.workspace.enabled {
                     self.open_structure_window();
                 }
-                self.document.ui.table_view = TableView::Structure;
+                self.database.document.ui.table_view = TableView::Structure;
             }
             Command::Back => {
-                if self.document.view == super::View::Browse {
+                if self.database.document.view == super::View::Browse {
                     self.navigate_back();
                 } else {
                     self.return_to_table();
@@ -423,25 +433,25 @@ impl App {
             Command::CopyResults => self.copy_results(ctx, crate::export::Format::Tsv),
             Command::Sql => self.toggle_sql(),
             Command::Open => {
-                if self.session.is_some() {
-                    self.request_close();
+                if self.database.session.is_some() {
+                    self.new_workspace(ctx);
                 } else {
                     self.choose_file(ctx);
                 }
             }
             Command::Begin => {
-                if self.transaction == tursobench_core::TransactionState::Autocommit {
+                if self.database.transaction == tursobench_core::TransactionState::Autocommit {
                     self.run_text("BEGIN".into(), None);
                 }
             }
             Command::Filter => {
-                self.document.ui.filter_open = true;
-                self.document.tools.filter_focus = true;
+                self.database.document.ui.filter_open = true;
+                self.database.document.tools.filter_focus = true;
             }
             Command::Inspector => self.toggle_inspector(),
             Command::CopySelection => match self.selection_tsv() {
                 Ok(text) => ctx.copy_text(text),
-                Err(e) => self.status = e,
+                Err(e) => self.database.status = e,
             },
             Command::RefreshTable => self.refresh_table(),
             Command::Close => self.request_close(),
@@ -453,7 +463,7 @@ impl App {
                 self.select_tool(panel);
             }
             Command::Action(action) => self.dispatch_action(action, ctx),
-            Command::Help => self.tools.help = true,
+            Command::Help => self.database.tools.help = true,
             Command::Theme => {
                 self.toggle_theme(ctx);
                 self.store.save(&self.preferences);

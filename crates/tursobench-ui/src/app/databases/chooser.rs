@@ -309,7 +309,7 @@ impl App {
 
         let (selected, forget) =
             self.databases
-                .rows_ui(ui, &filtered, &self.path, self.picker.is_some());
+                .rows_ui(ui, &filtered, &self.database.path, self.picker.is_some());
         if let Some(path) = selected {
             self.databases.highlighted = Some(path.clone());
             self.databases.navigating = true;

@@ -143,19 +143,19 @@ impl State {
 }
 impl App {
     pub(super) fn open_transfers(&mut self) {
-        if self.tools.transfers.ticket.is_some() {
-            self.tools.transfers.open = true;
+        if self.database.tools.transfers.ticket.is_some() {
+            self.database.tools.transfers.open = true;
             return;
         }
         let statement = self.current_text();
         let query = statement.and_then(|text| {
-            Bindings::parse_json(&self.document.params).map(|params| (text, params))
+            Bindings::parse_json(&self.database.document.params).map(|params| (text, params))
         });
-        self.tools.transfers = State {
+        self.database.tools.transfers = State {
             open: true,
-            session: self.session.as_ref().map(|s| s.id),
-            table: self.document.table.clone(),
-            source: self.document.browse.clone(),
+            session: self.database.session.as_ref().map(|s| s.id),
+            table: self.database.document.table.clone(),
+            source: self.database.document.browse.clone(),
             message: query
                 .as_ref()
                 .err()
@@ -165,29 +165,29 @@ impl App {
         };
     }
     fn transfer_request(&mut self, operation: Operation) {
-        let Some(session) = &self.session else {
+        let Some(session) = &self.database.session else {
             return;
         };
-        if self.tools.transfers.session != Some(session.id) {
-            self.tools.transfers.message =
+        if self.database.tools.transfers.session != Some(session.id) {
+            self.database.tools.transfers.message =
                 "Reopen the transfer panel for the current database".into();
             return;
         }
-        if !self.requests_enabled() || self.tools.transfers.ticket.is_some() {
+        if !self.requests_enabled() || self.database.tools.transfers.ticket.is_some() {
             return;
         }
-        self.sequence += 1;
-        let ticket = session.ticket(self.sequence, self.generation);
+        self.database.sequence += 1;
+        let ticket = session.ticket(self.database.sequence, self.database.generation);
         match session.submit(Request { ticket, operation }) {
             Ok(()) => {
-                self.tools.transfers.ticket = Some(ticket);
-                self.tools.transfers.message = "Queued…".into();
+                self.database.tools.transfers.ticket = Some(ticket);
+                self.database.tools.transfers.message = "Queued…".into();
             }
-            Err(e) => self.tools.transfers.message = e.to_string(),
+            Err(e) => self.database.tools.transfers.message = e.to_string(),
         }
     }
     pub(super) fn transfer_event(&mut self, kind: EventKind) {
-        let state = &mut self.tools.transfers;
+        let state = &mut self.database.tools.transfers;
         match kind {
             EventKind::ImportPreview(preview) => {
                 if state
@@ -218,12 +218,12 @@ impl App {
                     "Preview loaded. Remaining records are validated during import.".into();
             }
             EventKind::TransferFinished(outcome) => {
-                self.transaction = outcome.transaction;
+                self.database.transaction = outcome.transaction;
                 if outcome.transaction == TransactionState::Unknown {
-                    self.uncertain_edit = true;
+                    self.database.uncertain_edit = true;
                 }
                 state.message = outcome.message;
-                self.status = state.message.clone();
+                self.database.status = state.message.clone();
             }
             EventKind::Failed(e) => {
                 state.message = e.to_string();
@@ -234,21 +234,22 @@ impl App {
         state.ticket = None;
     }
     pub(super) fn transfer_ui(&mut self, ctx: &egui::Context) {
-        if !self.tools.transfers.open {
+        if !self.database.tools.transfers.open {
             return;
         }
-        let writable = !self.uncertain_edit
-            && self.writable
-            && self.transaction == TransactionState::Autocommit
-            && self.document.active.is_none()
-            && self.documents.values().all(|d| d.active.is_none());
+        let writable = !self.database.uncertain_edit
+            && self.database.writable
+            && self.database.transaction == TransactionState::Autocommit
+            && self.database.document.active.is_none()
+            && self.database.documents.values().all(|d| d.active.is_none());
         let enabled = self.requests_enabled()
-            && self.tools.transfers.ticket.is_none()
-            && self.tools.transfers.session == self.session.as_ref().map(|s| s.id);
+            && self.database.tools.transfers.ticket.is_none()
+            && self.database.tools.transfers.session
+                == self.database.session.as_ref().map(|s| s.id);
         let mut open = true;
         let mut operation = None;
         let mut cancel = false;
-        let state = &mut self.tools.transfers;
+        let state = &mut self.database.tools.transfers;
         egui::Window::new("Data transfer and maintenance").id(egui::Id::unique("data-transfers")).open(&mut open).default_width(680.0).max_height(ctx.content_rect().height()*0.85).vscroll(true).show(ctx,|ui|{
             ui.strong("Complete source export · typed JSONL");
             ui.label("New output file");ui.text_edit_singleline(&mut state.output);
@@ -276,10 +277,10 @@ impl App {
             if state.ticket.is_some(){ui.spinner();cancel=ui.button("Cancel transfer after the current write").clicked();}
             ui.label(&state.message);
         });
-        self.tools.transfers.open = open;
+        self.database.tools.transfers.open = open;
         if cancel
-            && let Some(ticket) = self.tools.transfers.ticket
-            && let Some(session) = &self.session
+            && let Some(ticket) = self.database.tools.transfers.ticket
+            && let Some(session) = &self.database.session
         {
             session.discard_results(ticket.request);
         }

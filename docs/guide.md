@@ -96,7 +96,7 @@ unsupported. Shared access is an experimental Linux preview feature.
 See the [UI guide and capability map](ui-redesign.md) for workspace navigation,
 responsive behavior, diagram limits and validation. Relationships sits above Table data;
 Record and Structure follow the selected table. SQL editors keep drafts and linked results
-inside the SQL tile. All views share one database session and transaction; they are not independent transaction tabs.
+inside the SQL tile. Within each database workspace, views share its editor session and transaction; different database workspaces are independent.
 Settings opens in the left navigator, like History, Saved queries and Database checks,
 while the current workspace stays visible. The Settings command and Ctrl+, use the same panel.
 Back restores typed filters, sorting, the retained browse window and matching row selection. Explicit
@@ -119,8 +119,8 @@ database chooser; hover shows only its full path. The active database is highlig
 Search matches full paths as well as filenames; Enter selects a single matching
 result. Selecting the active database simply dismisses the switcher.
 **Open database…** returns to the chooser, and **Close database** closes the database.
-Switching or closing still follows the managed close/rollback flow, including
-confirmation for writable sessions and fresh access review for another database.
+Switching between open workspaces retains their sessions. Opening another database
+uses fresh access review; closing a writable session retains managed close/rollback confirmation.
 
 - **Tables:** search names or columns, then use the refresh icon to reload schema.
 - **History:** the filter icon shows only slow queries; the down-arrow orders by
@@ -299,3 +299,17 @@ require writable access and editor autocommit. Apply reads effective settings ba
 values reset on reopen and do not change saved connection defaults. Busy timeout is
 editor-local; cache capacity can affect the shared pager. Foreign-key enforcement is
 not disabled. Checkpoint and verified backup reuse the existing maintenance panel.
+
+### Multiple database workspaces
+
+Open database now opens a separate workspace while preserving the current database.
+Up to four workspaces retain independent sessions, SQL documents, results, layouts,
+transactions and staged edits. Use the database tabs or Ctrl PageUp/PageDown to switch;
+Ctrl P searches objects/columns across open databases using cached metadata. Duplicate
+paths, symlinks and file identities focus an existing session. New opens still require
+access review and default to read-only. Close database closes only the selected session.
+Application exit waits for every session/export and retains writable-close confirmation;
+uncertain outcomes pause exit. Inactive requests continue draining to their owning views.
+Each workspace retains the existing 16-view limit and per-session quotas; the four-session
+cap bounds aggregate application retention, not engine allocations. No database is
+silently reopened writable after restart. Connection-local state never crosses tabs.

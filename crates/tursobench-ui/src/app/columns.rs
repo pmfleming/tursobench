@@ -239,21 +239,23 @@ impl Columns {
 }
 impl App {
     pub(super) fn visible_columns(&self) -> Vec<usize> {
-        self.document
+        self.database
+            .document
             .tools
             .columns
-            .visible(self.document.result.columns.len())
+            .visible(self.database.document.result.columns.len())
             .collect()
     }
     pub(super) fn prepare_columns(&mut self, ui: &egui::Ui) {
-        if self.document.result.columns.is_empty() {
+        if self.database.document.result.columns.is_empty() {
             return;
         }
         let scope = format!(
             "{}:{}",
-            self.tools.database_scope,
-            if self.document.view == View::Browse {
-                self.document
+            self.database.tools.database_scope,
+            if self.database.document.view == View::Browse {
+                self.database
+                    .document
                     .table
                     .as_ref()
                     .map_or("browse", |t| t.name.as_str())
@@ -261,34 +263,39 @@ impl App {
                 "query"
             }
         );
-        if self.document.tools.column_scope != scope {
-            let old = std::mem::take(&mut self.document.tools.columns);
-            self.document.tools.column_layouts.insert(
-                std::mem::replace(&mut self.document.tools.column_scope, scope.clone()),
+        if self.database.document.tools.column_scope != scope {
+            let old = std::mem::take(&mut self.database.document.tools.columns);
+            self.database.document.tools.column_layouts.insert(
+                std::mem::replace(
+                    &mut self.database.document.tools.column_scope,
+                    scope.clone(),
+                ),
                 old,
             );
-            self.document.tools.columns = self
+            self.database.document.tools.columns = self
+                .database
                 .document
                 .tools
                 .column_layouts
                 .remove(&scope)
                 .unwrap_or_default();
-            while self.document.tools.column_layouts.len() > 32 {
-                self.document.tools.column_layouts.pop_first();
+            while self.database.document.tools.column_layouts.len() > 32 {
+                self.database.document.tools.column_layouts.pop_first();
             }
         }
-        let c = &mut self.document.tools.columns;
-        if c.signature != self.document.result.columns {
+        let c = &mut self.database.document.tools.columns;
+        if c.signature != self.database.document.result.columns {
             *c = Columns {
-                order: (0..self.document.result.columns.len()).collect(),
-                signature: self.document.result.columns.clone(),
+                order: (0..self.database.document.result.columns.len()).collect(),
+                signature: self.database.document.result.columns.clone(),
                 refit: true,
                 ..Default::default()
             };
         }
-        if let Some((_, name)) = &self.document.tools.highlight_column
-            && self.document.tools.scroll_to_column
+        if let Some((_, name)) = &self.database.document.tools.highlight_column
+            && self.database.document.tools.scroll_to_column
             && let Some(i) = self
+                .database
                 .document
                 .result
                 .columns
@@ -297,13 +304,14 @@ impl App {
         {
             c.hidden.remove(&i);
         }
-        let sample = self.document.result.rows.len().min(200);
+        let sample = self.database.document.result.rows.len().min(200);
         if c.refit || sample > c.measured_rows {
-            let key_columns: Vec<_> = (0..self.document.result.columns.len())
-                .map(|i| self.document.column_header(i).has_key())
+            let key_columns: Vec<_> = (0..self.database.document.result.columns.len())
+                .map(|i| self.database.document.column_header(i).has_key())
                 .collect();
-            let c = &mut self.document.tools.columns;
+            let c = &mut self.database.document.tools.columns;
             c.natural = self
+                .database
                 .document
                 .result
                 .columns
@@ -321,7 +329,8 @@ impl App {
                         .x
                         + 36.0
                         + if key_columns[i] { 15.0 } else { 0.0 };
-                    self.document
+                    self.database
+                        .document
                         .result
                         .rows
                         .iter()

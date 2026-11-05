@@ -172,14 +172,14 @@ impl App {
             return;
         }
         self.update_draft_presentation();
-        if self.workspace.enabled {
+        if self.database.workspace.enabled {
             self.grid_status_bar(ui);
         }
-        if !self.document.script_results.is_empty() {
+        if !self.database.document.script_results.is_empty() {
             let mut selected = None;
             ui.collapsing("Script results and outcomes", |ui| {
-                ui.label(&self.document.script_message);
-                for (i, result) in self.document.script_results.iter().enumerate() {
+                ui.label(&self.database.document.script_message);
+                for (i, result) in self.database.document.script_results.iter().enumerate() {
                     if ui
                         .button(format!(
                             "Statement {} · {} retained rows · {} changes · {}",
@@ -199,13 +199,13 @@ impl App {
                 }
             });
             if let Some(i) = selected {
-                let result = &self.document.script_results[i];
-                self.document.result.columns = result.columns.clone();
-                self.document.result.rows = result.rows.clone();
-                self.document.result.completion = Some(result.completion.clone());
+                let result = &self.database.document.script_results[i];
+                self.database.document.result.columns = result.columns.clone();
+                self.database.document.result.rows = result.rows.clone();
+                self.database.document.result.completion = Some(result.completion.clone());
             }
         }
-        if self.document.stale {
+        if self.database.document.stale {
             ui.colored_label(
                 ui.visuals().warn_fg_color,
                 "Data changed since this result was loaded. Refresh to reload.",
@@ -217,7 +217,7 @@ impl App {
         }
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
         let grid_id = ui.scope_id().with("grid-keyboard");
-        self.document.tools.grid_focus = Some(grid_id);
+        self.database.document.tools.grid_focus = Some(grid_id);
         let grid_response = ui.interact(
             ui.available_rect_before_wrap(),
             grid_id,
@@ -242,47 +242,49 @@ impl App {
                 )
             });
         }
-        self.document.tools.context.hovered = None;
+        self.database.document.tools.context.hovered = None;
         let mut action = None;
         let editable = self.can_edit();
-        self.document.tools.row_stride = ROW_HEIGHT + ui.spacing().item_spacing.y;
+        self.database.document.tools.row_stride = ROW_HEIGHT + ui.spacing().item_spacing.y;
         if !ui.input(|i| i.pointer.primary_down()) {
-            self.document.tools.dragging_selection = false;
+            self.database.document.tools.dragging_selection = false;
         }
         let auxiliary_rows = usize::from(
-            self.document
+            self.database
+                .document
                 .inspect
-                .and_then(|(r, c)| self.document.result.rows.get(r)?.get(c))
+                .and_then(|(r, c)| self.database.document.result.rows.get(r)?.get(c))
                 .is_some_and(|v| matches!(v, Value::Deferred(_))),
-        ) + usize::from(self.document.tools.pages.pending.is_some())
-            + 2 * usize::from(!self.document.tools.pages.error.is_empty());
+        ) + usize::from(self.database.document.tools.pages.pending.is_some())
+            + 2 * usize::from(!self.database.document.tools.pages.error.is_empty());
         let remaining = (ui.available_height()
-            - if self.workspace.enabled {
+            - if self.database.workspace.enabled {
                 HEADER_HEIGHT + auxiliary_rows as f32 * ROW_HEIGHT
             } else {
                 52.0
             })
         .max(0.0);
-        self.document.tools.grid_height = remaining;
+        self.database.document.tools.grid_height = remaining;
         #[cfg(test)]
         {
-            self.ui.grid_rect = ui.available_rect_before_wrap();
+            self.database.ui.grid_rect = ui.available_rect_before_wrap();
         }
         self.prepare_columns(ui);
-        if self.document.view == View::Explain
+        if self.database.document.view == View::Explain
             && let Some(detail) = self
+                .database
                 .document
                 .result
                 .columns
                 .iter()
                 .position(|c| c.name.eq_ignore_ascii_case("detail"))
         {
-            let scans=self.document.result.rows.iter().filter(|r|matches!(r.get(detail),Some(Value::Text(s))if s.to_uppercase().contains("SCAN "))).count();
+            let scans=self.database.document.result.rows.iter().filter(|r|matches!(r.get(detail),Some(Value::Text(s))if s.to_uppercase().contains("SCAN "))).count();
             ui.label(format!("Planner notes: {scans} scan entries. Scans may be intentional; not a runtime profile."));
         }
         let mut page_range = 0..0;
-        let restore = self.document.tools.restore_scroll.take();
-        if !self.document.result.columns.is_empty() {
+        let restore = self.database.document.tools.restore_scroll.take();
+        if !self.database.document.result.columns.is_empty() {
             let band = egui::Rect::from_min_size(
                 ui.cursor().min,
                 egui::vec2(ui.available_width(), HEADER_HEIGHT),
@@ -296,27 +298,29 @@ impl App {
             );
         }
         let horizontal = egui::ScrollArea::horizontal()
-            .horizontal_scroll_offset(restore.map_or(self.document.tools.grid_scroll.x, |s| s.x))
+            .horizontal_scroll_offset(
+                restore.map_or(self.database.document.tools.grid_scroll.x, |s| s.x),
+            )
             .id_salt("result-columns")
             .show(ui, |ui| {
-                if !self.document.result.columns.is_empty() {
+                if !self.database.document.result.columns.is_empty() {
                     self.grid_header(ui);
                 }
                 let vertical = egui::ScrollArea::vertical()
                     .vertical_scroll_offset(
-                        restore.map_or(self.document.tools.grid_scroll.y, |s| s.y),
+                        restore.map_or(self.database.document.tools.grid_scroll.y, |s| s.y),
                     )
                     .id_salt("result-rows")
                     .max_height(remaining)
                     .show_rows(
                         ui,
                         ROW_HEIGHT,
-                        self.document.result.rows.len(),
+                        self.database.document.result.rows.len(),
                         |ui, range| {
                             page_range = range.clone();
                             #[cfg(test)]
                             {
-                                self.ui.visible_rows = range
+                                self.database.ui.visible_rows = range
                                     .clone()
                                     .filter(|r| {
                                         (*r + 1) as f32 * (29.0 + ui.spacing().item_spacing.y)
@@ -331,18 +335,18 @@ impl App {
                             }
                         },
                     );
-                self.document.tools.grid_scroll.y = vertical.state.clamped_offset().y;
+                self.database.document.tools.grid_scroll.y = vertical.state.clamped_offset().y;
             });
-        self.document.tools.grid_scroll.x = horizontal.state.clamped_offset().x;
+        self.database.document.tools.grid_scroll.x = horizontal.state.clamped_offset().x;
         match action {
             Some(GridAction::Cell(r, c)) => self.select_cell(
                 r,
                 c,
-                ui.input(|i| i.modifiers.shift) || self.document.tools.dragging_selection,
+                ui.input(|i| i.modifiers.shift) || self.database.document.tools.dragging_selection,
             ),
             Some(GridAction::Edit(r, c)) => self.start_inline(r, c),
             Some(GridAction::Inspect(r, c)) => {
-                if self.workspace.enabled {
+                if self.database.workspace.enabled {
                     self.open_record_window(r, c);
                 } else {
                     self.open_cell(r, c);
@@ -350,16 +354,18 @@ impl App {
             }
             Some(GridAction::Stage(r, c, v)) => {
                 self.stage_cell(r, c, v);
-                self.document.tools.inline = None;
-                if let Some(id) = self.document.tools.grid_focus {
+                self.database.document.tools.inline = None;
+                if let Some(id) = self.database.document.tools.grid_focus {
                     ui.ctx().memory_mut(|m| m.request_focus(id));
                 }
             }
-            Some(GridAction::Record(r)) if self.workspace.enabled => self.open_record_window(r, 0),
+            Some(GridAction::Record(r)) if self.database.workspace.enabled => {
+                self.open_record_window(r, 0)
+            }
             Some(GridAction::Record(r)) => {
-                self.document.tools.detail = Some(r);
-                self.document.ui.inspector = shell::DetailMode::Record;
-                self.document.ui.inspector_open = true;
+                self.database.document.tools.detail = Some(r);
+                self.database.document.ui.inspector = shell::DetailMode::Record;
+                self.database.document.ui.inspector_open = true;
             }
             Some(GridAction::Copy(r)) => self.copy_row(ui.ctx(), r),
             Some(GridAction::Delete(r)) => self.stage_delete(r),
@@ -370,13 +376,14 @@ impl App {
             }
             None => {}
         }
-        if !self.workspace.enabled {
+        if !self.database.workspace.enabled {
             self.grid_status_contents(ui);
         }
         if let Some(cell) = self
+            .database
             .document
             .inspect
-            .and_then(|(r, c)| self.document.result.rows.get(r)?.get(c))
+            .and_then(|(r, c)| self.database.document.result.rows.get(r)?.get(c))
             .and_then(|v| {
                 if let Value::Deferred(v) = v {
                     Some((**v).clone())
@@ -389,34 +396,35 @@ impl App {
             self.open_large_value(cell);
         }
         self.hover_context(ui.ctx());
-        if self.document.ui.nav == shell::Nav::Table
-            && self.document.ui.table_view == shell::TableView::Data
+        if self.database.document.ui.nav == shell::Nav::Table
+            && self.database.document.ui.table_view == shell::TableView::Data
         {
             self.maybe_page(
                 page_range.start,
                 page_range.end,
                 ui.input(|i| i.smooth_scroll_delta.y),
             );
-            if self.document.tools.pages.pending.is_some() {
+            if self.database.document.tools.pages.pending.is_some() {
                 ui.horizontal(|ui| {
                     ui.spinner();
                     ui.small("Loading 100 rows…");
                 });
             }
-            if !self.document.tools.pages.error.is_empty() {
+            if !self.database.document.tools.pages.error.is_empty() {
                 ui.colored_label(
                     ui.visuals().error_fg_color,
-                    &self.document.tools.pages.error,
+                    &self.database.document.tools.pages.error,
                 );
                 if ui.button("Retry page").clicked() {
-                    self.request_page(self.document.tools.pages.retry_previous);
+                    self.request_page(self.database.document.tools.pages.retry_previous);
                 }
             }
         }
-        if !self.workspace.enabled
-            && self.writable
-            && self.document.view == View::Browse
+        if !self.database.workspace.enabled
+            && self.database.writable
+            && self.database.document.view == View::Browse
             && self
+                .database
                 .document
                 .table
                 .as_ref()
@@ -430,15 +438,16 @@ impl App {
         {
             self.begin_insert();
         }
-        if !self.document.tools.inspection_error.is_empty()
-            && self.document.result.columns.is_empty()
+        if !self.database.document.tools.inspection_error.is_empty()
+            && self.database.document.result.columns.is_empty()
         {
             ui.colored_label(
                 ui.visuals().warn_fg_color,
-                &self.document.tools.inspection_error,
+                &self.database.document.tools.inspection_error,
             );
         }
-        if self.document.result.rows.is_empty() && self.document.active.is_none() {
+        if self.database.document.result.rows.is_empty() && self.database.document.active.is_none()
+        {
             icons::empty_state(ui, Icon::Data, "No rows to display");
         }
     }
@@ -477,7 +486,7 @@ impl App {
             egui::WidgetInfo::labeled(
                 egui::Role::Status,
                 true,
-                if self.document.browse.is_some() {
+                if self.database.document.browse.is_some() {
                     "Table data status"
                 } else {
                     "Query result status"
@@ -487,15 +496,17 @@ impl App {
     }
 
     fn grid_status_contents(&mut self, ui: &mut egui::Ui) {
-        let spec = self.document.browse.clone();
+        let spec = self.database.document.browse.clone();
         let mut jump = false;
         let count_label = spec.as_ref().and_then(|b| {
-            self.document
+            self.database
+                .document
                 .tools
                 .filtered_count
                 .map(|n| format!("{n} matching"))
                 .or_else(|| {
-                    self.tools
+                    self.database
+                        .tools
                         .counts
                         .get(&b.table)
                         .map(|n| format!("{n} total"))
@@ -509,7 +520,7 @@ impl App {
                 .x
         };
         let actions_width = if spec.is_some() {
-            text_width(format!("Row {}", self.document.tools.jump_row))
+            text_width(format!("Row {}", self.database.document.tools.jump_row))
                 + 108.0
                 + count_label
                     .as_ref()
@@ -517,7 +528,7 @@ impl App {
         } else {
             0.0
         };
-        let leading = if self.workspace.enabled {
+        let leading = if self.database.workspace.enabled {
             CONTENT_INSET - super::presentation::BAR_INSET
         } else {
             0.0
@@ -530,10 +541,10 @@ impl App {
             .show(ui, |ui| {
                 ui.set_width(width);
                 ui.horizontal(|ui| {
-                    if self.workspace.enabled {
+                    if self.database.workspace.enabled {
                         ui.add_space(leading);
                         let start = spec.as_ref().map_or(0, |b| b.offset);
-                        let count = self.document.result.rows.len();
+                        let count = self.database.document.result.rows.len();
                         ui.allocate_ui_with_layout(
                             egui::vec2(
                                 width - leading - actions_width - super::presentation::BAR_SPACING,
@@ -558,19 +569,19 @@ impl App {
                         );
                     }
                     if let Some(spec) = &spec {
-                        let enabled = self.ready
-                            && !self.closing
-                            && !self.document.stale
+                        let enabled = self.database.ready
+                            && !self.database.closing
+                            && !self.database.document.stale
                             && !self.has_drafts()
-                            && self.commit_ticket.is_none()
-                            && self.document.active.is_none()
-                            && self.document.tools.pages.pending.is_none();
+                            && self.database.commit_ticket.is_none()
+                            && self.database.document.active.is_none()
+                            && self.database.document.tools.pages.pending.is_none();
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui
                                 .add_enabled_ui(
-                                    self.ready
-                                        && !self.closing
-                                        && self.tools.count_request.is_none(),
+                                    self.database.ready
+                                        && !self.database.closing
+                                        && self.database.tools.count_request.is_none(),
                                     |ui| icons::button(ui, Icon::Count, "Count matching rows", ""),
                                 )
                                 .inner
@@ -590,7 +601,7 @@ impl App {
                                 .clicked();
                             let input = ui.add_enabled(
                                 enabled,
-                                egui::DragValue::new(&mut self.document.tools.jump_row)
+                                egui::DragValue::new(&mut self.database.document.tools.jump_row)
                                     .range(1..=i64::MAX as usize)
                                     .prefix("Row "),
                             );
@@ -606,7 +617,7 @@ impl App {
                 });
             });
         if jump && let Some(mut next) = spec {
-            next.offset = self.document.tools.jump_row.saturating_sub(1);
+            next.offset = self.database.document.tools.jump_row.saturating_sub(1);
             next.options.cursor = None;
             next.options.reverse = false;
             next.options.tail = false;
@@ -614,7 +625,7 @@ impl App {
                 .submit(tursobench_db::Operation::Browse(next.clone()), View::Browse)
                 .is_some()
             {
-                self.document.browse = Some(next);
+                self.database.document.browse = Some(next);
             }
         }
     }
@@ -630,9 +641,9 @@ impl App {
             }
         });
         if let Some(i) = sort
-            && self.document.view == View::Browse
+            && self.database.document.view == View::Browse
             && self.requests_enabled()
-            && let Some(b) = self.document.browse.as_mut()
+            && let Some(b) = self.database.document.browse.as_mut()
         {
             if ui.input(|i| i.modifiers.shift) {
                 if let Some((_, desc)) = b.options.sorts.iter_mut().find(|(col, _)| *col == i) {
@@ -658,41 +669,46 @@ impl App {
     }
     fn grid_column_header(&mut self, ui: &mut egui::Ui, i: usize) -> bool {
         let tokens = crate::appearance::Tokens::of(ui.ctx());
-        let header = self.document.column_header(i);
+        let header = self.database.document.column_header(i);
         let (rect, response) = ui.allocate_exact_size(
-            egui::vec2(self.document.tools.columns.widths[i], HEADER_HEIGHT),
+            egui::vec2(
+                self.database.document.tools.columns.widths[i],
+                HEADER_HEIGHT,
+            ),
             egui::Sense::click_and_drag(),
         );
         header.describe(&response, ui.is_enabled());
-        let highlighted =
-            self.document
-                .tools
-                .highlight_column
-                .as_ref()
-                .is_some_and(|(table, name)| {
-                    self.document.view == View::Browse
-                        && self
-                            .document
-                            .table
-                            .as_ref()
-                            .is_some_and(|t| &t.name == table)
-                        && &header.column.name == name
-                });
-        if highlighted && self.document.tools.scroll_to_column {
+        let highlighted = self
+            .database
+            .document
+            .tools
+            .highlight_column
+            .as_ref()
+            .is_some_and(|(table, name)| {
+                self.database.document.view == View::Browse
+                    && self
+                        .database
+                        .document
+                        .table
+                        .as_ref()
+                        .is_some_and(|t| &t.name == table)
+                    && &header.column.name == name
+            });
+        if highlighted && self.database.document.tools.scroll_to_column {
             ui.scroll_to_rect(rect, Some(egui::Align::Center));
         }
         header.paint(ui, rect, highlighted);
         let response=response.on_hover_text(format!("{} · {}\nPK = key position; IX = declared leading index; FK = foreign key. Index method/partial predicate may not apply. Drag the right edge or right-click to resize.",header.column.name,header.declared_type().unwrap_or("runtime type")));
         let filter_label = format!("Filter {}", header.column.name);
         if highlighted {
-            self.document.tools.scroll_to_column = false;
+            self.database.document.tools.scroll_to_column = false;
         }
-        response.context_menu(|ui| self.document.tools.columns.header_menu(ui, i));
+        response.context_menu(|ui| self.database.document.tools.columns.header_menu(ui, i));
         if response.drag_started() {
             response.dnd_set_drag_payload(i);
         }
         if let Some(from) = response.dnd_release_payload::<usize>() {
-            self.document.tools.columns.move_before(*from, i);
+            self.database.document.tools.columns.move_before(*from, i);
         }
 
         let funnel_rect = egui::Rect::from_min_size(
@@ -705,6 +721,7 @@ impl App {
             egui::Sense::click(),
         );
         let filtered = self
+            .database
             .document
             .browse
             .as_ref()
@@ -735,22 +752,28 @@ impl App {
             )
             .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
         if drag.double_clicked() {
-            self.document.tools.columns.fit(i);
+            self.database.document.tools.columns.fit(i);
         }
         if drag.dragged() {
-            self.document.tools.columns.manual.insert(i);
-            self.document.tools.columns.widths[i] =
-                (self.document.tools.columns.widths[i] + drag.drag_delta().x).clamp(60.0, 640.0);
+            self.database.document.tools.columns.manual.insert(i);
+            self.database.document.tools.columns.widths[i] =
+                (self.database.document.tools.columns.widths[i] + drag.drag_delta().x)
+                    .clamp(60.0, 640.0);
         }
         response.clicked() && !drag.contains_pointer() && !funnel.contains_pointer()
     }
     fn grid_row(&mut self, ui: &mut egui::Ui, row: usize, editable: bool) -> Option<GridAction> {
         let mut action = None;
         ui.horizontal(|ui| {
-            let overlay = self.document.tools.draft_ui.rows.get(&row);
+            let overlay = self.database.document.tools.draft_ui.rows.get(&row);
             let deleted = overlay.is_some_and(|r| r.deleted);
             let modified = overlay.is_some_and(|r| r.modified());
-            let offset = self.document.browse.as_ref().map_or(0, |b| b.offset);
+            let offset = self
+                .database
+                .document
+                .browse
+                .as_ref()
+                .map_or(0, |b| b.offset);
             let marker = if deleted {
                 "D"
             } else if modified {
@@ -775,7 +798,14 @@ impl App {
                         .small(),
                 ),
             );
-            if deleted || modified || self.document.inspect.is_some_and(|(r, _)| r == row) {
+            if deleted
+                || modified
+                || self
+                    .database
+                    .document
+                    .inspect
+                    .is_some_and(|(r, _)| r == row)
+            {
                 ui.painter().vline(
                     gutter.rect.left() + 1.5,
                     gutter.rect.y_range(),
@@ -807,30 +837,31 @@ impl App {
         editable: bool,
     ) -> Option<GridAction> {
         let mut action = None;
-        let values = &self.document.result.rows[row];
+        let values = &self.database.document.result.rows[row];
         let value = &values[col];
         let references = matching_keys(
-            self.document.view,
-            self.document.table.as_ref(),
-            self.document.tools.inspection.as_ref(),
+            self.database.document.view,
+            self.database.document.table.as_ref(),
+            self.database.document.tools.inspection.as_ref(),
             Some(values),
             col,
         );
-        let staged = self
-            .document
-            .tools
-            .draft_ui
-            .value(self.document.drafts.as_ref(), row, col);
+        let staged = self.database.document.tools.draft_ui.value(
+            self.database.document.drafts.as_ref(),
+            row,
+            col,
+        );
         let displayed = staged.unwrap_or(value);
         let (rect, response) = ui.allocate_exact_size(
-            egui::vec2(self.document.tools.columns.widths[col], 29.0),
+            egui::vec2(self.database.document.tools.columns.widths[col], 29.0),
             egui::Sense::click_and_drag(),
         );
         let appearance = CellAppearance {
             value: displayed,
-            column: &self.document.result.columns[col].name,
+            column: &self.database.document.result.columns[col].name,
             null_display: &self.preferences.null_display,
             style: self
+                .database
                 .document
                 .tools
                 .columns
@@ -839,30 +870,33 @@ impl App {
                 .copied()
                 .unwrap_or_default(),
             selected: self.cell_selected(row, col),
-            focused: self.document.inspect == Some((row, col)) || response.has_focus(),
+            focused: self.database.document.inspect == Some((row, col)) || response.has_focus(),
             deleted,
             staged: staged.is_some(),
             related: !references.is_empty(),
             row,
         };
         appearance.describe(ui, &response, offset + row + 1);
-        if let Some(edit) = self.document.tools.inline.as_mut().filter(|e| {
+        if let Some(edit) = self.database.document.tools.inline.as_mut().filter(|e| {
             e.row == row
                 && e.column == col
-                && (!self.workspace.enabled || self.workspace.active != super::tiling::Kind::Record)
+                && (!self.database.workspace.enabled
+                    || self.database.workspace.active != super::tiling::Kind::Record)
         }) {
             let response = ui.put(rect, egui::TextEdit::singleline(&mut edit.editor.input));
             response.context_menu(|ui| edit.editor.type_picker(ui, "inline-type", false));
             match edit.submitted(ui, &response) {
                 Some(Ok(value)) => action = Some(GridAction::Stage(row, col, value)),
-                Some(Err(error)) => self.status = error,
+                Some(Err(error)) => self.database.status = error,
                 None => {}
             }
             return action;
         }
-        if self.document.tools.scroll_to_cell && self.document.inspect == Some((row, col)) {
+        if self.database.document.tools.scroll_to_cell
+            && self.database.document.inspect == Some((row, col))
+        {
             ui.scroll_to_rect(rect, Some(egui::Align::Center));
-            self.document.tools.scroll_to_cell = false;
+            self.database.document.tools.scroll_to_cell = false;
         }
         appearance.paint(ui, rect);
         #[cfg(test)]
@@ -874,31 +908,34 @@ impl App {
             self.first_cell_rect = Some(rect);
         }
         if response.drag_started_by(egui::PointerButton::Primary) {
-            self.document.tools.grid_selection = Some(super::selection::Selection {
-                ticket: self.document.result.current,
+            self.database.document.tools.grid_selection = Some(super::selection::Selection {
+                ticket: self.database.document.result.current,
                 anchor: (row, col),
                 cursor: (row, col),
             });
-            self.document.tools.dragging_selection = true;
-            if let Some(id) = self.document.tools.grid_focus {
+            self.database.document.tools.dragging_selection = true;
+            if let Some(id) = self.database.document.tools.grid_focus {
                 ui.ctx().memory_mut(|m| m.request_focus(id));
             }
         }
         if response.hovered()
-            && self.document.tools.dragging_selection
+            && self.database.document.tools.dragging_selection
             && ui.input(|i| i.pointer.primary_down())
         {
-            if let Some(s) = &mut self.document.tools.grid_selection {
+            if let Some(s) = &mut self.database.document.tools.grid_selection {
                 s.cursor = (row, col);
             }
             action = Some(GridAction::Cell(row, col));
         }
         if response.clicked()
-            && let Some(id) = self.document.tools.grid_focus
+            && let Some(id) = self.database.document.tools.grid_focus
         {
             ui.ctx().memory_mut(|m| m.request_focus(id));
         }
-        if response.clicked() && ui.input(|i| i.modifiers.alt) && self.document.browse.is_some() {
+        if response.clicked()
+            && ui.input(|i| i.modifiers.alt)
+            && self.database.document.browse.is_some()
+        {
             action = Some(GridAction::Filter(tursobench_core::Filter {
                 column: col,
                 op: tursobench_core::FilterOp::Equal,
@@ -917,7 +954,7 @@ impl App {
             action = Some(GridAction::Edit(row, col));
         }
         if response.hovered() && references.len() == 1 {
-            self.document.tools.context.hovered = Some((row, (*references[0]).clone()));
+            self.database.document.tools.context.hovered = Some((row, (*references[0]).clone()));
         }
         let response = if references.is_empty() {
             response
@@ -948,9 +985,9 @@ impl App {
         references: &[&ForeignKey],
     ) -> Option<GridAction> {
         let mut action = None;
-        let value = &self.document.result.rows[row][col];
+        let value = &self.database.document.result.rows[row][col];
 
-        if self.document.view == View::Browse && self.document.browse.is_some() {
+        if self.database.document.view == View::Browse && self.database.document.browse.is_some() {
             for (op, label) in [
                 (tursobench_core::FilterOp::Equal, "Filter = value"),
                 (tursobench_core::FilterOp::NotEqual, "Exclude value"),
@@ -993,7 +1030,7 @@ impl App {
             action = Some(GridAction::Record(row));
             ui.close();
         }
-        if self.writable
+        if self.database.writable
             && ui
                 .add_enabled(editable, egui::Button::new("Stage row deletion"))
                 .clicked()
@@ -1005,10 +1042,15 @@ impl App {
     }
     pub(super) fn cell_references(&self, row: usize, col: usize) -> Vec<&ForeignKey> {
         matching_keys(
-            self.document.view,
-            self.document.table.as_ref(),
-            self.document.tools.inspection.as_ref(),
-            self.document.result.rows.get(row).map(Vec::as_slice),
+            self.database.document.view,
+            self.database.document.table.as_ref(),
+            self.database.document.tools.inspection.as_ref(),
+            self.database
+                .document
+                .result
+                .rows
+                .get(row)
+                .map(Vec::as_slice),
             col,
         )
     }

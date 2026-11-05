@@ -28,15 +28,16 @@ pub(super) struct Pending {
 }
 impl App {
     pub(super) fn request_page(&mut self, previous: bool) {
-        if self.document.stale
-            || self.document.view != View::Browse
-            || self.document.active.is_some()
-            || self.document.tools.pages.pending.is_some()
+        if self.database.document.stale
+            || self.database.document.view != View::Browse
+            || self.database.document.active.is_some()
+            || self.database.document.tools.pages.pending.is_some()
             || !self.requests_enabled()
         {
             return;
         }
         if !self
+            .database
             .document
             .result
             .completion
@@ -45,12 +46,12 @@ impl App {
         {
             return;
         }
-        let Some(mut spec) = self.document.browse.clone() else {
+        let Some(mut spec) = self.database.document.browse.clone() else {
             return;
         };
         let fetch_rows = fetch_rows(self.preferences.row_limit);
-        let pages = &mut self.document.tools.pages;
-        let end = spec.offset + self.document.result.rows.len();
+        let pages = &mut self.database.document.tools.pages;
+        let end = spec.offset + self.database.document.result.rows.len();
         if previous {
             if spec.offset == 0 {
                 return;
@@ -62,7 +63,7 @@ impl App {
             }
             spec.offset = end;
         }
-        let seek = self.document.table.as_ref().is_some_and(|table| {
+        let seek = self.database.document.table.as_ref().is_some_and(|table| {
             let keys = table.keys();
             table.is_table
                 && !keys.is_empty()
@@ -70,9 +71,9 @@ impl App {
                 && keys.iter().all(|i| table.columns[*i].not_null)
         });
         let cursor = if previous {
-            self.document.result.rows.first()
+            self.database.document.result.rows.first()
         } else {
-            self.document.result.rows.last()
+            self.database.document.result.rows.last()
         };
         let seek = seek
             && cursor.is_some_and(|row| {
@@ -81,7 +82,8 @@ impl App {
             });
         spec.options.tail = previous && !seek;
         spec.options.page_rows = if spec.options.tail {
-            self.document
+            self.database
+                .document
                 .browse
                 .as_ref()
                 .unwrap()
@@ -94,20 +96,20 @@ impl App {
         let tail = spec.options.tail;
         spec.options.cursor = if seek {
             if previous {
-                self.document.result.rows.first().cloned()
+                self.database.document.result.rows.first().cloned()
             } else {
-                self.document.result.rows.last().cloned()
+                self.database.document.result.rows.last().cloned()
             }
         } else {
             None
         };
         spec.options.reverse = previous && seek;
         let reverse = spec.options.reverse;
-        let Some(session) = &self.session else {
+        let Some(session) = &self.database.session else {
             return;
         };
-        self.sequence += 1;
-        let ticket = session.ticket(self.sequence, self.generation);
+        self.database.sequence += 1;
+        let ticket = session.ticket(self.database.sequence, self.database.generation);
         pages.retry_previous = previous;
         let offset = spec.offset;
         match session.submit(Request {
@@ -115,14 +117,16 @@ impl App {
             operation: Operation::Browse(spec),
         }) {
             Ok(()) => {
-                if pages.chunks.is_empty() && !self.document.result.rows.is_empty() {
-                    pages.chunks.push_back(self.document.result.rows.len());
+                if pages.chunks.is_empty() && !self.database.document.result.rows.is_empty() {
+                    pages
+                        .chunks
+                        .push_back(self.database.document.result.rows.len());
                 }
                 let mut result = ResultSet::default();
                 result.start(ticket);
                 pages.pending = Some(Pending {
                     result,
-                    owner: self.document.result.current,
+                    owner: self.database.document.result.current,
                     offset,
                     previous,
                     reverse,
@@ -135,22 +139,25 @@ impl App {
         }
     }
     pub(super) fn maybe_page(&mut self, start: usize, end: usize, delta: f32) {
-        if !self.document.tools.pages.error.is_empty() {
+        if !self.database.document.tools.pages.error.is_empty() {
             return;
         }
-        if self.document.tools.pages.restore_rows > self.document.result.rows.len() {
+        if self.database.document.tools.pages.restore_rows
+            > self.database.document.result.rows.len()
+        {
             self.request_page(false);
         } else if start <= 20 && delta > 0.0 {
             self.request_page(true);
-        } else if end + 20 >= self.document.result.rows.len() && delta <= 0.0 {
+        } else if end + 20 >= self.database.document.result.rows.len() && delta <= 0.0 {
             let keep = self.preferences.row_limit.clamp(200, 10000) - 100;
-            let rows_needed = (self.document.result.rows.len()
+            let rows_needed = (self.database.document.result.rows.len()
                 + fetch_rows(self.preferences.row_limit))
             .saturating_sub(keep);
-            let bytes_needed = retained_bytes(&self.document.result)
+            let bytes_needed = retained_bytes(&self.database.document.result)
                 .saturating_add(PAGE_BYTES)
                 .saturating_sub(4 * 1024 * 1024);
             let before = self
+                .database
                 .document
                 .result
                 .rows
@@ -166,20 +173,20 @@ impl App {
     }
     pub(super) fn page_event(&mut self, event: Event) {
         let done = matches!(event.kind, EventKind::Finished(_) | EventKind::Failed(_));
-        let Some(mut page) = self.document.tools.pages.pending.take() else {
+        let Some(mut page) = self.database.document.tools.pages.pending.take() else {
             return;
         };
         if page.result.current != Some(event.ticket) {
-            self.document.tools.pages.pending = Some(page);
+            self.database.document.tools.pages.pending = Some(page);
             return;
         }
         match &event.kind {
-            EventKind::Table(table) if self.document.table.as_ref() != Some(table) => {
+            EventKind::Table(table) if self.database.document.table.as_ref() != Some(table) => {
                 page.error = "Schema changed while loading; refresh the table".into()
             }
             EventKind::Failed(e) => page.error = e.to_string(),
             EventKind::Finished(c) => {
-                self.transaction = c.transaction;
+                self.database.transaction = c.transaction;
                 if c.error.is_some() || c.delivery != Delivery::Complete {
                     page.error = "Page delivery incomplete; refresh or retry".into();
                 }
@@ -188,14 +195,17 @@ impl App {
         }
         page.result.apply(event);
         if !done {
-            self.document.tools.pages.pending = Some(page);
+            self.database.document.tools.pages.pending = Some(page);
             return;
         }
-        if page.owner != self.document.result.current || self.has_drafts() || self.closing {
+        if page.owner != self.database.document.result.current
+            || self.has_drafts()
+            || self.database.closing
+        {
             return;
         }
-        if !page.error.is_empty() || page.result.columns != self.document.result.columns {
-            self.document.tools.pages.error = if page.error.is_empty() {
+        if !page.error.is_empty() || page.result.columns != self.database.document.result.columns {
+            self.database.document.tools.pages.error = if page.error.is_empty() {
                 "Column metadata changed; refresh the table".into()
             } else {
                 page.error
@@ -206,11 +216,12 @@ impl App {
             page.result.rows.reverse();
         }
         if (page.reverse || page.tail)
-            && let Some(browse) = &self.document.browse
+            && let Some(browse) = &self.database.document.browse
         {
             page.offset = browse.offset.saturating_sub(page.result.rows.len());
         }
-        self.document
+        self.database
+            .document
             .append_page(page, self.preferences.row_limit.clamp(200, 10_000) - 100);
         self.restore_browse_selection();
     }

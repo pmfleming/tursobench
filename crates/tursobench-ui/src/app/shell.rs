@@ -119,41 +119,42 @@ impl Layout {
 impl App {
     pub(super) fn diagram_ui(&mut self, ui: &mut egui::Ui) {
         let relatives = self
+            .database
             .ui
             .hover_table
             .as_deref()
             .map(|t| self.related_tables(t))
             .unwrap_or_default();
-        if let Some(name) = self.ui.diagram.show(ui, &relatives) {
+        if let Some(name) = self.database.ui.diagram.show(ui, &relatives) {
             self.browse_table(name);
         }
     }
 
     pub(super) fn show_structure(&mut self) {
-        if self.workspace.enabled {
+        if self.database.workspace.enabled {
             self.open_structure_window();
             return;
         }
-        self.document.ui.inspector = DetailMode::Structure;
-        self.document.ui.inspector_open = true;
+        self.database.document.ui.inspector = DetailMode::Structure;
+        self.database.document.ui.inspector_open = true;
     }
     pub(super) fn shell(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        if self.workspace.enabled {
-            self.switch_document(self.workspace.focused);
+        if self.database.workspace.enabled {
+            self.switch_document(self.database.workspace.focused);
             if ctx.input_mut(|i| {
                 i.consume_key(
                     egui::Modifiers::CTRL | egui::Modifiers::ALT,
                     egui::Key::Enter,
                 )
             }) {
-                self.expand_window(self.workspace.focused);
+                self.expand_window(self.database.workspace.focused);
             }
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Tab)) {
                 let panes = super::tiling::Kind::PANES;
                 let index = panes
                     .iter()
-                    .position(|kind| *kind == self.workspace.active)
+                    .position(|kind| *kind == self.database.workspace.active)
                     .unwrap_or(0);
                 self.focus_pane(panes[(index + 1) % panes.len()]);
             }
@@ -161,10 +162,10 @@ impl App {
         self.shortcuts(&ctx);
         #[cfg(test)]
         {
-            self.ui.transaction_rects.clear();
-            self.ui.ribbon_actions.clear();
-            self.ui.sidebar_rect = egui::Rect::NOTHING;
-            self.ui.visible_rows = 0;
+            self.database.ui.transaction_rects.clear();
+            self.database.ui.ribbon_actions.clear();
+            self.database.ui.sidebar_rect = egui::Rect::NOTHING;
+            self.database.ui.visible_rows = 0;
         }
         let layout = Layout::new(ui.available_width());
         // Reserve full-height navigation before the workspace ribbon and status bar.
@@ -174,12 +175,12 @@ impl App {
                 .default_size(layout.sidebar_width)
                 .size_range(180.0..=(ui.available_width() - 360.0).clamp(180.0, 600.0))
                 .show(ui, |ui| {
-                    if self.session.is_some() {
+                    if self.database.session.is_some() {
                         egui::Panel::bottom("navigator-utilities")
                             .resizable(false)
                             .show(ui, |ui| self.navigator_utilities(ui));
                         self.navigation_sidebar(ui);
-                    } else if self.ui.sidebar == ToolPanel::Settings {
+                    } else if self.database.ui.sidebar == ToolPanel::Settings {
                         if icons::button(ui, Icon::Back, "Databases", "").clicked() {
                             self.select_tool(ToolPanel::Schema);
                         }
@@ -192,33 +193,33 @@ impl App {
                 });
             #[cfg(test)]
             {
-                self.ui.sidebar_rect = panel.response.rect;
+                self.database.ui.sidebar_rect = panel.response.rect;
             }
             #[cfg(not(test))]
             let _ = panel;
         }
         self.status_bar(ui);
-        if !self.workspace.enabled {
-            if self.document.ui.nav == Nav::Table
-                && (!self.document.ui.inspector_initialized
-                    || self.document.ui.inspector_compact != Some(layout.bottom_inspector)
+        if !self.database.workspace.enabled {
+            if self.database.document.ui.nav == Nav::Table
+                && (!self.database.document.ui.inspector_initialized
+                    || self.database.document.ui.inspector_compact != Some(layout.bottom_inspector)
                         && !self
                             .preferences
                             .inspector_visibility
-                            .contains_key(&self.tools.database_scope))
+                            .contains_key(&self.database.tools.database_scope))
             {
-                self.document.ui.inspector_open = self
+                self.database.document.ui.inspector_open = self
                     .preferences
                     .inspector_visibility
-                    .get(&self.tools.database_scope)
+                    .get(&self.database.tools.database_scope)
                     .copied()
                     .unwrap_or(!layout.bottom_inspector);
-                self.document.ui.inspector_initialized = true;
-                self.document.ui.inspector_compact = Some(layout.bottom_inspector);
+                self.database.document.ui.inspector_initialized = true;
+                self.database.document.ui.inspector_compact = Some(layout.bottom_inspector);
             }
-            if self.document.ui.inspector_open
-                && !self.document.ui.inspector_detached
-                && matches!(self.document.ui.nav, Nav::Table | Nav::Result)
+            if self.database.document.ui.inspector_open
+                && !self.database.document.ui.inspector_detached
+                && matches!(self.database.document.ui.nav, Nav::Table | Nav::Result)
             {
                 if layout.bottom_inspector {
                     egui::Area::new(egui::Id::unique("inspector-overlay"))
@@ -239,13 +240,13 @@ impl App {
                         .show(ui, |ui| self.docked_inspector(ui));
                 }
             }
-            if self.document.ui.sql_open {
-                let height = if self.document.ui.sql_expanded {
+            if self.database.document.ui.sql_open {
+                let height = if self.database.document.ui.sql_expanded {
                     ui.available_height() * 0.65
                 } else {
                     ui.available_height() * 0.30
                 };
-                egui::Panel::bottom(if self.document.ui.sql_expanded {
+                egui::Panel::bottom(if self.database.document.ui.sql_expanded {
                     "sql-editor-expanded"
                 } else {
                     "sql-editor-dock"
@@ -261,12 +262,12 @@ impl App {
             }
         }
         egui::CentralPanel::default().show(ui, |ui| self.workspace_ui(ui));
-        if self.confirm_close {
+        if self.database.confirm_close {
             egui::Window::new("Close writable database?").frame(crate::app::presentation::window_frame(&ctx)).default_pos(ctx.content_rect().center()-egui::vec2(280.0,180.0)).anchor(egui::Align2::CENTER_CENTER,egui::Vec2::ZERO).collapsible(false).max_width((ctx.content_rect().width()-48.0).min(520.0)).show(&ctx,|ui|{
                 presentation::notice(ui,Icon::Disconnect,Intent::Pending,"Local drafts will be discarded. Active execution will finish. Any remaining editor transaction will be explicitly rolled back. This does not undo committed writes.");
                 presentation::footer(ui, |ui| {
                     if ui.add(presentation::action(ui,"Wait, roll back transaction, and close",Intent::Pending)).clicked(){self.close();}
-                    if ui.button("Keep open").clicked(){self.confirm_close=false;self.quit=false;self.pending_database=None;}
+                    if ui.button("Keep open").clicked(){self.database.confirm_close=false;self.quit=false;self.database.pending_database=None;}
                 });
             });
         }
@@ -275,7 +276,7 @@ impl App {
         self.command_palette(&ctx);
         self.access_dialog(&ctx);
 
-        if self.ui.outcomes {
+        if self.database.ui.outcomes {
             let mut open = true;
             egui::Window::new("Execution outcomes")
                 .frame(crate::app::presentation::window_frame(&ctx))
@@ -289,21 +290,23 @@ impl App {
                     presentation::notice(
                         ui,
                         Icon::History,
-                        if self.uncertain_edit || self.transaction == TransactionState::Unknown {
+                        if self.database.uncertain_edit
+                            || self.database.transaction == TransactionState::Unknown
+                        {
                             Intent::Danger
                         } else {
                             Intent::Neutral
                         },
-                        &self.status,
+                        &self.database.status,
                     );
-                    for message in self.activity.iter().rev() {
+                    for message in self.database.activity.iter().rev() {
                         ui.separator();
                         ui.label(message);
                     }
                 });
-            self.ui.outcomes = open;
+            self.database.ui.outcomes = open;
         }
-        if self.ui.export_open {
+        if self.database.ui.export_open {
             let mut open = true;
             egui::Window::new("Export retained result")
                 .frame(crate::app::presentation::window_frame(&ctx))
@@ -315,7 +318,7 @@ impl App {
                 .max_height(ctx.content_rect().height() * 0.8)
                 .vscroll(true)
                 .show(&ctx, |ui| self.usability_controls(ui));
-            self.ui.export_open = open;
+            self.database.ui.export_open = open;
         }
     }
     fn connection_status(&self, visuals: &egui::Visuals) -> (&'static str, egui::Color32) {
@@ -325,26 +328,31 @@ impl App {
         // First active condition wins: execution state precedes retained-result state.
         if let Some((_, label, color)) = [
             (
-                self.uncertain_edit || self.transaction == TransactionState::Unknown,
+                self.database.uncertain_edit
+                    || self.database.transaction == TransactionState::Unknown,
                 "UNKNOWN",
                 error,
             ),
-            (self.closing, "Closing", warn),
-            (self.commit_ticket.is_some(), "Committing", warn),
+            (self.database.closing, "Closing", warn),
+            (self.database.commit_ticket.is_some(), "Committing", warn),
             (
-                self.executing() || self.tools.count_request.is_some(),
+                self.executing() || self.database.tools.count_request.is_some(),
                 "Executing",
                 warn,
             ),
-            (self.ui.diagram.ticket.is_some(), "Loading schema", muted),
-            (!self.ready, "Disconnected", muted),
+            (
+                self.database.ui.diagram.ticket.is_some(),
+                "Loading schema",
+                muted,
+            ),
+            (!self.database.ready, "Disconnected", muted),
         ]
         .into_iter()
         .find(|(active, _, _)| *active)
         {
             return (label, color);
         }
-        if let Some(c) = &self.document.result.completion {
+        if let Some(c) = &self.database.document.result.completion {
             if c.error.is_some() {
                 ("Failed", error)
             } else {
@@ -360,7 +368,9 @@ impl App {
     }
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         let tokens = crate::appearance::Tokens::of(ui.ctx());
-        let fill = if self.uncertain_edit || self.transaction == TransactionState::Unknown {
+        let fill = if self.database.uncertain_edit
+            || self.database.transaction == TransactionState::Unknown
+        {
             crate::appearance::mix(ui.visuals().panel_fill, ui.visuals().error_fg_color, 0.13)
         } else {
             ui.visuals().panel_fill
@@ -386,9 +396,10 @@ impl App {
                     self.transaction_controls(ui);
                     if self.has_drafts() {
                         let count: usize = self
+                            .database
                             .documents
                             .values()
-                            .chain(std::iter::once(&self.document))
+                            .chain(std::iter::once(&self.database.document))
                             .filter_map(|d| d.drafts.as_ref())
                             .map(|d| d.edits.len())
                             .sum();
@@ -406,15 +417,15 @@ impl App {
     }
     fn connection_controls(&mut self, ui: &mut egui::Ui) {
         let tokens = crate::appearance::Tokens::of(ui.ctx());
-        if self.session.is_some()
+        if self.database.session.is_some()
             && presentation::chip(
                 ui,
-                if self.writable {
+                if self.database.writable {
                     "Editing"
                 } else {
                     "Read-only"
                 },
-                if self.writable {
+                if self.database.writable {
                     tokens.pending
                 } else {
                     tokens.muted
@@ -422,29 +433,34 @@ impl App {
             )
             .on_hover_text(format!(
                 "Turso 0.8.3 · {} · click to close cleanly and change access",
-                self.coordination
-                    .filter(|_| self.ready)
+                self.database
+                    .coordination
+                    .filter(|_| self.database.ready)
                     .map_or("Connecting", |c| c.label())
             ))
             .clicked()
         {
-            self.ui.access_dialog = true;
+            self.database.ui.access_dialog = true;
         }
         let (state, color) = self.connection_status(ui.visuals());
         let (dot, _) = ui.allocate_exact_size(egui::vec2(7.0, 7.0), egui::Sense::hover());
         ui.painter().circle_filled(dot.center(), 3.0, color);
-        ui.colored_label(color, state).on_hover_text(&self.status);
+        ui.colored_label(color, state)
+            .on_hover_text(&self.database.status);
     }
     fn transaction_controls(&mut self, ui: &mut egui::Ui) {
-        if self.transaction == TransactionState::Autocommit {
+        if self.database.transaction == TransactionState::Autocommit {
             return;
         }
-        let color = if self.uncertain_edit || self.transaction == TransactionState::Unknown {
+        let color = if self.database.uncertain_edit
+            || self.database.transaction == TransactionState::Unknown
+        {
             ui.visuals().error_fg_color
         } else {
             crate::appearance::Tokens::of(ui.ctx()).pending
         };
-        let transaction = presentation::chip(ui, &format!("    {:?}", self.transaction), color);
+        let transaction =
+            presentation::chip(ui, &format!("    {:?}", self.database.transaction), color);
         let animate = ui.style().animation_time > 0.0;
         let pulse = if animate {
             ui.input(|i| 0.6 + 0.4 * (i.time as f32 * 3.0).sin().abs())
@@ -468,7 +484,7 @@ impl App {
                     "Persistent editor connection. Transactions also apply to read-only sessions.",
                 );
             #[cfg(test)]
-            self.ui.transaction_rects.push(response.rect);
+            self.database.ui.transaction_rects.push(response.rect);
             if response.clicked() {
                 self.dispatch_action(action, ui.ctx());
             }
@@ -476,10 +492,19 @@ impl App {
     }
     fn status_details(&mut self, ui: &mut egui::Ui) {
         let tokens = crate::appearance::Tokens::of(ui.ctx());
-        if icons::control(ui, Icon::History, "Outcomes", "", self.ui.outcomes, false).clicked() {
-            self.ui.outcomes = !self.ui.outcomes;
+        if icons::control(
+            ui,
+            Icon::History,
+            "Outcomes",
+            "",
+            self.database.ui.outcomes,
+            false,
+        )
+        .clicked()
+        {
+            self.database.ui.outcomes = !self.database.ui.outcomes;
         }
-        if let Some(c) = &self.document.result.completion
+        if let Some(c) = &self.database.document.result.completion
             && ui.available_width() > 200.0
         {
             ui.add(egui::Label::new(
@@ -508,36 +533,36 @@ impl App {
     fn workspace_ui(&mut self, ui: &mut egui::Ui) {
         #[cfg(test)]
         {
-            self.ui.workspace_rect = ui.available_rect_before_wrap();
+            self.database.ui.workspace_rect = ui.available_rect_before_wrap();
         }
-        if self.session.is_none() && self.document.ui.nav == Nav::Databases {
+        if self.database.session.is_none() && self.database.document.ui.nav == Nav::Databases {
             self.connect_ui(ui);
             return;
         }
-        if self.session.is_some() && !self.ready {
+        if self.database.session.is_some() && !self.database.ready {
             ui.spinner();
             ui.label("Opening database…");
             return;
         }
-        if self.session.is_none() {
+        if self.database.session.is_none() {
             ui.horizontal(|ui| {
                 if icons::control(ui, Icon::Database, "Databases", "Ctrl O", false, true).clicked()
                 {
-                    self.document.ui.nav = Nav::Databases;
+                    self.database.document.ui.nav = Nav::Databases;
                 }
                 ui.label("Retained data · disconnected")
-                    .on_hover_text(&self.tools.database_scope);
+                    .on_hover_text(&self.database.tools.database_scope);
             });
         }
-        if self.workspace.enabled {
+        if self.database.workspace.enabled {
             self.tiled_workspace(ui);
             return;
         }
         self.workspace_header(ui);
-        if self.document.ui.nav == Nav::Table
-            && self.document.ui.table_view == TableView::Data
+        if self.database.document.ui.nav == Nav::Table
+            && self.database.document.ui.table_view == TableView::Data
             && ui.ctx().content_rect().width() >= 2400.0
-            && self.document.inspect.is_some()
+            && self.database.document.inspect.is_some()
         {
             egui::Panel::bottom("related-records")
                 .resizable(true)
@@ -548,11 +573,12 @@ impl App {
                     self.wide_related(ui)
                 });
         }
-        if self.document.ui.nav == Nav::Overview {
+        if self.database.document.ui.nav == Nav::Overview {
             self.diagram_ui(ui);
             return;
         }
-        if self.document.ui.nav == Nav::Table && self.document.ui.table_view == TableView::Structure
+        if self.database.document.ui.nav == Nav::Table
+            && self.database.document.ui.table_view == TableView::Structure
         {
             egui::ScrollArea::vertical()
                 .id_salt("table-structure")
@@ -563,7 +589,7 @@ impl App {
     }
     fn workspace_actions(&mut self, ui: &mut egui::Ui) {
         if icons::button(ui, Icon::Export, "Export retained result", "Ctrl E").clicked() {
-            self.ui.export_open = true;
+            self.database.ui.export_open = true;
         }
         if icons::button(
             ui,
@@ -576,25 +602,26 @@ impl App {
             self.copy_results(ui.ctx(), crate::export::Format::Tsv);
         }
         if icons::button(ui, Icon::Columns, "Show hidden columns", "").clicked() {
-            self.document.tools.columns.hidden.clear();
+            self.database.document.tools.columns.hidden.clear();
         }
         if icons::button(ui, Icon::Fit, "Fit all column widths", "").clicked() {
-            self.document.tools.columns.manual.clear();
-            self.document.tools.columns.refit = true;
+            self.database.document.tools.columns.manual.clear();
+            self.database.document.tools.columns.refit = true;
         }
         if self.has_drafts() && icons::button(ui, Icon::Edit, "Show staged data", "").clicked() {
-            self.document.ui.nav = Nav::Table;
-            self.document.ui.table_view = TableView::Data;
+            self.database.document.ui.nav = Nav::Table;
+            self.database.document.ui.table_view = TableView::Data;
         }
     }
     fn workspace_header(&mut self, ui: &mut egui::Ui) {
         let header = ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            if self.document.ui.nav == Nav::Overview {
+            if self.database.document.ui.nav == Nav::Overview {
                 ui.strong("Map");
                 return;
             }
-            let can_back = !self.tools.back.is_empty() || self.tools.result_return.is_some();
+            let can_back =
+                !self.database.tools.back.is_empty() || self.database.tools.result_return.is_some();
             if ui
                 .add_enabled_ui(can_back, |ui| {
                     icons::button(ui, Icon::Back, "Back", "Alt Left")
@@ -602,7 +629,7 @@ impl App {
                 .inner
                 .clicked()
             {
-                if self.document.view == View::Browse {
+                if self.database.document.view == View::Browse {
                     self.navigate_back();
                 } else {
                     self.return_to_table();
@@ -621,12 +648,12 @@ impl App {
                 egui::Label::new(egui::RichText::new(&title).strong()).truncate(),
             )
             .on_hover_text(title);
-            if self.document.ui.nav == Nav::Table {
+            if self.database.document.ui.nav == Nav::Table {
                 for (view, label) in [
                     (TableView::Data, "Data"),
                     (TableView::Structure, "Structure"),
                 ] {
-                    ui.selectable_value(&mut self.document.ui.table_view, view, label);
+                    ui.selectable_value(&mut self.database.document.ui.table_view, view, label);
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -636,7 +663,7 @@ impl App {
                     Icon::Columns,
                     "Inspector",
                     "Space",
-                    self.document.ui.inspector_open,
+                    self.database.document.ui.inspector_open,
                     false,
                 )
                 .clicked()
@@ -645,7 +672,7 @@ impl App {
                 }
                 if ui
                     .add_enabled_ui(
-                        self.document.view == View::Browse && self.requests_enabled(),
+                        self.database.document.view == View::Browse && self.requests_enabled(),
                         |ui| icons::button(ui, Icon::Refresh, "Refresh table", "F5"),
                     )
                     .inner
@@ -653,8 +680,8 @@ impl App {
                 {
                     self.refresh_table();
                 }
-                if self.document.ui.nav == Nav::Table
-                    && self.document.ui.table_view == TableView::Data
+                if self.database.document.ui.nav == Nav::Table
+                    && self.database.document.ui.table_view == TableView::Data
                 {
                     self.page_controls(ui);
                     if ui.available_width() >= 120.0 {
@@ -667,18 +694,19 @@ impl App {
                             Icon::Filter,
                             "Filter rows",
                             "Ctrl F",
-                            self.document
+                            self.database
+                                .document
                                 .browse
                                 .as_ref()
                                 .is_some_and(|b| !b.filters.is_empty()),
                             false,
                         );
-                        if self.document.ui.filter_open {
+                        if self.database.document.ui.filter_open {
                             egui::Popup::open_id(
                                 ui.ctx(),
                                 egui::Popup::default_response_id(&filter),
                             );
-                            self.document.ui.filter_open = false;
+                            self.database.document.ui.filter_open = false;
                         }
                         egui::Popup::menu(&filter).show(|ui| {
                             ui.set_min_width(300.0);
@@ -690,39 +718,39 @@ impl App {
         });
         #[cfg(test)]
         {
-            self.ui.view_header = header.response.rect;
+            self.database.ui.view_header = header.response.rect;
         }
         #[cfg(not(test))]
         let _ = header;
         ui.separator();
     }
     pub(super) fn toggle_inspector(&mut self) {
-        if self.workspace.enabled {
-            if let Some((r, c)) = self.document.inspect {
+        if self.database.workspace.enabled {
+            if let Some((r, c)) = self.database.document.inspect {
                 self.open_record_window(r, c);
             } else {
-                self.status = "Select a cell to open its record".into();
+                self.database.status = "Select a cell to open its record".into();
             }
             return;
         }
-        self.document.ui.inspector_open = !self.document.ui.inspector_open;
-        self.document.ui.inspector_initialized = true;
+        self.database.document.ui.inspector_open = !self.database.document.ui.inspector_open;
+        self.database.document.ui.inspector_initialized = true;
         self.preferences.inspector_visibility.insert(
-            self.tools.database_scope.clone(),
-            self.document.ui.inspector_open,
+            self.database.tools.database_scope.clone(),
+            self.database.document.ui.inspector_open,
         );
         self.preferences.normalize();
         self.store.save(&self.preferences);
     }
     fn page_controls(&mut self, ui: &mut egui::Ui) {
-        let Some(b) = self.document.browse.clone() else {
+        let Some(b) = self.database.document.browse.clone() else {
             ui.small("Lookup ≤100")
                 .on_hover_text("Bound related-row lookup. Not a complete table.");
             return;
         };
-        if let Some(n) = self.document.tools.filtered_count {
+        if let Some(n) = self.database.document.tools.filtered_count {
             ui.small(format!("of {n} matching"));
-        } else if let Some(n) = self.tools.counts.get(&b.table) {
+        } else if let Some(n) = self.database.tools.counts.get(&b.table) {
             ui.small(format!("of {n} total"));
         } else if icons::control(ui, Icon::Count, "?", "", false, true)
             .on_hover_text("Count matching rows (explicit scan)")
@@ -730,14 +758,16 @@ impl App {
         {
             self.count_table(b.table.clone());
         }
-        ui.small(format!("{}–{}",b.offset+usize::from(!self.document.result.rows.is_empty()),b.offset+self.document.result.rows.len())).on_hover_text("Up to 100 rows per fetch · retained window · paging is not a snapshot · scroll back to reload evicted pages");
+        ui.small(format!("{}–{}",b.offset+usize::from(!self.database.document.result.rows.is_empty()),b.offset+self.database.document.result.rows.len())).on_hover_text("Up to 100 rows per fetch · retained window · paging is not a snapshot · scroll back to reload evicted pages");
     }
     pub(super) fn refresh_table(&mut self) {
-        if self.document.view != View::Browse || self.document.ui.nav != Nav::Table {
+        if self.database.document.view != View::Browse
+            || self.database.document.ui.nav != Nav::Table
+        {
             return;
         }
-        if self.document.ui.table_view == TableView::Structure {
-            if let Some(name) = self.ui.diagram.selected.clone() {
+        if self.database.document.ui.table_view == TableView::Structure {
+            if let Some(name) = self.database.ui.diagram.selected.clone() {
                 self.request_inspection(name);
             }
             self.refresh_catalog();
@@ -746,14 +776,21 @@ impl App {
         }
     }
     fn result_title(&self) -> &str {
-        if self.document.ui.table_view == TableView::Structure
-            && let Some(object) = &self.document.tools.ddl
+        if self.database.document.ui.table_view == TableView::Structure
+            && let Some(object) = &self.database.document.tools.ddl
         {
             return &object.name;
         }
-        match self.document.view {
-            View::Browse => self.document.table.as_ref().map_or_else(
-                || self.ui.diagram.selected.as_deref().unwrap_or("Table data"),
+        match self.database.document.view {
+            View::Browse => self.database.document.table.as_ref().map_or_else(
+                || {
+                    self.database
+                        .ui
+                        .diagram
+                        .selected
+                        .as_deref()
+                        .unwrap_or("Table data")
+                },
                 |t| t.name.as_str(),
             ),
             View::Explain => "EXPLAIN result",
@@ -763,39 +800,41 @@ impl App {
     }
     fn docked_inspector(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.strong(if self.document.ui.inspector == DetailMode::Structure {
-                "Structure"
-            } else {
-                "Row detail"
-            });
-            if self.document.ui.inspector != DetailMode::Structure {
+            ui.strong(
+                if self.database.document.ui.inspector == DetailMode::Structure {
+                    "Structure"
+                } else {
+                    "Row detail"
+                },
+            );
+            if self.database.document.ui.inspector != DetailMode::Structure {
                 if icons::control(
                     ui,
                     Icon::Edit,
                     "Typed cell",
                     "",
-                    self.document.ui.inspector == DetailMode::Cell,
+                    self.database.document.ui.inspector == DetailMode::Cell,
                     false,
                 )
                 .clicked()
                 {
-                    self.document.ui.inspector = DetailMode::Cell;
+                    self.database.document.ui.inspector = DetailMode::Cell;
                 }
                 if icons::control(
                     ui,
                     Icon::Structure,
                     "Record",
                     "",
-                    self.document.ui.inspector == DetailMode::Record,
+                    self.database.document.ui.inspector == DetailMode::Record,
                     false,
                 )
                 .clicked()
                 {
-                    self.document.ui.inspector = DetailMode::Record;
+                    self.database.document.ui.inspector = DetailMode::Record;
                 }
             }
             if icons::button(ui, Icon::Popout, "Open inspector in window", "").clicked() {
-                self.document.ui.inspector_detached = true;
+                self.database.document.ui.inspector_detached = true;
             }
             if icons::button(ui, Icon::Close, "Close inspector", "Esc").clicked() {
                 self.toggle_inspector();
@@ -807,20 +846,20 @@ impl App {
             .show(ui, |ui| self.inspector_content(ui));
     }
     pub(super) fn inspector_content(&mut self, ui: &mut egui::Ui) {
-        match self.document.ui.inspector {
+        match self.database.document.ui.inspector {
             DetailMode::Cell => {
-                if let Some((r, c)) = self.document.inspect {
+                if let Some((r, c)) = self.database.document.inspect {
                     self.cell_inspector(ui, r, c);
                 } else {
                     ui.label("Select a cell to inspect or edit its typed value.");
                 }
             }
             DetailMode::Record => {
-                if let Some(r) = self
+                if let Some(r) = self.database.document.tools.detail.or(self
+                    .database
                     .document
-                    .tools
-                    .detail
-                    .or(self.document.inspect.map(|(r, _)| r))
+                    .inspect
+                    .map(|(r, _)| r))
                 {
                     self.record_inspector(ui, r);
                 } else {

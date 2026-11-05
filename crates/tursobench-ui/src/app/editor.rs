@@ -150,11 +150,11 @@ impl App {
         );
     }
     pub(super) fn run_text(&mut self, text: String, explain: Option<bool>) {
-        if self.has_drafts() || self.commit_ticket.is_some() {
-            self.status = "Commit or discard drafts first".into();
+        if self.has_drafts() || self.database.commit_ticket.is_some() {
+            self.database.status = "Commit or discard drafts first".into();
             return;
         }
-        match Bindings::parse_json(&self.document.params) {
+        match Bindings::parse_json(&self.database.document.params) {
             Ok(parameters) => {
                 let operation = match explain {
                     Some(bytecode) => Operation::Explain {
@@ -171,25 +171,28 @@ impl App {
                         },
                     },
                 };
-                if self.workspace.enabled {
+                if self.database.workspace.enabled {
                     if let Some(previous) = self.navigation_entry() {
-                        self.tools.result_return = Some(previous);
+                        self.database.tools.result_return = Some(previous);
                     }
-                    let source = if self.document.kind == super::tiling::Kind::Result {
-                        self.document.source.unwrap_or(self.document.id)
+                    let source = if self.database.document.kind == super::tiling::Kind::Result {
+                        self.database
+                            .document
+                            .source
+                            .unwrap_or(self.database.document.id)
                     } else {
-                        self.document.id
+                        self.database.document.id
                     };
-                    let sql = self.document.sql.clone();
-                    let params = self.document.params.clone();
+                    let sql = self.database.document.sql.clone();
+                    let params = self.database.document.params.clone();
                     if self
                         .create_window(super::tiling::Kind::Result, None, Some(source), false)
                         .is_none()
                     {
                         return;
                     }
-                    self.document.sql = sql;
-                    self.document.params = params;
+                    self.database.document.sql = sql;
+                    self.database.document.params = params;
                 }
                 if let Some(ticket) = self.submit(
                     operation,
@@ -200,7 +203,7 @@ impl App {
                     },
                 ) {
                     if let Some(bytecode) = explain {
-                        self.document.explain = super::explain::State {
+                        self.database.document.explain = super::explain::State {
                             sql: text.clone(),
                             bytecode,
                             raw: false,
@@ -211,37 +214,43 @@ impl App {
                         Some(false) => format!("EXPLAIN QUERY PLAN {text}"),
                         None => text,
                     };
-                    self.tools.pending_history.insert(
+                    self.database.tools.pending_history.insert(
                         ticket.request,
-                        (self.tools.database_scope.clone(), history_sql),
+                        (self.database.tools.database_scope.clone(), history_sql),
                     );
-                    self.document.table = None;
-                    self.document.browse = None;
-                    self.document.tools.related = None;
+                    self.database.document.table = None;
+                    self.database.document.browse = None;
+                    self.database.document.tools.related = None;
                 }
             }
-            Err(e) => self.status = format!("Typed bindings: {e}"),
+            Err(e) => self.database.status = format!("Typed bindings: {e}"),
         }
     }
     pub(super) fn run_current(&mut self, explain: Option<bool>) {
         match self.current_text() {
             Ok(text) => self.run_text(text, explain),
-            Err(e) => self.status = e.to_string(),
+            Err(e) => self.database.status = e.to_string(),
         }
     }
     pub(super) fn current_text(&self) -> Result<String, tursobench_core::Failure> {
-        let start = byte_index(&self.document.sql, self.document.tools.selection.start);
-        let end = byte_index(&self.document.sql, self.document.tools.selection.end);
-        sql::selection_or_statement(&self.document.sql, start..end)
+        let start = byte_index(
+            &self.database.document.sql,
+            self.database.document.tools.selection.start,
+        );
+        let end = byte_index(
+            &self.database.document.sql,
+            self.database.document.tools.selection.end,
+        );
+        sql::selection_or_statement(&self.database.document.sql, start..end)
     }
 
     pub(super) fn run_all(&mut self, atomic: bool) {
         if !self.action_enabled(super::ribbon::Action::RunAll) {
             return;
         }
-        match Bindings::parse_json(&self.document.params) {
+        match Bindings::parse_json(&self.database.document.params) {
             Ok(parameters) => {
-                let text = self.document.sql.clone();
+                let text = self.database.document.sql.clone();
                 let operation = Operation::Script {
                     sql: text.clone(),
                     parameters,
@@ -252,12 +261,13 @@ impl App {
                     },
                 };
                 if let Some(ticket) = self.submit(operation, View::Query) {
-                    self.tools
-                        .pending_history
-                        .insert(ticket.request, (self.tools.database_scope.clone(), text));
+                    self.database.tools.pending_history.insert(
+                        ticket.request,
+                        (self.database.tools.database_scope.clone(), text),
+                    );
                 }
             }
-            Err(e) => self.status = e.to_string(),
+            Err(e) => self.database.status = e.to_string(),
         }
     }
     pub(super) fn run_all_menu(&mut self, ui: &mut egui::Ui, ribbon: bool) -> egui::Response {
@@ -303,39 +313,39 @@ impl App {
                 Icon::Parameters,
                 "Typed parameters",
                 "",
-                self.document.ui.params_open,
+                self.database.document.ui.params_open,
                 false,
             )
             .clicked()
             {
-                self.document.ui.params_open = !self.document.ui.params_open;
+                self.database.document.ui.params_open = !self.database.document.ui.params_open;
             }
             if icons::control(
                 ui,
                 Icon::Complete,
                 "Complete",
                 "Ctrl Space",
-                self.document.tools.complete,
+                self.database.document.tools.complete,
                 false,
             )
             .clicked()
             {
-                self.document.tools.complete = !self.document.tools.complete;
+                self.database.document.tools.complete = !self.database.document.tools.complete;
             }
             if icons::control(
                 ui,
                 Icon::Fit,
                 "Expand SQL editor",
                 "",
-                self.document.ui.sql_expanded,
+                self.database.document.ui.sql_expanded,
                 false,
             )
             .clicked()
             {
-                self.document.ui.sql_expanded = !self.document.ui.sql_expanded;
+                self.database.document.ui.sql_expanded = !self.database.document.ui.sql_expanded;
             }
             if icons::button(ui, Icon::Close, "Close SQL editor", "Ctrl J").clicked() {
-                self.document.ui.sql_open = false;
+                self.database.document.ui.sql_open = false;
             }
             if icons::button(ui, Icon::Structure, "Explain bytecode", "").clicked() {
                 self.run_current(Some(true));
@@ -347,7 +357,7 @@ impl App {
     }
 
     pub(super) fn editor_ui(&mut self, ui: &mut egui::Ui) {
-        if !self.workspace.enabled {
+        if !self.database.workspace.enabled {
             self.editor_toolbar(ui);
         }
         let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, width: f32| {
@@ -355,9 +365,9 @@ impl App {
         };
         let output = egui::ScrollArea::vertical()
             .id_salt("sql-editor-scroll")
-            .max_height(if self.workspace.enabled {
+            .max_height(if self.database.workspace.enabled {
                 (ui.available_height()
-                    - if self.document.ui.params_open {
+                    - if self.database.document.ui.params_open {
                         120.0
                     } else {
                         8.0
@@ -367,14 +377,15 @@ impl App {
                 (ui.ctx().content_rect().height() * 0.35).clamp(100.0, 400.0)
             })
             .show(ui, |ui| {
-                let empty_size = if self.workspace.enabled && self.document.sql.is_empty() {
-                    ui.available_rect_before_wrap()
-                        .intersect(ui.clip_rect())
-                        .size()
-                } else {
-                    egui::Vec2::ZERO
-                };
-                egui::TextEdit::multiline(&mut self.document.sql)
+                let empty_size =
+                    if self.database.workspace.enabled && self.database.document.sql.is_empty() {
+                        ui.available_rect_before_wrap()
+                            .intersect(ui.clip_rect())
+                            .size()
+                    } else {
+                        egui::Vec2::ZERO
+                    };
+                egui::TextEdit::multiline(&mut self.database.document.sql)
                     .id_salt("sql-editor")
                     .code_editor()
                     .min_size(empty_size)
@@ -384,7 +395,7 @@ impl App {
                     .show(ui)
             })
             .inner;
-        if self.document.sql.is_empty() && !output.response.has_focus() {
+        if self.database.document.sql.is_empty() && !output.response.has_focus() {
             icons::empty_state_at(
                 ui,
                 output.response.rect.intersect(ui.clip_rect()),
@@ -416,8 +427,8 @@ impl App {
                         .gamma_multiply(0.06),
                 );
         }
-        self.document.tools.sql_focus = Some(output.response.id);
-        if let Some(range) = self.document.restore_cursor.take() {
+        self.database.document.tools.sql_focus = Some(output.response.id);
+        if let Some(range) = self.database.document.restore_cursor.take() {
             let mut state = output.state.clone();
             state
                 .cursor
@@ -428,40 +439,43 @@ impl App {
             state.store(ui.ctx(), output.response.id);
         } else if let Some(cursor) = output.cursor_range {
             let range = cursor.as_sorted_char_range();
-            self.document.tools.selection = range.start.0..range.end.0;
+            self.database.document.tools.selection = range.start.0..range.end.0;
         }
-        if self.document.ui.params_open {
+        if self.database.document.ui.params_open {
             self.bindings_ui(ui);
         }
-        if self.document.tools.complete {
+        if self.database.document.tools.complete {
             self.completion_ui(ui, output.response.id);
         }
     }
     fn bindings_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            ui.label("Typed bindings (JSON):");ui.add(egui::TextEdit::singleline(&mut self.document.params).desired_width(ui.available_width().min(420.0)));
+            ui.label("Typed bindings (JSON):");ui.add(egui::TextEdit::singleline(&mut self.database.document.params).desired_width(ui.available_width().min(420.0)));
             if ui.button("Generate NULL bindings").clicked(){
-                let names=sql::parameter_names(&self.document.sql);
-                if names.iter().any(|n|n.starts_with('?')) {self.status="Positional parameters use an array ordered by slot: [{\"type\":\"Null\"}, ...]".into();}
-                else {self.document.params=serde_json::to_string(&sql::named_template(&self.document.sql)).unwrap_or_default();}
+                let names=sql::parameter_names(&self.database.document.sql);
+                if names.iter().any(|n|n.starts_with('?')) {self.database.status="Positional parameters use an array ordered by slot: [{\"type\":\"Null\"}, ...]".into();}
+                else {self.database.document.params=serde_json::to_string(&sql::named_template(&self.database.document.sql)).unwrap_or_default();}
             }
         });
         ui.small("?1: [{\"type\":\"Integer\",\"value\":42}]    :id: {\":id\":{\"type\":\"Integer\",\"value\":42}}. Values are never interpolated or persisted.");
     }
     fn completion_ui(&mut self, ui: &mut egui::Ui, editor_id: egui::Id) {
-        let cursor = byte_index(&self.document.sql, self.document.tools.selection.end);
-        let Some(span) = completion_span(&self.document.sql, cursor) else {
+        let cursor = byte_index(
+            &self.database.document.sql,
+            self.database.document.tools.selection.end,
+        );
+        let Some(span) = completion_span(&self.database.document.sql, cursor) else {
             ui.small("Completion unavailable here: quoted/comment/parameter text, a lexical error, or a buffer above 64 KiB.");
             return;
         };
         let start = span.start;
         let mut catalog = tursobench_db::completion::Catalog::new();
-        for object in &self.schema {
+        for object in &self.database.schema {
             if object.kind == "table" || object.kind == "view" {
                 catalog.entry(object.name.clone()).or_default();
             }
         }
-        if let Some(graph) = &self.ui.diagram.data {
+        if let Some(graph) = &self.database.ui.diagram.data {
             for table in &graph.tables {
                 if let Some(info) = &table.inspection {
                     catalog.insert(
@@ -471,22 +485,29 @@ impl App {
                 }
             }
         }
-        if let Some(info) = &self.document.tools.inspection {
+        if let Some(info) = &self.database.document.tools.inspection {
             catalog.insert(
                 info.table.name.clone(),
                 info.table.columns.iter().map(|c| c.name.clone()).collect(),
             );
         }
-        let candidates =
-            tursobench_db::completion::candidates(&self.document.sql, cursor, start, &catalog);
+        let candidates = tursobench_db::completion::candidates(
+            &self.database.document.sql,
+            cursor,
+            start,
+            &catalog,
+        );
         ui.small("Context completions from cached schema: aliases, qualified columns and CTEs. Unknown expressions remain unresolved.");
         ui.horizontal_wrapped(|ui| {
             for candidate in candidates.into_iter().take(30) {
                 if ui.button(candidate.as_str()).clicked() {
-                    self.document.sql.replace_range(span.clone(), &candidate);
-                    let position =
-                        self.document.sql[..start].chars().count() + candidate.chars().count();
-                    self.document.tools.selection = position..position;
+                    self.database
+                        .document
+                        .sql
+                        .replace_range(span.clone(), &candidate);
+                    let position = self.database.document.sql[..start].chars().count()
+                        + candidate.chars().count();
+                    self.database.document.tools.selection = position..position;
                     if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), editor_id) {
                         state
                             .cursor
@@ -496,7 +517,7 @@ impl App {
                         state.store(ui.ctx(), editor_id);
                         ui.memory_mut(|m| m.request_focus(editor_id));
                     }
-                    self.document.tools.complete = false;
+                    self.database.document.tools.complete = false;
                 }
             }
         });

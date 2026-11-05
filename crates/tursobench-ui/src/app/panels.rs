@@ -12,7 +12,7 @@ impl App {
         if heading_action(ui, "Settings", Icon::Saved, "Save settings", true) {
             self.preferences.normalize();
             self.store.save(&self.preferences);
-            self.status = "Saving preferences…".into();
+            self.database.status = "Saving preferences…".into();
         }
         section(ui, "Appearance", |ui| {
             ui.horizontal(|ui| {
@@ -35,7 +35,7 @@ impl App {
                         self.store.save(&self.preferences);
                     }
                 }
-                ui.weak("Aa").on_hover_text(&self.ui.font_label);
+                ui.weak("Aa").on_hover_text(&self.database.ui.font_label);
             });
             let before = self.preferences.font_size;
             ui.horizontal(|ui| {
@@ -75,8 +75,8 @@ impl App {
             });
             if before != self.preferences.font_size {
                 self.apply_theme(ui.ctx());
-                for document in
-                    std::iter::once(&mut self.document).chain(self.documents.values_mut())
+                for document in std::iter::once(&mut self.database.document)
+                    .chain(self.database.documents.values_mut())
                 {
                     document.tools.columns.refit = true;
                     for columns in document.tools.column_layouts.values_mut() {
@@ -160,36 +160,44 @@ impl App {
             let width = (ui.available_width() - 28.0 - ui.spacing().item_spacing.x).max(40.0);
             ui.add_sized(
                 [width, 28.0],
-                egui::TextEdit::singleline(&mut self.tools.bookmark_name)
+                egui::TextEdit::singleline(&mut self.database.tools.bookmark_name)
                     .hint_text("Query name…")
                     .char_limit(64),
             )
             .on_hover_text("Name for the current editor SQL");
             let save = ui
-                .add_enabled_ui(!self.document.sql.trim().is_empty(), |ui| {
+                .add_enabled_ui(!self.database.document.sql.trim().is_empty(), |ui| {
                     icons::button(ui, Icon::Plus, "Save current SQL", "")
                 })
                 .inner;
             if save.clicked() {
-                let name = if self.tools.bookmark_name.trim().is_empty() {
-                    self.document.sql.chars().take(60).collect()
+                let name = if self.database.tools.bookmark_name.trim().is_empty() {
+                    self.database.document.sql.chars().take(60).collect()
                 } else {
-                    self.tools.bookmark_name.clone()
+                    self.database.tools.bookmark_name.clone()
                 };
-                self.preferences
-                    .bookmark(&self.tools.database_scope, &name, &self.document.sql);
+                self.preferences.bookmark(
+                    &self.database.tools.database_scope,
+                    &name,
+                    &self.database.document.sql,
+                );
                 self.store.save(&self.preferences);
             }
         });
-        search(ui, &mut self.tools.bookmark_search, "Search saved queries…");
+        search(
+            ui,
+            &mut self.database.tools.bookmark_search,
+            "Search saved queries…",
+        );
         ui.add_space(4.0);
-        let query = self.tools.bookmark_search.to_lowercase();
+        let query = self.database.tools.bookmark_search.to_lowercase();
         let mut load = None;
         let mut remove = None;
         let mut renamed = false;
         let mut visible = 0;
         for (index, bookmark) in self.preferences.saved_queries.iter_mut().enumerate() {
-            if !(bookmark.database.is_empty() || bookmark.database == self.tools.database_scope)
+            if !(bookmark.database.is_empty()
+                || bookmark.database == self.database.tools.database_scope)
                 || !format!("{} {}", bookmark.name, bookmark.sql)
                     .to_lowercase()
                     .contains(&query)
@@ -262,11 +270,23 @@ impl App {
             self.preferences.query_history.clear();
             self.store.save(&self.preferences);
         }
-        search(ui, &mut self.tools.history_search, "Search history…");
+        search(
+            ui,
+            &mut self.database.tools.history_search,
+            "Search history…",
+        );
         ui.horizontal(|ui| {
             for (selected, icon, name) in [
-                (&mut self.tools.slow_only, Icon::Filter, "Slow queries only"),
-                (&mut self.tools.sort_slow, Icon::Down, "Slowest first"),
+                (
+                    &mut self.database.tools.slow_only,
+                    Icon::Filter,
+                    "Slow queries only",
+                ),
+                (
+                    &mut self.database.tools.sort_slow,
+                    Icon::Down,
+                    "Slowest first",
+                ),
             ] {
                 if icons::control(ui, icon, name, "", *selected, false).clicked() {
                     *selected = !*selected;
@@ -274,7 +294,7 @@ impl App {
             }
         });
         ui.add_space(4.0);
-        let query = self.tools.history_search.to_lowercase();
+        let query = self.database.tools.history_search.to_lowercase();
         let threshold = self.preferences.slow_query_ms;
         let mut entries: Vec<_> = self
             .preferences
@@ -282,12 +302,13 @@ impl App {
             .iter()
             .enumerate()
             .filter(|(_, h)| {
-                (h.database.is_empty() || h.database == self.tools.database_scope)
+                (h.database.is_empty() || h.database == self.database.tools.database_scope)
                     && (query.is_empty() || h.sql.to_lowercase().contains(&query))
-                    && (!self.tools.slow_only || h.elapsed_ms.is_some_and(|ms| ms >= threshold))
+                    && (!self.database.tools.slow_only
+                        || h.elapsed_ms.is_some_and(|ms| ms >= threshold))
             })
             .collect();
-        if self.tools.sort_slow {
+        if self.database.tools.sort_slow {
             entries.sort_by_key(|(_, h)| std::cmp::Reverse(h.elapsed_ms));
         }
         if entries.is_empty() {
@@ -325,20 +346,20 @@ impl App {
 
     pub(super) fn diagnostics_ui(&mut self, ui: &mut egui::Ui) {
         if ui
-            .add_enabled(self.ready, egui::Button::new("PRAGMA dashboard…"))
+            .add_enabled(self.database.ready, egui::Button::new("PRAGMA dashboard…"))
             .clicked()
         {
-            self.tools.admin.open = true;
+            self.database.tools.admin.open = true;
         }
         if ui
-            .add_enabled(self.ready, egui::Button::new("Data profiling…"))
+            .add_enabled(self.database.ready, egui::Button::new("Data profiling…"))
             .clicked()
         {
-            self.tools.profile.open = true;
+            self.database.tools.profile.open = true;
         }
         if ui
             .add_enabled(
-                self.ready,
+                self.database.ready,
                 egui::Button::new("Data transfer / maintenance…"),
             )
             .clicked()
@@ -380,7 +401,7 @@ impl App {
             section(ui, title, |ui| {
                 for &(diagnostic, icon, label) in checks {
                     let response = ui
-                        .add_enabled_ui(self.ready && !self.closing, |ui| {
+                        .add_enabled_ui(self.database.ready && !self.database.closing, |ui| {
                             action_row(ui, icon, label, diagnostic.label())
                         })
                         .inner;

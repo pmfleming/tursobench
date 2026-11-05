@@ -177,3 +177,15 @@ require writable autocommit and read back effective settings on the correct lane
 Tests prove read-only preservation/rejection, scope isolation and transaction/range
 rejection. Workspace checks, engine spike, build and all native smoke scripts passed;
 native smoke now executes profiling and the administration dashboard (2026-11-05).
+
+## Stage 7 delivery
+
+DatabaseWorkspace now owns session, documents, transaction/edit state, retained
+results, layouts, diagnostics and recovery tracking. Four bounded workspaces can be
+open; tabs/Ctrl PageUp/PageDown switch ownership without cloning result buffers.
+Ctrl P searches cached objects/columns across databases. File identity deduplicates
+aliases. Background sessions drain independently; quit settles all live sessions.
+Tests cover inactive results, transaction/draft isolation, duplicate aliases, close,
+limits and coordinated quit. Native desktop smoke opens/switches/closes two actual
+databases. Workspace Clippy/tests, engine spike, build and all smoke scripts passed
+(2026-11-05). Per-session limits multiply up to four; engine memory is not bounded.

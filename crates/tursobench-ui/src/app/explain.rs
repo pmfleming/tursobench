@@ -82,32 +82,32 @@ fn draw(
 impl App {
     /// Returns true when the tree consumes the result pane; raw/bytecode uses the grid.
     pub(super) fn explain_panel(&mut self, ui: &mut egui::Ui) -> bool {
-        if self.document.view != View::Explain {
+        if self.database.document.view != View::Explain {
             return false;
         }
         let mut rerun = None;
         ui.horizontal_wrapped(|ui| {
-            ui.selectable_value(&mut self.document.explain.raw, false, "Plan tree");
-            ui.selectable_value(&mut self.document.explain.raw, true, "Raw rows");
+            ui.selectable_value(&mut self.database.document.explain.raw, false, "Plan tree");
+            ui.selectable_value(&mut self.database.document.explain.raw, true, "Raw rows");
             if ui
-                .button(if self.document.explain.bytecode {
+                .button(if self.database.document.explain.bytecode {
                     "Load query plan"
                 } else {
                     "Load bytecode"
                 })
                 .clicked()
             {
-                rerun = Some(!self.document.explain.bytecode);
+                rerun = Some(!self.database.document.explain.bytecode);
             }
         });
         if let Some(bytecode) = rerun {
-            self.run_text(self.document.explain.sql.clone(), Some(bytecode));
+            self.run_text(self.database.document.explain.sql.clone(), Some(bytecode));
             return true;
         }
-        if self.document.explain.raw || self.document.explain.bytecode {
+        if self.database.document.explain.raw || self.database.document.explain.bytecode {
             return false;
         }
-        let Some(nodes) = nodes(&self.document.result) else {
+        let Some(nodes) = nodes(&self.database.document.result) else {
             ui.weak("Plan shape unavailable; showing raw engine rows.");
             return false;
         };
@@ -123,9 +123,9 @@ impl App {
                 if node.id == node.parent || !all.contains_key(&node.parent) { draw(ui,node,&all,&mut seen,0); }
             }
             if seen.len() < nodes.len() { ui.weak("Some plan edges are cyclic or disconnected; use Raw rows for the complete retained plan."); }
-            if nodes.iter().any(|n| n.detail.to_uppercase().contains("SCAN ")) && let Some(graph) = &self.ui.diagram.data {
+            if nodes.iter().any(|n| n.detail.to_uppercase().contains("SCAN ")) && let Some(graph) = &self.database.ui.diagram.data {
                 for table in &graph.tables {
-                    if let Some(info) = &table.inspection && let Some(sql) = tursobench_db::advice::index_draft(&self.document.explain.sql,info) {
+                    if let Some(info) = &table.inspection && let Some(sql) = tursobench_db::advice::index_draft(&self.database.document.explain.sql,info) {
                         ui.separator(); ui.monospace(&sql);
                         ui.small("Existing ordinary indexes were checked. This does not establish that a new index will improve runtime.");
                         if ui.button("Open index draft in SQL editor").clicked() { draft = Some(sql); }

@@ -110,11 +110,11 @@ impl App {
         key: &'a ForeignKey,
         kind: ReadKind,
     ) -> Option<Relationship<'a>> {
-        if self.document.view != View::Browse {
+        if self.database.document.view != View::Browse {
             return None;
         }
-        let table = self.document.table.as_ref()?;
-        let row = self.document.result.rows.get(row)?;
+        let table = self.database.document.table.as_ref()?;
+        let row = self.database.document.result.rows.get(row)?;
         let outgoing = matches!(kind, ReadKind::Parent);
         if outgoing && table.name != child
             || !outgoing && !table.name.eq_ignore_ascii_case(&key.target)
@@ -159,12 +159,12 @@ impl App {
         key: &ForeignKey,
         kind: ReadKind,
     ) {
-        if !self.ready
-            || self.closing
-            || self.document.active.is_some()
-            || self.document.tools.context.pending.is_some()
-            || self.document.tools.pages.pending.is_some()
-            || self.commit_ticket.is_some()
+        if !self.database.ready
+            || self.database.closing
+            || self.database.document.active.is_some()
+            || self.database.document.tools.context.pending.is_some()
+            || self.database.document.tools.pages.pending.is_some()
+            || self.database.commit_ticket.is_some()
             || self.has_drafts()
         {
             return;
@@ -172,21 +172,28 @@ impl App {
         let Some(plan) = self.relationship_read(row, child, key, kind) else {
             return;
         };
-        if self.document.tools.context.cached(&plan.id).is_some() {
+        if self
+            .database
+            .document
+            .tools
+            .context
+            .cached(&plan.id)
+            .is_some()
+        {
             return;
         }
-        let Some(session) = &self.session else {
+        let Some(session) = &self.database.session else {
             return;
         };
         let (id, operation) = plan.into_operation();
-        self.sequence += 1;
-        let ticket = session.ticket(self.sequence, self.generation);
+        self.database.sequence += 1;
+        let ticket = session.ticket(self.database.sequence, self.database.generation);
         if session.submit(Request { ticket, operation }).is_ok() {
             let mut result = ResultSet::default();
             result.start(ticket);
-            self.document.tools.context.pending = Some(Read {
+            self.database.document.tools.context.pending = Some(Read {
                 result,
-                owner: self.document.result.current,
+                owner: self.database.document.result.current,
                 key: id,
                 error: String::new(),
             });
@@ -194,13 +201,13 @@ impl App {
     }
     pub(super) fn context_event(&mut self, event: Event) {
         let done = matches!(event.kind, EventKind::Failed(_) | EventKind::Finished(_));
-        let Some(mut read) = self.document.tools.context.pending.take() else {
+        let Some(mut read) = self.database.document.tools.context.pending.take() else {
             return;
         };
         match &event.kind {
             EventKind::Failed(e) => read.error = e.to_string(),
             EventKind::Finished(c) => {
-                self.transaction = c.transaction;
+                self.database.transaction = c.transaction;
                 if let Some(e) = &c.error {
                     read.error = e.to_string();
                 }
@@ -209,23 +216,24 @@ impl App {
         }
         read.result.apply(event);
         if !done {
-            self.document.tools.context.pending = Some(read);
+            self.database.document.tools.context.pending = Some(read);
             return;
         }
-        if read.owner != self.document.result.current || self.closing {
+        if read.owner != self.database.document.result.current || self.database.closing {
             return;
         }
-        self.document
-            .tools
-            .context
-            .remember(Cached::new(read.key, read.result, read.error));
+        self.database.document.tools.context.remember(Cached::new(
+            read.key,
+            read.result,
+            read.error,
+        ));
     }
     pub(super) fn hover_context(&mut self, ctx: &egui::Context) {
-        let Some((row, key)) = &self.document.tools.context.hovered else {
-            self.document.tools.context.hover = None;
+        let Some((row, key)) = &self.database.document.tools.context.hovered else {
+            self.database.document.tools.context.hover = None;
             return;
         };
-        let Some(table) = self.document.table.as_ref() else {
+        let Some(table) = self.database.document.table.as_ref() else {
             return;
         };
         let Some(id) = self
@@ -234,12 +242,12 @@ impl App {
         else {
             return;
         };
-        let cached = self.document.tools.context.cached(&id).is_some();
+        let cached = self.database.document.tools.context.cached(&id).is_some();
         let now = ctx.input(|i| i.time);
-        let since = match &self.document.tools.context.hover {
+        let since = match &self.database.document.tools.context.hover {
             Some((old, since)) if old == &id => *since,
             _ => {
-                self.document.tools.context.hover = Some((id, now));
+                self.database.document.tools.context.hover = Some((id, now));
                 now
             }
         };
@@ -248,9 +256,9 @@ impl App {
         }
         if now - since >= 0.35 {
             let table = table.name.clone();
-            if let Some((row, key)) = self.document.tools.context.hovered.take() {
+            if let Some((row, key)) = self.database.document.tools.context.hovered.take() {
                 self.request_context(row, &table, &key, ReadKind::Parent);
-                self.document.tools.context.hovered = Some((row, key));
+                self.database.document.tools.context.hovered = Some((row, key));
             }
         } else {
             ctx.request_repaint_after(std::time::Duration::from_millis(350));
@@ -258,7 +266,7 @@ impl App {
     }
     pub(super) fn peek_view(&self, ui: &mut egui::Ui, row: usize, key: &ForeignKey) {
         ui.strong(format!("Parent · {}", key.target));
-        let Some(table) = &self.document.table else {
+        let Some(table) = &self.database.document.table else {
             return;
         };
         let Some(id) = self
@@ -268,7 +276,7 @@ impl App {
             ui.label("Unresolved or NULL key");
             return;
         };
-        if let Some(c) = self.document.tools.context.cached(&id) {
+        if let Some(c) = self.database.document.tools.context.cached(&id) {
             if !c.error.is_empty() {
                 ui.label(&c.error);
                 return;
@@ -292,10 +300,11 @@ impl App {
         }
     }
     fn incoming_keys(&self) -> Vec<(String, ForeignKey)> {
-        let Some(table) = &self.document.table else {
+        let Some(table) = &self.database.document.table else {
             return vec![];
         };
-        self.ui
+        self.database
+            .ui
             .diagram
             .data
             .iter()
@@ -310,13 +319,14 @@ impl App {
             .collect()
     }
     pub(super) fn related_list(&mut self, ui: &mut egui::Ui, row: usize) {
-        if self.document.view != View::Browse {
+        if self.database.document.view != View::Browse {
             return;
         }
         ui.separator();
         ui.strong("Related");
-        if self.ui.diagram.stale
+        if self.database.ui.diagram.stale
             || self
+                .database
                 .ui
                 .diagram
                 .data
@@ -337,7 +347,7 @@ impl App {
                 .map(|plan| plan.id);
             let cached = spec
                 .as_ref()
-                .and_then(|id| self.document.tools.context.cached(id));
+                .and_then(|id| self.database.document.tools.context.cached(id));
             let count = cached
                 .and_then(|c| {
                     c.result
@@ -382,7 +392,7 @@ impl App {
                         .clicked()
                 {
                     if let Some(id) = &spec {
-                        self.document.tools.context.forget(id);
+                        self.database.document.tools.context.forget(id);
                     }
                     self.request_context(row, &child, &key, ReadKind::Count);
                 }
@@ -390,11 +400,11 @@ impl App {
         }
     }
     pub(super) fn wide_related(&mut self, ui: &mut egui::Ui) {
-        let Some(row) = self
+        let Some(row) = self.database.document.inspect.map(|(r, _)| r).or(self
+            .database
             .document
-            .inspect
-            .map(|(r, _)| r)
-            .or(self.document.tools.detail)
+            .tools
+            .detail)
         else {
             return;
         };
@@ -402,7 +412,7 @@ impl App {
         if keys.is_empty() {
             return;
         }
-        let chosen = &self.document.tools.context.relation;
+        let chosen = &self.database.document.tools.context.relation;
         let mut selected = None;
         ui.horizontal_wrapped(|ui| {
             ui.strong("Related rows");
@@ -421,12 +431,13 @@ impl App {
             }
         });
         if let Some(selected) = selected {
-            self.document.tools.context.relation = Some(selected);
+            self.database.document.tools.context.relation = Some(selected);
         }
         let (child, key) = keys
             .iter()
             .find(|(child, key)| {
-                self.document
+                self.database
+                    .document
                     .tools
                     .context
                     .relation
@@ -434,7 +445,7 @@ impl App {
                     .is_some_and(|(name, id)| name == child && *id == key.id)
             })
             .unwrap_or(&keys[0]);
-        self.document.tools.context.relation = Some((child.clone(), key.id));
+        self.database.document.tools.context.relation = Some((child.clone(), key.id));
         if ui.link("Open related rows in full view").clicked() {
             self.follow_incoming(row, child.clone(), key.clone());
             return;
@@ -447,7 +458,7 @@ impl App {
             ui.weak("Select a resolved non-NULL parent key");
             return;
         };
-        let Some(c) = self.document.tools.context.cached(&id) else {
+        let Some(c) = self.database.document.tools.context.cached(&id) else {
             ui.spinner();
             ui.weak("Loading related rows…");
             return;
@@ -455,7 +466,7 @@ impl App {
         if !c.error.is_empty() {
             ui.colored_label(ui.visuals().error_fg_color, &c.error);
             if ui.button("Retry related rows").clicked() {
-                self.document.tools.context.forget(&id);
+                self.database.document.tools.context.forget(&id);
                 self.request_context(row, child, key, ReadKind::Rows);
             }
             return;

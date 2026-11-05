@@ -77,21 +77,21 @@ impl App {
         }
         // Keep at most one worker, even while the user types paths quickly.
         // A result for an old selection never supplies a new path's classification.
-        let changed = inspection.path != self.path;
-        let retry_blocked = inspection.blocked(&self.path).is_some()
+        let changed = inspection.path != self.database.path;
+        let retry_blocked = inspection.blocked(&self.database.path).is_some()
             && inspection
                 .checked
                 .is_some_and(|t| t.elapsed() >= std::time::Duration::from_secs(2));
         if inspection.worker.is_none() && (changed || inspection.refresh || retry_blocked) {
             inspection.refresh = false;
             if changed {
-                inspection.path.clone_from(&self.path);
+                inspection.path.clone_from(&self.database.path);
                 inspection.result = None;
                 inspection.access = None;
                 inspection.override_sqlite = false;
             }
-            if !self.path.is_empty() {
-                let path = PathBuf::from(&self.path);
+            if !self.database.path.is_empty() {
+                let path = PathBuf::from(&self.database.path);
                 let wake = ctx.clone();
                 let (tx, rx) = mpsc::sync_channel(1);
                 match std::thread::Builder::new()
@@ -118,7 +118,7 @@ impl App {
         }
         if inspection.worker.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
-        } else if inspection.blocked(&self.path).is_some() {
+        } else if inspection.blocked(&self.database.path).is_some() {
             ctx.request_repaint_after(std::time::Duration::from_secs(2));
         }
     }

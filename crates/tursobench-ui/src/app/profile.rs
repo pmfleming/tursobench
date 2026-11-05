@@ -21,28 +21,28 @@ impl Default for State {
 }
 impl App {
     pub(super) fn profile_ui(&mut self, ctx: &egui::Context) {
-        let mut open = self.tools.profile.open;
+        let mut open = self.database.tools.profile.open;
         if !open {
             return;
         }
         let mut run = None;
         egui::Window::new("Data profiling").open(&mut open).resizable(true).show(ctx, |ui| {
-            let old = self.tools.profile.table.clone();
-            egui::ComboBox::from_label("Table").selected_text(&self.tools.profile.table).show_ui(ui, |ui| {
-                for table in self.schema.iter().filter(|s|s.kind == "table") { ui.selectable_value(&mut self.tools.profile.table,table.name.clone(),&table.name); }
+            let old = self.database.tools.profile.table.clone();
+            egui::ComboBox::from_label("Table").selected_text(&self.database.tools.profile.table).show_ui(ui, |ui| {
+                for table in self.database.schema.iter().filter(|s|s.kind == "table") { ui.selectable_value(&mut self.database.tools.profile.table,table.name.clone(),&table.name); }
             });
-            if old != self.tools.profile.table { self.tools.profile.column.clear(); }
-            ui.horizontal(|ui| { ui.label("Column (blank = all, up to 24)"); ui.text_edit_singleline(&mut self.tools.profile.column); });
-            ui.checkbox(&mut self.tools.profile.exact,"Exact scan of the complete table");
-            if !self.tools.profile.exact {
-                ui.add(egui::DragValue::new(&mut self.tools.profile.sample).range(1..=100_000).prefix("First ").suffix(" rows"));
+            if old != self.database.tools.profile.table { self.database.tools.profile.column.clear(); }
+            ui.horizontal(|ui| { ui.label("Column (blank = all, up to 24)"); ui.text_edit_singleline(&mut self.database.tools.profile.column); });
+            ui.checkbox(&mut self.database.tools.profile.exact,"Exact scan of the complete table");
+            if !self.database.tools.profile.exact {
+                ui.add(egui::DragValue::new(&mut self.database.tools.profile.sample).range(1..=100_000).prefix("First ").suffix(" rows"));
                 ui.small("Prefix sample in engine scan order, not random. Statistics describe only those rows; distinctness does not establish table uniqueness.");
             } else { ui.small("Exact statistics may scan the table repeatedly. Query deadlines and discard apply."); }
-            if ui.add_enabled(self.ready && !self.closing && !self.tools.profile.table.is_empty(),egui::Button::new("Generate profile")).clicked() {
-                run = Some(Request { table:self.tools.profile.table.clone(),column:(!self.tools.profile.column.is_empty()).then(||self.tools.profile.column.clone()),sample_rows:(!self.tools.profile.exact).then_some(self.tools.profile.sample) });
+            if ui.add_enabled(self.database.ready && !self.database.closing && !self.database.tools.profile.table.is_empty(),egui::Button::new("Generate profile")).clicked() {
+                run = Some(Request { table:self.database.tools.profile.table.clone(),column:(!self.database.tools.profile.column.is_empty()).then(||self.database.tools.profile.column.clone()),sample_rows:(!self.database.tools.profile.exact).then_some(self.database.tools.profile.sample) });
             }
         });
-        self.tools.profile.open = open;
+        self.database.tools.profile.open = open;
         if let Some(request) = run {
             self.run_profile(request);
         }
@@ -52,12 +52,12 @@ impl App {
             .submit(Operation::Profile(request.clone()), View::Diagnostics)
             .is_some()
         {
-            self.document.profile = Some(request);
-            self.tools.profile.open = false;
+            self.database.document.profile = Some(request);
+            self.database.tools.profile.open = false;
         }
     }
     pub(super) fn profile_header(&mut self, ui: &mut egui::Ui) {
-        let Some(request) = self.document.profile.clone() else {
+        let Some(request) = self.database.document.profile.clone() else {
             return;
         };
         ui.horizontal_wrapped(|ui| {
@@ -72,12 +72,12 @@ impl App {
             ui.label(request.sample_rows.map_or("Exact scan".into(), |n| {
                 format!("Prefix sample: at most {n} rows")
             }));
-            if self.document.stale {
+            if self.database.document.stale {
                 ui.colored_label(ui.visuals().warn_fg_color, "Stale — data changed");
             }
             if ui
                 .add_enabled(
-                    self.document.active.is_none() && self.ready,
+                    self.database.document.active.is_none() && self.database.ready,
                     egui::Button::new("Refresh profile"),
                 )
                 .clicked()
@@ -86,7 +86,7 @@ impl App {
             }
         });
         ui.collapsing("Value frequencies (top five per column)", |ui| {
-            let rows: Vec<_> = self.document.result.rows.iter().filter(|r| matches!(r.get(1),Some(tursobench_core::Value::Text(s)) if s == "top value")).collect();
+            let rows: Vec<_> = self.database.document.result.rows.iter().filter(|r| matches!(r.get(1),Some(tursobench_core::Value::Text(s)) if s == "top value")).collect();
             let maximum = rows.iter().filter_map(|r| match r.get(3) { Some(tursobench_core::Value::Integer(n)) => Some(*n), _ => None }).max().unwrap_or(1).max(1);
             for row in rows {
                 if let Some(tursobench_core::Value::Integer(n)) = row.get(3) {

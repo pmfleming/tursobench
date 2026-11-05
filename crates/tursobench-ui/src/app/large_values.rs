@@ -15,29 +15,29 @@ pub(super) struct Viewer {
 }
 impl App {
     pub(super) fn open_large_value(&mut self, cell: DeferredCell) {
-        self.document.tools.large = Viewer {
+        self.database.document.tools.large = Viewer {
             cell: Some(cell),
             ..Default::default()
         };
         self.load_value_chunk();
     }
     fn value_request(&mut self, operation: Operation) {
-        if self.document.tools.large.ticket.is_some() {
+        if self.database.document.tools.large.ticket.is_some() {
             return;
         }
-        let Some(session) = &self.session else {
-            self.document.tools.large.message = "The source session is closed".into();
+        let Some(session) = &self.database.session else {
+            self.database.document.tools.large.message = "The source session is closed".into();
             return;
         };
-        self.sequence += 1;
-        let ticket = session.ticket(self.sequence, self.generation);
+        self.database.sequence += 1;
+        let ticket = session.ticket(self.database.sequence, self.database.generation);
         match session.submit(Request { ticket, operation }) {
-            Ok(()) => self.document.tools.large.ticket = Some(ticket),
-            Err(e) => self.document.tools.large.message = e.to_string(),
+            Ok(()) => self.database.document.tools.large.ticket = Some(ticket),
+            Err(e) => self.database.document.tools.large.message = e.to_string(),
         }
     }
     fn load_value_chunk(&mut self) {
-        let viewer = &self.document.tools.large;
+        let viewer = &self.database.document.tools.large;
         if let Some(handle) = viewer.cell.as_ref().and_then(|c| c.handle) {
             self.value_request(Operation::ReadValue {
                 handle,
@@ -45,13 +45,13 @@ impl App {
                 bytes: 16 * 1024,
             });
         } else {
-            self.document.tools.large.message =
+            self.database.document.tools.large.message =
                 "Full value unavailable: it exceeded the spool limit or temporary storage failed"
                     .into();
         }
     }
     pub(super) fn value_event(&mut self, kind: EventKind) {
-        let viewer = &mut self.document.tools.large;
+        let viewer = &mut self.database.document.tools.large;
         match kind {
             EventKind::ValueChunk {
                 handle,
@@ -74,14 +74,14 @@ impl App {
         viewer.ticket = None;
     }
     pub(super) fn large_value_ui(&mut self, ctx: &egui::Context) {
-        let viewer = &mut self.document.tools.large;
+        let viewer = &mut self.database.document.tools.large;
         let Some(cell) = viewer.cell.clone() else {
             return;
         };
         let mut open = true;
         let mut load = false;
         let mut save = false;
-        egui::Window::new("Full value").id(egui::Id::unique(("large-value",self.document.id))).open(&mut open).default_width(660.0).vscroll(true).show(ctx,|ui|{
+        egui::Window::new("Full value").id(egui::Id::unique(("large-value",self.database.document.id))).open(&mut open).default_width(660.0).vscroll(true).show(ctx,|ui|{
             ui.label(format!("{:?} · {} bytes · immutable result snapshot",cell.kind,cell.bytes));
             ui.horizontal(|ui|{
                 ui.label("Byte offset");
@@ -99,7 +99,7 @@ impl App {
             if !viewer.message.is_empty(){ui.label(&viewer.message);}
         });
         if !open {
-            self.document.tools.large.cell = None;
+            self.database.document.tools.large.cell = None;
             return;
         }
         if load {
@@ -108,7 +108,7 @@ impl App {
         if save && let Some(handle) = cell.handle {
             self.value_request(Operation::SaveValue {
                 handle,
-                path: self.document.tools.large.path.clone().into(),
+                path: self.database.document.tools.large.path.clone().into(),
             });
         }
     }

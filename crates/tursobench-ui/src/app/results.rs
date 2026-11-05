@@ -187,59 +187,62 @@ pub(super) fn detail_text(value: &Value) -> String {
 }
 impl App {
     pub(super) fn record_history(&mut self, ticket: Ticket, elapsed_ms: Option<u64>, failed: bool) {
-        if let Some((database, sql)) = self.tools.pending_history.remove(&ticket.request) {
+        if let Some((database, sql)) = self.database.tools.pending_history.remove(&ticket.request) {
             self.preferences
                 .record_query(&database, &sql, elapsed_ms, failed);
             self.store.save(&self.preferences);
         }
     }
     pub(super) fn copy_results(&mut self, ctx: &egui::Context, format: Format) {
-        if self.document.active.is_some() || self.document.result.completion.is_none() {
-            self.status = "Wait for retained results before copying".into();
+        if self.database.document.active.is_some()
+            || self.database.document.result.completion.is_none()
+        {
+            self.database.status = "Wait for retained results before copying".into();
             return;
         }
         match export::clipboard(
             format,
             self.export_scope(),
-            &self.document.result.columns,
-            &self.document.result.rows,
-            &self.document.tools.export_table,
+            &self.database.document.result.columns,
+            &self.database.document.result.rows,
+            &self.database.document.tools.export_table,
         ) {
             Ok(text) => {
                 ctx.copy_text(text);
-                self.status =
+                self.database.status =
                     "Copied retained engine rows with scope metadata (not staged overlays)".into();
             }
-            Err(e) => self.status = e,
+            Err(e) => self.database.status = e,
         }
     }
     pub(super) fn copy_row(&mut self, ctx: &egui::Context, row: usize) {
-        let Some(values) = self.document.result.rows.get(row) else {
+        let Some(values) = self.database.document.result.rows.get(row) else {
             return;
         };
         match export::clipboard(
             Format::Tsv,
             "single-retained-row",
-            &self.document.result.columns,
+            &self.database.document.result.columns,
             std::slice::from_ref(values),
-            &self.document.tools.export_table,
+            &self.database.document.tools.export_table,
         ) {
             Ok(text) => ctx.copy_text(text),
-            Err(e) => self.status = e,
+            Err(e) => self.database.status = e,
         }
     }
     pub(super) fn open_cell(&mut self, row: usize, column: usize) {
         if let Some(value) = self
+            .database
             .document
             .result
             .rows
             .get(row)
             .and_then(|r| r.get(column))
         {
-            self.document.inspect = Some((row, column));
-            self.document.ui.inspector = shell::DetailMode::Cell;
-            self.document.ui.inspector_open = true;
-            self.document.tools.cell_editor = CellEditor::new(value);
+            self.database.document.inspect = Some((row, column));
+            self.database.document.ui.inspector = shell::DetailMode::Cell;
+            self.database.document.ui.inspector_open = true;
+            self.database.document.tools.cell_editor = CellEditor::new(value);
         }
     }
 }

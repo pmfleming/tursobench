@@ -10,7 +10,7 @@ use std::path::Path;
 impl App {
     pub(in crate::app) fn database_switcher_ui(&mut self, ui: &mut egui::Ui) {
         let response = ui.add_enabled(
-            self.ready && !self.closing,
+            self.database.ready && !self.database.closing,
             egui::Button::new("")
                 .corner_radius(10)
                 .min_size(egui::vec2(ui.available_width(), 52.0)),
@@ -19,11 +19,11 @@ impl App {
             egui::WidgetInfo::labeled(
                 egui::Role::Button,
                 response.enabled(),
-                format!("Switch database: {}", self.path),
+                format!("Switch database: {}", self.database.path),
             )
         });
         let current = Entry {
-            path: self.path.clone().into(),
+            path: self.database.path.clone().into(),
             state: State::Found,
             size: None,
             last_opened: Some(0),
@@ -39,7 +39,7 @@ impl App {
             &current,
             response.enabled(),
         );
-        let path = Path::new(&self.path);
+        let path = Path::new(&self.database.path);
         let filename = path
             .file_name()
             .unwrap_or(path.as_os_str())
@@ -75,7 +75,7 @@ impl App {
             Icon::Down,
             ui.visuals().weak_text_color(),
         );
-        let response = response.on_hover_text(&self.path);
+        let response = response.on_hover_text(&self.database.path);
         if response.clicked() {
             self.databases.switcher_filter.clear();
         }
@@ -137,8 +137,12 @@ impl App {
                     color,
                 );
                 if response.clicked() {
-                    self.pending_database = None;
-                    self.request_close();
+                    self.database.pending_database = None;
+                    if primary {
+                        self.new_workspace(ui.ctx());
+                    } else {
+                        self.request_close();
+                    }
                     ui.close();
                 }
             }
@@ -195,8 +199,12 @@ impl App {
                         last_opened: Some(recent.last_opened),
                         kind: known.map_or(DatabaseKind::Unknown, |entry| entry.kind),
                     };
-                    let (row, remove) =
-                        entry.row_ui(ui, entry.path == Path::new(&self.path), false, true);
+                    let (row, remove) = entry.row_ui(
+                        ui,
+                        entry.path == Path::new(&self.database.path),
+                        false,
+                        true,
+                    );
                     if row.clicked() {
                         select = Some(entry.path.clone());
                     }
@@ -209,10 +217,8 @@ impl App {
             self.forget_database(&path);
         }
         if let Some(path) = select {
-            if path != Path::new(&self.path) {
-                // Keep the existing close/rollback acknowledgement and fresh access review.
-                self.pending_database = Some(path);
-                self.request_close();
+            if path != Path::new(&self.database.path) {
+                self.request_database(ui.ctx(), path);
             }
             ui.close();
         }
@@ -366,9 +372,9 @@ mod tests {
                 &ctx,
                 vec![key_event(egui::Key::Enter, true, egui::Modifiers::NONE)],
             );
-            assert_eq!(app.pending_database, Some(long_path.into()));
-            assert!(app.confirm_close);
-            assert_eq!(app.path, "/work/current/session.db");
+            assert!(app.pending_database.is_none());
+            assert!(!app.confirm_close);
+            assert_eq!(app.path, long_path);
             assert!(!app.closing);
         }
     }

@@ -232,17 +232,17 @@ fn row_hash(row: &[Value]) -> u64 {
 }
 impl App {
     pub(super) fn update_draft_presentation(&mut self) {
-        let Some(draft) = &self.document.drafts else {
-            self.document.tools.draft_ui = Presentation::default();
+        let Some(draft) = &self.database.document.drafts else {
+            self.database.document.tools.draft_ui = Presentation::default();
             return;
         };
         let signature = (
-            self.document.draft_revision,
-            self.document.result.current,
-            self.document.result.rows.len(),
+            self.database.document.draft_revision,
+            self.database.document.result.current,
+            self.database.document.result.rows.len(),
             draft.edits.len(),
         );
-        if self.document.tools.draft_ui.signature == Some(signature) {
+        if self.database.document.tools.draft_ui.signature == Some(signature) {
             return;
         }
         let mut edits = std::collections::HashMap::<u64, Vec<(usize, &Edit)>>::new();
@@ -256,10 +256,10 @@ impl App {
         }
         let mut model = Presentation {
             signature: Some(signature),
-            selected: self.document.tools.draft_ui.selected,
+            selected: self.database.document.tools.draft_ui.selected,
             ..Default::default()
         };
-        for (row, values) in self.document.result.rows.iter().enumerate() {
+        for (row, values) in self.database.document.result.rows.iter().enumerate() {
             if let Some(edits) = edits.get(&row_hash(values)) {
                 let mut entry = RowPresentation::default();
                 for &(edit_index, edit) in edits {
@@ -281,39 +281,48 @@ impl App {
                 }
             }
         }
-        self.document.tools.draft_ui = model;
+        self.database.document.tools.draft_ui = model;
     }
 
     pub(super) fn has_drafts(&self) -> bool {
-        self.document.has_drafts() || self.documents.values().any(|d| d.has_drafts())
+        self.database.document.has_drafts()
+            || self.database.documents.values().any(|d| d.has_drafts())
     }
     pub(super) fn can_edit(&self) -> bool {
         !self
+            .database
             .documents
             .values()
             .any(|d| d.has_drafts() || d.active.is_some())
             && !self
+                .database
                 .document
                 .result
                 .rows
                 .iter()
                 .flatten()
                 .any(|v| matches!(v, Value::Deferred(_)))
-            && !self.document.stale
-            && self.writable
-            && self.ready
-            && !self.closing
-            && !self.uncertain_edit
-            && self.transaction == TransactionState::Autocommit
-            && self.commit_ticket.is_none()
-            && self.document.active.is_none()
-            && self.document.tools.pages.pending.is_none()
-            && self.document.view == View::Browse
-            && self.document.table.as_ref().is_some_and(Table::editable)
-            && self.document.drafts.as_ref().is_none_or(|d| {
-                d.edits.is_empty() || Some(&d.table) == self.document.table.as_ref()
+            && !self.database.document.stale
+            && self.database.writable
+            && self.database.ready
+            && !self.database.closing
+            && !self.database.uncertain_edit
+            && self.database.transaction == TransactionState::Autocommit
+            && self.database.commit_ticket.is_none()
+            && self.database.document.active.is_none()
+            && self.database.document.tools.pages.pending.is_none()
+            && self.database.document.view == View::Browse
+            && self
+                .database
+                .document
+                .table
+                .as_ref()
+                .is_some_and(Table::editable)
+            && self.database.document.drafts.as_ref().is_none_or(|d| {
+                d.edits.is_empty() || Some(&d.table) == self.database.document.table.as_ref()
             })
             && self
+                .database
                 .document
                 .result
                 .completion
@@ -324,12 +333,13 @@ impl App {
         if !self.can_edit() {
             return;
         }
-        let Some(table) = &self.document.table else {
+        let Some(table) = &self.database.document.table else {
             return;
         };
         // Reverting the final operation must not carry the old table identity
         // into a subsequent edit after navigating to another table.
         let mut draft = self
+            .database
             .document
             .drafts
             .as_ref()
@@ -342,15 +352,17 @@ impl App {
         f(&mut draft);
         match draft.preview() {
             Ok(_) => {
-                self.document.draft_revision = self.document.draft_revision.wrapping_add(1);
-                self.document.drafts = Some(draft);
-                self.status = "Staged locally. Preview and explicitly commit to write.".into();
+                self.database.document.draft_revision =
+                    self.database.document.draft_revision.wrapping_add(1);
+                self.database.document.drafts = Some(draft);
+                self.database.status =
+                    "Staged locally. Preview and explicitly commit to write.".into();
             }
-            Err(e) => self.status = e.to_string(),
+            Err(e) => self.database.status = e.to_string(),
         }
     }
     pub(super) fn stage_cell(&mut self, row: usize, column: usize, value: Value) {
-        if let Some(original) = self.document.result.rows.get(row).cloned() {
+        if let Some(original) = self.database.document.result.rows.get(row).cloned() {
             self.stage(|d| d.stage_cell(original, column, value));
         }
     }
@@ -361,7 +373,7 @@ impl App {
             .collect::<std::collections::BTreeSet<_>>();
         let originals = rows
             .into_iter()
-            .filter_map(|r| self.document.result.rows.get(r).cloned())
+            .filter_map(|r| self.database.document.result.rows.get(r).cloned())
             .collect::<Vec<_>>();
         self.stage(|d| {
             for original in originals {
@@ -370,7 +382,7 @@ impl App {
         });
     }
     pub(super) fn stage_delete(&mut self, row: usize) {
-        if let Some(original) = self.document.result.rows.get(row).cloned() {
+        if let Some(original) = self.database.document.result.rows.get(row).cloned() {
             self.stage(|d| d.stage_delete(original));
         }
     }
@@ -378,8 +390,10 @@ impl App {
         if !self.can_edit() {
             return;
         }
-        if let (Some(table), Some(row)) = (&self.document.table, self.document.result.rows.get(row))
-        {
+        if let (Some(table), Some(row)) = (
+            &self.database.document.table,
+            self.database.document.result.rows.get(row),
+        ) {
             let values: Vec<Option<&Value>> = table
                 .columns
                 .iter()
@@ -388,7 +402,7 @@ impl App {
                 .collect();
             let prepared = PreparedInsert::new(table, values);
             if prepared.is_ok() {
-                self.status = "Clone prepared locally; primary keys omitted. Supply any required keys before staging.".into();
+                self.database.status = "Clone prepared locally; primary keys omitted. Supply any required keys before staging.".into();
             }
             self.prepare_insert(prepared);
         }
@@ -396,33 +410,33 @@ impl App {
     fn prepare_insert(&mut self, prepared: Result<PreparedInsert, serde_json::Error>) {
         match prepared {
             Ok(prepared) => {
-                self.document.insert_fields = prepared.fields;
-                self.document.insert_use_json = false;
-                self.document.insert_json = prepared.json;
-                self.document.show_insert = true;
+                self.database.document.insert_fields = prepared.fields;
+                self.database.document.insert_use_json = false;
+                self.database.document.insert_json = prepared.json;
+                self.database.document.show_insert = true;
             }
-            Err(error) => self.status = error.to_string(),
+            Err(error) => self.database.status = error.to_string(),
         }
     }
     pub(super) fn begin_insert(&mut self) {
         if self.can_edit()
-            && let Some(table) = &self.document.table
+            && let Some(table) = &self.database.document.table
         {
             let prepared = PreparedInsert::new(table, vec![None; table.columns.len()]);
             self.prepare_insert(prepared);
         }
     }
     pub(super) fn edit_windows(&mut self, ctx: &egui::Context) {
-        if self.document.show_insert {
+        if self.database.document.show_insert {
             self.insert_window(ctx);
         }
-        if self.document.show_preview {
+        if self.database.document.show_preview {
             self.review_window(ctx);
         }
     }
 
     fn insert_fields_ui(&mut self, ui: &mut egui::Ui) {
-        if let Some(t) = &self.document.table {
+        if let Some(t) = &self.database.document.table {
             ui.label(
                 t.columns
                     .iter()
@@ -431,16 +445,17 @@ impl App {
                     .join(", "),
             );
         }
-        if self.document.insert_use_json {
+        if self.database.document.insert_use_json {
             ui.small("JSON null omits a column; {\"type\":\"Null\"} inserts SQL NULL.");
             ui.add(
-                egui::TextEdit::multiline(&mut self.document.insert_json)
+                egui::TextEdit::multiline(&mut self.database.document.insert_json)
                     .code_editor()
                     .desired_width(ui.available_width())
                     .desired_rows(8),
             );
-        } else if let Some(table) = &self.document.table {
+        } else if let Some(table) = &self.database.document.table {
             for (i, (field, column)) in self
+                .database
                 .document
                 .insert_fields
                 .iter_mut()
@@ -461,7 +476,10 @@ impl App {
             .default_width(580.0)
             .max_width((ctx.content_rect().width() - 40.0).max(280.0))
             .show(ctx, |ui| {
-                ui.checkbox(&mut self.document.insert_use_json, "Advanced JSON input");
+                ui.checkbox(
+                    &mut self.database.document.insert_use_json,
+                    "Advanced JSON input",
+                );
                 egui::ScrollArea::vertical()
                     .max_height((ctx.content_rect().height() - 230.0).clamp(120.0, 400.0))
                     .show(ui, |ui| {
@@ -480,11 +498,14 @@ impl App {
                 .inner
                 .clicked()
                 {
-                    let values = if self.document.insert_use_json {
-                        serde_json::from_str::<Vec<Option<Value>>>(&self.document.insert_json)
-                            .map_err(|e| e.to_string())
+                    let values = if self.database.document.insert_use_json {
+                        serde_json::from_str::<Vec<Option<Value>>>(
+                            &self.database.document.insert_json,
+                        )
+                        .map_err(|e| e.to_string())
                     } else {
-                        self.document
+                        self.database
+                            .document
                             .insert_fields
                             .iter()
                             .map(InsertField::value)
@@ -492,12 +513,12 @@ impl App {
                     };
                     match values {
                         Ok(values) => self.stage(|d| d.edits.push(Edit::Insert { values })),
-                        Err(e) => self.status = e.to_string(),
+                        Err(e) => self.database.status = e.to_string(),
                     }
                 }
-                ui.label(&self.status);
+                ui.label(&self.database.status);
             });
-        self.document.show_insert = open;
+        self.database.document.show_insert = open;
     }
 
     fn review_window(&mut self, ctx: &egui::Context) {
@@ -510,23 +531,28 @@ impl App {
             .max_width((ctx.content_rect().width()-40.0).max(280.0))
             .show(ctx, |ui| {
                 presentation::notice(ui,super::icons::Icon::ReviewEdits,Intent::Pending,"Dedicated connection · foreign keys enabled · original values checked · atomic batch. Only a confirmed commit clears these drafts.");
-                let remove = self.document.drafts.as_ref().and_then(|draft| {
+                let remove = self.database.document.drafts.as_ref().and_then(|draft| {
                     ui.strong(format!("{} · {} staged operations", draft.table.name, draft.edits.len()));
-                    self.document.tools.draft_ui.review_ui(ui, draft, self.commit_ticket.is_none())
+                    self.database.document.tools.draft_ui.review_ui(ui, draft, self.database.commit_ticket.is_none())
                 });
-                if let Some(index) = remove && let Some(draft) = &mut self.document.drafts {
+                if let Some(index) = remove && let Some(draft) = &mut self.database.document.drafts {
                     draft.edits.remove(index);
-                    self.document.draft_revision=self.document.draft_revision.wrapping_add(1);
+                    self.database.document.draft_revision=self.database.document.draft_revision.wrapping_add(1);
                 }
-                if self.uncertain_edit { ui.colored_label(ui.visuals().error_fg_color,"UNKNOWN outcome — close/reopen and inspect; never automatically retry."); }
-                if self.commit_ticket.is_some() { ui.label("Committing — awaiting the actual outcome…"); }
+                if self.database.uncertain_edit { ui.colored_label(ui.visuals().error_fg_color,"UNKNOWN outcome — close/reopen and inspect; never automatically retry."); }
+                if self.database.commit_ticket.is_some() { ui.label("Committing — awaiting the actual outcome…"); }
                 if presentation::footer(ui, |ui| ui.add_enabled(self.can_edit() && self.has_drafts(),presentation::action(ui,"COMMIT staged edits to database",Intent::Pending))).inner.clicked() { self.commit_drafts(); }
-                ui.label(&self.status);
+                ui.label(&self.database.status);
             });
-        self.document.show_preview = open;
+        self.database.document.show_preview = open;
     }
     pub(super) fn staged_edit_dock(&mut self, ui: &mut egui::Ui) {
-        let count = self.document.drafts.as_ref().map_or(0, |d| d.edits.len());
+        let count = self
+            .database
+            .document
+            .drafts
+            .as_ref()
+            .map_or(0, |d| d.edits.len());
         let tokens = crate::appearance::Tokens::of(ui.ctx());
         egui::Frame::new()
             .fill(tokens.pending.gamma_multiply(0.08))
@@ -549,21 +575,21 @@ impl App {
                         self.commit_drafts();
                     }
                     if ui.button("Diff / SQL").clicked() {
-                        self.document.show_preview = true;
+                        self.database.document.show_preview = true;
                     }
                     if ui
                         .add_enabled(
-                            self.commit_ticket.is_none() && !self.uncertain_edit,
+                            self.database.commit_ticket.is_none() && !self.database.uncertain_edit,
                             egui::Button::new("Discard"),
                         )
                         .clicked()
                     {
-                        self.document.drafts = None;
+                        self.database.document.drafts = None;
                     }
-                    if self.commit_ticket.is_some() {
+                    if self.database.commit_ticket.is_some() {
                         ui.small("Committing…");
                     }
-                    if self.uncertain_edit {
+                    if self.database.uncertain_edit {
                         ui.colored_label(
                             ui.visuals().error_fg_color,
                             "Outcome unknown — inspect before retrying",
@@ -576,21 +602,23 @@ impl App {
         if !self.can_edit() || !self.has_drafts() {
             return;
         }
-        let (Some(s), Some(batch)) = (&self.session, &self.document.drafts) else {
+        let (Some(s), Some(batch)) = (&self.database.session, &self.database.document.drafts)
+        else {
             return;
         };
-        self.sequence += 1;
-        let ticket = s.ticket(self.sequence, self.generation);
+        self.database.sequence += 1;
+        let ticket = s.ticket(self.database.sequence, self.database.generation);
         match s.submit(Request {
             ticket,
             operation: Operation::CommitEdits(batch.clone()),
         }) {
             Ok(()) => {
-                self.commit_ticket = Some(ticket);
-                self.commit_owner = Some(self.document.id);
-                self.status = "Committing staged edits… do not retry until outcome is known".into();
+                self.database.commit_ticket = Some(ticket);
+                self.database.commit_owner = Some(self.database.document.id);
+                self.database.status =
+                    "Committing staged edits… do not retry until outcome is known".into();
             }
-            Err(e) => self.status = e.to_string(),
+            Err(e) => self.database.status = e.to_string(),
         }
     }
 }

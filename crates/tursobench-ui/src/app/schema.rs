@@ -16,7 +16,7 @@ impl App {
             name,
             result,
             owner,
-        }) = self.tools.count_request.take()
+        }) = self.database.tools.count_request.take()
         else {
             return;
         };
@@ -26,12 +26,12 @@ impl App {
             .is_some_and(|c| c.error.is_none() && c.delivery == tursobench_core::Delivery::Complete)
             && let Some(Value::Integer(n)) = result.rows.first().and_then(|r| r.first())
         {
-            self.status = format!("{name}: {n} rows · explicit full scan");
+            self.database.status = format!("{name}: {n} rows · explicit full scan");
             if let Some((id, ticket)) = owner {
-                let document = if self.document.id == id {
-                    Some(&mut self.document)
+                let document = if self.database.document.id == id {
+                    Some(&mut self.database.document)
                 } else {
-                    self.documents.get_mut(&id)
+                    self.database.documents.get_mut(&id)
                 };
                 if let Some(document) = document
                     && document.result.current == ticket
@@ -40,26 +40,28 @@ impl App {
                     document.tools.filtered_count = Some(*n);
                 }
             } else {
-                self.tools.counts.insert(name, *n);
+                self.database.tools.counts.insert(name, *n);
             }
         } else {
-            self.status = failure.map_or_else(
+            self.database.status = failure.map_or_else(
                 || format!("Count failed or incomplete: {:?}", result.completion),
                 |error| format!("Count failed: {error}"),
             );
         }
-        self.log_outcome(self.status.clone());
+        self.log_outcome(self.database.status.clone());
     }
     pub(super) fn catalog_event(&mut self, event: Event) {
         let done = matches!(event.kind, EventKind::Finished(_) | EventKind::Failed(_));
         let error = match &event.kind {
             EventKind::Finished(c) => {
-                self.transaction = c.transaction;
+                self.database.transaction = c.transaction;
                 if c.error.is_none() && c.delivery != tursobench_core::Delivery::Complete {
-                    self.catalog_error =
+                    self.database.catalog_error =
                         "Schema discovery incomplete: metadata budget or delivery limit reached"
                             .into();
-                    self.status.clone_from(&self.catalog_error);
+                    self.database
+                        .status
+                        .clone_from(&self.database.catalog_error);
                 }
                 c.error.as_ref()
             }
@@ -67,13 +69,16 @@ impl App {
             _ => None,
         };
         if let Some(error) = error {
-            self.catalog_error = error.to_string();
-            self.status.clone_from(&self.catalog_error);
+            self.database.catalog_error = error.to_string();
+            self.database
+                .status
+                .clone_from(&self.database.catalog_error);
         }
-        self.catalog.apply(event);
+        self.database.catalog.apply(event);
         if done {
-            self.catalog_ticket = None;
-            self.schema = self
+            self.database.catalog_ticket = None;
+            self.database.schema = self
+                .database
                 .catalog
                 .rows
                 .drain(..)
@@ -98,24 +103,28 @@ impl App {
                     })
                 })
                 .collect();
-            if self.catalog_refresh_pending {
+            if self.database.catalog_refresh_pending {
                 self.refresh_catalog();
             }
         }
     }
 
     pub(super) fn count_table(&mut self, name: String) {
-        if self.tools.count_request.is_some() || !self.ready || self.closing {
+        if self.database.tools.count_request.is_some()
+            || !self.database.ready
+            || self.database.closing
+        {
             return;
         }
-        let Some(session) = &self.session else {
+        let Some(session) = &self.database.session else {
             return;
         };
-        self.sequence += 1;
-        let ticket = session.ticket(self.sequence, self.generation);
+        self.database.sequence += 1;
+        let ticket = session.ticket(self.database.sequence, self.database.generation);
         match session.submit(Request {
             ticket,
             operation: self
+                .database
                 .document
                 .browse
                 .as_ref()
@@ -128,51 +137,55 @@ impl App {
             Ok(()) => {
                 let mut result = tursobench_core::ResultSet::default();
                 result.start(ticket);
-                let filtered = self.document.browse.as_ref().is_some_and(|b| {
+                let filtered = self.database.document.browse.as_ref().is_some_and(|b| {
                     b.table == name
                         && (!b.filters.is_empty()
                             || b.options.predicate.is_some()
                             || b.options.relation.is_some())
                 });
-                self.tools.count_request = Some(tools::CountRequest {
+                self.database.tools.count_request = Some(tools::CountRequest {
                     name,
                     result,
-                    owner: filtered.then_some((self.document.id, self.document.result.current)),
+                    owner: filtered.then_some((
+                        self.database.document.id,
+                        self.database.document.result.current,
+                    )),
                 });
-                self.status =
+                self.database.status =
                     "Counting rows; full scan, discard interrupts SELECT reads; writes finish normally".into();
             }
-            Err(e) => self.status = e.to_string(),
+            Err(e) => self.database.status = e.to_string(),
         }
     }
     pub(super) fn request_inspection(&mut self, name: String) {
-        self.document.tools.inspection = None;
-        self.document.tools.inspection_error.clear();
-        let Some(session) = &self.session else {
+        self.database.document.tools.inspection = None;
+        self.database.document.tools.inspection_error.clear();
+        let Some(session) = &self.database.session else {
             return;
         };
-        self.sequence += 1;
-        let ticket = session.ticket(self.sequence, self.generation);
+        self.database.sequence += 1;
+        let ticket = session.ticket(self.database.sequence, self.database.generation);
         match session.submit(Request {
             ticket,
             operation: Operation::Inspect(name),
         }) {
-            Ok(()) => self.document.tools.inspection_ticket = Some(ticket),
+            Ok(()) => self.database.document.tools.inspection_ticket = Some(ticket),
             Err(e) => {
-                self.document.tools.inspection_ticket = None;
-                self.document.tools.inspection_error = e.to_string();
+                self.database.document.tools.inspection_ticket = None;
+                self.database.document.tools.inspection_error = e.to_string();
             }
         }
     }
     pub(super) fn structure_inspector(&mut self, ui: &mut egui::Ui) {
         let name = self
+            .database
             .document
             .tools
             .ddl
             .as_ref()
             .map(|o| o.name.as_str())
-            .or(self.document.object.as_deref())
-            .or(self.ui.diagram.selected.as_deref());
+            .or(self.database.document.object.as_deref())
+            .or(self.database.ui.diagram.selected.as_deref());
         let Some(name) = name else {
             icons::empty_state(
                 ui,
@@ -183,12 +196,14 @@ impl App {
         };
         let info = self.loaded_inspection(name);
         let object = self
+            .database
             .document
             .tools
             .ddl
             .as_ref()
-            .or_else(|| self.schema.iter().find(|o| o.name == name));
+            .or_else(|| self.database.schema.iter().find(|o| o.name == name));
         if let Some(node) = self
+            .database
             .ui
             .diagram
             .data
@@ -198,20 +213,20 @@ impl App {
         {
             ui.colored_label(ui.visuals().error_fg_color, error);
         }
-        if self.document.tools.inspection_ticket.is_some() {
+        if self.database.document.tools.inspection_ticket.is_some() {
             ui.small("Loading structure…");
         }
-        if !self.document.tools.inspection_error.is_empty() {
+        if !self.database.document.tools.inspection_error.is_empty() {
             ui.colored_label(
                 ui.visuals().error_fg_color,
-                &self.document.tools.inspection_error,
+                &self.database.document.tools.inspection_error,
             );
         }
         let action = presentation::Structure {
             info,
             object,
-            schema: &self.schema,
-            loading: self.document.tools.inspection_ticket.is_some(),
+            schema: &self.database.schema,
+            loading: self.database.document.tools.inspection_ticket.is_some(),
         }
         .show(ui);
         match action {
@@ -224,30 +239,30 @@ impl App {
         }
     }
     pub(super) fn follow_key(&mut self, row: usize, key: ForeignKey) {
-        if !self.ready || self.closing {
-            self.status =
+        if !self.database.ready || self.database.closing {
+            self.database.status =
                 "Open a database before following references; retained values are unchanged".into();
             return;
         }
         if self.has_drafts()
-            || self.commit_ticket.is_some()
-            || self.document.view != View::Browse
-            || self.document.active.is_some()
+            || self.database.commit_ticket.is_some()
+            || self.database.document.view != View::Browse
+            || self.database.document.active.is_some()
         {
-            self.status =
+            self.database.status =
                 "Finish execution and commit or discard drafts before following a reference".into();
             return;
         }
-        let Some(table) = self.document.table.as_ref() else {
+        let Some(table) = self.database.document.table.as_ref() else {
             return;
         };
-        let Some(values) = self.document.result.rows.get(row) else {
+        let Some(values) = self.database.document.result.rows.get(row) else {
             return;
         };
         let mut keys = Vec::new();
         for (source, target) in key.columns {
             let Some(target) = target else {
-                self.status = "Referenced primary key could not be resolved".into();
+                self.database.status = "Referenced primary key could not be resolved".into();
                 return;
             };
             let Some(index) = table
@@ -261,18 +276,18 @@ impl App {
                 return;
             };
             if *value == Value::Null {
-                self.status = "NULL foreign key has no referenced row".into();
+                self.database.status = "NULL foreign key has no referenced row".into();
                 return;
             }
             keys.push((target, value.clone()));
         }
         let previous = self.navigation_entry();
-        if self.workspace.enabled
+        if self.database.workspace.enabled
             && self
                 .create_window(
                     super::tiling::Kind::Data,
                     Some(key.target.clone()),
-                    Some(self.document.id),
+                    Some(self.database.document.id),
                     true,
                 )
                 .is_none()
@@ -290,25 +305,26 @@ impl App {
             .is_some()
         {
             if let Some(previous) = previous {
-                self.tools.back.push(previous);
-                if self.tools.back.len() > 32 {
-                    self.tools.back.remove(0);
+                self.database.tools.back.push(previous);
+                if self.database.tools.back.len() > 32 {
+                    self.database.tools.back.remove(0);
                 }
             }
-            self.document.browse = None;
-            self.document.table = None;
-            self.ui.diagram.selected = Some(key.target.clone());
-            self.document.tools.ddl = None;
-            self.document.tools.related = Some(Destination::Related(key.target, keys));
+            self.database.document.browse = None;
+            self.database.document.table = None;
+            self.database.ui.diagram.selected = Some(key.target.clone());
+            self.database.document.tools.ddl = None;
+            self.database.document.tools.related = Some(Destination::Related(key.target, keys));
         }
     }
     pub(super) fn follow_incoming(&mut self, row: usize, child: String, key: ForeignKey) {
-        if self.document.active.is_some() || self.document.view != View::Browse {
+        if self.database.document.active.is_some() || self.database.document.view != View::Browse {
             return;
         }
-        let (Some(table), Some(values)) =
-            (&self.document.table, self.document.result.rows.get(row))
-        else {
+        let (Some(table), Some(values)) = (
+            &self.database.document.table,
+            self.database.document.result.rows.get(row),
+        ) else {
             return;
         };
         if !table.name.eq_ignore_ascii_case(&key.target) {
@@ -342,15 +358,15 @@ impl App {
         browse.options.relation = Some(Box::new((key, bound)));
         let destination = Destination::Page(browse.clone());
         let previous = self.navigation_entry();
-        if self.has_drafts() || self.commit_ticket.is_some() {
+        if self.has_drafts() || self.database.commit_ticket.is_some() {
             return;
         }
-        if self.workspace.enabled
+        if self.database.workspace.enabled
             && self
                 .create_window(
                     super::tiling::Kind::Data,
                     Some(child.clone()),
-                    Some(self.document.id),
+                    Some(self.database.document.id),
                     true,
                 )
                 .is_none()
@@ -359,32 +375,34 @@ impl App {
         }
         if self.submit(destination.operation(), View::Browse).is_some() {
             if let Some(previous) = previous {
-                self.tools.back.push(previous);
-                if self.tools.back.len() > 32 {
-                    self.tools.back.remove(0);
+                self.database.tools.back.push(previous);
+                if self.database.tools.back.len() > 32 {
+                    self.database.tools.back.remove(0);
                 }
             }
-            self.document.browse = Some(browse);
-            self.document.table = None;
-            self.document.tools.ddl = None;
-            self.ui.diagram.selected = Some(child);
-            self.document.tools.related = None;
+            self.database.document.browse = Some(browse);
+            self.database.document.table = None;
+            self.database.document.tools.ddl = None;
+            self.database.ui.diagram.selected = Some(child);
+            self.database.document.tools.related = None;
         }
     }
     pub(super) fn navigation_entry(&self) -> Option<NavigationEntry> {
-        if self.document.view != View::Browse {
+        if self.database.document.view != View::Browse {
             return None;
         }
         let destination = self
+            .database
             .document
             .tools
             .related
             .clone()
-            .or_else(|| self.document.browse.clone().map(Destination::Page))?;
+            .or_else(|| self.database.document.browse.clone().map(Destination::Page))?;
         Some(NavigationEntry {
             destination,
-            cell: self.document.inspect.and_then(|(r, c)| {
-                self.document
+            cell: self.database.document.inspect.and_then(|(r, c)| {
+                self.database
+                    .document
                     .result
                     .rows
                     .get(r)
@@ -392,20 +410,21 @@ impl App {
                     .map(|row| (row, c))
             }),
             record: self
+                .database
                 .document
                 .tools
                 .detail
-                .and_then(|r| self.document.result.rows.get(r).cloned()),
-            structure: self.document.ui.table_view == shell::TableView::Structure,
-            scroll: self.document.tools.grid_scroll,
-            window_rows: self.document.result.rows.len(),
+                .and_then(|r| self.database.document.result.rows.get(r).cloned()),
+            structure: self.database.document.ui.table_view == shell::TableView::Structure,
+            scroll: self.database.document.tools.grid_scroll,
+            window_rows: self.database.document.result.rows.len(),
         })
     }
     pub(super) fn restore_destination(&mut self, entry: NavigationEntry) -> bool {
-        if self.has_drafts() || self.commit_ticket.is_some() {
+        if self.has_drafts() || self.database.commit_ticket.is_some() {
             return false;
         }
-        if self.workspace.enabled
+        if self.database.workspace.enabled
             && self
                 .create_window(
                     super::tiling::Kind::Data,
@@ -423,66 +442,69 @@ impl App {
         {
             return false;
         }
-        self.document.tools.ddl = None;
-        self.document.table = None;
-        self.ui.diagram.selected = Some(entry.destination.table().into());
-        self.ui.unfolded = Some(entry.destination.table().into());
+        self.database.document.tools.ddl = None;
+        self.database.document.table = None;
+        self.database.ui.diagram.selected = Some(entry.destination.table().into());
+        self.database.ui.unfolded = Some(entry.destination.table().into());
         match &entry.destination {
             Destination::Page(b) => {
-                self.document.browse = Some(b.clone());
-                self.document.tools.related = None;
+                self.database.document.browse = Some(b.clone());
+                self.database.document.tools.related = None;
             }
             related => {
-                self.document.browse = None;
-                self.document.tools.related = Some(related.clone());
+                self.database.document.browse = None;
+                self.database.document.tools.related = Some(related.clone());
             }
         }
-        self.document.ui.table_view = if entry.structure {
+        self.database.document.ui.table_view = if entry.structure {
             shell::TableView::Structure
         } else {
             shell::TableView::Data
         };
-        self.document.tools.pages.restore_rows = if self.document.browse.is_some() {
+        self.database.document.tools.pages.restore_rows = if self.database.document.browse.is_some()
+        {
             entry
                 .window_rows
                 .min(self.preferences.row_limit.clamp(200, 10_000) - 100)
         } else {
             0
         };
-        self.document.tools.restore_navigation = Some(entry);
+        self.database.document.tools.restore_navigation = Some(entry);
         true
     }
     pub(super) fn navigate_back(&mut self) {
-        let Some(entry) = self.tools.back.last().cloned() else {
+        let Some(entry) = self.database.tools.back.last().cloned() else {
             return;
         };
         if self.restore_destination(entry) {
-            self.tools.back.pop();
+            self.database.tools.back.pop();
         }
     }
     pub(super) fn return_to_table(&mut self) {
-        let Some(entry) = self.tools.result_return.clone() else {
+        let Some(entry) = self.database.tools.result_return.clone() else {
             return;
         };
         if self.restore_destination(entry) {
-            self.tools.result_return = None;
+            self.database.tools.result_return = None;
         }
     }
     pub(super) fn restore_browse_selection(&mut self) {
-        if self.document.tools.pages.restore_rows > self.document.result.rows.len()
-            && !self.document.tools.pages.capacity_reached
-            && self.document.tools.pages.end.is_none()
+        if self.database.document.tools.pages.restore_rows
+            > self.database.document.result.rows.len()
+            && !self.database.document.tools.pages.capacity_reached
+            && self.database.document.tools.pages.end.is_none()
         {
             return;
         }
-        self.document.tools.pages.restore_rows = 0;
-        let Some(entry) = self.document.tools.restore_navigation.take() else {
+        self.database.document.tools.pages.restore_rows = 0;
+        let Some(entry) = self.database.document.tools.restore_navigation.take() else {
             return;
         };
-        self.document.inspect = entry.cell.and_then(|(values, column)| {
-            (column < self.document.result.columns.len())
+        self.database.document.inspect = entry.cell.and_then(|(values, column)| {
+            (column < self.database.document.result.columns.len())
                 .then(|| {
-                    self.document
+                    self.database
+                        .document
                         .result
                         .rows
                         .iter()
@@ -491,17 +513,23 @@ impl App {
                 })
                 .flatten()
         });
-        self.document.tools.detail = entry
-            .record
-            .and_then(|values| self.document.result.rows.iter().position(|r| *r == values));
-        self.document.tools.grid_selection =
-            self.document
+        self.database.document.tools.detail = entry.record.and_then(|values| {
+            self.database
+                .document
+                .result
+                .rows
+                .iter()
+                .position(|r| *r == values)
+        });
+        self.database.document.tools.grid_selection =
+            self.database
+                .document
                 .inspect
                 .map(|cell| super::selection::Selection {
-                    ticket: self.document.result.current,
+                    ticket: self.database.document.result.current,
                     anchor: cell,
                     cursor: cell,
                 });
-        self.document.tools.restore_scroll = Some(entry.scroll);
+        self.database.document.tools.restore_scroll = Some(entry.scroll);
     }
 }

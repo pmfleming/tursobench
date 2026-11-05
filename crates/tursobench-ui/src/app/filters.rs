@@ -340,13 +340,13 @@ fn filter_chips(
 }
 impl App {
     fn change_filters(&mut self, change: FilterChange) -> bool {
-        let Some(browse) = &self.document.browse else {
+        let Some(browse) = &self.database.document.browse else {
             return false;
         };
         let next = match change.apply(browse) {
             Ok(next) => next,
             Err(error) => {
-                self.document.tools.filter_error = error;
+                self.database.document.tools.filter_error = error;
                 return false;
             }
         };
@@ -356,10 +356,10 @@ impl App {
         {
             return false;
         }
-        self.tools.counts.clear();
-        self.document.browse = Some(next);
-        self.document.tools.filter_editor = None;
-        self.document.tools.filter_error.clear();
+        self.database.tools.counts.clear();
+        self.database.document.browse = Some(next);
+        self.database.document.tools.filter_editor = None;
+        self.database.document.tools.filter_error.clear();
         true
     }
     pub(super) fn add_filter(&mut self, filter: Filter) -> bool {
@@ -367,7 +367,10 @@ impl App {
     }
     pub(super) fn filter_controls(&mut self, ui: &mut egui::Ui) {
         self.expression_controls(ui);
-        let (Some(table), Some(browse)) = (&self.document.table, &self.document.browse) else {
+        let (Some(table), Some(browse)) = (
+            &self.database.document.table,
+            &self.database.document.browse,
+        ) else {
             return;
         };
         let enabled = self.requests_enabled();
@@ -378,39 +381,40 @@ impl App {
                         ui,
                         table,
                         &browse.filters,
-                        &mut self.document.tools.filter_editor,
+                        &mut self.database.document.tools.filter_editor,
                     );
                     let response = ui.add(
-                        egui::TextEdit::singleline(&mut self.document.filter)
+                        egui::TextEdit::singleline(&mut self.database.document.filter)
                             .id_salt("token-input")
                             .hint_text("column = value")
                             .desired_width(ui.available_width().max(90.0))
                             .char_limit(65536),
                     );
-                    if std::mem::take(&mut self.document.tools.filter_focus) {
+                    if std::mem::take(&mut self.database.document.tools.filter_focus) {
                         response.request_focus();
-                        self.document.ui.filter_open = self.workspace.enabled;
+                        self.database.document.ui.filter_open = self.database.workspace.enabled;
                     }
                     if response.has_focus() || response.lost_focus() {
                         if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
                         {
                             action = Some(
-                                parse_filter(&self.document.filter, table).map(FilterChange::Add),
+                                parse_filter(&self.database.document.filter, table)
+                                    .map(FilterChange::Add),
                             );
                         }
-                        if self.document.filter.is_empty()
+                        if self.database.document.filter.is_empty()
                             && !browse.filters.is_empty()
                             && ui.input_mut(|i| {
                                 i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)
                             })
                         {
                             action = Some(Ok(FilterChange::Remove(browse.filters.len() - 1)));
-                            self.document.tools.filter_focus = true;
+                            self.database.document.tools.filter_focus = true;
                         }
                     }
-                    if !self.document.tools.filter_error.is_empty() {
+                    if !self.database.document.tools.filter_error.is_empty() {
                         ui.colored_label(ui.visuals().error_fg_color, "!")
-                            .on_hover_text(&self.document.tools.filter_error);
+                            .on_hover_text(&self.database.document.tools.filter_error);
                     }
                     action
                 })
@@ -423,15 +427,15 @@ impl App {
                 let replace = matches!(change, FilterChange::Replace(..));
                 if self.change_filters(change) {
                     if add {
-                        self.document.filter.clear();
-                        self.document.tools.filter_focus = true;
+                        self.database.document.filter.clear();
+                        self.database.document.tools.filter_focus = true;
                     }
                     if replace {
                         egui::Popup::close_all(ui.ctx());
                     }
                 }
             }
-            Some(Err(error)) => self.document.tools.filter_error = error,
+            Some(Err(error)) => self.database.document.tools.filter_error = error,
             None => {}
         }
     }
@@ -440,12 +444,13 @@ impl App {
         ui.menu_button("AND / OR / IN…", |ui| {
             ui.label("Group comparisons with parentheses, AND and OR. IN accepts a JSON list.");
             ui.label("Example: (id = 5 OR id IN [7,8]) AND name != 'hidden'");
-            ui.text_edit_multiline(&mut self.document.tools.advanced_filter);
+            ui.text_edit_multiline(&mut self.database.document.tools.advanced_filter);
             if ui.button("Apply expression").clicked()
-                && let Some(table) = &self.document.table
+                && let Some(table) = &self.database.document.table
             {
                 change = Some(
-                    parse_expression(&self.document.tools.advanced_filter, table, 0).map(Some),
+                    parse_expression(&self.database.document.tools.advanced_filter, table, 0)
+                        .map(Some),
                 );
             }
             if ui.button("Clear expression").clicked() {
@@ -455,7 +460,7 @@ impl App {
         if let Some(change) = change {
             match change {
                 Ok(predicate) => {
-                    if let Some(mut next) = self.document.browse.clone() {
+                    if let Some(mut next) = self.database.document.browse.clone() {
                         next.options.predicate = predicate.map(Box::new);
                         next.options.cursor = None;
                         next.options.reverse = false;
@@ -464,24 +469,25 @@ impl App {
                             .submit(Operation::Browse(next.clone()), View::Browse)
                             .is_some()
                         {
-                            self.document.browse = Some(next);
-                            self.tools.counts.clear();
+                            self.database.document.browse = Some(next);
+                            self.database.tools.counts.clear();
                         }
                     }
                 }
-                Err(e) => self.document.tools.filter_error = e,
+                Err(e) => self.database.document.tools.filter_error = e,
             }
         }
     }
     pub(super) fn column_facets(&mut self, ui: &mut egui::Ui, column: usize) {
-        if self.document.view != View::Browse || self.document.browse.is_none() {
+        if self.database.document.view != View::Browse || self.database.document.browse.is_none() {
             ui.label("Facets require a table browse");
             return;
         }
-        let sample = self.document.result.rows.len().min(1000);
+        let sample = self.database.document.result.rows.len().min(1000);
         ui.label(format!("Top values · {sample} retained rows"));
         let mut counts = std::collections::BTreeMap::<String, (Value, usize)>::new();
         for value in self
+            .database
             .document
             .result
             .rows
@@ -507,15 +513,16 @@ impl App {
             }
         }
         if ui.button("Custom filter…").clicked() {
-            if let Some(c) = self.document.result.columns.get(column) {
-                self.document.filter = format!("{} = ", tursobench_core::quote_identifier(&c.name));
+            if let Some(c) = self.database.document.result.columns.get(column) {
+                self.database.document.filter =
+                    format!("{} = ", tursobench_core::quote_identifier(&c.name));
             }
-            self.document.ui.filter_open = true;
-            self.document.tools.filter_focus = true;
+            self.database.document.ui.filter_open = true;
+            self.database.document.tools.filter_focus = true;
             ui.close();
         }
         if ui.button("Hide column").clicked() {
-            self.document.tools.columns.hidden.insert(column);
+            self.database.document.tools.columns.hidden.insert(column);
             ui.close();
         }
     }

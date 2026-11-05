@@ -49,17 +49,18 @@ impl Default for Workspace {
 }
 impl App {
     pub(super) fn document_ref(&self, id: u64) -> Option<&Document> {
-        if self.document.id == id {
-            Some(&self.document)
+        if self.database.document.id == id {
+            Some(&self.database.document)
         } else {
-            self.documents.get(&id)
+            self.database.documents.get(&id)
         }
     }
     pub(super) fn window_ids(&self) -> Vec<u64> {
-        self.documents
+        self.database
+            .documents
             .keys()
             .copied()
-            .chain(std::iter::once(self.document.id))
+            .chain(std::iter::once(self.database.document.id))
             .collect()
     }
     pub(super) fn find_window(
@@ -76,50 +77,51 @@ impl App {
     }
     pub(super) fn pane_document(&self, kind: Kind) -> Option<u64> {
         match kind {
-            Kind::Record => self.workspace.visible.get(&Kind::Data).copied(),
+            Kind::Record => self.database.workspace.visible.get(&Kind::Data).copied(),
             Kind::Structure => self
+                .database
                 .workspace
                 .visible
                 .get(&Kind::Structure)
-                .or(self.workspace.visible.get(&Kind::Data))
+                .or(self.database.workspace.visible.get(&Kind::Data))
                 .copied(),
-            _ => self.workspace.visible.get(&kind).copied(),
+            _ => self.database.workspace.visible.get(&kind).copied(),
         }
     }
     pub(super) fn focus_pane(&mut self, kind: Kind) {
-        self.workspace.active = kind.pane();
-        self.workspace.minimized.remove(&kind.pane());
-        if self.workspace.expanded.is_some() {
-            self.workspace.expanded = Some(kind.pane());
+        self.database.workspace.active = kind.pane();
+        self.database.workspace.minimized.remove(&kind.pane());
+        if self.database.workspace.expanded.is_some() {
+            self.database.workspace.expanded = Some(kind.pane());
         }
         if let Some(id) = self.pane_document(kind) {
             self.switch_document(id);
-            self.workspace.focused = id;
+            self.database.workspace.focused = id;
         }
     }
     pub(super) fn focus_window(&mut self, id: u64) {
         if !self.switch_document(id) {
             return;
         }
-        let kind = self.document.kind;
-        self.workspace.visible.insert(kind, id);
+        let kind = self.database.document.kind;
+        self.database.workspace.visible.insert(kind, id);
         // Structure follows the newly selected table until a separate schema object is inspected.
         if kind == Kind::Data {
-            self.workspace.visible.remove(&Kind::Structure);
+            self.database.workspace.visible.remove(&Kind::Structure);
         }
         if kind == Kind::Result
-            && let Some(source) = self.document.source
+            && let Some(source) = self.database.document.source
             && self
                 .document_ref(source)
                 .is_some_and(|d| d.kind == Kind::Sql)
         {
-            self.workspace.visible.insert(Kind::Sql, source);
+            self.database.workspace.visible.insert(Kind::Sql, source);
         }
-        self.workspace.focused = id;
-        self.workspace.active = kind.pane();
-        self.workspace.minimized.remove(&kind.pane());
-        if self.workspace.expanded.is_some() {
-            self.workspace.expanded = Some(kind.pane());
+        self.database.workspace.focused = id;
+        self.database.workspace.active = kind.pane();
+        self.database.workspace.minimized.remove(&kind.pane());
+        if self.database.workspace.expanded.is_some() {
+            self.database.workspace.expanded = Some(kind.pane());
         }
     }
     pub(super) fn create_window(
@@ -136,10 +138,16 @@ impl App {
         if self.window_ids().len() >= MAX_VIEWS {
             // Evict only idle, hidden, clean results; never discard an editor or draft.
             let victim = self
+                .database
                 .documents
                 .iter()
                 .find(|(id, d)| {
-                    !self.workspace.visible.values().any(|shown| shown == *id)
+                    !self
+                        .database
+                        .workspace
+                        .visible
+                        .values()
+                        .any(|shown| shown == *id)
                         && !d.has_drafts()
                         && d.active.is_none()
                         && d.tools.inspection_ticket.is_none()
@@ -149,14 +157,14 @@ impl App {
                 })
                 .map(|(id, _)| *id);
             if let Some(id) = victim {
-                self.documents.remove(&id);
+                self.database.documents.remove(&id);
             } else {
-                self.status="All retained views are busy or contain unsaved SQL; finish an operation before opening another".into();
+                self.database.status="All retained views are busy or contain unsaved SQL; finish an operation before opening another".into();
                 return None;
             }
         }
-        let id = self.workspace.next_id;
-        self.workspace.next_id += 1;
+        let id = self.database.workspace.next_id;
+        self.database.workspace.next_id += 1;
         let mut next = Document {
             id,
             kind,
@@ -178,33 +186,37 @@ impl App {
         if kind == Kind::Sql {
             next.sql.clear();
         }
-        let previous = std::mem::replace(&mut self.document, next);
-        self.documents.insert(previous.id, previous);
+        let previous = std::mem::replace(&mut self.database.document, next);
+        self.database.documents.insert(previous.id, previous);
         self.focus_window(id);
         Some(id)
     }
     pub(super) fn initialize_workspace(&mut self) {
-        self.workspace.enabled = true;
-        self.document.kind = Kind::Map;
-        self.workspace.visible.insert(Kind::Map, self.document.id);
-        self.workspace.focused = self.document.id;
+        self.database.workspace.enabled = true;
+        self.database.document.kind = Kind::Map;
+        self.database
+            .workspace
+            .visible
+            .insert(Kind::Map, self.database.document.id);
+        self.database.workspace.focused = self.database.document.id;
         self.open_sql_window(false);
         self.focus_pane(Kind::Map);
     }
     pub(super) fn open_structure_window(&mut self) {
-        if self.document.kind == Kind::Data {
-            self.workspace.visible.remove(&Kind::Structure);
-            if let Some(name) = self.document.object.clone() {
+        if self.database.document.kind == Kind::Data {
+            self.database.workspace.visible.remove(&Kind::Structure);
+            if let Some(name) = self.database.document.object.clone() {
                 self.request_inspection(name);
             }
             self.focus_pane(Kind::Structure);
             return;
         }
-        let Some(name) = self
-            .document
-            .object
-            .clone()
-            .or(self.ui.diagram.selected.clone())
+        let Some(name) = self.database.document.object.clone().or(self
+            .database
+            .ui
+            .diagram
+            .selected
+            .clone())
         else {
             self.focus_pane(Kind::Structure);
             return;
@@ -224,62 +236,62 @@ impl App {
         self.create_window(Kind::Sql, None, None, duplicate);
     }
     pub(super) fn open_record_window(&mut self, row: usize, column: usize) {
-        if self.document.result.rows.get(row).is_none() {
+        if self.database.document.result.rows.get(row).is_none() {
             return;
         }
-        self.document.inspect = Some((row, column));
-        self.document.tools.detail = Some(row);
-        self.document.ui.inspector = DetailMode::Record;
-        if self.document.kind == Kind::Data {
+        self.database.document.inspect = Some((row, column));
+        self.database.document.tools.detail = Some(row);
+        self.database.document.ui.inspector = DetailMode::Record;
+        if self.database.document.kind == Kind::Data {
             self.focus_pane(Kind::Record);
         } else {
-            self.document.ui.inspector_open = true;
-            self.document.ui.inspector_detached = true;
+            self.database.document.ui.inspector_open = true;
+            self.database.document.ui.inspector_detached = true;
         }
     }
     pub(super) fn expand_window(&mut self, id: u64) {
-        let kind = if id == self.workspace.focused {
-            self.workspace.active
+        let kind = if id == self.database.workspace.focused {
+            self.database.workspace.active
         } else {
             self.document_ref(id).map_or(Kind::Data, |d| d.kind.pane())
         };
         self.expand_pane(kind);
     }
     pub(super) fn expand_pane(&mut self, kind: Kind) {
-        let restore = self.workspace.expanded == Some(kind);
+        let restore = self.database.workspace.expanded == Some(kind);
         self.focus_pane(kind);
-        self.workspace.expanded = if restore { None } else { Some(kind) };
+        self.database.workspace.expanded = if restore { None } else { Some(kind) };
     }
     pub(super) fn minimize_pane(&mut self, kind: Kind) {
-        self.workspace.minimized.insert(kind);
-        if self.workspace.expanded == Some(kind) {
-            self.workspace.expanded = None;
+        self.database.workspace.minimized.insert(kind);
+        if self.database.workspace.expanded == Some(kind) {
+            self.database.workspace.expanded = None;
         }
     }
     pub(super) fn retile(&mut self) {
-        self.workspace.minimized.clear();
-        self.workspace.expanded = None;
+        self.database.workspace.minimized.clear();
+        self.database.workspace.expanded = None;
     }
     pub(super) fn tiled_workspace(&mut self, ui: &mut egui::Ui) {
-        self.workspace.area = ui.available_rect_before_wrap();
+        self.database.workspace.area = ui.available_rect_before_wrap();
         #[cfg(test)]
         {
-            self.workspace.tiles.clear();
-            self.workspace.pane_rects.clear();
-            self.workspace.controls.clear();
+            self.database.workspace.tiles.clear();
+            self.database.workspace.pane_rects.clear();
+            self.database.workspace.controls.clear();
         }
         let mut panes = tiling::layout(
-            self.workspace.area,
-            self.workspace.expanded,
-            &self.workspace.minimized,
-            &self.workspace.splits,
+            self.database.workspace.area,
+            self.database.workspace.expanded,
+            &self.database.workspace.minimized,
+            &self.database.workspace.splits,
         );
         if self.workspace_dividers(ui, &panes) {
             panes = tiling::layout(
-                self.workspace.area,
-                self.workspace.expanded,
-                &self.workspace.minimized,
-                &self.workspace.splits,
+                self.database.workspace.area,
+                self.database.workspace.expanded,
+                &self.database.workspace.minimized,
+                &self.database.workspace.splits,
             );
         }
         for (kind, rect) in panes {
@@ -287,7 +299,7 @@ impl App {
             if let Some(id) = owner {
                 self.switch_document(id);
             }
-            if !self.workspace.minimized.contains(&kind)
+            if !self.database.workspace.minimized.contains(&kind)
                 && ui.input(|i| {
                     i.pointer.any_pressed()
                         && i.pointer.interact_pos().is_some_and(|p| rect.contains(p))
@@ -297,12 +309,12 @@ impl App {
             }
             #[cfg(test)]
             {
-                self.workspace.pane_rects.push((kind, rect));
+                self.database.workspace.pane_rects.push((kind, rect));
                 if let Some(id) = owner {
-                    self.workspace.tiles.push((id, rect));
+                    self.database.workspace.tiles.push((id, rect));
                 }
             }
-            let focused = self.workspace.active == kind;
+            let focused = self.database.workspace.active == kind;
             let tokens = crate::appearance::Tokens::of(ui.ctx());
             ui.painter()
                 .rect_filled(rect, 10.0, ui.visuals().extreme_bg_color);
@@ -349,7 +361,7 @@ impl App {
                     ui.set_clip_rect(content.intersect(ui.clip_rect()));
                     ui.set_min_size(content.size());
                     ui.set_max_size(content.size());
-                    if self.workspace.minimized.contains(&kind) {
+                    if self.database.workspace.minimized.contains(&kind) {
                         ui.horizontal(|ui| {
                             if ui
                                 .add_sized(
@@ -384,7 +396,7 @@ impl App {
                         return;
                     }
                     self.pane_ribbon(ui, kind, owner.is_some());
-                    if self.workspace.minimized.contains(&kind) {
+                    if self.database.workspace.minimized.contains(&kind) {
                         return;
                     }
                     let divider_y = ui.cursor().top().min(content.bottom());
@@ -423,13 +435,15 @@ impl App {
                 },
             );
         }
-        self.switch_document(self.workspace.focused);
+        self.switch_document(self.database.workspace.focused);
     }
     fn workspace_dividers(&mut self, ui: &mut egui::Ui, panes: &[(Kind, egui::Rect)]) -> bool {
         let mut changed = false;
-        for (divider, rect) in
-            tiling::dividers(panes, &self.workspace.minimized, self.workspace.area)
-        {
+        for (divider, rect) in tiling::dividers(
+            panes,
+            &self.database.workspace.minimized,
+            self.database.workspace.area,
+        ) {
             let response = ui
                 .interact(
                     rect,
@@ -455,9 +469,12 @@ impl App {
                 };
                 let movement = if divider.vertical() { delta.x } else { delta.y };
                 if movement != 0.0 {
-                    self.workspace
-                        .splits
-                        .resize(divider, delta, panes, &self.workspace.minimized);
+                    self.database.workspace.splits.resize(
+                        divider,
+                        delta,
+                        panes,
+                        &self.database.workspace.minimized,
+                    );
                     changed = true;
                     ui.ctx().request_repaint();
                 }
@@ -488,17 +505,20 @@ impl App {
                     .show(ui, |ui| self.structure_inspector(ui));
             }
             Kind::Record => {
-                if self.document.has_drafts() || self.commit_owner == Some(self.document.id) {
+                if self.database.document.has_drafts()
+                    || self.database.commit_owner == Some(self.database.document.id)
+                {
                     egui::Panel::bottom("record-edits")
                         .resizable(false)
                         .show(ui, |ui| self.staged_edit_dock(ui));
                 }
                 let row = self
+                    .database
                     .document
                     .inspect
                     .map(|(r, _)| r)
-                    .or(self.document.tools.detail)
-                    .or_else(|| (!self.document.result.rows.is_empty()).then_some(0));
+                    .or(self.database.document.tools.detail)
+                    .or_else(|| (!self.database.document.result.rows.is_empty()).then_some(0));
                 egui::ScrollArea::vertical()
                     .id_salt("record-scroll")
                     .auto_shrink([false, false])
@@ -515,12 +535,16 @@ impl App {
             }
             Kind::Sql => self.sql_pane(ui),
             Kind::Data | Kind::Result => {
-                if self.document.has_drafts() || self.commit_owner == Some(self.document.id) {
+                if self.database.document.has_drafts()
+                    || self.database.commit_owner == Some(self.database.document.id)
+                {
                     egui::Panel::bottom("staged-edit-dock")
                         .resizable(false)
                         .show(ui, |ui| self.staged_edit_dock(ui));
                 }
-                if self.document.ui.filter_open || self.document.tools.filter_focus {
+                if self.database.document.ui.filter_open
+                    || self.database.document.tools.filter_focus
+                {
                     self.filter_controls(ui);
                 }
                 self.grid_contents(ui);
@@ -530,7 +554,8 @@ impl App {
     pub(super) fn sql_result_window(&self, editor: u64) -> Option<u64> {
         self.find_window(Kind::Result, None, Some(editor))
             .or_else(|| {
-                self.workspace
+                self.database
+                    .workspace
                     .visible
                     .get(&Kind::Result)
                     .copied()
@@ -543,7 +568,7 @@ impl App {
             })
     }
     fn sql_pane(&mut self, ui: &mut egui::Ui) {
-        let editor = self.document.id;
+        let editor = self.database.document.id;
         if let Some(result) = self.sql_result_window(editor) {
             let height = (ui.available_height() * 0.44).max(45.0);
             egui::Panel::top("sql-editor")
@@ -619,6 +644,7 @@ impl Snapshot {
 impl App {
     pub(super) fn workspace_snapshot(&self) -> Option<Snapshot> {
         let views: Vec<_> = self
+            .database
             .workspace
             .visible
             .values()
@@ -636,29 +662,32 @@ impl App {
                 })
             })
             .collect();
-        let focused = if views.iter().any(|v| v.id == self.workspace.focused) {
-            self.workspace.focused
+        let focused = if views
+            .iter()
+            .any(|v| v.id == self.database.workspace.focused)
+        {
+            self.database.workspace.focused
         } else {
             views.first()?.id
         };
         let saved = Snapshot {
-            database: self.tools.database_scope.clone(),
+            database: self.database.tools.database_scope.clone(),
             views,
             focused,
-            expanded: self.workspace.expanded.map(|_| focused),
-            active: Some(self.workspace.active),
-            minimized: self.workspace.minimized.clone(),
-            splits: self.workspace.splits,
+            expanded: self.database.workspace.expanded.map(|_| focused),
+            active: Some(self.database.workspace.active),
+            minimized: self.database.workspace.minimized.clone(),
+            splits: self.database.workspace.splits,
         };
         saved.valid().then_some(saved)
     }
     pub(super) fn save_workspace(&mut self) {
-        if !self.workspace.enabled {
+        if !self.database.workspace.enabled {
             return;
         }
         self.preferences
             .workspace_layouts
-            .retain(|s| s.database != self.tools.database_scope);
+            .retain(|s| s.database != self.database.tools.database_scope);
         if let Some(snapshot) = self.workspace_snapshot() {
             self.preferences.workspace_layouts.insert(0, snapshot);
         }
@@ -670,13 +699,13 @@ impl App {
             .preferences
             .workspace_layouts
             .iter()
-            .find(|s| s.database == self.tools.database_scope && s.valid())
+            .find(|s| s.database == self.database.tools.database_scope && s.valid())
             .cloned()
         else {
             return;
         };
-        self.documents.clear();
-        self.workspace.visible.clear();
+        self.database.documents.clear();
+        self.database.workspace.visible.clear();
         for view in saved.views {
             let mut document = Document {
                 id: view.id,
@@ -699,42 +728,44 @@ impl App {
             if view.kind == Kind::Sql {
                 document.sql.clear();
             }
-            self.workspace.visible.insert(view.kind, view.id);
-            self.documents.insert(view.id, document);
+            self.database.workspace.visible.insert(view.kind, view.id);
+            self.database.documents.insert(view.id, document);
         }
-        self.document = self.documents.remove(&saved.focused).unwrap();
-        self.workspace
+        self.database.document = self.database.documents.remove(&saved.focused).unwrap();
+        self.database
+            .workspace
             .visible
-            .insert(self.document.kind, saved.focused);
-        self.workspace.focused = saved.focused;
-        self.workspace.active = saved.active.unwrap_or(self.document.kind.pane());
-        self.workspace.expanded = saved.expanded.map(|_| self.workspace.active);
-        self.workspace.next_id = self.window_ids().into_iter().max().unwrap() + 1;
-        let active = self.workspace.active;
-        if !self.workspace.visible.contains_key(&Kind::Map) {
+            .insert(self.database.document.kind, saved.focused);
+        self.database.workspace.focused = saved.focused;
+        self.database.workspace.active = saved.active.unwrap_or(self.database.document.kind.pane());
+        self.database.workspace.expanded = saved.expanded.map(|_| self.database.workspace.active);
+        self.database.workspace.next_id = self.window_ids().into_iter().max().unwrap() + 1;
+        let active = self.database.workspace.active;
+        if !self.database.workspace.visible.contains_key(&Kind::Map) {
             self.create_window(Kind::Map, None, None, false);
         }
-        if !self.workspace.visible.contains_key(&Kind::Sql) {
+        if !self.database.workspace.visible.contains_key(&Kind::Sql) {
             self.open_sql_window(false);
         }
-        self.workspace.active = active;
-        self.workspace.expanded = saved.expanded.map(|_| active);
-        self.workspace.minimized = saved.minimized;
-        self.workspace.splits = saved.splits;
+        self.database.workspace.active = active;
+        self.database.workspace.expanded = saved.expanded.map(|_| active);
+        self.database.workspace.minimized = saved.minimized;
+        self.database.workspace.splits = saved.splits;
         if let Some(id) = self.pane_document(active) {
             self.switch_document(id);
-            self.workspace.focused = id;
+            self.database.workspace.focused = id;
         }
-        self.status =
+        self.database.status =
             "Workspace layout restored; SQL recovery is controlled in Settings. Results and records are session-only.".into();
     }
     pub(super) fn load_restored_view(&mut self, ctx: &egui::Context) {
         if !self.requests_enabled()
             || self.executing()
-            || self.catalog_ticket.is_some()
-            || self.ui.diagram.ticket.is_some()
-            || self.document.tools.inspection_ticket.is_some()
+            || self.database.catalog_ticket.is_some()
+            || self.database.ui.diagram.ticket.is_some()
+            || self.database.document.tools.inspection_ticket.is_some()
             || self
+                .database
                 .documents
                 .values()
                 .any(|d| d.tools.inspection_ticket.is_some())
@@ -748,12 +779,13 @@ impl App {
         else {
             return;
         };
-        let focused = self.document.id;
+        let focused = self.database.document.id;
         self.switch_document(id);
-        let name = self.document.object.clone().unwrap();
+        let name = self.database.document.object.clone().unwrap();
         // Metadata has arrived before restoring table views. Missing objects stay visible with a clear explanation.
-        if let Some(object) = self.schema.iter().find(|o| o.name == name) {
-            if self.document.kind == Kind::Data && matches!(object.kind.as_str(), "table" | "view")
+        if let Some(object) = self.database.schema.iter().find(|o| o.name == name) {
+            if self.database.document.kind == Kind::Data
+                && matches!(object.kind.as_str(), "table" | "view")
             {
                 let browse = tursobench_core::Browse {
                     options: Default::default(),
@@ -763,21 +795,22 @@ impl App {
                     descending: false,
                     filters: vec![],
                 };
-                self.document.browse = Some(browse.clone());
-                self.document.view = View::Browse;
-                self.document.needs_load = self
+                self.database.document.browse = Some(browse.clone());
+                self.database.document.view = View::Browse;
+                self.database.document.needs_load = self
                     .submit(tursobench_db::Operation::Browse(browse), View::Browse)
                     .is_none();
             } else if matches!(object.kind.as_str(), "index" | "trigger") {
-                self.document.tools.ddl = Some(object.clone());
-                self.document.needs_load = false;
+                self.database.document.tools.ddl = Some(object.clone());
+                self.database.document.needs_load = false;
             } else {
                 self.request_inspection(name);
-                self.document.needs_load = self.document.tools.inspection_ticket.is_none();
+                self.database.document.needs_load =
+                    self.database.document.tools.inspection_ticket.is_none();
             }
         } else {
-            self.document.needs_load = false;
-            self.document.tools.inspection_error =
+            self.database.document.needs_load = false;
+            self.database.document.tools.inspection_error =
                 format!("{name} is no longer in the database catalog");
         }
         self.switch_document(focused);

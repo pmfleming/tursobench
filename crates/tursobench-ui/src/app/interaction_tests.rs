@@ -1,6 +1,6 @@
 use super::{
     App, View, context, egui, shell,
-    test_ui::{control, control_from, control_prefix, inspect_selected, key_event, pointer_button},
+    test_ui::{control, control_from, inspect_selected, key_event, pointer_button},
     tiling, workspace,
 };
 use std::time::{Duration, Instant};
@@ -823,11 +823,12 @@ fn reverted_empty_batch_cannot_carry_identity_to_another_table() {
     app.browse_table("a".into());
     wait(&mut app, &ctx);
     app.stage_cell(0, 1, Value::Text("temporary".into()));
-    app.document
+    app.database
+        .document
         .drafts
         .as_mut()
         .unwrap()
-        .revert_row(&app.document.result.rows[0]);
+        .revert_row(&app.database.document.result.rows[0]);
     assert!(!app.has_drafts());
     app.browse_table("b".into());
     wait(&mut app, &ctx);
@@ -1030,8 +1031,8 @@ fn click_inspect_stage_no_write_failed_commit_retains_drafts() {
     // Inspecting, rendering and staging produced no SQL request or row mutation.
     assert_retained(&app, 0, 0, Value::Integer(1));
     frame(&mut app, &ctx, vec![]);
-    let s = app.session.as_ref().unwrap();
-    app.sequence += 1;
+    let s = app.database.session.as_ref().unwrap();
+    app.database.sequence += 1;
     s.submit(Request {
         ticket: s.ticket(app.sequence, 0),
         operation: Operation::Execute {
@@ -1068,7 +1069,7 @@ fn click_inspect_stage_no_write_failed_commit_retains_drafts() {
     app.stage_cell(0, 1, Value::Text("uncertain draft".into()));
     let owner = app.document.id;
     let other = *app.documents.keys().next().unwrap();
-    app.sequence += 1;
+    app.database.sequence += 1;
     let ticket = app
         .session
         .as_ref()
@@ -1556,14 +1557,13 @@ fn table_title_cells_and_status_share_alignment_and_header_fills_the_tile() {
                 (status.x - cell.x).abs() < 1.1,
                 "status {status:?}, cell {cell:?}"
             );
-            let expand = control(
-                &output,
-                if expanded {
-                    "Restore workspace"
-                } else {
-                    "Expand to workspace"
-                },
-            );
+            let expand = app
+                .workspace
+                .controls
+                .iter()
+                .find(|(kind, _, _)| *kind == tiling::Kind::Data)
+                .unwrap()
+                .2;
             let count = control(&output, "Count matching rows");
             assert!(
                 (expand.right() - count.right()).abs() < 1.1,
@@ -2329,60 +2329,27 @@ fn filtered_index_tree_opens_original_ddl_without_replacing_primary_rows() {
 }
 
 #[test]
-fn cancelling_a_recent_database_switch_clears_the_pending_path() {
+fn opening_another_database_preserves_the_first_and_close_still_confirms() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("active.db");
     crate::test_support::create(&path, &["CREATE TABLE sample(id INTEGER PRIMARY KEY)"]);
     let (ctx, mut app) = connected(&path, true);
-    ctx.enable_accesskit();
+    let first = app.database.id;
     let session = app.session.as_ref().unwrap().id;
     let other = dir.path().join("other.db");
-    app.preferences.discovery.record_open(other.clone(), 1);
-    for target in [&path, &other] {
-        let output = frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
-        click(
-            &mut app,
-            &ctx,
-            control_prefix(&output, "Switch database").center(),
-        );
-        frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
-        let output = frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
-        click(
-            &mut app,
-            &ctx,
-            control_prefix(&output, target.to_str().unwrap()).center(),
-        );
-        if target == &path {
-            assert!(!app.confirm_close && !app.closing);
-            assert!(app.pending_database.is_none());
-            assert_eq!(app.session.as_ref().unwrap().id, session);
-        }
-    }
-    assert_eq!(app.pending_database.as_ref(), Some(&other));
+    app.request_database(&ctx, other.clone());
+    assert_eq!(app.path, other.to_string_lossy());
+    assert!(!app.confirm_close && !app.writable && app.session.is_none());
+    assert_eq!(app.parked[&first].session.as_ref().unwrap().id, session);
+    app.select_workspace(first);
+    assert_eq!(app.session.as_ref().unwrap().id, session);
+    app.request_close();
     assert!(app.confirm_close);
     press_key(&mut app, &ctx, egui::Key::Escape, egui::Modifiers::NONE);
-    assert!(app.pending_database.is_none());
-    assert!(!app.confirm_close);
-    assert!(!app.closing);
+    assert!(!app.closing && !app.confirm_close);
     assert_eq!(app.session.as_ref().unwrap().id, session);
-    assert_eq!(app.path, path.to_string_lossy());
-    for action in ["Open database…", "Close database"] {
-        let output = frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
-        click(
-            &mut app,
-            &ctx,
-            control_prefix(&output, "Switch database").center(),
-        );
-        frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
-        let output = frame_at(&mut app, &ctx, egui::vec2(1400.0, 900.0), vec![]);
-        click(&mut app, &ctx, control(&output, action).center());
-        assert!(app.confirm_close);
-        assert!(app.pending_database.is_none());
-        press_key(&mut app, &ctx, egui::Key::Escape, egui::Modifiers::NONE);
-        assert!(!app.closing && !app.confirm_close);
-        assert_eq!(app.session.as_ref().unwrap().id, session);
-    }
     app.close();
+    wait_closed(&mut app, &ctx);
 }
 
 #[test]
@@ -3242,4 +3209,121 @@ fn redesigned_dialog_actions_remain_visible_at_minimum_and_laptop_sizes() {
         }
     }
     app.close();
+}
+
+#[test]
+fn database_workspaces_isolate_transactions_drafts_and_inactive_results() {
+    let (dir, ctx, mut app) = fixture(
+        &[
+            "CREATE TABLE t(id INTEGER PRIMARY KEY, value TEXT)",
+            "INSERT INTO t VALUES(1,'first')",
+        ],
+        true,
+    );
+    let first = app.database.id;
+    let first_path = app.database.path.clone();
+    app.run_text("BEGIN".into(), None);
+    wait(&mut app, &ctx);
+    app.run_text("INSERT INTO t VALUES(2,'pending')".into(), None);
+    wait(&mut app, &ctx);
+    assert_eq!(app.transaction, TransactionState::Active);
+    // Leave a query queued on the first workspace while opening the second.
+    app.run_text("SELECT count(*) FROM t".into(), None);
+    let first_result = app.document.id;
+    let second_path = dir.path().join("second.db");
+    crate::test_support::create(
+        &second_path,
+        &[
+            "CREATE TABLE t(id INTEGER PRIMARY KEY, value TEXT)",
+            "INSERT INTO t VALUES(10,'second')",
+        ],
+    );
+    app.request_database(&ctx, second_path.clone());
+    app.database.writable = true;
+    inspect_selected(&mut app, &ctx);
+    app.open(&ctx);
+    wait(&mut app, &ctx);
+    let second = app.database.id;
+    assert_ne!(first, second);
+    app.run_text("SELECT value FROM t".into(), None);
+    wait(&mut app, &ctx);
+    assert_eq!(
+        app.document.result.rows,
+        vec![vec![Value::Text("second".into())]]
+    );
+    assert_eq!(app.transaction, TransactionState::Autocommit);
+    let first_state = &app.parked[&first];
+    let result = if first_state.document.id == first_result {
+        &first_state.document
+    } else {
+        &first_state.documents[&first_result]
+    };
+    assert!(result.active.is_none());
+    assert_eq!(result.result.rows, vec![vec![Value::Integer(2)]]);
+    app.select_workspace(first);
+    assert_eq!(app.transaction, TransactionState::Active);
+    app.browse_table("t".into());
+    wait(&mut app, &ctx);
+    assert_eq!(
+        app.document.result.rows.len(),
+        1,
+        "browse sees committed state"
+    );
+    app.select_workspace(second);
+    app.browse_table("t".into());
+    wait(&mut app, &ctx);
+    app.stage_cell(0, 1, Value::Text("draft".into()));
+    assert!(app.has_drafts());
+    app.select_workspace(first);
+    assert!(!app.has_drafts());
+    assert_eq!(app.transaction, TransactionState::Active);
+    app.select_workspace(second);
+    assert!(app.has_drafts());
+    // Duplicate aliases focus the existing session instead of opening another.
+    let alias = dir.path().join("alias.db");
+    std::os::unix::fs::symlink(&first_path, &alias).unwrap();
+    app.select_workspace(second);
+    app.request_database(&ctx, alias);
+    assert_eq!(app.database.id, first);
+    assert_eq!(app.parked.len(), 1);
+    // Closing the first rolls back only its own pending transaction.
+    app.close();
+    wait_closed(&mut app, &ctx);
+    app.select_workspace(second);
+    assert!(app.has_drafts());
+    app.database.document.drafts = None;
+    app.run_text("SELECT value FROM t".into(), None);
+    wait(&mut app, &ctx);
+    assert_eq!(
+        app.document.result.rows,
+        vec![vec![Value::Text("second".into())]]
+    );
+    frame(&mut app, &ctx, vec![]);
+    app.close();
+    wait_closed(&mut app, &ctx);
+}
+
+#[test]
+fn workspace_limit_and_quit_settle_every_live_session() {
+    let (dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
+    for i in 1..4 {
+        let path = dir.path().join(format!("db{i}.db"));
+        crate::test_support::create(&path, &["CREATE TABLE t(id INTEGER PRIMARY KEY)"]);
+        app.request_database(&ctx, path);
+        inspect_selected(&mut app, &ctx);
+        app.open(&ctx);
+        wait(&mut app, &ctx);
+    }
+    assert_eq!(app.parked.len(), 3);
+    assert!(!app.new_workspace(&ctx));
+    assert!(app.status.contains("Four database"));
+    app.quit = true;
+    app.continue_quit(&ctx);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while app.database.session.is_some() || app.parked.values().any(|d| d.session.is_some()) {
+        app.poll(&ctx);
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(app.parked.values().all(|d| !d.closing));
 }

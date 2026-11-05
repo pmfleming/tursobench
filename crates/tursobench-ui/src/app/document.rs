@@ -100,14 +100,14 @@ impl Document {
 }
 impl App {
     pub(super) fn switch_document(&mut self, id: u64) -> bool {
-        if id == self.document.id {
+        if id == self.database.document.id {
             return true;
         }
-        let Some(next) = self.documents.remove(&id) else {
+        let Some(next) = self.database.documents.remove(&id) else {
             return false;
         };
-        let previous = std::mem::replace(&mut self.document, next);
-        self.documents.insert(previous.id, previous);
+        let previous = std::mem::replace(&mut self.database.document, next);
+        self.database.documents.insert(previous.id, previous);
         true
     }
 }

@@ -48,34 +48,39 @@ pub(super) enum Action {
 }
 impl App {
     pub(super) fn executing(&self) -> bool {
-        self.document.active.is_some() || self.documents.values().any(|d| d.active.is_some())
+        self.database.document.active.is_some()
+            || self.database.documents.values().any(|d| d.active.is_some())
     }
     pub(super) fn action_enabled(&self, action: Action) -> bool {
         use Action::*;
         match action {
-            ZoomOut => self.ui.diagram.camera.zoom() > super::diagram::MIN_ZOOM,
-            ZoomIn => self.ui.diagram.camera.zoom() < super::diagram::MAX_ZOOM,
+            ZoomOut => self.database.ui.diagram.camera.zoom() > super::diagram::MIN_ZOOM,
+            ZoomIn => self.database.ui.diagram.camera.zoom() < super::diagram::MAX_ZOOM,
             Run | RunAll | Explain | Bytecode | Begin | Commit | Rollback => {
                 self.requests_enabled()
                     && !self.executing()
-                    && (!matches!(action, Commit) || self.transaction == TransactionState::Active)
+                    && (!matches!(action, Commit)
+                        || self.database.transaction == TransactionState::Active)
             }
             Count => {
                 self.requests_enabled()
-                    && self.document.kind == Kind::Data
-                    && self.document.object.is_some()
+                    && self.database.document.kind == Kind::Data
+                    && self.database.document.object.is_some()
             }
             Refresh => self.requests_enabled(),
             Insert => self.can_edit(),
-            CloneRecord | DeleteRecord => self.can_edit() && self.document.inspect.is_some(),
-            CopyRecord | Inspect | CopyValue => self.document.inspect.is_some(),
-            CopyRows | Export => !self.document.result.columns.is_empty(),
+            CloneRecord | DeleteRecord => {
+                self.can_edit() && self.database.document.inspect.is_some()
+            }
+            CopyRecord | Inspect | CopyValue => self.database.document.inspect.is_some(),
+            CopyRows | Export => !self.database.document.result.columns.is_empty(),
             Discard => {
-                self.document.active.is_some()
+                self.database.document.active.is_some()
                     || self
+                        .database
                         .documents
                         .values()
-                        .any(|d| d.source == Some(self.document.id) && d.active.is_some())
+                        .any(|d| d.source == Some(self.database.document.id) && d.active.is_some())
             }
             _ => true,
         }
@@ -87,17 +92,17 @@ impl App {
         use Action::*;
         match action {
             NewSql => self.open_sql_window(true),
-            Refresh => match if self.workspace.active == Kind::Structure {
+            Refresh => match if self.database.workspace.active == Kind::Structure {
                 Kind::Structure
             } else {
-                self.document.kind
+                self.database.document.kind
             } {
                 Kind::Map => {
                     self.refresh_catalog();
                     self.load_diagram();
                 }
                 Kind::Structure => {
-                    if let Some(name) = self.document.object.clone() {
+                    if let Some(name) = self.database.document.object.clone() {
                         self.request_inspection(name);
                     }
                     self.refresh_catalog();
@@ -105,50 +110,56 @@ impl App {
                 _ => self.reload(),
             },
             Filter => {
-                self.document.ui.filter_open = !self.document.ui.filter_open;
-                self.document.tools.filter_focus = self.document.ui.filter_open;
+                self.database.document.ui.filter_open = !self.database.document.ui.filter_open;
+                self.database.document.tools.filter_focus = self.database.document.ui.filter_open;
             }
             FitColumns => {
-                self.document.tools.columns.manual.clear();
-                self.document.tools.columns.refit = true;
+                self.database.document.tools.columns.manual.clear();
+                self.database.document.tools.columns.refit = true;
             }
-            ShowColumns => self.document.tools.columns.hidden.clear(),
-            Export => self.ui.export_open = true,
+            ShowColumns => self.database.document.tools.columns.hidden.clear(),
+            Export => self.database.ui.export_open = true,
             CopyRows => self.copy_results(ctx, crate::export::Format::Tsv),
             Count => {
-                if let Some(name) = self.document.object.clone() {
+                if let Some(name) = self.database.document.object.clone() {
                     self.count_table(name);
                 }
             }
             Inspect => {
-                if let Some((row, col)) = self.document.inspect {
+                if let Some((row, col)) = self.database.document.inspect {
                     self.open_record_window(row, col);
                 }
             }
-            FitMap => self.ui.diagram.camera.fit = true,
-            ArrangeMap => self.ui.diagram.arrange_nodes(),
-            MapColumns => self.ui.diagram.toggle_columns(),
-            SystemTables => self.ui.diagram.toggle_system(),
+            FitMap => self.database.ui.diagram.camera.fit = true,
+            ArrangeMap => self.database.ui.diagram.arrange_nodes(),
+            MapColumns => self.database.ui.diagram.toggle_columns(),
+            SystemTables => self.database.ui.diagram.toggle_system(),
             Find => self.open_palette(),
-            Zoom100 => self.ui.diagram.camera.reset_zoom(),
-            ZoomOut => self.ui.diagram.camera.step_zoom(1.0 / 1.25),
-            ZoomIn => self.ui.diagram.camera.step_zoom(1.25),
+            Zoom100 => self.database.ui.diagram.camera.reset_zoom(),
+            ZoomOut => self.database.ui.diagram.camera.step_zoom(1.0 / 1.25),
+            ZoomIn => self.database.ui.diagram.camera.step_zoom(1.25),
             Run => self.run_sql(),
             RunAll => self.run_all(false),
             Explain => self.run_current(Some(false)),
             Bytecode => self.run_current(Some(true)),
-            Parameters => self.document.ui.params_open = !self.document.ui.params_open,
-            Completion => self.document.tools.complete = !self.document.tools.complete,
-            SaveSql => self.ui.sidebar = ToolPanel::Saved,
+            Parameters => {
+                self.database.document.ui.params_open = !self.database.document.ui.params_open
+            }
+            Completion => {
+                self.database.document.tools.complete = !self.database.document.tools.complete
+            }
+            SaveSql => self.database.ui.sidebar = ToolPanel::Saved,
             CopyDdl => {
                 let name = self
+                    .database
                     .document
                     .tools
                     .ddl
                     .as_ref()
                     .map(|o| o.name.as_str())
-                    .or(self.document.object.as_deref());
+                    .or(self.database.document.object.as_deref());
                 if let Some(ddl) = self
+                    .database
                     .schema
                     .iter()
                     .find(|o| Some(o.name.as_str()) == name)
@@ -158,7 +169,7 @@ impl App {
                 }
             }
             CopyRecord | CloneRecord | DeleteRecord => {
-                if let Some((row, _)) = self.document.inspect {
+                if let Some((row, _)) = self.database.document.inspect {
                     match action {
                         CopyRecord => self.copy_row(ctx, row),
                         CloneRecord => self.clone_row(row),
@@ -167,8 +178,14 @@ impl App {
                 }
             }
             CopyValue => {
-                if let Some((r, c)) = self.document.inspect
-                    && let Some(value) = self.document.result.rows.get(r).and_then(|row| row.get(c))
+                if let Some((r, c)) = self.database.document.inspect
+                    && let Some(value) = self
+                        .database
+                        .document
+                        .result
+                        .rows
+                        .get(r)
+                        .and_then(|row| row.get(c))
                 {
                     ctx.copy_text(crate::export::cell_text(value));
                 }
@@ -177,7 +194,7 @@ impl App {
             Insert => self.begin_insert(),
             Review => {
                 self.focus_drafts();
-                self.document.show_preview = true;
+                self.database.document.show_preview = true;
             }
             Begin | Commit | Rollback => {
                 let sql = match action {
@@ -188,22 +205,25 @@ impl App {
                 self.run_transaction(sql);
             }
             Discard => {
-                let focus = self.workspace.focused;
-                let target = if self.document.active.is_some() {
-                    Some(self.document.id)
+                let focus = self.database.workspace.focused;
+                let target = if self.database.document.active.is_some() {
+                    Some(self.database.document.id)
                 } else {
-                    self.documents
+                    self.database
+                        .documents
                         .values()
-                        .find(|d| d.source == Some(self.document.id) && d.active.is_some())
+                        .find(|d| d.source == Some(self.database.document.id) && d.active.is_some())
                         .map(|d| d.id)
                 };
                 if let Some(id) = target {
                     self.switch_document(id);
-                    if let (Some(session), Some(ticket)) = (&self.session, self.document.active) {
+                    if let (Some(session), Some(ticket)) =
+                        (&self.database.session, self.database.document.active)
+                    {
                         session.discard_results(ticket.request);
-                        self.document.discard_ticket = Some(ticket);
-                        self.document.result.rows.clear();
-                        self.status="Result delivery suppressed; SQL execution continues. This does not roll back writes.".into();
+                        self.database.document.discard_ticket = Some(ticket);
+                        self.database.document.result.rows.clear();
+                        self.database.status="Result delivery suppressed; SQL execution continues. This does not roll back writes.".into();
                     }
                     self.switch_document(focus);
                 }
@@ -211,10 +231,11 @@ impl App {
         }
     }
     pub(super) fn focus_drafts(&mut self) {
-        let id = if self.document.has_drafts() {
-            Some(self.document.id)
+        let id = if self.database.document.has_drafts() {
+            Some(self.database.document.id)
         } else {
-            self.documents
+            self.database
+                .documents
                 .values()
                 .find(|d| d.has_drafts())
                 .map(|d| d.id)
@@ -225,11 +246,11 @@ impl App {
     }
     fn ribbon_action(&mut self, ui: &mut egui::Ui, action: Action, icon: Icon, label: &str) {
         let selected = match action {
-            Action::Filter => Some(self.document.ui.filter_open),
-            Action::MapColumns => Some(self.ui.diagram.all_columns),
-            Action::SystemTables => Some(self.ui.diagram.show_system),
-            Action::Parameters => Some(self.document.ui.params_open),
-            Action::Completion => Some(self.document.tools.complete),
+            Action::Filter => Some(self.database.document.ui.filter_open),
+            Action::MapColumns => Some(self.database.ui.diagram.all_columns),
+            Action::SystemTables => Some(self.database.ui.diagram.show_system),
+            Action::Parameters => Some(self.database.document.ui.params_open),
+            Action::Completion => Some(self.database.document.tools.complete),
             _ => None,
         };
         let response = ui
@@ -237,7 +258,7 @@ impl App {
                 if action == Action::RunAll {
                     self.run_all_menu(ui, true)
                 } else if action == Action::Zoom100 {
-                    let percent = self.ui.diagram.camera.zoom() * 100.0;
+                    let percent = self.database.ui.diagram.camera.zoom() * 100.0;
                     let text = if percent < 1.0 {
                         format!("{percent:.2}%")
                     } else {
@@ -263,12 +284,12 @@ impl App {
             .inner;
         #[cfg(test)]
         if ui.clip_rect().contains_rect(response.rect) {
-            self.ui.ribbon_actions.push(response.rect);
+            self.database.ui.ribbon_actions.push(response.rect);
         }
         if response.clicked() && action != Action::RunAll {
             // Export and the detached record inspector read the focused document later.
-            if self.document.kind == Kind::Result {
-                self.focus_window(self.document.id);
+            if self.database.document.kind == Kind::Result {
+                self.focus_window(self.database.document.id);
             }
             self.dispatch_action(action, ui.ctx());
         }
@@ -282,8 +303,8 @@ impl App {
             egui::ScrollArea::vertical()
                 .max_height(280.0)
                 .show(ui, |ui| {
-                    let hidden = &mut self.document.tools.columns.hidden;
-                    for (i, column) in self.document.result.columns.iter().enumerate() {
+                    let hidden = &mut self.database.document.tools.columns.hidden;
+                    for (i, column) in self.database.document.result.columns.iter().enumerate() {
                         ui.push_id(i, |ui| {
                             let mut shown = !hidden.contains(&i);
                             if ui.checkbox(&mut shown, &column.name).changed() {
@@ -300,7 +321,7 @@ impl App {
     }
 
     fn ribbon_editors(&mut self, ui: &mut egui::Ui) {
-        let current = self.document.id;
+        let current = self.database.document.id;
         let mut selected = current;
         egui::ComboBox::from_id_salt("open-editors")
             .selected_text(format!("Query {current}"))
@@ -320,7 +341,7 @@ impl App {
     }
 
     fn ribbon_sql_results(&mut self, ui: &mut egui::Ui) {
-        let editor = self.document.id;
+        let editor = self.database.document.id;
         let Some(result) = self.sql_result_window(editor) else {
             return;
         };
@@ -338,10 +359,10 @@ impl App {
 
     pub(super) fn pane_ribbon(&mut self, ui: &mut egui::Ui, kind: Kind, available: bool) {
         if kind == Kind::Record
-            && self.document.inspect.is_none()
-            && !self.document.result.rows.is_empty()
+            && self.database.document.inspect.is_none()
+            && !self.database.document.result.rows.is_empty()
         {
-            self.document.inspect = Some((0, 0));
+            self.database.document.inspect = Some((0, 0));
         }
         // Keep tile identity and window controls fixed while the action ribbon scrolls.
         // Never drop actions based on width or replace them with an overflow menu.
@@ -353,8 +374,8 @@ impl App {
                 icons::RIBBON_TEXT_SIZE,
             ));
             ui.spacing_mut().interact_size.y = icons::RIBBON_BUTTON_SIZE;
-            let show_restore =
-                !self.workspace.minimized.is_empty() || self.workspace.expanded.is_some();
+            let show_restore = !self.database.workspace.minimized.is_empty()
+                || self.database.workspace.expanded.is_some();
             let controls_width = 2.0 * icons::RIBBON_BUTTON_SIZE
                 + 20.0
                 + if show_restore {
@@ -372,14 +393,14 @@ impl App {
             };
             ui.add_space(leading);
             let show_title = matches!(kind, Kind::Data | Kind::Record | Kind::Result)
-                || kind == Kind::Structure && available && self.document.object.is_some();
+                || kind == Kind::Structure && available && self.database.document.object.is_some();
             if show_title {
                 let remaining = (ui.available_width() - controls_width).max(0.0);
                 let title_size = ui
                     .painter()
                     .layout_no_wrap(
                         if kind == Kind::Structure {
-                            self.document.object.clone().unwrap_or_default()
+                            self.database.document.object.clone().unwrap_or_default()
                         } else {
                             kind.label().into()
                         },
@@ -461,14 +482,17 @@ impl App {
             }
             match kind {
                 Kind::Data | Kind::Result => self.ribbon_columns(ui, "Visible columns"),
-                Kind::Sql if self.document.kind == Kind::Sql => {
+                Kind::Sql if self.database.document.kind == Kind::Sql => {
                     self.ribbon_editors(ui);
                     self.ribbon_sql_results(ui);
                 }
                 _ => {}
             }
         });
-        if available && matches!(kind, Kind::Data | Kind::Record) && self.document.has_drafts() {
+        if available
+            && matches!(kind, Kind::Data | Kind::Record)
+            && self.database.document.has_drafts()
+        {
             self.ribbon_action(ui, Action::Review, Icon::ReviewEdits, "Review staged edits");
         }
         if available && self.action_enabled(Action::Discard)
@@ -490,7 +514,7 @@ impl App {
             let expand = icons::ribbon_button(
                 ui,
                 Icon::Fit,
-                if self.workspace.expanded == Some(kind) {
+                if self.database.workspace.expanded == Some(kind) {
                     "Restore workspace"
                 } else {
                     "Expand to workspace"
@@ -504,7 +528,8 @@ impl App {
             }
             ui.separator();
             #[cfg(test)]
-            self.workspace
+            self.database
+                .workspace
                 .controls
                 .push((kind, minimize.rect, expand.rect));
             if minimize.clicked() {
@@ -526,13 +551,13 @@ impl App {
             return;
         }
         if kind == Kind::Structure {
-            if available && let Some(name) = &self.document.object {
+            if available && let Some(name) = &self.database.document.object {
                 ui.add(egui::Label::new(egui::RichText::new(name).strong()).truncate())
                     .on_hover_text(name);
             }
             return;
         }
-        let title = if available && let Some(name) = &self.document.object {
+        let title = if available && let Some(name) = &self.database.document.object {
             format!("{} · {name}", kind.label())
         } else {
             kind.label().to_owned()
@@ -556,8 +581,8 @@ impl App {
     }
 
     fn ribbon_record_slider(&mut self, ui: &mut egui::Ui) {
-        let count = self.document.result.rows.len();
-        let (row, column) = self.document.inspect.unwrap_or((0, 0));
+        let count = self.database.document.result.rows.len();
+        let (row, column) = self.database.document.inspect.unwrap_or((0, 0));
         let mut position = if count == 0 { 0 } else { (row + 1).min(count) };
         let response = ui
             .scope(|ui| {
@@ -583,20 +608,20 @@ impl App {
         response.on_hover_text("Move through loaded records while keeping the selected field. Drag the slider or enter a record number.");
         if changed && count > 0 {
             self.select_cell(position - 1, column, false);
-            self.document.tools.record_scroll_to = Some(column);
+            self.database.document.tools.record_scroll_to = Some(column);
         }
     }
 
     fn ribbon_field_selector(&mut self, ui: &mut egui::Ui, available: bool) {
-        let current = self.document.inspect.filter(|(row, col)| {
+        let current = self.database.document.inspect.filter(|(row, col)| {
             available
-                && self.document.result.rows.get(*row).is_some()
-                && self.document.result.columns.get(*col).is_some()
+                && self.database.document.result.rows.get(*row).is_some()
+                && self.database.document.result.columns.get(*col).is_some()
         });
         let mut selected = current.map(|(_, col)| col);
         let mut chosen = false;
         let name = selected
-            .and_then(|col| self.document.result.columns.get(col))
+            .and_then(|col| self.database.document.result.columns.get(col))
             .map_or("Choose field", |column| column.name.as_str());
         let response = ui
             .add_enabled_ui(current.is_some(), |ui| {
@@ -607,7 +632,9 @@ impl App {
                     .show_ui(ui, |ui| {
                         ui.style_mut().override_font_id = None;
                         ui.spacing_mut().interact_size.y = 28.0;
-                        for (col, column) in self.document.result.columns.iter().enumerate() {
+                        for (col, column) in
+                            self.database.document.result.columns.iter().enumerate()
+                        {
                             ui.push_id(col, |ui| {
                                 chosen |= ui
                                     .selectable_value(&mut selected, Some(col), &column.name)
@@ -626,12 +653,17 @@ impl App {
             && chosen
         {
             self.open_cell(row, col);
-            self.document.tools.record_scroll_to = Some(col);
+            self.database.document.tools.record_scroll_to = Some(col);
         }
     }
 
     fn ribbon_table_selector(&mut self, ui: &mut egui::Ui, available: bool) {
-        let current = self.document.object.as_deref().filter(|_| available);
+        let current = self
+            .database
+            .document
+            .object
+            .as_deref()
+            .filter(|_| available);
         let mut selected = current;
         let response = egui::ComboBox::from_id_salt("table-selector")
             .selected_text(current.unwrap_or("Choose table"))
@@ -641,6 +673,7 @@ impl App {
                 ui.style_mut().override_font_id = None;
                 ui.spacing_mut().interact_size.y = 28.0;
                 let mut tables: Vec<_> = self
+                    .database
                     .schema
                     .iter()
                     .filter(|object| matches!(object.kind.as_str(), "table" | "view"))
