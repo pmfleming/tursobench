@@ -199,6 +199,13 @@ impl App {
                         View::Query
                     },
                 ) {
+                    if let Some(bytecode) = explain {
+                        self.document.explain = super::explain::State {
+                            sql: text.clone(),
+                            bytecode,
+                            raw: false,
+                        };
+                    }
                     let history_sql = match explain {
                         Some(true) => format!("EXPLAIN {text}"),
                         Some(false) => format!("EXPLAIN QUERY PLAN {text}"),

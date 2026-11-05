@@ -10,6 +10,7 @@ mod document;
 mod editing;
 mod editor;
 mod events;
+mod explain;
 mod files;
 mod filters;
 mod grid;

@@ -7,6 +7,7 @@ mod access;
 mod browse;
 mod observe;
 pub use access::{ProcessUsage, check_access, processes_using};
+pub mod advice;
 pub mod completion;
 mod connection;
 mod diagram;

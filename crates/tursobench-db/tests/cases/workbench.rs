@@ -772,3 +772,37 @@ fn reverse_references_use_parent_affinity_and_collation_and_reject_changed_keys(
     c.close();
     assert_eq!(snapshot(dir.path()), before);
 }
+
+#[test]
+fn suggested_index_executes_and_is_not_suggested_twice() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("advice.db");
+    common::create(
+        &path,
+        &[
+            "CREATE TABLE items(id INTEGER PRIMARY KEY, label TEXT)",
+            "INSERT INTO items VALUES(1,'a'),(2,'b')",
+        ],
+    );
+    let mut client = Client::open(&path, Access::ReadWrite);
+    let info = client.run(Operation::Inspect("items".into())).info.unwrap();
+    let sql = "SELECT * FROM items WHERE label = ?1";
+    let draft = tursobench_db::advice::index_draft(sql, &info).unwrap();
+    client.sql(&draft);
+    let info = client.run(Operation::Inspect("items".into())).info.unwrap();
+    assert!(tursobench_db::advice::index_draft(sql, &info).is_none());
+    let plan = client.run(Operation::Explain {
+        sql: sql.into(),
+        parameters: vec![Value::Text("a".into())].into(),
+        bytecode: false,
+    });
+    assert!(plan.result.completion.unwrap().error.is_none());
+    assert!(
+        plan.result
+            .rows
+            .iter()
+            .flatten()
+            .any(|v| matches!(v,Value::Text(s) if s.contains("idx_items_label")))
+    );
+    client.close();
+}

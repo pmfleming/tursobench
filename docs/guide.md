@@ -264,3 +264,13 @@ projections and AS aliases), including nested scopes and correlated references.
 Identifiers are quoted on insertion. Complex expression/derived-table output names
 remain unresolved; prefix keyword/name completion remains available. Completion does
 not execute SQL or fetch schema on each keystroke; refresh schema after external DDL.
+
+### Query-plan diagnostics
+
+EXPLAIN opens a collapsible plan tree with scan, indexed-lookup and temporary-sort
+notes. Raw rows and bytecode remain available; unknown/cyclic plan shapes retain
+raw output. For simple single-table equality filters (optionally followed by a
+simple ascending ORDER BY), the tree can offer an index draft using cached metadata.
+Existing ordinary indexes are checked. Complex joins, expressions and collations
+remain manual. Open a draft in the editor to review and execute explicitly, then
+compare plans; suggestions do not establish a runtime improvement.

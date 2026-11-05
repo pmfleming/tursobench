@@ -150,3 +150,11 @@ CTE names/projections with nested lexical scopes and incomplete-SQL fallback.
 Unknown complex expressions are left unresolved. Quoted identifiers and Unicode
 remain safe. Scope/CTE regression tests, workspace Clippy/tests, engine spike,
 workspace build and all three native smoke scripts passed (2026-11-05).
+
+## Stage 4 delivery
+
+EXPLAIN now has collapsible plan diagnostics, raw/bytecode access and conservative
+single-table index drafts checked against cached indexes. Analysis uses the existing
+bound, non-mutating backend operation. Real-engine tests execute an index draft,
+verify its use and suppress repeat advice. Plan-shape tests, workspace Clippy/tests,
+engine spike, build and all three native smoke scripts passed (2026-11-05).

@@ -167,6 +167,9 @@ impl CellAppearance<'_> {
 }
 impl App {
     pub(super) fn grid_contents(&mut self, ui: &mut egui::Ui) {
+        if self.explain_panel(ui) {
+            return;
+        }
         self.update_draft_presentation();
         if self.workspace.enabled {
             self.grid_status_bar(ui);
