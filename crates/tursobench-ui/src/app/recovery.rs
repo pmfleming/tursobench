@@ -25,7 +25,7 @@ impl App {
             .into_iter()
             .filter_map(|id| {
                 let d = self.document_ref(id)?;
-                (d.kind == Kind::Sql).then(|| Document {
+                (d.kind == Kind::Sql && d.migration.is_none()).then(|| Document {
                     id,
                     sql: d.sql.clone(),
                     selection: {
@@ -167,6 +167,16 @@ mod tests {
         app.document.sql = "SELECT :secret, 'λ'".into();
         app.document.params = "{\":secret\":123}".into();
         app.document.tools.selection = 2..5;
+        app.document.migration = Some(std::sync::Arc::new(tursobench_core::SchemaSnapshot {
+            version: 0,
+            objects: vec![],
+        }));
+        assert!(
+            app.recovery_documents()
+                .iter()
+                .all(|d| d.sql != app.document.sql)
+        );
+        app.document.migration = None;
         app.save_recovery();
         // Wait for the worker acknowledgement, not a fixed scheduling delay.
         let until = Instant::now() + Duration::from_secs(5);

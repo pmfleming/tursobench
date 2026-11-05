@@ -7,6 +7,7 @@ use tursobench_core::{
 use tursobench_db::{Operation, Request};
 
 enum Target {
+    Snapshot,
     Result,
     Value,
     Context,
@@ -80,6 +81,7 @@ impl App {
             return Some((self.database.commit_owner, Target::Commit));
         }
         for (current, target) in [
+            (self.database.tools.snapshot.ticket, Target::Snapshot),
             (self.database.catalog_ticket, Target::Catalog),
             (self.database.tools.transfers.ticket, Target::Transfer),
             (self.database.ui.diagram.ticket, Target::Diagram),
@@ -114,6 +116,7 @@ impl App {
         let previous = self.database.document.id;
         let routed = owner.is_some_and(|id| id != previous && self.switch_document(id));
         match target {
+            Target::Snapshot => self.snapshot_event(event.kind),
             Target::Transfer => self.transfer_event(event.kind),
             Target::Value => self.value_event(event.kind),
             Target::Context => self.context_event(event),
@@ -225,6 +228,7 @@ impl App {
             None
         };
         self.database.catalog_ticket = None;
+        self.database.tools.snapshot = Default::default();
         self.database.tools.count_request = None;
         self.database.tools.pending_history.clear();
         self.database.document.tools.inspection_ticket = None;
@@ -273,6 +277,10 @@ impl App {
         }
     }
     fn failed(&mut self, ctx: &egui::Context, ticket: Ticket, e: Failure) {
+        if e.kind == tursobench_core::ErrorKind::Unknown {
+            self.database.uncertain_edit = true;
+            self.database.transaction = TransactionState::Unknown;
+        }
         self.record_history(ticket, None, true);
         self.log_outcome(format!("Request {} ERROR: {e}", ticket.request));
         if ticket.request == 0 {
@@ -321,6 +329,7 @@ impl App {
             session.discard_results(ticket.request);
         }
         if schema {
+            self.database.tools.snapshot.stale = true;
             self.database.ui.diagram.stale = true;
             self.database.diagram_refresh_pending |= self.database.ui.diagram.ticket.is_some();
         }

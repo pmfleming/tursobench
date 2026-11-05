@@ -439,12 +439,27 @@ impl FilterExpr {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SchemaObject {
     pub kind: String,
     pub name: String,
     pub table: String,
     pub ddl: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchemaSnapshot {
+    pub version: i64,
+    pub objects: Vec<SchemaObject>,
+}
+impl SchemaSnapshot {
+    pub fn bytes(&self) -> usize {
+        self.objects
+            .iter()
+            .map(|o| {
+                o.kind.len() + o.name.len() + o.table.len() + o.ddl.as_ref().map_or(0, String::len)
+            })
+            .sum()
+    }
 }
 #[derive(Debug, Clone)]
 pub struct IndexInfo {
@@ -483,6 +498,7 @@ pub struct SchemaDiagram {
 
 #[derive(Debug)]
 pub enum EventKind {
+    SchemaSnapshot(SchemaSnapshot),
     ImportPreview(ImportPreview),
     TransferFinished(TransferOutcome),
     ScriptResult(ScriptResult),

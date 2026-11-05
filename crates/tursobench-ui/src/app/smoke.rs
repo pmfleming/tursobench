@@ -313,6 +313,16 @@ impl App {
                 self.select_workspace(smoke.first_workspace.unwrap());
                 assert!(self.database.ready);
                 self.select_workspace(second);
+                self.comparison.open = true;
+                self.comparison.source = smoke.first_workspace.unwrap();
+                self.comparison.target = second;
+                self.capture_schema(self.comparison.source);
+                self.capture_schema(second);
+                smoke.stage = 69;
+            }
+            69 if self.comparison_ready() => smoke.stage = 70,
+            70 => {
+                self.comparison.open = false;
                 smoke.stage = 67;
             }
             67 => {

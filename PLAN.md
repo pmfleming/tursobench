@@ -45,16 +45,16 @@ schema comparison into implementation scope. Acceptance gates and stage status a
 in [the current comparison baseline](docs/tursotui-review.md#current-baseline-and-gap-closure-2026-11-05).
 Each stage is verified and committed separately.
 
-Cloud connections/sync, a retained TUI, encrypted files, schema-design tools,
-profiling, schema diffing, and complete
-tursotui feature parity are not first-release requirements. Multiple database
-windows/tabs can follow the first single-database vertical slice; identities and
-session ownership must support them from the beginning.
+Cloud connections/sync, a retained TUI, encrypted files, visual schema-design tools,
+and exact tursotui feature parity remain outside first-release requirements.
+The eight follow-up stages are delivered, including bounded profiling, schema
+comparison with guarded additive drafts, and four independent database workspaces.
 
 The subsequent Direction B redesign makes the bounded native-metadata schema map
 the home screen, with expandable table/SQL drawers, Map/List fallback, command
-search, typed filters and reverse references. Independent database/query tabs
-remain deferred. See [UI implementation and capability map](docs/ui-redesign.md).
+search, typed filters and reverse references. The later workspace stage adds
+independent database sessions and per-database document layouts. See
+[UI implementation and capability map](docs/ui-redesign.md) for the earlier redesign.
 
 Linux is the proposed first desktop target. Keep the design portable; confirm
 macOS/Windows release requirements before promising support.
@@ -291,10 +291,10 @@ Follow-up capability decision: enable Turso's explicit `fts` Cargo feature and
 against source-derived local-project schemas; other experimental flags remain
 disabled. See `docs/fts.md` for usage, dependency patch provenance and test results.
 
-Follow-up functionality review: the single-database workbench now closes practical
-schema/editor/results/editing/history/export gaps against tursotui. The explicit
-remaining differences, evidence and shortcuts are in `docs/tursotui-review.md`.
-This does not silently promote the deferred scope above to complete parity.
+Follow-up functionality review: eight separately committed stages add SQL recovery,
+scoped completion, EXPLAIN advice, profiling, administration, independent database
+workspaces and guarded schema migration drafts. The current boundaries and evidence
+are in `docs/tursotui-review.md`; this is not a claim of exact tursotui parity.
 
 Phases 0–5 now have a Linux preview implementation, with a separate commit for
 each phase. No upstream backend or GUI feature-parity import was performed.

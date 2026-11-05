@@ -3,6 +3,8 @@ mod common;
 mod editing;
 #[path = "cases/local_projects.rs"]
 mod local_projects;
+#[path = "cases/schema_compare.rs"]
+mod schema_compare;
 #[path = "cases/session.rs"]
 mod session;
 #[path = "cases/shared.rs"]

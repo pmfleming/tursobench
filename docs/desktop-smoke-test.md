@@ -243,3 +243,23 @@ Local evidence is under `target/egui037-wayland/`, `target/egui037-validation.lo
 
 Rebuild and restart the executable being used. An already installed preview
 binary does not inherit the dependency upgrade from this checkout.
+
+## Gap-closure workflows
+
+The native desktop smoke now also executes/renders a sampled profile and PRAGMA
+report, opens a second database, switches both workspaces, captures/renders their
+schema comparison, and closes both sessions. For interactive acceptance on disposable
+files, verify these additional paths:
+
+- Edit SQL, close/reopen, and recover text/cursor without execution or bindings;
+  disable/clear recovery from Settings.
+- Complete an alias/CTE with Ctrl Space; inspect EXPLAIN tree/raw/bytecode and open
+  a suggested index draft without executing it.
+- From Checks, compare exact and prefix-sampled profiles and read the sampling label;
+  apply a bounded administration setting in writable mode and inspect readback.
+- Keep an editor transaction and table drafts in different database tabs; switch
+  with Ctrl PageUp/PageDown and search cached objects with Ctrl P.
+- Press F7, select desired and target databases, capture and expand a changed object.
+  Open an additive migration draft in the target, review it, then Run all. Change the
+  target schema before executing another draft and verify stale-schema rejection.
+  Inspect manual guidance for removed columns/objects and changed constraints.

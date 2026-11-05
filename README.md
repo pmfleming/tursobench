@@ -81,10 +81,17 @@ LIMIT 12;
 
 ![SQL editor with linked query results.](docs/assets/ui/current/sql-results.png)
 
-Syntax highlighting, completion and EXPLAIN are available.
+SQL documents recover after restart without restoring bindings or executing SQL.
+Completion resolves cached aliases and simple CTEs. EXPLAIN offers plan diagnostics
+and conservative index drafts for review.
 CTEs, PRAGMAs and `RETURNING` are supported.
 Native Turso full-text search uses `USING fts(...)` and `fts_match(...)`.
 [FTS reference](docs/fts.md).
+
+Checks offers exact or prefix-sampled data profiles and a scoped PRAGMA dashboard.
+F7 compares two open schemas and opens guarded additive migration drafts in the
+target editor. Destructive and ambiguous changes retain manual guidance.
+[Comparison and migration limits](docs/guide.md#schema-comparison-and-migration-drafts).
 
 ## Editing, transactions and export
 

@@ -345,6 +345,9 @@ impl App {
     }
 
     pub(super) fn diagnostics_ui(&mut self, ui: &mut egui::Ui) {
+        if ui.button("Compare schemas… (F7)").clicked() {
+            self.comparison.open = true;
+        }
         if ui
             .add_enabled(self.database.ready, egui::Button::new("PRAGMA dashboard…"))
             .clicked()

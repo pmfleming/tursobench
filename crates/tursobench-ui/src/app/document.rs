@@ -3,6 +3,7 @@ use super::{App, View, shell, tools};
 use tursobench_core::{Browse, DraftBatch, Inspection, ResultSet, Table, Ticket};
 
 pub(super) struct Document {
+    pub migration: Option<std::sync::Arc<tursobench_core::SchemaSnapshot>>,
     pub id: u64,
     pub profile: Option<tursobench_db::profile::Request>,
     pub explain: super::explain::State,
@@ -38,6 +39,7 @@ pub(super) struct Document {
 impl Default for Document {
     fn default() -> Self {
         Self {
+            migration: None,
             id: 0,
             profile: None,
             explain: Default::default(),

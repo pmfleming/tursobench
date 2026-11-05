@@ -17,6 +17,7 @@ mod imports;
 mod inspection;
 pub mod preferences;
 pub mod profile;
+pub mod schema_compare;
 pub mod sql;
 mod transfers;
 mod validation;
@@ -74,6 +75,11 @@ impl DeliveryControl {
 }
 
 pub enum Operation {
+    CaptureSchema,
+    Migration {
+        sql: String,
+        expected: std::sync::Arc<tursobench_core::SchemaSnapshot>,
+    },
     Admin(Option<admin::Change>),
     Profile(profile::Request),
     ExportQuery {
@@ -159,6 +165,7 @@ impl Operation {
         let values = |v: &[Value]| v.iter().map(Value::bytes).sum::<usize>();
         std::mem::size_of::<Self>()
             + match self {
+                Self::Migration { sql, expected } => sql.len() + expected.bytes(),
                 Self::Profile(r) => r.table.len() + r.column.as_ref().map_or(0, String::len),
                 Self::Execute {
                     sql, parameters, ..

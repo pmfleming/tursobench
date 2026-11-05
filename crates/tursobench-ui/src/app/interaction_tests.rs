@@ -3327,3 +3327,87 @@ fn workspace_limit_and_quit_settle_every_live_session() {
     }
     assert!(app.parked.values().all(|d| !d.closing));
 }
+
+#[test]
+fn schema_comparison_routes_inactive_snapshots_and_guards_target_drafts() {
+    let (dir, ctx, mut app) = fixture(
+        &["CREATE TABLE t(id INTEGER PRIMARY KEY, value TEXT)"],
+        false,
+    );
+    let source = app.database.id;
+    let target_path = dir.path().join("target.db");
+    crate::test_support::create(
+        &target_path,
+        &[
+            "CREATE TABLE t(id INTEGER PRIMARY KEY)",
+            "INSERT INTO t VALUES(1)",
+        ],
+    );
+    app.request_database(&ctx, target_path);
+    app.database.writable = true;
+    inspect_selected(&mut app, &ctx);
+    app.open(&ctx);
+    wait(&mut app, &ctx);
+    let target = app.database.id;
+    app.comparison.source = source;
+    app.comparison.target = target;
+    app.comparison.open = true;
+    app.capture_schema(source);
+    app.capture_schema(target);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !app.comparison_ready() {
+        app.poll(&ctx);
+        app.poll_comparison(&ctx);
+        assert!(
+            Instant::now() < deadline,
+            "snapshot comparison did not settle"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    frame(&mut app, &ctx, vec![]);
+    assert!(app.parked[&source].tools.snapshot.snapshot.is_some());
+    let expected = app.database.tools.snapshot.snapshot.clone().unwrap();
+    app.select_workspace(source);
+    app.open_migration(
+        target,
+        "ALTER TABLE main.t ADD COLUMN value TEXT; CREATE INDEX main.idx ON t(value);".into(),
+        expected.clone(),
+    );
+    assert_eq!(app.database.id, target);
+    assert!(app.document.migration.is_some());
+    let editor = app.document.id;
+    app.run_all(false); // Guarded drafts force atomic execution even through this action.
+    wait(&mut app, &ctx);
+    assert!(
+        app.document
+            .result
+            .completion
+            .as_ref()
+            .unwrap()
+            .error
+            .is_none()
+    );
+    assert_eq!(app.transaction, TransactionState::Autocommit);
+    assert!(app.document.migration.is_some());
+    assert!(app.tools.snapshot.stale);
+    app.poll_comparison(&ctx);
+    assert!(!app.comparison_ready());
+    app.switch_document(editor);
+    app.document.sql = "CREATE TABLE main.stale(x)".into();
+    app.run_all(true);
+    wait(&mut app, &ctx);
+    assert!(app.status.contains("schema changed"), "{}", app.status);
+    app.load_sql_window("SELECT id,value FROM t".into());
+    assert!(app.document.migration.is_none());
+    app.run_current(None);
+    wait(&mut app, &ctx);
+    assert_eq!(
+        app.document.result.rows,
+        vec![vec![Value::Integer(1), Value::Null]]
+    );
+    app.close();
+    wait_closed(&mut app, &ctx);
+    app.select_workspace(source);
+    app.close();
+    wait_closed(&mut app, &ctx);
+}

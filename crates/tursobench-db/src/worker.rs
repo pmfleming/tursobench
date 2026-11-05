@@ -407,10 +407,16 @@ impl<'a> Worker<'a> {
         parameters: Bindings,
         atomic: bool,
         budget: Budget,
+        guard: Option<&tursobench_core::SchemaSnapshot>,
     ) -> Result<EventKind, Failure> {
         let statements = sql::script_statements(&text)?;
         for statement in &statements {
             sql::validate_coordinated(statement)?;
+            if guard.is_some() && !crate::schema_compare::additive(statement) {
+                return Err(Failure::input(
+                    "Guarded migration drafts require additive DDL with an explicit main schema target; use a separate reviewed workflow for destructive/data changes",
+                ));
+            }
         }
         if self.uncertain
             && statements
@@ -466,6 +472,23 @@ impl<'a> Worker<'a> {
                 )
                 .await
                 .map_err(failure)?;
+        }
+        if let Some(expected) = guard {
+            let checked = crate::schema_compare::capture(self.editor).await.and_then(|current| {
+                if &current == expected { Ok(()) } else { Err(Failure::input("Target schema changed since comparison; refresh and review a new draft")) }
+            });
+            if let Err(error) = checked {
+                if let Err(cleanup) = rollback(self.editor).await {
+                    self.uncertain = true;
+                    return Err(Failure {
+                        kind: ErrorKind::Unknown,
+                        message: format!(
+                            "Migration validation failed: {error}; rollback uncertain: {cleanup}"
+                        ),
+                    });
+                }
+                return Err(error);
+            }
         }
         let mut retained_rows = 0usize;
         let mut retained_bytes = 0usize;
@@ -863,6 +886,11 @@ impl<'a> Worker<'a> {
         let tail_mode = matches!(&operation,Operation::Browse(spec) if spec.options.tail);
         let default = Budget::default();
         let Query { connection, sql, parameters, budget } = match operation {
+            Operation::CaptureSchema => return crate::schema_compare::capture(self.browse).await.map(EventKind::SchemaSnapshot).map(Some),
+            Operation::Migration {sql,expected} => {
+                if self.access != Access::ReadWrite { return Err(Failure::input("Migration requires explicit read/write access")); }
+                return self.script(ticket,sql,vec![].into(),true,default,Some(&expected)).await.map(Some);
+            },
             Operation::ReadValue { handle, offset, bytes } => {
                 let (bytes, total) = self.depot.read(handle, offset, bytes)?;
                 return Ok(Some(EventKind::ValueChunk { handle, offset, bytes, total }));
@@ -877,7 +905,7 @@ impl<'a> Worker<'a> {
             Operation::ExportQuery { path, sql, parameters } => return self.export(ticket, path, sql, parameters, true).await.map(Some),
             Operation::Checkpoint => return self.checkpoint().await.map(Some),
             Operation::BackupAndClose(_) => return Err(Failure::input("Backup must be coordinated by the session owner")),
-            Operation::Script { sql, parameters, atomic, budget } => return self.script(ticket, sql, parameters, atomic, budget).await.map(Some),
+            Operation::Script { sql, parameters, atomic, budget } => return self.script(ticket, sql, parameters, atomic, budget, None).await.map(Some),
             Operation::Close => return Ok(None),
             Operation::Admin(change) => {
                 if change.is_some() && self.uncertain { return Err(Failure::input("Prior outcome UNKNOWN; reopen before changing settings")); }

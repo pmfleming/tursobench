@@ -19,9 +19,9 @@ reference paging, complete transfers/imports, checkpoint, verified backup, coope
 read cancellation, column search, and persistent diagram layouts. See the guide for
 limits; none of these are outstanding parity work.
 
-Remaining work and acceptance gates:
+Delivered stages and acceptance gates (all eight complete):
 
-1. **Baseline**: reconcile this record and PLAN.md. Complete in this stage.
+1. **Baseline**: reconcile this record and PLAN.md.
 2. **Recovery**: asynchronous, bounded, versioned SQL-document autosave, restore and
    clear/disable controls; restore no bindings, results, mutations or writable session.
    Acknowledged saves survive restart; failed saves retain the last good record.
@@ -40,8 +40,8 @@ Remaining work and acceptance gates:
    views and triggers; supported migration drafts and explicit manual guidance for
    unsupported/destructive changes; comparison never writes either database.
 
-Each stage receives focused regression coverage, required repository checks, updated
-user documentation and its own commit. Native smoke coverage exercises the new UI
+Each implementation stage received focused regression coverage, required repository
+checks, updated user documentation and its own commit. Native smoke coverage exercises the new UI
 workflows. The existing engine, editing, cancellation and ownership contracts remain
 requirements. Production qualification is tracked separately in release.md.
 
@@ -68,7 +68,7 @@ requirements. Production qualification is tracked separately in release.md.
 This closes practical gaps in the single-database workbench. It is **not complete
 tursotui parity**; the remaining differences above are explicit follow-up work.
 
-## Using the additions
+## Historical usage notes (superseded by the current guide)
 
 The later [responsive UI redesign](ui-redesign.md) reorganizes these capabilities
 into activity-rail panels, SQL/Data/Diagram modes and a docked inspector. The modes
@@ -189,3 +189,30 @@ Tests cover inactive results, transaction/draft isolation, duplicate aliases, cl
 limits and coordinated quit. Native desktop smoke opens/switches/closes two actual
 databases. Workspace Clippy/tests, engine spike, build and all smoke scripts passed
 (2026-11-05). Per-session limits multiply up to four; engine memory is not bounded.
+
+## Stage 8 delivery
+
+Two-workspace schema comparison captures bounded committed snapshots and calculates
+object/column/constraint differences off the UI thread. Original definitions remain
+copyable. Ordinary added objects and unconstrained appended columns produce explicit
+editor drafts; other changes get manual dependency/rebuild/data-mapping guidance.
+Draft execution requires writable autocommit, checks the target snapshot inside a
+write transaction, accepts additive DDL only, and rolls back a failed batch. Drafts
+are session-only, excluded from automatic recovery/history to retain guard semantics.
+Real-engine tests cover read-only file preservation, object classification, stale
+rejection, rollback and non-additive/transaction rejection. UI tests cover inactive
+snapshot routing, target selection and guarded execution; native smoke renders the
+two-database comparison. Generated main-qualified table/index/view/trigger drafts
+are executed in regression tests, including trigger behavior and rejection of
+unqualified/temporary targets. Formatting, workspace Clippy/tests, engine spike,
+build and all three native smoke scripts passed (2026-11-05).
+
+## Remaining deliberate boundaries
+
+This closes the eight authorized stages, rather than claiming identical terminal
+workflows or full tursotui parity. Completion leaves complex derived expressions
+unresolved; index advice is conservative; profiling samples are prefixes, not random;
+workspaces are capped at four. Schema comparison is literal and committed-state only,
+with per-object additive drafts rather than inferred destructive rebuilds or rename
+matching. Cloud connections, visual schema design and release qualification remain
+outside this implementation. No performance benchmark claims are made by this review.

@@ -313,3 +313,33 @@ uncertain outcomes pause exit. Inactive requests continue draining to their owni
 Each workspace retains the existing 16-view limit and per-session quotas; the four-session
 cap bounds aggregate application retention, not engine allocations. No database is
 silently reopened writable after restart. Connection-local state never crosses tabs.
+
+### Schema comparison and migration drafts
+
+Checks → Compare schemas or F7 compares two open database workspaces. Choose the
+**desired schema** and **target database**, then capture both. Capture reads committed
+`main` schemas even when the editor has an open transaction; it never writes either
+file. Tables, columns, constraints, indexes, views and triggers appear as added,
+removed, modified or identical. Definitions are compared literally, so cosmetic SQL
+differences can appear modified. Expand an object to inspect/copy both full definitions;
+column changes and table-constraint/options changes have additional notes.
+
+New ordinary tables/indexes/views/triggers and unconstrained appended columns offer
+**Open guarded migration draft in target editor**. Review the SQL and explicitly run
+it in writable mode. Run all always uses an atomic transaction for these drafts and
+checks the captured target schema after acquiring the write transaction. Guarded
+DDL requires explicit `main` targets to avoid temporary-object name shadowing. A changed
+target rejects execution before applying statements; refresh comparison and review a
+new draft. Existing editor transactions, non-additive statements and read-only access
+are rejected. A failed batch rolls back; any uncertain cleanup is reported explicitly.
+Each draft addresses one object; dependent objects may require a deliberate order.
+
+Removals, inferred renames, type/constraint changes, and unsupported definitions get
+manual rebuild/dependency/data-mapping guidance. They never generate destructive SQL.
+Comparison is capped at 10,000 objects / 8 MiB per schema and 1 MiB per definition;
+oversized/inconsistent captures fail explicitly. Filtering shows up to 200 objects,
+and expanded definitions show a bounded preview with full-definition copying. Each
+database snapshot is internally checked; the two databases are captured independently.
+Migration drafts retain their guards only in the live workspace and are excluded from
+automatic recovery/history. Refresh comparison after reopening. SQL manually copied or
+saved as a bookmark is ordinary SQL without the captured guard.

@@ -28,6 +28,7 @@ mod recovery;
 mod results;
 mod ribbon;
 mod schema;
+mod schema_compare;
 mod selection;
 mod sessions;
 mod shell;
@@ -120,6 +121,7 @@ impl DatabaseWorkspace {
     }
 }
 pub struct App {
+    comparison: schema_compare::State,
     database: DatabaseWorkspace,
     parked: std::collections::BTreeMap<u64, DatabaseWorkspace>,
     next_workspace: u64,
@@ -185,6 +187,7 @@ impl App {
         let smoke = args.get(1).is_some_and(|a| a == "--smoke-test");
         let recovery_wake = ctx.clone();
         let mut app = Self {
+            comparison: Default::default(),
             database: DatabaseWorkspace::new(ctx, 1),
             parked: Default::default(),
             next_workspace: 2,
@@ -649,6 +652,7 @@ impl App {
         self.transfer_ui(ui.ctx());
         self.profile_ui(ui.ctx());
         self.admin_ui(ui.ctx());
+        self.comparison_ui(ui.ctx());
     }
 }
 impl eframe::App for App {

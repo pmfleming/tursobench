@@ -150,6 +150,7 @@ impl App {
         );
     }
     pub(super) fn run_text(&mut self, text: String, explain: Option<bool>) {
+        let migration = self.database.document.migration.clone();
         if self.has_drafts() || self.database.commit_ticket.is_some() {
             self.database.status = "Commit or discard drafts first".into();
             return;
@@ -161,6 +162,10 @@ impl App {
                         sql: text.clone(),
                         parameters,
                         bytecode,
+                    },
+                    None if migration.is_some() => Operation::Migration {
+                        sql: text.clone(),
+                        expected: migration.clone().unwrap(),
                     },
                     None => Operation::ExecuteBound {
                         sql: text.clone(),
@@ -194,6 +199,7 @@ impl App {
                     self.database.document.sql = sql;
                     self.database.document.params = params;
                 }
+                self.database.document.migration = migration.clone();
                 if let Some(ticket) = self.submit(
                     operation,
                     if explain.is_some() {
@@ -214,10 +220,13 @@ impl App {
                         Some(false) => format!("EXPLAIN QUERY PLAN {text}"),
                         None => text,
                     };
-                    self.database.tools.pending_history.insert(
-                        ticket.request,
-                        (self.database.tools.database_scope.clone(), history_sql),
-                    );
+                    // Restoring SQL text from history must not lose a migration guard.
+                    if migration.is_none() {
+                        self.database.tools.pending_history.insert(
+                            ticket.request,
+                            (self.database.tools.database_scope.clone(), history_sql),
+                        );
+                    }
                     self.database.document.table = None;
                     self.database.document.browse = None;
                     self.database.document.tools.related = None;
@@ -246,6 +255,10 @@ impl App {
 
     pub(super) fn run_all(&mut self, atomic: bool) {
         if !self.action_enabled(super::ribbon::Action::RunAll) {
+            return;
+        }
+        if self.database.document.migration.is_some() {
+            self.run_text(self.database.document.sql.clone(), None);
             return;
         }
         match Bindings::parse_json(&self.database.document.params) {
@@ -357,6 +370,9 @@ impl App {
     }
 
     pub(super) fn editor_ui(&mut self, ui: &mut egui::Ui) {
+        if self.database.document.migration.is_some() {
+            ui.label("Guarded migration · Run all is atomic · target schema must match the comparison · session-only draft");
+        }
         if !self.database.workspace.enabled {
             self.editor_toolbar(ui);
         }
