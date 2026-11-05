@@ -4,7 +4,7 @@ use super::{
     ribbon::Action,
 };
 use eframe::egui;
-use tursobench_core::{Bindings, Budget, quote_identifier};
+use tursobench_core::{Bindings, Budget};
 use tursobench_db::Operation;
 
 use tursobench_db::sql::{self, TokenStyle};
@@ -448,50 +448,34 @@ impl App {
             return;
         };
         let start = span.start;
-        let prefix = self.document.sql[start..cursor].to_lowercase();
-        let mut candidates = vec![
-            "SELECT",
-            "FROM",
-            "WHERE",
-            "ORDER BY",
-            "GROUP BY",
-            "LIMIT",
-            "JOIN",
-            "INSERT INTO",
-            "UPDATE",
-            "DELETE FROM",
-            "RETURNING",
-            "NULL",
-            "fts_match",
-            "fts_score",
-            "uuid4",
-            "uuid7",
-            "vector_distance_cos",
-        ]
-        .into_iter()
-        .map(std::borrow::Cow::Borrowed)
-        .collect::<Vec<_>>();
-        candidates.extend(
-            self.schema
-                .iter()
-                .filter(|o| o.kind == "table" || o.kind == "view")
-                .map(|o| std::borrow::Cow::Owned(quote_identifier(&o.name))),
-        );
+        let mut catalog = tursobench_db::completion::Catalog::new();
+        for object in &self.schema {
+            if object.kind == "table" || object.kind == "view" {
+                catalog.entry(object.name.clone()).or_default();
+            }
+        }
+        if let Some(graph) = &self.ui.diagram.data {
+            for table in &graph.tables {
+                if let Some(info) = &table.inspection {
+                    catalog.insert(
+                        table.name.clone(),
+                        info.table.columns.iter().map(|c| c.name.clone()).collect(),
+                    );
+                }
+            }
+        }
         if let Some(info) = &self.document.tools.inspection {
-            candidates.extend(
-                info.table
-                    .columns
-                    .iter()
-                    .map(|c| std::borrow::Cow::Owned(quote_identifier(&c.name))),
+            catalog.insert(
+                info.table.name.clone(),
+                info.table.columns.iter().map(|c| c.name.clone()).collect(),
             );
         }
-        candidates.retain(|c| c.trim_matches('"').to_lowercase().starts_with(&prefix));
-        candidates.sort();
-        candidates.dedup();
-        ui.small("Prefix completions: SQL/Turso functions, schema objects and inspected-table columns. Alias resolution is not inferred.");
+        let candidates =
+            tursobench_db::completion::candidates(&self.document.sql, cursor, start, &catalog);
+        ui.small("Context completions from cached schema: aliases, qualified columns and CTEs. Unknown expressions remain unresolved.");
         ui.horizontal_wrapped(|ui| {
             for candidate in candidates.into_iter().take(30) {
-                if ui.button(candidate.as_ref()).clicked() {
+                if ui.button(candidate.as_str()).clicked() {
                     self.document.sql.replace_range(span.clone(), &candidate);
                     let position =
                         self.document.sql[..start].chars().count() + candidate.chars().count();

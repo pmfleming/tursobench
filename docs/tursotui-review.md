@@ -142,3 +142,11 @@ restoration, and clear/disable controls. Parameters, rows and edits are excluded
 Tests cover restart, deletion, corrupt/locked stores, failed-save preservation and
 non-executing UI restoration. Formatting, workspace Clippy/tests, engine spike,
 workspace build and all three native smoke scripts passed (2026-11-05).
+
+## Stage 3 delivery
+
+Completion now resolves cached schema aliases, qualified columns, JOIN targets and
+CTE names/projections with nested lexical scopes and incomplete-SQL fallback.
+Unknown complex expressions are left unresolved. Quoted identifiers and Unicode
+remain safe. Scope/CTE regression tests, workspace Clippy/tests, engine spike,
+workspace build and all three native smoke scripts passed (2026-11-05).

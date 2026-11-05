@@ -255,3 +255,12 @@ saved recovery in Settings. Clearing preserves live editors; subsequent edits ca
 be saved again. Errors remain visible in Settings and preserve the last good save.
 Only one application instance can write recovery at a time. A damaged/newer recovery
 file is preserved and disables saving until it is moved aside while the app is closed.
+
+### Context completion
+
+Ctrl Space uses cached table/view names and inspected schema-map columns. It resolves
+FROM/JOIN aliases, qualified columns and CTE names (explicit column lists, simple
+projections and AS aliases), including nested scopes and correlated references.
+Identifiers are quoted on insertion. Complex expression/derived-table output names
+remain unresolved; prefix keyword/name completion remains available. Completion does
+not execute SQL or fetch schema on each keystroke; refresh schema after external DDL.
