@@ -11,7 +11,41 @@ its older engine-compatibility statements. No reference code/tests were copied.
 > reference paging, transfer and cancellation limitations; current behavior is in
 > [the guide](guide.md) and [backend contract](../contracts/backend.md).
 
-## Gap assessment and changes
+## Current baseline and gap closure (2026-11-05)
+
+The eight-stage implementation below supersedes the historical matrix that follows.
+Current implemented capabilities include sequential/atomic scripts, structured inserts,
+reference paging, complete transfers/imports, checkpoint, verified backup, cooperative
+read cancellation, column search, and persistent diagram layouts. See the guide for
+limits; none of these are outstanding parity work.
+
+Remaining work and acceptance gates:
+
+1. **Baseline**: reconcile this record and PLAN.md. Complete in this stage.
+2. **Recovery**: asynchronous, bounded, versioned SQL-document autosave, restore and
+   clear/disable controls; restore no bindings, results, mutations or writable session.
+   Acknowledged saves survive restart; failed saves retain the last good record.
+3. **Completion**: cached schema-aware aliases, qualified columns, JOIN and CTE
+   contexts with incomplete-SQL fallback, identifier quoting and scope isolation.
+4. **EXPLAIN**: navigable plan, raw/bytecode fallback, scan/index/sort diagnostics and
+   conservative index drafts; analysis never executes source mutations.
+5. **Profiling**: exact/sampled column statistics and frequencies, explicit sampling
+   scope, worker cancellation/deadlines and stale indicators; no unsolicited scans.
+6. **Administration**: file/WAL information and curated validated PRAGMA changes,
+   with explicit connection scope, writable gating and effective-value readback.
+7. **Workspaces**: independent database sessions/documents/transactions/drafts,
+   cross-database object search, duplicate-file detection, aggregate resource limits,
+   inactive-session routing and coordinated close/quit.
+8. **Schema comparison**: snapshot diff for tables, columns, constraints, indexes,
+   views and triggers; supported migration drafts and explicit manual guidance for
+   unsupported/destructive changes; comparison never writes either database.
+
+Each stage receives focused regression coverage, required repository checks, updated
+user documentation and its own commit. Native smoke coverage exercises the new UI
+workflows. The existing engine, editing, cancellation and ownership contracts remain
+requirements. Production qualification is tracked separately in release.md.
+
+## Historical gap assessment and changes
 
 | Area | TursoBench after this review | Remaining difference / deliberate boundary |
 | --- | --- | --- |

@@ -37,7 +37,13 @@ engine compatibility rules. TursoBench owns its backend API and release cadence.
 - Preserve SQL value types, including NULL and blobs.
 - Provide useful errors without obscuring partial execution or transaction state.
 
-### Deferred scope
+### Original deferred scope
+
+The user-authorized eight-stage follow-up now promotes recovery, advanced completion,
+EXPLAIN diagnostics, profiling, administration, multiple database workspaces and
+schema comparison into implementation scope. Acceptance gates and stage status are
+in [the current comparison baseline](docs/tursotui-review.md#current-baseline-and-gap-closure-2026-11-05).
+Each stage is verified and committed separately.
 
 Cloud connections/sync, a retained TUI, encrypted files, schema-design tools,
 profiling, schema diffing, and complete
@@ -304,7 +310,7 @@ each phase. No upstream backend or GUI feature-parity import was performed.
 Implementation does **not** mean all original acceptance gates are satisfied.
 See `docs/release.md` for exercised tests, measurements, scope reductions and
 outstanding production gates, and `contracts/engine-compatibility.md` for runtime
-evidence. In particular, live multiprocess access is unsupported, file/engine
+evidence. In particular, shared local access has the qualified Linux scope documented above; file/engine
 memory safety is not certified, and legacy-engine fixtures, physical engine I/O
 fault injection, complete license review and cross-host reproducibility remain open.
 The eight-stage review remediation adds verified cooperative read interruption,
