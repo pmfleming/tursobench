@@ -4,6 +4,7 @@ use tursobench_core::{Browse, DraftBatch, Inspection, ResultSet, Table, Ticket};
 
 pub(super) struct Document {
     pub id: u64,
+    pub restore_cursor: Option<std::ops::Range<usize>>,
     pub needs_load: bool,
     pub stale: bool,
     pub external_refresh: bool,
@@ -36,6 +37,7 @@ impl Default for Document {
     fn default() -> Self {
         Self {
             id: 0,
+            restore_cursor: None,
             needs_load: false,
             stale: false,
             external_refresh: false,

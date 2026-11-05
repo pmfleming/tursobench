@@ -21,6 +21,7 @@ mod large_values;
 mod paging;
 mod panels;
 mod presentation;
+mod recovery;
 mod results;
 mod ribbon;
 mod schema;
@@ -45,6 +46,7 @@ enum View {
     Diagnostics,
 }
 pub struct App {
+    recovery: recovery::State,
     pending_database: Option<std::path::PathBuf>,
     path: String,
     tools: tools::Tools,
@@ -116,6 +118,7 @@ impl App {
         };
         let smoke = args.get(1).is_some_and(|a| a == "--smoke-test");
         let mut app = Self {
+            recovery: recovery::State::new(ctx),
             pending_database: None,
             tools: tools::Tools::default(),
             document: document::Document::default(),
@@ -449,6 +452,7 @@ impl App {
     }
     fn poll(&mut self, ctx: &egui::Context) {
         self.poll_storage(ctx);
+        self.poll_recovery(ctx);
         self.apply_theme(ctx);
         if let Some(rx) = &self.ui.font_rx {
             match rx.try_recv() {
@@ -543,6 +547,7 @@ impl App {
         }
     }
     fn close(&mut self) {
+        self.save_recovery();
         self.save_workspace();
         if let Some(layout) = self.ui.diagram.snapshot(&self.tools.database_scope) {
             self.preferences

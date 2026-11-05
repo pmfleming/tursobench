@@ -133,3 +133,12 @@ Metadata/diagnostics/counts run on the browse worker lane and do not observe
 uncommitted editor changes. Expensive checks still drain to completion; discard
 is not interruption. Existing production safety/release gates remain open in
 [release.md](release.md).
+
+## Stage 2 delivery
+
+SQL recovery is implemented in a separate bounded atomic snapshot store, with a
+worker, exclusive application-instance lock, version checks, debounce, cursor/text
+restoration, and clear/disable controls. Parameters, rows and edits are excluded.
+Tests cover restart, deletion, corrupt/locked stores, failed-save preservation and
+non-executing UI restoration. Formatting, workspace Clippy/tests, engine spike,
+workspace build and all three native smoke scripts passed (2026-11-05).

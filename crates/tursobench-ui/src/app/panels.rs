@@ -86,6 +86,7 @@ impl App {
                 self.store.save(&self.preferences);
             }
         });
+        self.recovery_settings(ui);
         section(ui, "Queries", |ui| {
             setting(ui, "Rows", "Maximum retained query rows", |ui| {
                 ui.add(egui::DragValue::new(&mut self.preferences.row_limit).range(1..=10_000))

@@ -143,6 +143,7 @@ pub struct Bookmark {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preferences {
+    pub sql_recovery: bool,
     pub row_limit: usize,
     pub busy_timeout_ms: u64,
     pub query_timeout_ms: u64,
@@ -171,6 +172,7 @@ pub struct MapLayout {
 impl Default for Preferences {
     fn default() -> Self {
         Self {
+            sql_recovery: true,
             row_limit: 1000,
             busy_timeout_ms: 250,
             query_timeout_ms: 30_000,
@@ -409,7 +411,7 @@ impl Drop for Store {
         }
     }
 }
-fn config_path() -> Result<PathBuf, String> {
+pub(crate) fn config_path() -> Result<PathBuf, String> {
     let root = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())

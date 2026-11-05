@@ -6,6 +6,7 @@ mod export;
 #[cfg(test)]
 #[path = "../../tursobench-db/tests/common/local_fixtures.rs"]
 mod local_project_fixtures;
+mod recovery;
 mod storage;
 #[cfg(test)]
 #[path = "../../tursobench-db/tests/common/fixture.rs"]

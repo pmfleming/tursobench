@@ -726,7 +726,7 @@ impl App {
             self.workspace.focused = id;
         }
         self.status =
-            "Workspace layout restored. SQL drafts, results and records are session-only.".into();
+            "Workspace layout restored; SQL recovery is controlled in Settings. Results and records are session-only.".into();
     }
     pub(super) fn load_restored_view(&mut self, ctx: &egui::Context) {
         if !self.requests_enabled()

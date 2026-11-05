@@ -208,6 +208,7 @@ impl App {
         self.document.ui.nav = shell::Nav::Overview;
         self.load_diagram();
         self.restore_workspace();
+        self.restore_sql();
     }
     fn closed(&mut self, ctx: &egui::Context, rollback: Result<(), Failure>) {
         self.tools.transfers.disconnected();

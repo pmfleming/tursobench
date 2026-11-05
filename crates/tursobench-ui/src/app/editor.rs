@@ -410,7 +410,16 @@ impl App {
                 );
         }
         self.document.tools.sql_focus = Some(output.response.id);
-        if let Some(cursor) = output.cursor_range {
+        if let Some(range) = self.document.restore_cursor.take() {
+            let mut state = output.state.clone();
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(range.start),
+                    egui::text::CCursor::new(range.end),
+                )));
+            state.store(ui.ctx(), output.response.id);
+        } else if let Some(cursor) = output.cursor_range {
             let range = cursor.as_sorted_char_range();
             self.document.tools.selection = range.start.0..range.end.0;
         }

@@ -242,3 +242,16 @@ binary is not a portable Linux tarball. macOS/Windows packages are not promised.
 
 MIT licensed. No tursotui code or tests have been copied. Dependencies retain their
 own licenses; consult generated package notices before redistribution.
+
+### SQL recovery
+
+Settings → Recover SQL documents enables debounced saves of SQL text, document order
+and cursor selections. Recovery is separate from preferences, in `sql-recovery.json`
+under the application configuration directory (32 MiB total, 64 database entries,
+16 documents per database, 1 MiB SQL per document). Reopen a database explicitly to
+restore its editors; nothing executes and parameter values/results/table edits are
+never saved. SQL literals may contain sensitive information. Disable saving or clear
+saved recovery in Settings. Clearing preserves live editors; subsequent edits can
+be saved again. Errors remain visible in Settings and preserve the last good save.
+Only one application instance can write recovery at a time. A damaged/newer recovery
+file is preserved and disables saving until it is moved aside while the app is closed.
