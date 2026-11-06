@@ -2022,7 +2022,7 @@ fn scroll_pages_append_evict_reload_and_reject_stale_or_draft_owned_fetches() {
 }
 
 #[test]
-fn contextual_reads_and_wide_related_grid_preserve_parent_result_and_selection() {
+fn record_prioritizes_values_and_reads_related_rows_only_on_request() {
     let (_dir, ctx, mut app) = fixture(
         &[
             "CREATE TABLE parent(a INTEGER,b TEXT COLLATE NOCASE,PRIMARY KEY(a,b))",
@@ -2032,6 +2032,7 @@ fn contextual_reads_and_wide_related_grid_preserve_parent_result_and_selection()
         ],
         false,
     );
+    ctx.global_style_mut(|style| style.animation_time = 0.0);
     browse_and_wait(&mut app, &ctx, "child");
     let child = app
         .database
@@ -2071,12 +2072,51 @@ fn contextual_reads_and_wide_related_grid_preserve_parent_result_and_selection()
     );
     app.request_context(0, "child", &child, context::ReadKind::Count);
     wait(&mut app, &ctx);
-    frame_at(&mut app, &ctx, egui::vec2(3440.0, 1440.0), vec![]);
-    wait(&mut app, &ctx);
-    for _ in 0..2 {
-        frame_at(&mut app, &ctx, egui::vec2(3440.0, 1440.0), vec![]);
+    app.open_record_window(0, 0);
+    app.expand_pane(tiling::Kind::Record);
+    let sequence = app.database.sequence;
+    for size in [egui::vec2(1280.0, 720.0), egui::vec2(3440.0, 1440.0)] {
+        frame_at(&mut app, &ctx, size, vec![]);
+        let output = frame_at(&mut app, &ctx, size, vec![]);
+        let fields = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "Fields & values" => {
+                    Some(text.pos)
+                }
+                _ => None,
+            })
+            .expect("field section heading");
+        let relationships = control(&output, "Relationships");
+        let value = control(&output, "a · INTEGER · 7");
+        assert!(fields.y < value.top());
+        assert!(value.bottom() < relationships.top());
+        assert!(value.width() > pane(&app, tiling::Kind::Record).width() * 0.9);
+        assert_eq!(
+            app.database.sequence, sequence,
+            "width must not trigger related reads"
+        );
     }
-    let output = frame_at(&mut app, &ctx, egui::vec2(3440.0, 1440.0), vec![]);
+    frame(&mut app, &ctx, vec![]);
+    let output = frame(&mut app, &ctx, vec![]);
+    click(&mut app, &ctx, control(&output, "Relationships").center());
+    // Opening key navigation still leaves row reads deferred.
+    for _ in 0..3 {
+        frame(&mut app, &ctx, vec![]);
+    }
+    assert_eq!(app.database.sequence, sequence);
+    let output = frame(&mut app, &ctx, vec![]);
+    click(
+        &mut app,
+        &ctx,
+        control(&output, "Preview related rows").center(),
+    );
+    for _ in 0..3 {
+        frame(&mut app, &ctx, vec![]);
+    }
+    wait(&mut app, &ctx);
+    let output = frame(&mut app, &ctx, vec![]);
     let texts: Vec<_> = output
         .shapes
         .iter()
@@ -3555,12 +3595,13 @@ fn sidebar_search_loads_parked_columns_and_respects_scopes_and_keyboard() {
 mod sidebar_review;
 
 #[test]
-fn compact_record_rows_align_and_disable_null_composite_parent_links() {
+fn compact_record_rows_align_and_separate_null_composite_parent_links() {
     let (_dir, ctx, mut app) = fixture(
         &[
             "CREATE TABLE parent(a INTEGER,b INTEGER,PRIMARY KEY(a,b))",
             "CREATE TABLE child(id INTEGER PRIMARY KEY,a INTEGER,b INTEGER,status TEXT,FOREIGN KEY(a,b) REFERENCES parent(a,b))",
-            "INSERT INTO child VALUES(1,7,NULL,'pending')",
+            "INSERT INTO parent VALUES(7,8)",
+            "INSERT INTO child VALUES(1,7,NULL,'pending'),(2,7,8,'ready')",
         ],
         true,
     );
@@ -3587,7 +3628,16 @@ fn compact_record_rows_align_and_disable_null_composite_parent_links() {
     assert!((status.pos.y - id.pos.y - 72.0).abs() < 1.0);
     assert_eq!(id.pos.x, status.pos.x);
     assert!(!texts.iter().any(|t| t.galley.job.text.contains("Parent:")));
-    let parents: Vec<_> = output
+    assert!(
+        !super::test_ui::nodes(&output)
+            .iter()
+            .any(|(_, n)| n.label() == Some("Follow parent")),
+        "navigation must not take space from field values"
+    );
+    let relationships = super::test_ui::render(&ctx, egui::vec2(396.0, 244.0), vec![], |ui| {
+        app.record_relationships(ui, 0)
+    });
+    let parents: Vec<_> = relationships
         .platform_output
         .accesskit_update
         .as_ref()
@@ -3596,10 +3646,28 @@ fn compact_record_rows_align_and_disable_null_composite_parent_links() {
         .iter()
         .filter(|(_, n)| n.label() == Some("Follow parent"))
         .collect();
-    assert_eq!(parents.len(), 2);
+    assert_eq!(parents.len(), 1, "one link per composite relationship");
     assert!(parents.iter().all(|(_, n)| n.is_disabled()));
     assert_eq!(app.database.sequence, sequence);
     assert!(!app.has_drafts());
+    let relationships = super::test_ui::render(&ctx, egui::vec2(396.0, 244.0), vec![], |ui| {
+        app.record_relationships(ui, 1)
+    });
+    let follow = control(&relationships, "Follow parent").center();
+    for pressed in [true, false] {
+        super::test_ui::render(
+            &ctx,
+            egui::vec2(396.0, 244.0),
+            super::test_ui::pointer(follow, pressed),
+            |ui| app.record_relationships(ui, 1),
+        );
+    }
+    wait(&mut app, &ctx);
+    assert_eq!(app.database.document.table.as_ref().unwrap().name, "parent");
+    assert_eq!(
+        visible_result(&app).rows,
+        vec![vec![Value::Integer(7), Value::Integer(8)]]
+    );
     app.close();
 }
 

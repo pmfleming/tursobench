@@ -12,7 +12,6 @@ enum RecordAction {
     Inspect(usize),
     Edit(usize),
     Stage(usize, Value),
-    Follow(tursobench_core::ForeignKey),
     Revert(usize),
 }
 struct RecordField<'a> {
@@ -403,7 +402,6 @@ impl App {
                             self.database.document.draft_revision.wrapping_add(1);
                     }
                 }
-                RecordAction::Follow(key) => self.follow_key(row, key),
                 RecordAction::Inspect(col) => self.select_cell(row, col, false),
                 RecordAction::Edit(col) => {
                     self.open_cell(row, col);
@@ -430,7 +428,8 @@ impl App {
             }
         }
         if !self.database.workspace.enabled {
-            self.related_list(ui, row);
+            ui.separator();
+            self.record_relationships(ui, row);
         }
     }
     fn record_keys(&mut self, ctx: &egui::Context, row: usize) {
@@ -465,7 +464,11 @@ impl App {
         }
     }
     /// A parent link is usable only when every component has a resolved target and a retained non-NULL value.
-    fn record_parent_ready(&self, row: usize, key: &tursobench_core::ForeignKey) -> bool {
+    pub(super) fn record_parent_ready(
+        &self,
+        row: usize,
+        key: &tursobench_core::ForeignKey,
+    ) -> bool {
         !key.columns.is_empty()
             && key.columns.iter().all(|(source, target)| {
                 target.is_some()
@@ -491,11 +494,6 @@ impl App {
             (ui.available_width() * 0.32).clamp(48.0, if wide { 180.0 } else { 124.0 });
         let type_width = if wide { 64.0 } else { 0.0 };
         let mut action = None;
-        let can_follow = self.database.ready
-            && !self.database.closing
-            && !self.has_drafts()
-            && self.database.commit_ticket.is_none()
-            && self.database.document.active.is_none();
         let row_spacing = ui.spacing().item_spacing.y;
         ui.spacing_mut().item_spacing.y = 0.0;
         for (col, value) in values.iter().enumerate() {
@@ -514,30 +512,7 @@ impl App {
                 foreign: header.is_foreign(),
                 selected: self.database.document.inspect == Some((row, col)),
             };
-            let parents: Vec<_> = self
-                .database
-                .document
-                .browse_inspection()
-                .into_iter()
-                .flat_map(|info| &info.foreign_keys)
-                .filter(|key| {
-                    key.columns
-                        .iter()
-                        .any(|(source, _)| source.eq_ignore_ascii_case(field.name))
-                })
-                .map(|key| {
-                    (
-                        key.clone(),
-                        can_follow && self.record_parent_ready(row, key),
-                    )
-                })
-                .collect();
             let available_value = (ui.available_width() - name_width - type_width - 12.0).max(16.0);
-            let link_width = parents
-                .iter()
-                .map(|(key, _)| (key.target.chars().count() as f32 * 6.5 + 20.0).min(110.0))
-                .sum::<f32>()
-                .min(available_value * 0.6);
             let staged = field.shown != field.stored;
             let revert_width = if staged { 24.0 } else { 0.0 };
             let editing = self
@@ -550,7 +525,7 @@ impl App {
             let wrapped = record_wrap(
                 ui,
                 field.shown,
-                available_value - link_width - revert_width - 4.0,
+                available_value - revert_width - 4.0,
                 field.selected && !editing,
                 staged,
             );
@@ -630,24 +605,6 @@ impl App {
                         }
                     },
                 );
-            }
-            if !parents.is_empty() {
-                let links = egui::Rect::from_min_max(
-                    egui::pos2(value_rect.right() - link_width, rect.top()),
-                    egui::pos2(value_rect.right(), rect.top() + 24.0),
-                );
-                value_rect.max.x = links.left() - 4.0;
-                ui.scope_builder(egui::UiBuilder::new().id_salt(("parents", col)).max_rect(links).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
-                    ui.spacing_mut().item_spacing.x = 2.0;
-                    for (key, enabled) in &parents {
-                        let (area, response) = ui.add_enabled_ui(*enabled, |ui| ui.allocate_exact_size(egui::vec2((links.width() / parents.len() as f32 - 2.0).max(1.0), 22.0), egui::Sense::click())).inner;
-                        let color = crate::appearance::Tokens::of(ui.ctx()).relationship.gamma_multiply(if *enabled { 1.0 } else { 0.45 });
-                        icons::paint(ui.painter(), egui::Rect::from_center_size(area.left_center() + egui::vec2(6.0, 0.0), egui::vec2(12.0, 12.0)), Icon::Next, color);
-                        super::schema::presentation::text_at(ui, egui::Rect::from_min_max(area.min + egui::vec2(15.0, 0.0), area.max), &key.target, color, 11.5);
-                        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Link, *enabled && ui.is_enabled(), format!("Follow {}", key.target)));
-                        if response.on_hover_text(format!("Follow {} ({}) · requires resolved non-NULL keys and no staged edits", key.target, key.columns.iter().map(|(source, target)| format!("{source} references {}", target.as_deref().unwrap_or("unresolved PK"))).collect::<Vec<_>>().join(", "))).clicked() { action = Some(RecordAction::Follow(key.clone())); }
-                    }
-                });
             }
             if let Some(inline) = self.database.document.tools.inline.as_mut().filter(|e| {
                 e.row == row

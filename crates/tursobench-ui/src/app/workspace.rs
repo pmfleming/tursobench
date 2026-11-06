@@ -594,41 +594,43 @@ impl App {
                     .or(self.database.document.tools.detail)
                     .or_else(|| (!self.database.document.result.rows.is_empty()).then_some(0));
                 if let Some(row) = row
-                    && self.related_visible()
+                    && (self.related_visible()
+                        || self
+                            .database
+                            .document
+                            .browse_inspection()
+                            .is_some_and(|info| !info.foreign_keys.is_empty()))
                 {
-                    egui::Panel::bottom("record-related")
+                    let relationship_height = (ui.available_height() * 0.35 - 32.0).max(0.0);
+                    egui::Panel::bottom("record-relationships")
                         .resizable(false)
                         .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(4, 0)))
-                        .show(ui, |ui| self.related_list(ui, row));
-                }
-                if ui.available_width() > 600.0
-                    && !self.incoming_keys().is_empty()
-                    && let Some(row) = row
-                {
-                    ui.columns(2, |panes| {
-                        egui::ScrollArea::vertical()
-                            .id_salt("record-fields-wide")
-                            .auto_shrink([false, false])
-                            .show(&mut panes[0], |ui| {
-                                self.record_inspector_with_types(ui, row, true)
-                            });
-                        egui::ScrollArea::vertical()
-                            .id_salt("record-related-wide")
-                            .auto_shrink([false, false])
-                            .show(&mut panes[1], |ui| self.wide_related(ui));
-                    });
-                } else {
-                    egui::ScrollArea::vertical()
-                        .id_salt("record-scroll")
-                        .auto_shrink([false, false])
                         .show(ui, |ui| {
-                            if let Some(row) = row {
-                                self.record_inspector(ui, row);
-                            } else {
-                                icons::empty_state(ui, Icon::Selection, "Select a row to inspect");
-                            }
+                            ui.separator();
+                            egui::CollapsingHeader::new("Relationships")
+                                .id_salt("record-relationships-section")
+                                .default_open(false)
+                                .show(ui, |ui| {
+                                    ui.set_min_height(relationship_height);
+                                    egui::ScrollArea::vertical()
+                                        .id_salt("record-relationships-scroll")
+                                        .max_height(relationship_height)
+                                        .auto_shrink([false, true])
+                                        .show(ui, |ui| self.record_relationships(ui, row));
+                                });
                         });
                 }
+                ui.strong("Fields & values");
+                egui::ScrollArea::vertical()
+                    .id_salt("record-scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        if let Some(row) = row {
+                            self.record_inspector(ui, row);
+                        } else {
+                            icons::empty_state(ui, Icon::Selection, "Select a row to inspect");
+                        }
+                    });
             }
             Kind::Sql => self.sql_pane(ui),
             Kind::Data | Kind::Result => {

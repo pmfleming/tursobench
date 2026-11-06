@@ -331,6 +331,64 @@ impl App {
                         .any(|n| n.error.is_some() || n.inspection.is_none())
             })
     }
+    pub(super) fn record_relationships(&mut self, ui: &mut egui::Ui, row: usize) {
+        let parents = self
+            .database
+            .document
+            .browse_inspection()
+            .map(|info| info.foreign_keys.clone())
+            .unwrap_or_default();
+        let available = self.database.ready
+            && !self.database.closing
+            && !self.has_drafts()
+            && self.database.commit_ticket.is_none()
+            && self.database.document.active.is_none();
+        if !parents.is_empty() {
+            ui.weak("References · records this row points to");
+            for key in parents {
+                let mapping = key
+                    .columns
+                    .iter()
+                    .map(|(source, target)| {
+                        format!(
+                            "{source} → {}.{}",
+                            key.target,
+                            target.as_deref().unwrap_or("unresolved PK")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                ui.horizontal_wrapped(|ui| {
+                    let enabled = available && self.record_parent_ready(row, &key);
+                    let response = ui.add_enabled(
+                        enabled,
+                        egui::Button::new(
+                            egui::RichText::new(format!("Follow {}", key.target))
+                                .color(crate::appearance::Tokens::of(ui.ctx()).relationship),
+                        )
+                        .frame(false),
+                    );
+                    if response
+                        .on_hover_text("Open the referenced record; requires resolved non-NULL keys and no staged edits")
+                        .clicked()
+                    {
+                        self.follow_key(row, key.clone());
+                    }
+                    ui.label(mapping);
+                });
+            }
+        }
+        if self.related_visible() {
+            ui.weak("Referenced by · rows that point to this record");
+            self.related_list(ui, row);
+            if !self.incoming_keys().is_empty() {
+                egui::CollapsingHeader::new("Preview related rows")
+                    .id_salt("record-related-preview")
+                    .default_open(false)
+                    .show(ui, |ui| self.wide_related(ui));
+            }
+        }
+    }
     pub(super) fn related_list(&mut self, ui: &mut egui::Ui, row: usize) {
         if !self.related_visible() {
             return;
@@ -397,10 +455,17 @@ impl App {
                                 available && spec.is_some(),
                                 egui::Button::new(
                                     egui::RichText::new(format!(
-                                        "{child}.{} · {}",
+                                        "{child}.{} → {} · {}",
                                         key.columns
                                             .iter()
                                             .map(|(from, _)| from.as_str())
+                                            .collect::<Vec<_>>()
+                                            .join(" + "),
+                                        key.columns
+                                            .iter()
+                                            .map(|(_, target)| target
+                                                .as_deref()
+                                                .unwrap_or("unresolved PK"))
                                             .collect::<Vec<_>>()
                                             .join(" + "),
                                         count.map_or("—".into(), |n| n.to_string())

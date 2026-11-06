@@ -59,6 +59,14 @@ there is no copied, detached table record. Indexes and triggers can independentl
 select their original DDL in Structure. FK links use declared metadata, including
 composite keys and parent collation/affinity; no relationships are inferred.
 
+Record puts **Fields & values** first, using the full tile width. Key badges stay
+beside the field names. A separate **Relationships** section below the fields is
+collapsed initially and distinguishes outgoing **References** from incoming
+**Referenced by** links. It shows the key mappings and provides follow/count
+actions. Related-row previews expand on request; widening the tile does not
+automatically fetch them or replace field space with a second grid. When expanded,
+the relationships section scrolls within a bounded part of the tile height.
+
 SQL keeps its editor and linked results inside one tile. Ctrl J focuses the current
 editor. Its command bar has Run for the selection/current statement and a Run all
 icon for whole-buffer scripts, with sequential or atomic transaction policy.
