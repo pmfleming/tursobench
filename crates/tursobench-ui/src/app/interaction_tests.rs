@@ -3511,3 +3511,52 @@ fn sidebar_search_loads_parked_columns_and_respects_scopes_and_keyboard() {
 }
 
 mod sidebar_review;
+
+#[test]
+fn compact_record_rows_align_and_disable_null_composite_parent_links() {
+    let (_dir, ctx, mut app) = fixture(
+        &[
+            "CREATE TABLE parent(a INTEGER,b INTEGER,PRIMARY KEY(a,b))",
+            "CREATE TABLE child(id INTEGER PRIMARY KEY,a INTEGER,b INTEGER,status TEXT,FOREIGN KEY(a,b) REFERENCES parent(a,b))",
+            "INSERT INTO child VALUES(1,7,NULL,'pending')",
+        ],
+        true,
+    );
+    ctx.enable_accesskit();
+    browse_and_wait(&mut app, &ctx, "child");
+    app.open_record_window(0, 0);
+    let sequence = app.database.sequence;
+    let output = super::test_ui::render(&ctx, egui::vec2(396.0, 244.0), vec![], |ui| {
+        app.record_inspector(ui, 0)
+    });
+    let texts: Vec<_> = output
+        .shapes
+        .iter()
+        .filter_map(|s| match &s.shape {
+            egui::Shape::Text(t) => Some(t),
+            _ => None,
+        })
+        .collect();
+    let id = texts.iter().find(|t| t.galley.job.text == "id").unwrap();
+    let status = texts
+        .iter()
+        .find(|t| t.galley.job.text == "status")
+        .unwrap();
+    assert!((status.pos.y - id.pos.y - 72.0).abs() < 1.0);
+    assert_eq!(id.pos.x, status.pos.x);
+    assert!(!texts.iter().any(|t| t.galley.job.text.contains("Parent:")));
+    assert!(
+        output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.label() == Some("→ parent"))
+            .all(|(_, n)| n.is_disabled())
+    );
+    assert_eq!(app.database.sequence, sequence);
+    assert!(!app.has_drafts());
+    app.close();
+}
