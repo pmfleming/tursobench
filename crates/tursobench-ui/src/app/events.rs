@@ -49,27 +49,7 @@ impl Document {
 }
 impl App {
     pub(super) fn load_diagram(&mut self) {
-        if !self.database.ready
-            || self.database.closing
-            || self.database.ui.diagram.ticket.is_some()
-        {
-            return;
-        }
-        let Some(session) = &self.database.session else {
-            return;
-        };
-        self.database.sequence += 1;
-        let ticket = session.ticket(self.database.sequence, self.database.generation);
-        match session.submit(Request {
-            ticket,
-            operation: Operation::Diagram,
-        }) {
-            Ok(()) => {
-                self.database.ui.diagram.ticket = Some(ticket);
-                self.database.ui.diagram.error.clear();
-            }
-            Err(e) => self.database.ui.diagram.error = e.to_string(),
-        }
+        self.database.request_diagram();
     }
 
     fn event_target(&self, ticket: Ticket) -> Option<(Option<u64>, Target)> {
@@ -483,4 +463,27 @@ fn completion_summary(c: &Completion) -> String {
         "{:?}: {} rows seen, {} changes; transaction {:?}{error}",
         c.delivery, c.rows_seen, c.changed, c.transaction
     )
+}
+
+impl super::sessions::DatabaseWorkspace {
+    pub(super) fn request_diagram(&mut self) {
+        if !self.ready || self.closing || self.ui.diagram.ticket.is_some() {
+            return;
+        }
+        let Some(session) = &self.session else {
+            return;
+        };
+        self.sequence += 1;
+        let ticket = session.ticket(self.sequence, self.generation);
+        match session.submit(Request {
+            ticket,
+            operation: Operation::Diagram,
+        }) {
+            Ok(()) => {
+                self.ui.diagram.ticket = Some(ticket);
+                self.ui.diagram.error.clear();
+            }
+            Err(e) => self.ui.diagram.error = e.to_string(),
+        }
+    }
 }

@@ -225,9 +225,6 @@ impl App {
         if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::PageUp)) {
             self.cycle_database(-1);
         }
-        if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::P)) {
-            self.object_search_open = true;
-        }
         if self.parked.is_empty() {
             return;
         }
@@ -263,9 +260,6 @@ impl App {
                 {
                     selected = Some(0);
                 }
-                if ui.button("Find object…").clicked() {
-                    self.object_search_open = true;
-                }
             });
         });
         if let Some(id) = selected {
@@ -290,53 +284,5 @@ impl App {
             .unwrap_or(0);
         let next = (index as isize + direction).rem_euclid(ids.len() as isize) as usize;
         self.select_workspace(ids[next]);
-    }
-    pub(super) fn object_search_ui(&mut self, ctx: &egui::Context) {
-        let mut open = self.object_search_open;
-        if !open {
-            return;
-        }
-        let mut chosen = None;
-        egui::Window::new("Find object across databases")
-            .open(&mut open)
-            .show(ctx, |ui| {
-                ui.text_edit_singleline(&mut self.object_search);
-                egui::ScrollArea::vertical()
-                    .max_height(400.0)
-                    .show(ui, |ui| {
-                        let matches = std::iter::once(&self.database)
-                            .chain(self.parked.values())
-                            .flat_map(|d| {
-                                let file = Path::new(&d.path)
-                                    .file_name()
-                                    .unwrap_or_default()
-                                    .to_string_lossy();
-                                super::commands::objects(&d.schema, d.ui.diagram.data.as_ref()).map(
-                                    move |object| {
-                                        (d.id, format!("{file} · {}", object.label()), object)
-                                    },
-                                )
-                            });
-                        let mut matches = matches.filter(|(_, label, _)| {
-                            super::commands::fuzzy(label, &self.object_search)
-                        });
-                        for (id, label, object) in matches.by_ref().take(100) {
-                            if ui.button(label).clicked() {
-                                chosen = Some((id, object.command()));
-                            }
-                        }
-                        if matches.next().is_some() {
-                            ui.weak("First 100 matches; refine the search.");
-                        }
-                    });
-            });
-        self.object_search_open = open;
-        if let Some((id, command)) = chosen {
-            self.select_workspace(id);
-            if self.database.id == id {
-                self.execute_command(ctx, command);
-                self.object_search_open = false;
-            }
-        }
     }
 }

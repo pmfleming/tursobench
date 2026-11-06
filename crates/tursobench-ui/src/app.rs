@@ -57,8 +57,7 @@ pub struct App {
     next_workspace: u64,
     recovery_store: crate::recovery::Store,
     polling_background: bool,
-    object_search: String,
-    object_search_open: bool,
+    sidebar_search: database_navigation::Search,
     smoke: Option<smoke::Smoke>,
     preferences: crate::storage::Preferences,
     appearance: crate::appearance::Appearance,
@@ -112,8 +111,7 @@ impl App {
             next_workspace: 2,
             recovery_store: crate::recovery::Store::start(move || recovery_wake.request_repaint()),
             polling_background: false,
-            object_search: String::new(),
-            object_search_open: false,
+            sidebar_search: Default::default(),
             smoke: smoke.then(smoke::Smoke::new),
             databases: databases::Chooser::new(&preferences.discovery),
             appearance: crate::appearance::Appearance::new(
@@ -566,7 +564,6 @@ impl App {
     pub fn render(&mut self, ui: &mut egui::Ui) {
         self.database_tabs(ui);
         ui.push_id(self.database.id, |ui| self.shell(ui));
-        self.object_search_ui(ui.ctx());
         self.large_value_ui(ui.ctx());
         self.transfer_ui(ui.ctx());
         self.profile_ui(ui.ctx());

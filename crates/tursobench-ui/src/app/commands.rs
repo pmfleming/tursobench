@@ -127,10 +127,17 @@ impl App {
     }
     pub(super) fn shortcuts(&mut self, ctx: &egui::Context) {
         use egui::{Key, Modifiers};
+        self.database_navigation_keys(ctx);
         self.grid_keys(ctx);
         let consumed = |mods, key| ctx.input_mut(|i| i.consume_key(mods, key));
         if consumed(Modifiers::NONE, Key::Escape) {
-            self.dismiss_surface(ctx);
+            let search = egui::Id::unique("sidebar-search");
+            if ctx.memory(|m| m.has_focus(search)) && !self.sidebar_search.query.is_empty() {
+                self.sidebar_search.query.clear();
+                self.sidebar_search.index = 0;
+            } else {
+                self.dismiss_surface(ctx);
+            }
             return;
         }
         if consumed(Modifiers::CTRL, Key::K) {
@@ -261,10 +268,6 @@ impl App {
         self.database.ui.access_dialog &= open;
     }
     pub(super) fn open_palette(&mut self) {
-        if self.database.session.is_none() && self.database.document.ui.nav == Nav::Databases {
-            self.databases.focus_filter = true;
-            return;
-        }
         self.database.ui.palette_open = true;
         self.database.ui.palette_focus = true;
         self.database.ui.palette_query.clear();
@@ -283,7 +286,9 @@ impl App {
         }
         let mut open = true;
         let mut chosen = None;
-        egui::Window::new("Search tables, columns and commands").frame(crate::app::presentation::window_frame(ctx)).default_pos(ctx.content_rect().center()-egui::vec2(280.0,180.0))
+        egui::Window::new("Commands")
+            .frame(crate::app::presentation::window_frame(ctx))
+            .default_pos(ctx.content_rect().center() - egui::vec2(280.0, 180.0))
             .id(egui::Id::unique("command-palette"))
             .open(&mut open)
             .collapsible(false)
@@ -294,7 +299,7 @@ impl App {
                 let search = ui.add(
                     egui::TextEdit::singleline(&mut self.database.ui.palette_query)
                         .id_salt("command-search")
-                        .hint_text("Table, column, or action…")
+                        .hint_text("Find an action…")
                         .desired_width(ui.available_width()),
                 );
                 if self.database.ui.palette_focus {
@@ -306,13 +311,18 @@ impl App {
                 }
                 let mut items = self.palette_items();
                 let mut chosen_index = None;
-                self.database.ui.palette_index = self.database.ui.palette_index.min(items.len().saturating_sub(1));
+                self.database.ui.palette_index = self
+                    .database
+                    .ui
+                    .palette_index
+                    .min(items.len().saturating_sub(1));
                 if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)) {
                     self.database.ui.palette_index =
                         (self.database.ui.palette_index + 1).min(items.len().saturating_sub(1));
                 }
                 if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)) {
-                    self.database.ui.palette_index = self.database.ui.palette_index.saturating_sub(1);
+                    self.database.ui.palette_index =
+                        self.database.ui.palette_index.saturating_sub(1);
                 }
                 if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
                     chosen_index = Some(self.database.ui.palette_index);
@@ -322,7 +332,12 @@ impl App {
                     .show(ui, |ui| {
                         for (index, (label, _)) in items.iter().enumerate() {
                             let selected = index == self.database.ui.palette_index;
-                            let response = ui.add_sized([ui.available_width(),32.0],egui::Button::new(label).selected(selected).frame_when_inactive(false));
+                            let response = ui.add_sized(
+                                [ui.available_width(), 32.0],
+                                egui::Button::new(label)
+                                    .selected(selected)
+                                    .frame_when_inactive(false),
+                            );
                             if selected {
                                 response.scroll_to_me(Some(egui::Align::Center));
                             }
@@ -334,9 +349,13 @@ impl App {
                             ui.label("No matches in loaded metadata.");
                         }
                     });
-                chosen = chosen_index.filter(|&i| i < items.len()).map(|i| items.swap_remove(i).1);
+                chosen = chosen_index
+                    .filter(|&i| i < items.len())
+                    .map(|i| items.swap_remove(i).1);
                 presentation::footer(ui, |ui| {
-                    ui.small("Up/Down choose · Enter open · Esc close. Column search uses loaded map metadata.");
+                    ui.small(
+                        "Up/Down choose · Enter run · Esc close. Ctrl+P searches database objects.",
+                    );
                 });
             });
         self.database.ui.palette_open = open;
@@ -388,17 +407,6 @@ impl App {
             ("Toggle theme".into(), Command::Theme),
             ("Keyboard shortcuts and help · F1".into(), Command::Help),
         ];
-        items.extend(
-            objects(
-                &self.database.schema,
-                self.database.ui.diagram.data.as_ref(),
-            )
-            .filter(|o| {
-                matches!(o.kind, "table" | "view")
-                    && (o.column.is_none() || !self.database.ui.palette_query.is_empty())
-            })
-            .map(|o| (o.label(), o.command())),
-        );
         items.retain(|(label, _)| fuzzy(label, &self.database.ui.palette_query));
         items.truncate(80);
         items
@@ -406,10 +414,25 @@ impl App {
     pub(super) fn execute_command(&mut self, ctx: &egui::Context, action: Command) {
         match action {
             Command::Definition(name) => {
-                self.submit(
-                    tursobench_db::Operation::Definition(name),
-                    View::Diagnostics,
-                );
+                if let Some(object) = self
+                    .database
+                    .schema
+                    .iter()
+                    .find(|o| o.name == name)
+                    .cloned()
+                {
+                    if self.database.workspace.enabled
+                        && self
+                            .create_window(Kind::Structure, Some(object.name.clone()), None, false)
+                            .is_none()
+                    {
+                        return;
+                    }
+                    self.database.ui.diagram.selected = Some(object.table.clone());
+                    self.database.document.tools.ddl = Some(object);
+                    self.database.document.ui.nav = Nav::Table;
+                    self.database.document.ui.table_view = TableView::Structure;
+                }
             }
             Command::Table(name, column) => {
                 let before = self.database.document.result.current;

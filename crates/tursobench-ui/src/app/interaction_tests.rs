@@ -1369,9 +1369,9 @@ fn sql_tile_keeps_result_identity_and_read_transactions_visible() {
     click(&mut app, &ctx, rollback);
     wait(&mut app, &ctx);
     assert_eq!(app.database.transaction, TransactionState::Autocommit);
-    app.open_palette();
+    app.sidebar_search.focus = true;
+    app.sidebar_search.query = "a.id".into();
     frame(&mut app, &ctx, vec![]);
-    app.database.ui.palette_query = "a.id".into();
     press_key(&mut app, &ctx, egui::Key::Enter, egui::Modifiers::NONE);
     wait(&mut app, &ctx);
     assert_eq!(app.database.document.table.as_ref().unwrap().name, "a");
@@ -2313,7 +2313,7 @@ fn filtered_index_tree_opens_original_ddl_without_replacing_primary_rows() {
         false,
     );
     browse_and_wait(&mut app, &ctx, "sample");
-    app.database.tools.schema_filter = "sample_value".into();
+    app.sidebar_search.query = "sample_value".into();
     frame(&mut app, &ctx, vec![]);
     let output = frame_at(&mut app, &ctx, egui::vec2(1280.0, 720.0), vec![]);
     let pos = output
@@ -2322,7 +2322,7 @@ fn filtered_index_tree_opens_original_ddl_without_replacing_primary_rows() {
         .rev()
         .find_map(|s| {
             if let egui::Shape::Text(t) = &s.shape {
-                (t.galley.job.text == "sample_value"
+                (t.galley.job.text == "sample_value · index"
                     && app.database.ui.sidebar_rect.contains(t.pos))
                 .then_some(t.pos + egui::vec2(8.0, 6.0))
             } else {
@@ -3395,5 +3395,80 @@ fn schema_comparison_routes_inactive_snapshots_and_guards_target_drafts() {
     );
     close_and_wait(&mut app, &ctx);
     app.select_workspace(source);
+    close_and_wait(&mut app, &ctx);
+}
+
+#[test]
+fn sidebar_search_loads_parked_columns_and_respects_scopes_and_keyboard() {
+    use super::database_navigation::Scope;
+    let (dir, ctx, mut app) = fixture(
+        &[
+            "CREATE TABLE first_table(id INTEGER PRIMARY KEY, first_value TEXT)",
+            "INSERT INTO first_table VALUES(1,'keep')",
+        ],
+        false,
+    );
+    browse_and_wait(&mut app, &ctx, "first_table");
+    let first = app.database.id;
+    let retained = app.database.document.result.current;
+    let second_path = dir.path().join("second.db");
+    crate::test_support::create(
+        &second_path,
+        &["CREATE TABLE second_table(id INTEGER PRIMARY KEY, needle_column TEXT)"],
+    );
+    app.request_database(&ctx, second_path);
+    inspect_selected(&mut app, &ctx);
+    app.open(&ctx);
+    wait(&mut app, &ctx);
+    let second = app.database.id;
+    app.select_workspace(first);
+    app.parked.get_mut(&second).unwrap().ui.diagram.data = None;
+    app.sidebar_search.query = "needle_column".into();
+    app.sidebar_search.scope = Scope::ThisDatabase;
+    let output = frame_at(&mut app, &ctx, egui::vec2(1280.0, 720.0), vec![]);
+    assert!(
+        !crate::app::test_ui::nodes(&output)
+            .iter()
+            .any(|(_, n)| n.label() == Some("second_table.needle_column · column"))
+    );
+    assert!(app.parked[&second].ui.diagram.ticket.is_none());
+    app.sidebar_search.scope = Scope::AllOpen;
+    app.sidebar_search.focus = true;
+    frame_at(&mut app, &ctx, egui::vec2(1280.0, 720.0), vec![]);
+    assert_eq!(app.database.id, first);
+    assert_eq!(app.database.document.result.current, retained);
+    wait_until(&mut app, &ctx, |a| {
+        a.parked[&second].ui.diagram.data.is_some()
+    });
+    let output = frame_at(&mut app, &ctx, egui::vec2(1280.0, 720.0), vec![]);
+    control(&output, "second_table.needle_column · column");
+    press_key(&mut app, &ctx, egui::Key::Enter, egui::Modifiers::NONE);
+    wait(&mut app, &ctx);
+    assert_eq!(app.database.id, second);
+    assert_eq!(
+        app.database.document.tools.highlight_column,
+        Some(("second_table".into(), "needle_column".into()))
+    );
+    assert!(app.sidebar_search.query.is_empty());
+    app.sidebar_search.query = "first_table".into();
+    app.sidebar_search.scope = Scope::Databases;
+    let output = frame_at(&mut app, &ctx, egui::vec2(1280.0, 720.0), vec![]);
+    assert!(
+        !crate::app::test_ui::nodes(&output)
+            .iter()
+            .any(|(_, n)| n.label() == Some("first_table · table"))
+    );
+    app.sidebar_search.query = "second_table".into();
+    app.open_palette();
+    app.database.ui.palette_query = "second_table".into();
+    let output = frame_at(&mut app, &ctx, egui::vec2(1280.0, 720.0), vec![]);
+    assert!(
+        !crate::app::test_ui::nodes(&output)
+            .iter()
+            .any(|(_, n)| n.label() == Some("second_table · table"))
+    );
+    app.database.ui.palette_open = false;
+    close_and_wait(&mut app, &ctx);
+    app.select_workspace(first);
     close_and_wait(&mut app, &ctx);
 }

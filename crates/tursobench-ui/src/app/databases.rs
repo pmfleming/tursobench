@@ -950,3 +950,20 @@ mod tests {
         assert!(!app.databases.cancelling);
     }
 }
+
+impl App {
+    pub(super) fn available_database_paths(&self, query: &str) -> Vec<PathBuf> {
+        let query = query.to_lowercase();
+        self.databases
+            .entries
+            .iter()
+            .filter(|entry| entry.selectable() && self.duplicate_workspace(&entry.path).is_none())
+            .filter(|entry| {
+                query
+                    .split_whitespace()
+                    .all(|word| entry.path.to_string_lossy().to_lowercase().contains(word))
+            })
+            .map(|entry| entry.path.clone())
+            .collect()
+    }
+}

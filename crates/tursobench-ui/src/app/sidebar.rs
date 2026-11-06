@@ -97,23 +97,10 @@ impl App {
                 });
             return;
         }
-        let find = ui
-            .horizontal(|ui| {
-                let width = (ui.available_width() - 28.0 - ui.spacing().item_spacing.x).max(40.0);
-                let find = ui.add_sized(
-                    [width, 28.0],
-                    egui::TextEdit::singleline(&mut self.database.tools.schema_filter)
-                        .hint_text("Find tables or columns…"),
-                );
-                if icons::button(ui, Icon::Refresh, "Refresh schema", "F5").clicked() {
-                    self.refresh_catalog();
-                    self.load_diagram();
-                }
-                find
-            })
-            .inner;
-        if find.has_focus() {
-            self.database.tools.tree_focus = Some(find.id);
+        self.sidebar_search_ui(ui);
+        if !self.sidebar_search.query.trim().is_empty() {
+            self.sidebar_search_results_ui(ui);
+            return;
         }
         egui::ScrollArea::vertical().id_salt("navigation-tree").show(ui,|ui| {
             if self.database.catalog_ticket.is_some(){ui.spinner();}
@@ -121,7 +108,7 @@ impl App {
             if self.database.catalog.completion.as_ref().is_some_and(|c|c.delivery!=tursobench_core::Delivery::Complete||c.error.is_some()) {
                 ui.colored_label(ui.visuals().warn_fg_color,"Catalog incomplete").on_hover_text("Retained metadata budget reached or catalog failed. Use SQL to inspect omitted objects.");
             }
-            let filter=self.database.tools.schema_filter.to_lowercase();
+            let filter=String::new();
             let related=self.database.ui.hover_table.as_deref().map(|t|self.related_tables(t)).unwrap_or_default();
             let mut hovered=None;
             for (kind,title,icon) in [("table","Tables",Icon::Data),("view","Views",Icon::Data),("system","System",Icon::System),("index","Indexes",Icon::Columns),("trigger","Triggers",Icon::System)] {
