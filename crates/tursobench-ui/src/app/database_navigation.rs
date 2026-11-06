@@ -77,6 +77,12 @@ impl App {
                 [width, 28.0],
                 egui::TextEdit::singleline(&mut self.sidebar_search.query)
                     .id(egui::Id::unique("sidebar-search"))
+                    .event_filter(egui::EventFilter {
+                        escape: true,
+                        vertical_arrows: true,
+                        horizontal_arrows: true,
+                        tab: false,
+                    })
                     .hint_text("Find in databases…"),
             );
             if std::mem::take(&mut self.sidebar_search.focus) {
@@ -135,12 +141,12 @@ impl App {
         {
             return None;
         }
-        let mut chosen = self
-            .sidebar_search
-            .activate
-            .then_some(self.sidebar_search.index);
+        let results_mode = !self.sidebar_search.query.trim().is_empty();
         if let Some(delta) = self.sidebar_search.key_delta.take() {
-            if delta < 0 && self.sidebar_search.index == 0 {
+            if results_mode {
+                self.sidebar_search.index = self.sidebar_search.index.saturating_add_signed(delta);
+                self.sidebar_search.navigating = true;
+            } else if delta < 0 && self.sidebar_search.index == 0 {
                 self.sidebar_search.navigating = false;
             } else {
                 self.sidebar_search.index = if self.sidebar_search.navigating {
@@ -152,9 +158,10 @@ impl App {
             }
         }
         self.sidebar_search.index = self.sidebar_search.index.min(count.saturating_sub(1));
-        if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
-            chosen = Some(self.sidebar_search.index);
-        }
+        let enter = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
+            || self.sidebar_search.activate;
+        let chosen = (enter && (results_mode || self.sidebar_search.navigating))
+            .then_some(self.sidebar_search.index);
         chosen.filter(|&i| i < count)
     }
 

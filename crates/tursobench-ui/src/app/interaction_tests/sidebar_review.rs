@@ -200,3 +200,95 @@ fn active_close_chooses_an_open_database_and_last_close_clears_access() {
     assert!(!app.database.writable);
     assert!(app.parked.values().all(|d| !d.retained()));
 }
+#[test]
+fn review_esc_clears_focused_search() {
+    let (_d, ctx, mut app) = fixture(&["CREATE TABLE items(id INTEGER PRIMARY KEY)"], false);
+    app.sidebar_search.focus = true;
+    frame_at(&mut app, &ctx, SIZE, vec![]);
+    frame_at(
+        &mut app,
+        &ctx,
+        SIZE,
+        vec![egui::Event::Text("items".into())],
+    );
+    frame_at(&mut app, &ctx, SIZE, vec![]);
+    assert_eq!(
+        app.sidebar_search.query, "items",
+        "typing reached the field"
+    );
+    press_key(&mut app, &ctx, egui::Key::Escape, egui::Modifiers::NONE);
+    frame_at(&mut app, &ctx, SIZE, vec![]);
+    assert_eq!(app.sidebar_search.query, "", "Esc should clear the query");
+}
+#[test]
+fn review_enter_in_empty_search_does_nothing() {
+    let (d, ctx, mut app) = fixture(&["CREATE TABLE items(id INTEGER PRIMARY KEY)"], false);
+    let first = app.database.id;
+    let b = second_db(&d);
+    app.preferences.discovery.record_open(b, 1);
+    app.databases = crate::app::databases::Chooser::new(&app.preferences.discovery);
+    app.sidebar_search.focus = true;
+    frame_at(&mut app, &ctx, SIZE, vec![]);
+    frame_at(&mut app, &ctx, SIZE, vec![]);
+    press_key(&mut app, &ctx, egui::Key::Enter, egui::Modifiers::NONE);
+    frame_at(&mut app, &ctx, SIZE, vec![]);
+    assert_eq!(
+        app.database.id, first,
+        "Enter on empty query must not leave the active db"
+    );
+}
+#[test]
+fn review_first_arrow_down_moves_highlight() {
+    let (_d, ctx, mut app) = fixture(
+        &[
+            "CREATE TABLE aa_one(id INTEGER PRIMARY KEY)",
+            "CREATE TABLE aa_two(id INTEGER PRIMARY KEY)",
+        ],
+        false,
+    );
+    app.sidebar_search.query = "aa_".into();
+    app.sidebar_search.focus = true;
+    frame_at(&mut app, &ctx, SIZE, vec![]);
+    frame_at(&mut app, &ctx, SIZE, vec![]);
+    press_key(&mut app, &ctx, egui::Key::ArrowDown, egui::Modifiers::NONE);
+    frame_at(&mut app, &ctx, SIZE, vec![]);
+    assert_eq!(app.sidebar_search.index, 1, "first Down should reach row 2");
+}
+#[test]
+fn search_keyboard_pages_and_opens_the_highlighted_result() {
+    let (_dir, ctx, mut app) = fixture(
+        &[
+            "CREATE TABLE aa_one(id INTEGER)",
+            "CREATE TABLE aa_two(id INTEGER)",
+            "CREATE TABLE aa_three(id INTEGER)",
+            "CREATE TABLE aa_four(id INTEGER)",
+            "CREATE TABLE aa_five(id INTEGER)",
+            "CREATE TABLE aa_six(id INTEGER)",
+        ],
+        false,
+    );
+    app.sidebar_search.query = "aa_".into();
+    app.sidebar_search.focus = true;
+    frame_at(&mut app, &ctx, SIZE, vec![]);
+    frame_at(&mut app, &ctx, SIZE, vec![]);
+    app.database.workspace.expanded = Some(tiling::Kind::Map);
+    let expanded = app.database.workspace.expanded;
+    press_key(&mut app, &ctx, egui::Key::PageDown, egui::Modifiers::NONE);
+    assert_eq!(app.sidebar_search.index, 5);
+    press_key(&mut app, &ctx, egui::Key::ArrowUp, egui::Modifiers::NONE);
+    assert_eq!(app.sidebar_search.index, 4);
+    press_key(&mut app, &ctx, egui::Key::Escape, egui::Modifiers::NONE);
+    assert!(app.sidebar_search.query.is_empty());
+    assert_eq!(app.database.workspace.expanded, expanded);
+    app.sidebar_search.query = "aa_".into();
+    app.sidebar_search.focus = true;
+    frame_at(&mut app, &ctx, SIZE, vec![]);
+    press_key(&mut app, &ctx, egui::Key::ArrowDown, egui::Modifiers::NONE);
+    press_key(&mut app, &ctx, egui::Key::Enter, egui::Modifiers::NONE);
+    wait(&mut app, &ctx);
+    assert_eq!(
+        app.database.document.table.as_ref().unwrap().name,
+        "aa_four"
+    );
+    close_and_wait(&mut app, &ctx);
+}

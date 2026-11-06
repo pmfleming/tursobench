@@ -134,6 +134,7 @@ impl App {
             if ctx.memory(|m| m.has_focus(search)) && !self.sidebar_search.query.is_empty() {
                 self.sidebar_search.query.clear();
                 self.sidebar_search.index = 0;
+                self.sidebar_search.navigating = false;
             } else {
                 self.dismiss_surface(ctx);
             }
