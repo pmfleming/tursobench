@@ -101,11 +101,22 @@ impl App {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 let path = Path::new(&self.database.path);
-                ui.add(
-                    egui::Label::new(egui::RichText::new(
-                        path.file_name().unwrap_or(path.as_os_str()).to_string_lossy(),
-                    ).strong()).truncate(),
-                );
+                let name = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy().into_owned();
+                let writable = self.database.writable;
+                ui.horizontal(|ui| {
+                    let name_width = (ui.available_width() - 56.0 - 2.0 * ui.spacing().item_spacing.x).max(1.0);
+                    ui.allocate_ui_with_layout(egui::vec2(name_width, 28.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.set_min_size(egui::vec2(name_width, 28.0));
+                        ui.add(egui::Label::new(egui::RichText::new(name).strong()).truncate())
+                    }).inner
+                        .on_hover_text(&self.database.path);
+                    for mode in [false, true] {
+                        if crate::app::icons::access_button(ui, mode, Some(self.database.writable == mode)).clicked() {
+                            self.database.writable = mode;
+                        }
+                    }
+                });
+                if self.database.writable != writable { self.databases.open_failure = None; }
                 ui.add(egui::Label::new(&self.database.path).truncate())
                     .on_hover_text(&self.database.path);
                 let inspection = &mut self.databases.inspection;
@@ -121,16 +132,6 @@ impl App {
                     });
                 }
                 ui.add_space(8.0);
-                let writable = self.database.writable;
-                ui.horizontal_wrapped(|ui| {
-                    ui.small("Access");
-                    for mode in [false, true] {
-                        if crate::app::icons::access_button(ui, mode, Some(self.database.writable == mode)).clicked() {
-                            self.database.writable = mode;
-                        }
-                    }
-                });
-                if self.database.writable != writable { self.databases.open_failure = None; }
                 if self.database.writable {
                     ui.small(egui::RichText::new("Opening for writes may change the file. Back up first.").color(ui.visuals().warn_fg_color));
                 }

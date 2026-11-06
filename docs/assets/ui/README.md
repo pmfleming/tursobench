@@ -7,8 +7,9 @@ one shared definition for access-mode icons, colours, tooltips and accessible na
 a lock for Read only and a pencil for Read/write. Native captures use synthetic
 databases, isolated preferences and headless Weston/Mesa.
 
-- `database-access.png`: icon choices with the selected mode highlighted. The file
-  picker remains above the list; the card contains access review and Open/Cancel.
+- `database-access.png`: refreshed after `a3f18cf`, with the access icons at the
+  top right beside the database name, the selected mode highlighted, and no Access
+  caption. The file picker remains above the list; the card contains access review and Open/Cancel.
   Check again appears only with a blocking file-check error.
 - `sidebar-open-databases.png`: shared access indicators and integrated close buttons.
 - `navigator-settings.png`: database-count slider, memory estimate, Reset, and the
@@ -24,6 +25,9 @@ panels, dialogs, staged edits and database controls; capture dimensions were che
 Formatting, Clippy and all 229 active workspace tests passed (one existing ignored
 test), including mode-icon selection, picker consent and confirmed access switching.
 The access-switch interaction test also passed after shortening the dialog title.
+After moving the card icons into its heading, all 154 active UI tests passed; the six
+connection tests passed again after the final text alignment adjustment, along with
+formatting, Clippy and the native capture checks.
 
 ## Sidebar database navigation v9 — native Wayland
 

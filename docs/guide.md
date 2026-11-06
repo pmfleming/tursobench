@@ -114,7 +114,8 @@ Settings in the left panel. Hover controls for their names; F1 opens keyboard he
 
 Access mode uses the same icons throughout the app: a lock for **Read only** and a
 pencil for **Read/write**, with matching tooltips and accessible names. The opening
-card highlights the selected icon. The status-bar icon shows the current mode;
+card places the icons at the top right beside the database name and highlights the
+selected mode. The status-bar icon shows the current mode;
 clicking it asks for confirmation before closing and reopening with different access.
 
 Database navigation stays in the sidebar. **Open databases** shows each live session,
