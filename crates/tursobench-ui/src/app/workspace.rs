@@ -519,6 +519,14 @@ impl App {
                     .map(|(r, _)| r)
                     .or(self.database.document.tools.detail)
                     .or_else(|| (!self.database.document.result.rows.is_empty()).then_some(0));
+                if let Some(row) = row
+                    && self.related_visible()
+                {
+                    egui::Panel::bottom("record-related")
+                        .resizable(false)
+                        .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(4, 0)))
+                        .show(ui, |ui| self.related_list(ui, row));
+                }
                 egui::ScrollArea::vertical()
                     .id_salt("record-scroll")
                     .auto_shrink([false, false])

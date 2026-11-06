@@ -2059,6 +2059,16 @@ fn contextual_reads_and_wide_related_grid_preserve_parent_result_and_selection()
     app.select_cell(0, 0, false);
     let owner = visible_result(&app).current;
     let original = visible_result(&app).rows.clone();
+    ctx.enable_accesskit();
+    let sequence = app.database.sequence;
+    let line = super::test_ui::render(&ctx, egui::vec2(396.0, 30.0), vec![], |ui| {
+        app.related_list(ui, 0)
+    });
+    assert!(control(&line, "Count related child (FK 0)").height() <= 28.0);
+    assert_eq!(
+        app.database.sequence, sequence,
+        "rendering related counts must not read the database"
+    );
     app.request_context(0, "child", &child, context::ReadKind::Count);
     wait(&mut app, &ctx);
     frame_at(&mut app, &ctx, egui::vec2(3440.0, 1440.0), vec![]);

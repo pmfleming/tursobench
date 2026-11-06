@@ -318,13 +318,12 @@ impl App {
             })
             .collect()
     }
-    pub(super) fn related_list(&mut self, ui: &mut egui::Ui, row: usize) {
-        if self.database.document.view != View::Browse {
-            return;
-        }
-        ui.separator();
-        ui.strong("Related");
-        if self.database.ui.diagram.stale
+    pub(super) fn related_visible(&self) -> bool {
+        self.database.document.view == View::Browse
+            && (self.schema_incomplete() || !self.incoming_keys().is_empty())
+    }
+    pub(super) fn schema_incomplete(&self) -> bool {
+        self.database.ui.diagram.stale
             || self
                 .database
                 .ui
@@ -332,72 +331,111 @@ impl App {
                 .data
                 .as_ref()
                 .is_none_or(|g| g.limited || g.tables.iter().any(|n| n.error.is_some()))
-        {
-            ui.weak("Cached or incomplete schema — references may be missing");
+    }
+    pub(super) fn related_list(&mut self, ui: &mut egui::Ui, row: usize) {
+        if !self.related_visible() {
+            return;
         }
         let keys = self.incoming_keys();
-        if keys.is_empty() {
-            let (rect, _) = ui
-                .allocate_exact_size(egui::vec2(ui.available_width(), 56.0), egui::Sense::hover());
-            icons::empty_state_at(ui, rect, Icon::Link, "No declared incoming relationships");
-        }
-        for (child, key) in keys {
-            let spec = self
-                .relationship_read(row, &child, &key, ReadKind::Count)
-                .map(|plan| plan.id);
-            let cached = spec
-                .as_ref()
-                .and_then(|id| self.database.document.tools.context.cached(id));
-            let count = cached
-                .and_then(|c| {
-                    c.result
-                        .completion
-                        .as_ref()
-                        .filter(|done| done.delivery == Delivery::Complete && done.error.is_none())
-                        .and_then(|_| c.result.rows.first()?.first())
-                })
-                .and_then(|v| {
-                    if let Value::Integer(n) = v {
-                        Some(*n)
-                    } else {
-                        None
+        let available = self.database.ready
+            && !self.database.closing
+            && !self.has_drafts()
+            && self.database.document.active.is_none()
+            && self.database.commit_ticket.is_none()
+            && self.database.document.tools.context.pending.is_none();
+        egui::ScrollArea::horizontal()
+            .id_salt("related-line")
+            .max_height(24.0)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().interact_size.y = 22.0;
+                    ui.weak("Related");
+                    if self.schema_incomplete() {
+                        ui.colored_label(ui.visuals().warn_fg_color, "Incomplete schema")
+                            .on_hover_text(
+                                "Cached or incomplete schema — references may be missing",
+                            );
+                    }
+                    for (child, key) in keys {
+                        let spec = self
+                            .relationship_read(row, &child, &key, ReadKind::Count)
+                            .map(|plan| plan.id);
+                        let cached = spec
+                            .as_ref()
+                            .and_then(|id| self.database.document.tools.context.cached(id));
+                        let count = cached
+                            .and_then(|c| {
+                                c.result
+                                    .completion
+                                    .as_ref()
+                                    .filter(|done| {
+                                        done.delivery == Delivery::Complete && done.error.is_none()
+                                    })
+                                    .and_then(|_| c.result.rows.first()?.first())
+                            })
+                            .and_then(|v| {
+                                if let Value::Integer(n) = v {
+                                    Some(*n)
+                                } else {
+                                    None
+                                }
+                            });
+                        let error = cached.map(|c| c.error.clone()).unwrap_or_default();
+                        if ui
+                            .add_enabled(
+                                available && spec.is_some(),
+                                egui::Button::new(
+                                    egui::RichText::new(format!(
+                                        "↙ {child} · {}",
+                                        count.map_or("—".into(), |n| n.to_string())
+                                    ))
+                                    .color(crate::appearance::Tokens::of(ui.ctx()).relationship),
+                                )
+                                .frame(false),
+                            )
+                            .on_hover_text(format!(
+                                "Related {child} · FK {} · {}",
+                                key.id,
+                                key.columns
+                                    .iter()
+                                    .map(|(from, to)| format!(
+                                        "{from} → {}",
+                                        to.as_deref().unwrap_or("unresolved PK")
+                                    ))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ))
+                            .clicked()
+                        {
+                            self.follow_incoming(row, child.clone(), key.clone());
+                        }
+                        if count.is_none()
+                            && ui
+                                .add_enabled_ui(available && spec.is_some(), |ui| {
+                                    icons::button(
+                                        ui,
+                                        Icon::Count,
+                                        &format!("Count related {child} (FK {})", key.id),
+                                        "",
+                                    )
+                                })
+                                .inner
+                                .on_hover_text(if error.is_empty() {
+                                    "Count matching rows (full scan, may be slow)".to_owned()
+                                } else {
+                                    format!("{error} · click to retry count")
+                                })
+                                .clicked()
+                        {
+                            if let Some(id) = &spec {
+                                self.database.document.tools.context.forget(id);
+                            }
+                            self.request_context(row, &child, &key, ReadKind::Count);
+                        }
                     }
                 });
-            let error = cached.map(|c| c.error.clone()).unwrap_or_default();
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(
-                        spec.is_some(),
-                        egui::Button::new(
-                            egui::RichText::new(format!(
-                                "↙ {child} · {}",
-                                count.map_or("—".into(), |n| n.to_string())
-                            ))
-                            .color(crate::appearance::Tokens::of(ui.ctx()).relationship),
-                        )
-                        .frame_when_inactive(false),
-                    )
-                    .clicked()
-                {
-                    self.follow_incoming(row, child.clone(), key.clone());
-                }
-                if count.is_none()
-                    && ui
-                        .add_enabled(spec.is_some(), egui::Button::new("?"))
-                        .on_hover_text(if error.is_empty() {
-                            "Count matching rows (full scan, may be slow)".to_owned()
-                        } else {
-                            format!("{error} · click to retry count")
-                        })
-                        .clicked()
-                {
-                    if let Some(id) = &spec {
-                        self.database.document.tools.context.forget(id);
-                    }
-                    self.request_context(row, &child, &key, ReadKind::Count);
-                }
             });
-        }
     }
     pub(super) fn wide_related(&mut self, ui: &mut egui::Ui) {
         let Some(row) = self.database.document.inspect.map(|(r, _)| r).or(self

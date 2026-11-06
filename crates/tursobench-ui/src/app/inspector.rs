@@ -312,7 +312,9 @@ impl App {
                 }
             }
         }
-        self.related_list(ui, row);
+        if !self.database.workspace.enabled {
+            self.related_list(ui, row);
+        }
     }
     fn record_keys(&mut self, ctx: &egui::Context, row: usize) {
         if self.database.workspace.enabled
