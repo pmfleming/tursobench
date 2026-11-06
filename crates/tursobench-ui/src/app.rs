@@ -111,7 +111,10 @@ impl App {
             next_workspace: 2,
             recovery_store: crate::recovery::Store::start(move || recovery_wake.request_repaint()),
             polling_background: false,
-            sidebar_search: Default::default(),
+            sidebar_search: database_navigation::Search {
+                focus: true,
+                ..Default::default()
+            },
             smoke: smoke.then(smoke::Smoke::new),
             databases: databases::Chooser::new(&preferences.discovery),
             appearance: crate::appearance::Appearance::new(

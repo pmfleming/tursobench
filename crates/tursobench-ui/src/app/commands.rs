@@ -493,13 +493,7 @@ impl App {
             }
             Command::CopyResults => self.copy_results(ctx, crate::export::Format::Tsv),
             Command::Sql => self.toggle_sql(),
-            Command::Open => {
-                if self.database.session.is_some() {
-                    self.new_workspace(ctx);
-                } else {
-                    self.choose_file(ctx);
-                }
-            }
+            Command::Open => self.begin_database_browse(ctx),
             Command::Begin => {
                 if self.database.transaction == tursobench_core::TransactionState::Autocommit {
                     self.run_text("BEGIN".into(), None);

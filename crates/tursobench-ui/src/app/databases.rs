@@ -6,7 +6,6 @@ mod connection;
 mod inspection;
 mod presentation;
 mod settings;
-mod switcher;
 use crate::{
     discovery::{self, Availability, DatabaseKind, Event, Job, Request, Root, Summary},
     storage::{CachedDatabase, DiscoveryPreferences, normalized_absolute},
@@ -25,6 +24,7 @@ enum State {
     Checked(Availability),
 }
 
+#[derive(Clone)]
 struct Entry {
     path: PathBuf,
     state: State,
@@ -78,15 +78,8 @@ pub(super) struct Chooser {
     pub open_failure: Option<tursobench_core::Failure>,
     pub job: Option<Job>,
     entries: Vec<Entry>,
-    filter: String,
-    switcher_filter: String,
-    highlighted: Option<PathBuf>,
-    navigating: bool,
-    reveal_highlight: bool,
-    list_offset: f32,
     folder_input: String,
     exclude_input: String,
-    pub focus_filter: bool,
     pub picking_folder: bool,
     pub editing_path: bool,
     pub(super) settings_open: bool,
@@ -114,10 +107,7 @@ pub(super) struct Chooser {
 }
 impl Chooser {
     pub(super) fn new(prefs: &DiscoveryPreferences) -> Self {
-        let mut chooser = Self {
-            focus_filter: true,
-            ..Default::default()
-        };
+        let mut chooser = Self::default();
         for recent in &prefs.recent {
             chooser.entries.push(Entry {
                 path: recent.path.clone(),
@@ -417,19 +407,6 @@ impl App {
         self.store.save(&self.preferences);
     }
 
-    fn select_database(&mut self, path: &Path) {
-        if self.picker.is_some() || self.database.session.is_some() {
-            return;
-        }
-        if let Some(path) = path.to_str() {
-            self.set_database_path(path.into());
-            self.database.status = "Database selected. Review access before opening.".into();
-        } else {
-            self.database.status =
-                "Only UTF-8 database paths are supported by the Turso engine".into();
-        }
-    }
-
     pub(super) fn add_search_folder(&mut self, path: PathBuf) {
         let Some(path) = normalized_absolute(&path)
             .filter(|p| p.parent().is_some() && p.to_str().is_some_and(|s| s.len() <= 4096))
@@ -514,11 +491,9 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::{
-        App, Availability, CachedDatabase, Chooser, DatabaseKind, DiscoveryPreferences, Event,
-        Path, State, egui, request,
+        Availability, CachedDatabase, Chooser, DatabaseKind, DiscoveryPreferences, Event, Path,
+        State, request,
     };
-    use crate::app::shell;
-    use crate::app::test_ui::key_event;
     use crate::{discovery::Candidate, storage::RecentDatabase};
     use std::{
         sync::mpsc,
@@ -565,148 +540,90 @@ mod tests {
             kind: DatabaseKind::Unknown,
         })
     }
-    fn frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>, width: f32) {
-        let output = crate::app::test_ui::render(ctx, egui::vec2(width, 900.0), events, |ui| {
-            app.database_chooser_ui(ui)
-        });
-        assert!(!output.shapes.is_empty());
-    }
-    fn click(app: &mut App, ctx: &egui::Context, position: egui::Pos2) {
-        for pressed in [true, false] {
+    #[test]
+    fn shared_sidebar_search_preserves_cursor_and_selects_the_edited_query() {
+        use crate::app::test_ui::{key_event, render};
+        let (ctx, mut app) = crate::app::test_ui::app();
+        app.discovery_event(found("/work/agenda.db"));
+        app.discovery_event(found("/work/clipboard.db"));
+        let frame = |app: &mut crate::app::App, events| {
+            render(&ctx, eframe::egui::vec2(300.0, 600.0), events, |ui| {
+                app.navigation_sidebar(ui)
+            })
+        };
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![eframe::egui::Event::Text("agenda".into())]);
+        for key in [
+            eframe::egui::Key::Home,
+            eframe::egui::Key::ArrowRight,
+            eframe::egui::Key::ArrowDown,
+        ] {
             frame(
-                app,
-                ctx,
-                crate::app::test_ui::pointer(position, pressed),
-                900.0,
+                &mut app,
+                vec![key_event(key, true, eframe::egui::Modifiers::NONE)],
             );
         }
-    }
-    fn key(app: &mut App, ctx: &egui::Context, key: egui::Key) {
+        frame(&mut app, vec![eframe::egui::Event::Text("g".into())]);
+        assert_eq!(app.sidebar_search.query, "aggenda");
+        assert!(app.database.path.is_empty());
+        app.sidebar_search.query.clear();
+        app.sidebar_search.focus = true;
+        frame(&mut app, vec![]);
         frame(
-            app,
-            ctx,
-            [true, false]
-                .into_iter()
-                .map(|pressed| key_event(key, pressed, egui::Modifiers::NONE))
-                .collect(),
-            900.0,
+            &mut app,
+            vec![
+                eframe::egui::Event::Text("clipboard".into()),
+                key_event(
+                    eframe::egui::Key::Enter,
+                    true,
+                    eframe::egui::Modifiers::NONE,
+                ),
+            ],
         );
+        assert_eq!(app.database.path, "/work/clipboard.db");
+        assert!(!app.database.writable);
+        assert!(app.database.session.is_none());
     }
 
     #[test]
-    fn search_and_results_support_shelllist_arrow_keys_and_explicit_selection() {
+    fn available_rows_select_without_opening_and_skip_unavailable_candidates() {
+        use crate::app::test_ui::{key_event, pointer, render};
         let (ctx, mut app) = crate::app::test_ui::app();
-        app.database.path = "/explicit/database.db".into();
-
-        app.database.writable = true;
-        for path in ["/work/a.db", "/work/missing.db", "/work/b.db"] {
-            app.discovery_event(found(path));
-        }
+        app.discovery_event(found("/work/a.db"));
+        app.discovery_event(found("/work/missing.db"));
         app.discovery_event(Event::Checked(
             "/work/missing.db".into(),
             Availability::Missing,
         ));
-        frame(&mut app, &ctx, vec![], 900.0);
-        key(&mut app, &ctx, egui::Key::ArrowUp);
-        assert!(!app.databases.navigating);
-        key(&mut app, &ctx, egui::Key::ArrowDown);
-        assert!(app.databases.navigating);
-        assert_eq!(
-            app.databases.highlighted.as_deref(),
-            Some(Path::new("/work/a.db"))
-        );
-        key(&mut app, &ctx, egui::Key::ArrowDown);
-        assert_eq!(
-            app.databases.highlighted.as_deref(),
-            Some(Path::new("/work/b.db"))
-        );
-        assert_eq!(app.database.path, "/explicit/database.db");
-        assert!(app.database.writable);
-        key(&mut app, &ctx, egui::Key::Enter);
-        assert_eq!(app.database.path, "/work/b.db");
+        let frame = |app: &mut crate::app::App, events| {
+            render(&ctx, eframe::egui::vec2(272.0, 600.0), events, |ui| {
+                app.navigation_sidebar(ui)
+            })
+        };
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![]);
+        let row = app.databases.row_rects[0].1;
+        assert_eq!(row.height(), 34.0);
+        for pressed in [true, false] {
+            frame(&mut app, pointer(row.center(), pressed));
+        }
+        assert_eq!(app.database.path, "/work/a.db");
         assert!(!app.database.writable);
-        assert!(app.database.session.is_none() && app.picker.is_none());
-        key(&mut app, &ctx, egui::Key::ArrowUp);
-        assert!(app.databases.navigating);
-        key(&mut app, &ctx, egui::Key::ArrowUp);
-        assert!(!app.databases.navigating);
-        assert!(ctx.memory(|m| m.has_focus(egui::Id::unique("database-search"))));
-    }
-
-    #[test]
-    fn typing_from_results_preserves_the_native_search_cursor() {
-        let (ctx, mut app) = crate::app::test_ui::app();
-        app.discovery_event(found("/work/agenda.db"));
-        frame(&mut app, &ctx, vec![], 900.0);
-        frame(
-            &mut app,
-            &ctx,
-            vec![egui::Event::Text("agenda".into())],
-            900.0,
-        );
-        key(&mut app, &ctx, egui::Key::Home);
-        key(&mut app, &ctx, egui::Key::ArrowRight);
-        key(&mut app, &ctx, egui::Key::ArrowDown);
-        assert!(app.databases.navigating);
-        frame(&mut app, &ctx, vec![egui::Event::Text("g".into())], 900.0);
-        assert_eq!(app.databases.filter, "aggenda");
-        assert!(!app.databases.navigating);
-        assert!(app.databases.row_rects.is_empty());
-        key(&mut app, &ctx, egui::Key::ArrowDown);
-        key(&mut app, &ctx, egui::Key::Enter);
-        assert!(app.database.path.is_empty());
-        assert!(app.database.session.is_none() && app.picker.is_none());
-    }
-
-    #[test]
-    fn keyboard_navigation_reveals_virtualized_results_and_survives_async_updates() {
-        let (ctx, mut app) = crate::app::test_ui::app();
-        for i in 0..100 {
-            app.discovery_event(found(&format!("/work/{i:03}.db")));
+        app.sidebar_search.focus = true;
+        frame(&mut app, vec![]);
+        for key in [
+            eframe::egui::Key::ArrowDown,
+            eframe::egui::Key::ArrowDown,
+            eframe::egui::Key::Enter,
+        ] {
+            frame(
+                &mut app,
+                vec![key_event(key, true, eframe::egui::Modifiers::NONE)],
+            );
         }
-        frame(&mut app, &ctx, vec![], 900.0);
-        key(&mut app, &ctx, egui::Key::ArrowDown);
-        for _ in 0..6 {
-            key(&mut app, &ctx, egui::Key::PageDown);
-        }
-        assert_eq!(
-            app.databases.highlighted.as_deref(),
-            Some(Path::new("/work/030.db"))
-        );
-        assert!(app.databases.list_offset > 0.0);
-        assert!(
-            app.databases
-                .row_rects
-                .iter()
-                .any(|(p, _)| Some(p) == app.databases.highlighted.as_ref())
-        );
-        let offset = app.databases.list_offset;
-        app.discovery_event(found("/work/arriving.db"));
-        frame(&mut app, &ctx, vec![], 900.0);
-        assert_eq!(
-            app.databases.highlighted.as_deref(),
-            Some(Path::new("/work/030.db"))
-        );
-        assert_eq!(app.databases.list_offset, offset);
-        assert!(app.database.path.is_empty());
-    }
-    #[test]
-    fn typing_and_enter_in_one_frame_selects_the_new_filtered_result() {
-        let (ctx, mut app) = crate::app::test_ui::app();
-        app.discovery_event(found("/work/agenda.db"));
-        app.discovery_event(found("/work/clipboard.db"));
-        frame(&mut app, &ctx, vec![], 900.0);
-        frame(
-            &mut app,
-            &ctx,
-            vec![
-                egui::Event::Text("clipboard".into()),
-                key_event(egui::Key::Enter, true, egui::Modifiers::NONE),
-            ],
-            900.0,
-        );
-        assert_eq!(app.database.path, "/work/clipboard.db");
-        assert!(app.database.session.is_none());
+        assert_eq!(app.database.path, "/work/a.db");
+        assert!(app.database.session.is_none() && app.picker.is_none());
     }
 
     #[test]
@@ -738,7 +655,7 @@ mod tests {
 
     #[test]
     fn incremental_discoveries_never_replace_paths_consent_or_row_order() {
-        let (_ctx, mut app) = crate::app::test_ui::app();
+        let (ctx, mut app) = crate::app::test_ui::app();
         assert!(app.databases.job.is_none());
         app.database.path = "/explicit/command-line.db".into();
 
@@ -750,14 +667,14 @@ mod tests {
         assert!(app.database.writable);
         assert_eq!(app.databases.entries.len(), 2);
         assert_eq!(app.databases.entries[0].path, Path::new("/work/z-last.db"));
-        app.select_database(Path::new("/work/a-first.db"));
+        app.request_database(&ctx, "/work/a-first.db".into());
         assert_eq!(app.database.path, "/work/a-first.db");
         assert!(!app.database.writable);
         assert!(app.database.session.is_none());
         app.database.writable = true;
         let (tx, rx) = mpsc::sync_channel(1);
         app.picker = Some(rx);
-        app.select_database(Path::new("/work/z-last.db"));
+        app.request_database(&ctx, "/work/z-last.db".into());
         assert_eq!(app.database.path, "/work/a-first.db");
         assert!(app.database.writable);
         drop(tx);
@@ -810,53 +727,6 @@ mod tests {
         assert_eq!(app.databases.entries.len(), 1);
         assert_eq!(app.preferences.discovery.recent.len(), 1);
         assert!(app.databases.entries[0].last_opened.is_some());
-    }
-
-    #[test]
-    fn chooser_filters_clicks_and_keyboard_focus_without_opening_a_native_dialog() {
-        let (ctx, mut app) = crate::app::test_ui::app();
-        app.discovery_event(found("/work/agenda.db"));
-        app.discovery_event(found("/other/clipboard.db"));
-        app.database.document.ui.nav = shell::Nav::Result;
-        app.choose_file(&ctx);
-        assert_eq!(app.database.document.ui.nav, shell::Nav::Databases);
-        assert!(app.picker.is_none());
-        frame(&mut app, &ctx, vec![], 900.0);
-        assert!(ctx.memory(|m| m.focused().is_some()));
-        frame(
-            &mut app,
-            &ctx,
-            vec![egui::Event::Text("agenda".into())],
-            900.0,
-        );
-        assert_eq!(app.databases.filter, "agenda");
-        assert_eq!(app.databases.row_rects.len(), 1);
-        let row = app.databases.row_rects[0].1;
-        let browse = app.databases.browse_rect.unwrap();
-        let search = app.databases.search_rect.unwrap();
-        assert!(search.contains_rect(browse));
-        assert_eq!(browse.center().y, search.center().y);
-        assert!(row.top() > search.bottom());
-        click(&mut app, &ctx, row.center());
-        assert_eq!(app.database.path, "/work/agenda.db");
-        assert!(!app.database.writable);
-        assert!(app.database.session.is_none() && app.picker.is_none());
-        // Large candidate lists render only the visible rows.
-        app.databases.filter.clear();
-        for i in 0..500 {
-            app.discovery_event(found(&format!("/bulk/{i}.db")));
-        }
-        for width in [180.0, 300.0, 720.0, 900.0, 1920.0] {
-            frame(&mut app, &ctx, vec![], width);
-            assert!(app.databases.row_rects.len() < 10);
-            assert!(app.databases.browse_rect.unwrap().right() <= width);
-            assert!(
-                app.databases
-                    .search_rect
-                    .unwrap()
-                    .contains_rect(app.databases.browse_rect.unwrap())
-            );
-        }
     }
 
     #[test]

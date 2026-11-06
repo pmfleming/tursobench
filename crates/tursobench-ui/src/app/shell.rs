@@ -155,22 +155,15 @@ impl App {
                 .default_size(sidebar_width)
                 .size_range(180.0..=(ui.available_width() - 360.0).clamp(180.0, 600.0))
                 .show(ui, |ui| {
-                    if self.database.session.is_some() {
-                        egui::Panel::bottom("navigator-utilities")
-                            .resizable(false)
-                            .show(ui, |ui| self.navigator_utilities(ui));
-                        self.navigation_sidebar(ui);
-                    } else if self.database.ui.sidebar == ToolPanel::Settings {
-                        if icons::button(ui, Icon::Back, "Databases", "").clicked() {
-                            self.select_tool(ToolPanel::Schema);
-                        }
-                        egui::ScrollArea::vertical()
-                            .id_salt("sidebar-tool")
-                            .show(ui, |ui| self.settings_ui(ui));
-                    } else {
-                        self.open_databases_ui(ui);
-                        self.database_chooser_ui(ui);
-                    }
+                    egui::Panel::bottom("navigator-utilities")
+                        .resizable(false)
+                        .show(ui, |ui| {
+                            if self.database.session.is_some() {
+                                ui.small("Tools apply to the active database");
+                            }
+                            self.navigator_utilities(ui);
+                        });
+                    self.navigation_sidebar(ui);
                 });
             #[cfg(test)]
             {
@@ -194,6 +187,7 @@ impl App {
         self.inspection_surfaces(&ctx);
         self.command_palette(&ctx);
         self.access_dialog(&ctx);
+        self.discovery_settings_window(&ctx);
 
         if self.database.ui.outcomes {
             let mut open = true;

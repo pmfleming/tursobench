@@ -36,15 +36,6 @@ impl App {
         }
     }
 
-    pub(super) fn choose_file(&mut self, ctx: &egui::Context) {
-        if self.picker.is_some() || self.database.session.is_some() {
-            return;
-        }
-        self.database.document.ui.nav = shell::Nav::Databases;
-        self.databases.focus_filter = true;
-        ctx.request_repaint();
-    }
-
     pub(super) fn browse_file(&mut self, ctx: &egui::Context) {
         if self.picker.is_some() || self.database.session.is_some() {
             return;
@@ -114,7 +105,7 @@ impl App {
             }
             return;
         }
-        self.databases.focus_filter = true;
+        self.sidebar_search.focus = true;
         match result {
             Ok(Some(path)) if self.database.session.is_none() => {
                 if let Some(path) = path.to_str() {
@@ -233,7 +224,7 @@ mod tests {
         assert!(app.database.session.is_none());
         assert!(app.database.status.contains("Finish choosing a file"));
         // Ctrl+O or another button click must not replace an in-flight picker.
-        app.choose_file(&ctx);
+        app.begin_database_browse(&ctx);
         tx.send(Ok(Some("selected.db".into()))).unwrap();
         app.poll_picker();
         assert_eq!(app.database.path, "selected.db");

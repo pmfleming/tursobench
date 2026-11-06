@@ -4,50 +4,41 @@ use std::path::Path;
 
 impl App {
     pub(in crate::app) fn connect_ui(&mut self, ui: &mut egui::Ui) {
-        let ctx = ui.ctx().clone();
-        egui::ScrollArea::vertical()
-            .id_salt("database-connection")
-            .show(ui, |ui| {
-                let width = ui.available_width().min(560.0);
-                let inset = ((ui.available_width() - width) / 2.0).max(0.0);
-                let rect = egui::Rect::from_min_size(
-                    ui.cursor().min + egui::vec2(inset, 0.0),
-                    egui::vec2(width, ui.available_height()),
-                );
-                ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
-                        ui.set_width(width);
-                        ui.add_space(16.0);
-                        ui.heading("Open database");
-                        ui.add_space(12.0);
+        ui.centered_and_justified(|ui| {
+            ui.label("Choose a database in the sidebar, or press Ctrl+O to browse files.");
+        });
+    }
 
-                        if self.database.path.is_empty() {
-                            let edit = ui.link("Enter a path…");
-                            #[cfg(test)]
-                            {
-                                self.databases.edit_path_rect = Some(edit.rect);
-                                self.databases.open_rect = None;
-                                self.databases.open_enabled = false;
-                            }
-                            if edit.clicked() {
-                                self.databases.editing_path = !self.databases.editing_path;
-                            }
-                            if self.databases.editing_path {
-                                self.database_path_ui(ui, edit.clicked());
-                            }
-                        } else {
-                            self.database_access_ui(ui);
-                        }
-                        if self.has_drafts() {
-                            ui.colored_label(ui.visuals().error_fg_color, "Drafts retained after disconnect. Inspect the uncertain outcome before discarding or retrying.");
-                            if ui.button("Review retained drafts…").clicked() {
-                                self.database.document.show_preview = true;
-                            }
-                            if ui.button("Discard retained local drafts").clicked() {
-                                self.database.document.drafts = None;
-                            }
-                        }
-                });
-            });
+    pub(in crate::app) fn pending_database_ui(&mut self, ui: &mut egui::Ui) {
+        if self.database.path.is_empty() {
+            let edit = ui.link("Enter a path…");
+            #[cfg(test)]
+            {
+                self.databases.edit_path_rect = Some(edit.rect);
+                self.databases.open_rect = None;
+                self.databases.open_enabled = false;
+            }
+            if edit.clicked() {
+                self.databases.editing_path = !self.databases.editing_path;
+            }
+            if self.databases.editing_path {
+                self.database_path_ui(ui, edit.clicked());
+            }
+        } else {
+            self.database_access_ui(ui);
+        }
+        if self.has_drafts() {
+            ui.colored_label(ui.visuals().error_fg_color, "Drafts retained after disconnect. Inspect the uncertain outcome before discarding or retrying.");
+            if ui.button("Review retained drafts…").clicked() {
+                self.database.document.show_preview = true;
+            }
+            if ui.button("Discard retained local drafts").clicked() {
+                self.database.document.drafts = None;
+            }
+        }
+    }
+
+    pub(in crate::app) fn discovery_settings_window(&mut self, ctx: &egui::Context) {
         let mut open = self.databases.settings_open;
         egui::Window::new("Search settings")
             .frame(crate::app::presentation::window_frame(&ctx))
@@ -59,7 +50,7 @@ impl App {
             .min_width(280.0)
             .max_height(480.0)
             .vscroll(true)
-            .show(ui.ctx(), |ui| {
+            .show(ctx, |ui| {
                 self.discovery_settings_ui(ui);
                 if let Some(message) = &self.databases.message {
                     ui.label(message);
@@ -74,7 +65,7 @@ impl App {
             .fill(ui.visuals().faint_bg_color)
             .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
             .corner_radius(6.0)
-            .inner_margin(12.0)
+            .inner_margin(8.0)
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 let path = Path::new(&self.database.path);
@@ -111,21 +102,38 @@ impl App {
                 ui.add_space(8.0);
                 let writable = self.database.writable;
                 ui.horizontal_wrapped(|ui| {
-                    ui.scope(|ui| {
-                        if self.database.writable {
-                            let color = crate::appearance::Tokens::of(ui.ctx()).pending;
-                            ui.visuals_mut().selection.bg_fill = color.gamma_multiply(0.13);
-                            ui.visuals_mut().selection.stroke.color = color;
-                        }
-                        ui.horizontal(|ui| {
-                            ui.selectable_value(&mut self.database.writable, false, "Read only");
-                            ui.selectable_value(&mut self.database.writable, true, "Read and write");
-                        });
-                    });
+                    ui.selectable_value(&mut self.database.writable, false, "Read only");
+                    ui.selectable_value(&mut self.database.writable, true, "Read and write");
                 });
                 if self.database.writable != writable { self.databases.open_failure = None; }
                 if self.database.writable {
                     ui.small(egui::RichText::new("Opening for writes may change the file. Back up first.").color(ui.visuals().warn_fg_color));
+                }
+                let enabled = !self.database.path.is_empty()
+                    && self.picker.is_none()
+                    && self.databases.inspection.allows_open(&self.database.path)
+                    && !self.has_drafts();
+                let response = ui.horizontal_wrapped(|ui| {
+                    let response = ui.add_enabled(enabled, crate::app::presentation::action(ui,
+                        if self.databases.open_failure.is_some() { "Retry" } else { "Open" },
+                        crate::app::presentation::Intent::Primary).min_size(egui::vec2(70.0,30.0)));
+                    if crate::app::icons::control(ui,crate::app::icons::Icon::Refresh,"Check again","",false,false).clicked() {
+                        self.databases.open_failure = None;
+                        self.databases.inspection.recheck();
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.set_database_path(String::new());
+                        self.databases.editing_path = false;
+                    }
+                    response
+                }).inner;
+                #[cfg(test)]
+                {
+                    self.databases.open_rect = Some(response.rect);
+                    self.databases.open_enabled = response.enabled();
+                }
+                if response.clicked() {
+                    self.open(ui.ctx());
                 }
                 let issue = self.databases.open_failure.as_ref()
                     .or_else(|| self.databases.inspection.blocked(&self.database.path));
@@ -144,27 +152,7 @@ impl App {
                     ui.horizontal(|ui| { ui.spinner(); ui.weak("Checking file…"); });
                 }
                 ui.add_space(8.0);
-                let enabled = !self.database.path.is_empty()
-                    && self.picker.is_none()
-                    && self.databases.inspection.allows_open(&self.database.path)
-                    && !self.has_drafts();
-                let response = ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let response = ui.add_enabled(enabled, crate::app::presentation::action(ui,
-                        if self.databases.open_failure.is_some() { "Retry" } else { "Open" },
-                        crate::app::presentation::Intent::Primary).min_size(egui::vec2(100.0,30.0)));
-                    if crate::app::icons::control(ui,crate::app::icons::Icon::Refresh,"Check again","",false,false).clicked() {
-                        self.databases.inspection.recheck();
-                    }
-                    response
-                }).inner;
-                #[cfg(test)]
-                {
-                    self.databases.open_rect = Some(response.rect);
-                    self.databases.open_enabled = response.enabled();
-                }
-                if response.clicked() {
-                    self.open(ui.ctx());
-                }
+
             });
     }
 
@@ -481,9 +469,14 @@ mod tests {
     }
 
     #[test]
-    fn chooser_keeps_access_controls_visible_in_both_themes() {
+    fn sidebar_keeps_access_controls_visible_in_both_themes() {
         for dark in [true, false] {
-            for (width, height) in [(960.0, 640.0), (1280.0, 720.0), (1920.0, 1080.0)] {
+            for (width, height) in [
+                (720.0, 480.0),
+                (960.0, 640.0),
+                (1280.0, 720.0),
+                (1920.0, 1080.0),
+            ] {
                 let ctx = egui::Context::default();
                 crate::appearance::theme(&ctx, dark);
                 let mut app = App::new(&ctx);
@@ -514,14 +507,14 @@ mod tests {
                 let texts = frame(&mut app, &ctx, vec![], size);
                 let open = app.databases.open_rect.unwrap();
                 assert!(
-                    app.database.ui.workspace_rect.contains_rect(open),
-                    "{width}x{height}: {open:?}, workspace {:?}",
-                    app.database.ui.workspace_rect
+                    app.database.ui.sidebar_rect.contains_rect(open),
+                    "{width}x{height}: {open:?}, sidebar {:?}",
+                    app.database.ui.sidebar_rect
                 );
                 assert!(app.databases.search_rect.unwrap().width() <= 800.0);
-                assert!(app.databases.row_rects.len() < 10);
+                assert!(app.databases.row_rects.len() <= (height / 34.0).ceil() as usize);
                 assert!(texts.iter().any(|text| text == "recent.db"));
-                assert!(texts.iter().any(|text| text == "Missing"));
+                assert_eq!(app.databases.entries[1].badge(), Some("Missing"));
                 assert!(!app.databases.entries[1].selectable());
             }
         }

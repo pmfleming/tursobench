@@ -21,7 +21,9 @@ pub(super) struct Search {
     pub scope: Scope,
     pub index: usize,
     pub focus: bool,
-    activate: bool,
+    pub navigating: bool,
+    pub activate: bool,
+    pub key_delta: Option<isize>,
 }
 
 enum Target {
@@ -50,6 +52,20 @@ impl App {
         self.sidebar_search.activate = ui
             .memory(|m| m.has_focus(egui::Id::unique("sidebar-search")))
             && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        self.sidebar_search.key_delta = None;
+        if ui.memory(|m| m.has_focus(egui::Id::unique("sidebar-search"))) {
+            for (key, delta) in [
+                (egui::Key::ArrowDown, 1),
+                (egui::Key::ArrowUp, -1),
+                (egui::Key::PageDown, 5),
+                (egui::Key::PageUp, -5),
+            ] {
+                if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key)) {
+                    self.sidebar_search.key_delta = Some(delta);
+                    ui.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
+                }
+            }
+        }
         ui.horizontal(|ui| {
             let width = (ui.available_width() - 28.0 - ui.spacing().item_spacing.x).max(40.0);
             let response = ui.add_sized(
@@ -63,21 +79,35 @@ impl App {
             }
             if response.changed() {
                 self.sidebar_search.index = 0;
+                self.sidebar_search.navigating = false;
             }
             if response.has_focus() {
                 self.database.tools.tree_focus = Some(response.id);
             }
-            if icons::button(ui, Icon::Refresh, "Refresh schema", "F5").clicked() {
-                self.refresh_catalog();
-                self.load_diagram();
-                for database in self.parked.values_mut() {
-                    if self.sidebar_search.scope == Scope::AllOpen {
-                        database.request_diagram();
-                    }
-                }
+            let browse = ui
+                .add_enabled_ui(self.can_request_database(), |ui| {
+                    icons::button(ui, Icon::Folder, "Browse database files", "Ctrl O")
+                })
+                .inner;
+            #[cfg(test)]
+            {
+                self.databases.browse_rect = Some(browse.rect);
+                self.databases.search_rect = Some(response.rect.union(browse.rect));
+            }
+            if browse.clicked() {
+                self.begin_database_browse(ui.ctx());
             }
         });
         ui.horizontal_wrapped(|ui| {
+            if self.database.session.is_some()
+                && ui
+                    .small_button("↻")
+                    .on_hover_text("Refresh schema · F5")
+                    .clicked()
+            {
+                self.refresh_catalog();
+                self.load_diagram();
+            }
             ui.spacing_mut().item_spacing.x = 3.0;
             for (scope, label) in [
                 (Scope::AllOpen, "All open"),
@@ -96,6 +126,46 @@ impl App {
                 }
             }
         });
+    }
+
+    pub(super) fn sidebar_selection_keys(
+        &mut self,
+        ui: &mut egui::Ui,
+        count: usize,
+    ) -> Option<usize> {
+        if !ui.memory(|m| m.has_focus(egui::Id::unique("sidebar-search")))
+            && !self.sidebar_search.activate
+        {
+            return None;
+        }
+        let mut chosen = self
+            .sidebar_search
+            .activate
+            .then_some(self.sidebar_search.index);
+        if let Some(delta) = self.sidebar_search.key_delta.take() {
+            if delta < 0 && self.sidebar_search.index == 0 {
+                self.sidebar_search.navigating = false;
+            } else {
+                self.sidebar_search.index = if self.sidebar_search.navigating {
+                    self.sidebar_search.index.saturating_add_signed(delta)
+                } else {
+                    0
+                };
+                self.sidebar_search.navigating = true;
+            }
+        }
+        self.sidebar_search.index = self.sidebar_search.index.min(count.saturating_sub(1));
+        if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
+            chosen = Some(self.sidebar_search.index);
+        }
+        chosen.filter(|&i| i < count)
+    }
+
+    pub(super) fn begin_database_browse(&mut self, ctx: &egui::Context) {
+        if self.new_workspace(ctx) {
+            self.sidebar_search.query.clear();
+            self.browse_file(ctx);
+        }
     }
 
     fn sidebar_matches(&self) -> Vec<SearchResult> {
@@ -166,27 +236,7 @@ impl App {
         let total = results.len();
         results.truncate(100);
         let focused = ui.memory(|m| m.has_focus(egui::Id::unique("sidebar-search")));
-        let mut chosen = self
-            .sidebar_search
-            .activate
-            .then_some(self.sidebar_search.index);
-        if focused {
-            if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)) {
-                self.sidebar_search.index += 1;
-                ui.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
-            }
-            if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)) {
-                self.sidebar_search.index = self.sidebar_search.index.saturating_sub(1);
-                ui.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
-            }
-            if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
-                chosen = Some(self.sidebar_search.index);
-            }
-        }
-        self.sidebar_search.index = self
-            .sidebar_search
-            .index
-            .min(results.len().saturating_sub(1));
+        let mut chosen = self.sidebar_selection_keys(ui, results.len());
         egui::ScrollArea::vertical()
             .id_salt("sidebar-search-results")
             .show(ui, |ui| {
@@ -283,8 +333,9 @@ impl From<&DatabaseWorkspace> for DatabaseRow {
                 .documents
                 .values()
                 .chain(std::iter::once(&database.document))
-                .filter(|document| document.has_drafts())
-                .count(),
+                .filter_map(|document| document.drafts.as_ref())
+                .map(|drafts| drafts.edits.len())
+                .sum(),
             closing: database.closing,
         }
     }
@@ -337,7 +388,7 @@ impl App {
                                 ""
                             },
                             if row.drafts > 0 {
-                                format!("{} staged documents", row.drafts)
+                                format!("{} staged edits", row.drafts)
                             } else {
                                 String::new()
                             }
@@ -351,20 +402,78 @@ impl App {
                     };
                     let response = ui
                         .add_enabled_ui(enabled, |ui| {
-                            ui.add_sized(
-                                [width, 44.0],
-                                egui::Button::new(
-                                    egui::RichText::new(format!(
-                                        "{}  {}\n{}",
-                                        name,
-                                        if row.writable { "RW" } else { "RO" },
-                                        detail
-                                    ))
-                                    .size(12.0),
+                            let (rect, response) = ui
+                                .allocate_exact_size(egui::vec2(width, 44.0), egui::Sense::click());
+                            let painter =
+                                ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+                            let active = row.id == self.database.id;
+                            if active || response.hovered() || response.has_focus() {
+                                painter.rect_filled(
+                                    rect,
+                                    6.0,
+                                    if active {
+                                        ui.visuals().selection.bg_fill
+                                    } else {
+                                        ui.visuals().faint_bg_color
+                                    },
+                                );
+                            }
+                            if active {
+                                painter.vline(
+                                    rect.left() + 1.0,
+                                    rect.y_range().shrink(5.0),
+                                    egui::Stroke::new(2.0, ui.visuals().selection.stroke.color),
+                                );
+                            }
+                            icons::paint(
+                                &painter,
+                                egui::Rect::from_center_size(
+                                    rect.left_center() + egui::vec2(14.0, 0.0),
+                                    egui::vec2(18.0, 18.0),
+                                ),
+                                Icon::Database,
+                                crate::appearance::Tokens::of(ui.ctx()).relationship,
+                            );
+                            painter.text(
+                                rect.right_top() + egui::vec2(-4.0, 7.0),
+                                egui::Align2::RIGHT_TOP,
+                                if row.writable { "RW" } else { "RO" },
+                                crate::appearance::monospace(ui.ctx(), 10.0),
+                                if row.writable {
+                                    ui.visuals().warn_fg_color
+                                } else {
+                                    ui.visuals().weak_text_color()
+                                },
+                            );
+                            for (text, y, size, budget, color) in [
+                                (name.to_string(), 5.0, 12.0, 56.0, ui.visuals().text_color()),
+                                (
+                                    detail.clone(),
+                                    24.0,
+                                    10.0,
+                                    34.0,
+                                    if row.drafts > 0
+                                        || row.transaction != TransactionState::Autocommit
+                                    {
+                                        ui.visuals().warn_fg_color
+                                    } else {
+                                        ui.visuals().weak_text_color()
+                                    },
+                                ),
+                            ] {
+                                let galley = egui::WidgetText::from(
+                                    egui::RichText::new(text)
+                                        .size(crate::appearance::text_size(ui.ctx(), size)),
                                 )
-                                .selected(row.id == self.database.id)
-                                .truncate(),
-                            )
+                                .into_galley(
+                                    ui,
+                                    Some(egui::TextWrapMode::Truncate),
+                                    (width - budget).max(1.0),
+                                    egui::TextStyle::Body,
+                                );
+                                painter.galley(rect.min + egui::vec2(30.0, y), galley, color);
+                            }
+                            response
                         })
                         .inner;
                     response.widget_info(|| {
@@ -391,6 +500,11 @@ impl App {
                         }
                     });
                 });
+                if row.id == self.database.id {
+                    ui.indent(("active-database", row.id), |ui| {
+                        self.active_database_tree_ui(ui)
+                    });
+                }
             });
         }
         if let Some(id) = select {

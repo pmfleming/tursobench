@@ -83,49 +83,104 @@ impl App {
     }
 
     pub(super) fn navigation_sidebar(&mut self, ui: &mut egui::Ui) {
-        self.database_switcher_ui(ui);
-        self.open_databases_ui(ui);
-        if self.database.ui.sidebar != ToolPanel::Schema {
-            egui::ScrollArea::vertical()
-                .id_salt("sidebar-tool")
-                .show(ui, |ui| {
-                    if self.database.ui.sidebar == ToolPanel::Diagnostics {
-                        self.diagnostics_ui(ui);
-                    } else {
-                        self.history_controls(ui);
-                    }
-                });
-            return;
-        }
         self.sidebar_search_ui(ui);
         if !self.sidebar_search.query.trim().is_empty() {
             self.sidebar_search_results_ui(ui);
             return;
         }
-        egui::ScrollArea::vertical().id_salt("navigation-tree").show(ui,|ui| {
-            if self.database.catalog_ticket.is_some(){ui.spinner();}
-            if !self.database.catalog_error.is_empty(){ui.colored_label(ui.visuals().error_fg_color,&self.database.catalog_error);}
-            if self.database.catalog.completion.as_ref().is_some_and(|c|c.delivery!=tursobench_core::Delivery::Complete||c.error.is_some()) {
-                ui.colored_label(ui.visuals().warn_fg_color,"Catalog incomplete").on_hover_text("Retained metadata budget reached or catalog failed. Use SQL to inspect omitted objects.");
+        egui::ScrollArea::vertical()
+            .id_salt("database-navigation")
+            .show(ui, |ui| {
+                self.open_databases_ui(ui);
+                self.available_databases_ui(ui);
+            });
+    }
+
+    pub(super) fn active_database_tree_ui(&mut self, ui: &mut egui::Ui) {
+        if self.database.ui.sidebar != ToolPanel::Schema {
+            if self.database.ui.sidebar == ToolPanel::Diagnostics {
+                self.diagnostics_ui(ui);
+            } else if self.database.ui.sidebar == ToolPanel::Settings {
+                self.settings_ui(ui);
+            } else {
+                self.history_controls(ui);
             }
-            let filter=String::new();
-            let related=self.database.ui.hover_table.as_deref().map(|t|self.related_tables(t)).unwrap_or_default();
-            let mut hovered=None;
-            for (kind,title,icon) in [("table","Tables",Icon::Data),("view","Views",Icon::Data),("system","System",Icon::System),("index","Indexes",Icon::Columns),("trigger","Triggers",Icon::System)] {
-                let objects:Vec<_>=self.database.schema.iter().filter(|o| {
-                    let system=o.name.starts_with("__turso_internal_");
-                    (if kind=="system"{o.kind=="table"&&system}else{o.kind==kind&&!system}) && (o.name.to_lowercase().contains(&filter) || self.loaded_inspection(&o.name).is_some_and(|i| i.table.columns.iter().any(|c| c.name.to_lowercase().contains(&filter))))
-                }).map(|o| o.name.clone()).collect();
-                egui::CollapsingHeader::new(egui::RichText::new(format!("{} · {}",title.to_uppercase(),objects.len())).size(crate::appearance::text_size(ui.ctx(),10.5)).strong().color(crate::appearance::Tokens::of(ui.ctx()).muted)).id_salt(("nav-group",kind)).default_open(kind=="table" || kind=="view" || !filter.is_empty()).show(ui,|ui| {
-                    for name in objects {
-                        if self.sidebar_object(ui, &name, if kind == "system" { "table" } else { kind }, icon, related.contains(&name)) {
-                            hovered = Some(name);
-                        }
+            return;
+        }
+        if self.database.catalog_ticket.is_some() {
+            ui.spinner();
+        }
+        if !self.database.catalog_error.is_empty() {
+            ui.colored_label(ui.visuals().error_fg_color, &self.database.catalog_error);
+        }
+        if self
+            .database
+            .catalog
+            .completion
+            .as_ref()
+            .is_some_and(|c| c.delivery != tursobench_core::Delivery::Complete || c.error.is_some())
+        {
+            ui.colored_label(ui.visuals().warn_fg_color,"Catalog incomplete").on_hover_text("Retained metadata budget reached or catalog failed. Use SQL to inspect omitted objects.");
+        }
+        let filter = String::new();
+        let related = self
+            .database
+            .ui
+            .hover_table
+            .as_deref()
+            .map(|t| self.related_tables(t))
+            .unwrap_or_default();
+        let mut hovered = None;
+        for (kind, title, icon) in [
+            ("table", "Tables", Icon::Data),
+            ("view", "Views", Icon::Data),
+            ("system", "System", Icon::System),
+            ("index", "Indexes", Icon::Columns),
+            ("trigger", "Triggers", Icon::System),
+        ] {
+            let objects: Vec<_> = self
+                .database
+                .schema
+                .iter()
+                .filter(|o| {
+                    let system = o.name.starts_with("__turso_internal_");
+                    (if kind == "system" {
+                        o.kind == "table" && system
+                    } else {
+                        o.kind == kind && !system
+                    }) && (o.name.to_lowercase().contains(&filter)
+                        || self.loaded_inspection(&o.name).is_some_and(|i| {
+                            i.table
+                                .columns
+                                .iter()
+                                .any(|c| c.name.to_lowercase().contains(&filter))
+                        }))
+                })
+                .map(|o| o.name.clone())
+                .collect();
+            egui::CollapsingHeader::new(
+                egui::RichText::new(format!("{} · {}", title.to_uppercase(), objects.len()))
+                    .size(crate::appearance::text_size(ui.ctx(), 10.5))
+                    .strong()
+                    .color(crate::appearance::Tokens::of(ui.ctx()).muted),
+            )
+            .id_salt(("nav-group", kind))
+            .default_open(kind == "table" || kind == "view" || !filter.is_empty())
+            .show(ui, |ui| {
+                for name in objects {
+                    if self.sidebar_object(
+                        ui,
+                        &name,
+                        if kind == "system" { "table" } else { kind },
+                        icon,
+                        related.contains(&name),
+                    ) {
+                        hovered = Some(name);
                     }
-                });
-            }
-            self.database.ui.hover_table=hovered;
-        });
+                }
+            });
+        }
+        self.database.ui.hover_table = hovered;
     }
 
     fn sidebar_object(

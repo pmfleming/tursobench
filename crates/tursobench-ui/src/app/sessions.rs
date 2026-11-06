@@ -155,13 +155,36 @@ impl App {
             .find(|d| d.session.is_some() && same_file(Path::new(&d.path), path))
             .map(|d| d.id)
     }
+    pub(super) fn can_request_database(&self) -> bool {
+        if self.picker.is_some() || self.quit || self.database.confirm_close {
+            return false;
+        }
+        let retained = |d: &DatabaseWorkspace| {
+            d.session.is_some()
+                || d.export_job.is_some()
+                || d.uncertain_edit
+                || d.transaction == TransactionState::Unknown
+                || d.documents
+                    .values()
+                    .chain(std::iter::once(&d.document))
+                    .any(|v| v.has_drafts())
+        };
+        !retained(&self.database)
+            || self.parked.values().filter(|d| retained(d)).count() + 1 < MAX_DATABASES
+    }
     pub(super) fn request_database(&mut self, ctx: &egui::Context, path: PathBuf) {
         if let Some(id) = self.duplicate_workspace(&path) {
             self.select_workspace(id);
             return;
         }
+        if path.to_str().is_none() {
+            self.database.status =
+                "Only UTF-8 database paths are supported by the Turso engine".into();
+            return;
+        }
         if self.new_workspace(ctx) {
-            self.set_database_path(path.to_string_lossy().into_owned());
+            self.sidebar_search.query.clear();
+            self.set_database_path(path.to_str().unwrap().into());
         }
     }
     pub(super) fn poll(&mut self, ctx: &egui::Context) {

@@ -3,7 +3,6 @@ use eframe::egui::{self, Pos2, Stroke};
 
 #[derive(Clone, Copy)]
 pub(super) enum Icon {
-    Back,
     Next,
     Search,
     Database,
@@ -275,10 +274,6 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
     };
     use Icon::*;
     match icon {
-        Back => {
-            line(&[(19., 12.), (5., 12.)]);
-            line(&[(11., 6.), (5., 12.), (11., 18.)]);
-        }
         Next => {
             line(&[(5., 12.), (19., 12.)]);
             line(&[(13., 6.), (19., 12.), (13., 18.)]);
