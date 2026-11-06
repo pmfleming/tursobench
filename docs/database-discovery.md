@@ -17,7 +17,8 @@ The overall search is capped at 100 results; refine the query for omitted result
 The folder button or **Ctrl+O** opens the native file dialog. Manual entry is available
 under **Enter a path…**, and **Edit path…** changes a pending file’s path. Selecting a
 new path defaults to read-only and resets the SQLite override. Opening a file from the
-sidebar preserves other open database sessions; up to four workspaces are retained.
+sidebar preserves other open database sessions. Settings → Database resources sets
+the retained-database count and memory budget; the sidebar shows the effective limit.
 Cancelling access review or dismissing the picker restores the previous database.
 Available is collapsible, renders visible rows, and uses file identities cached by
 discovery/opening. Repainting never probes candidate files.

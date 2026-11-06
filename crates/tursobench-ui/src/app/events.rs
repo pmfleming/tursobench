@@ -237,7 +237,7 @@ impl App {
         }
         if let Some(writable) = reopen {
             self.database.writable = writable;
-            self.open(ctx);
+            self.open_with_slot(ctx, true);
         }
         if self.quit && self.database.export_job.is_none() {
             self.continue_quit(ctx);

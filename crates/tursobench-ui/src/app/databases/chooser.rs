@@ -94,7 +94,7 @@ impl App {
             return;
         }
         if !can_select && self.picker.is_none() && !self.database.confirm_close && !self.quit {
-            ui.small("4 of 4 workspaces retained. Close a database to open another.");
+            ui.small(self.database_limit_message());
         }
         let selectable: Vec<_> = indices
             .iter()

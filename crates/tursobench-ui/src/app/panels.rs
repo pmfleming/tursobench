@@ -86,6 +86,7 @@ impl App {
                 self.store.save(&self.preferences);
             }
         });
+        self.resource_settings(ui);
         self.recovery_settings(ui);
         section(ui, "Queries", |ui| {
             setting(ui, "Rows", "Maximum retained query rows", |ui| {
@@ -143,6 +144,146 @@ impl App {
                 ui.label(message);
             }
         });
+    }
+
+    fn resource_settings(&mut self, ui: &mut egui::Ui) {
+        let before = (
+            self.preferences.memory_budget_mib,
+            self.preferences.database_limit,
+        );
+        section(ui, "Database resources", |ui| {
+            match (self.memory.available_mib, self.memory.total_mib) {
+                (Some(available), Some(total)) => {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(format!(
+                                "At startup: {} available / {} total",
+                                crate::resources::format_mib(available),
+                                crate::resources::format_mib(total)
+                            ))
+                            .small(),
+                        )
+                        .wrap(),
+                    );
+                }
+                _ => {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(format!(
+                                "Available memory could not be detected. Automatic budget: {}.",
+                                crate::resources::format_mib(self.memory.automatic_budget_mib())
+                            ))
+                            .small(),
+                        )
+                        .wrap(),
+                    );
+                }
+            }
+            if self.memory.process_limited {
+                ui.small("Process memory limits included.");
+            }
+            let mut automatic_budget = self.preferences.memory_budget_mib.is_none();
+            if ui
+                .checkbox(&mut automatic_budget, "Automatic budget")
+                .on_hover_text("Use 25% of available memory detected at startup")
+                .changed()
+            {
+                self.preferences.memory_budget_mib =
+                    (!automatic_budget).then_some(self.memory.automatic_budget_mib().max(1));
+            }
+            let mut budget = self.memory.limits(&self.preferences).budget_mib;
+            let maximum = self
+                .memory
+                .total_mib
+                .unwrap_or(u64::MAX / crate::resources::MIB)
+                .max(budget)
+                .max(1);
+            named_setting(
+                ui,
+                "Budget",
+                "Memory budget for admitting databases",
+                |ui| {
+                    let response = ui.add_enabled(
+                        !automatic_budget,
+                        egui::DragValue::new(&mut budget)
+                            .range((if automatic_budget { 0 } else { 1 })..=maximum)
+                            .speed(64.0)
+                            .suffix(" MiB"),
+                    );
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::Role::SpinButton,
+                            response.enabled(),
+                            "Database memory budget",
+                        )
+                    });
+                    if response.changed() && !automatic_budget {
+                        self.preferences.memory_budget_mib = Some(budget);
+                    }
+                    response
+                },
+            );
+            let mut automatic_limit = self.preferences.database_limit.is_none();
+            if ui
+                .checkbox(&mut automatic_limit, "Automatic limit")
+                .on_hover_text("Derive the database count from the memory budget")
+                .changed()
+            {
+                self.preferences.database_limit = (!automatic_limit)
+                    .then_some(self.memory.limits(&self.preferences).memory_limit.max(1));
+            }
+            let limits = self.memory.limits(&self.preferences);
+            let mut count = self
+                .preferences
+                .database_limit
+                .unwrap_or(limits.memory_limit);
+            named_setting(
+                ui,
+                "Limit",
+                "Maximum retained databases; also limited by the memory budget",
+                |ui| {
+                    let response = ui.add_enabled(
+                        !automatic_limit,
+                        egui::DragValue::new(&mut count)
+                            .range((if automatic_limit { 0 } else { 1 })..=usize::MAX)
+                            .suffix(" db"),
+                    );
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::Role::SpinButton,
+                            response.enabled(),
+                            "Maximum open databases",
+                        )
+                    });
+                    if response.changed() && !automatic_limit {
+                        self.preferences.database_limit = Some(count);
+                    }
+                    response
+                },
+            );
+            let limits = self.memory.limits(&self.preferences);
+            ui.strong(format!(
+                "Effective limit: {} databases",
+                limits.database_limit
+            ));
+            ui.add(egui::Label::new(egui::RichText::new(format!("{} budget; {} MiB estimated per database. Actual engine memory can differ.", crate::resources::format_mib(limits.budget_mib), crate::resources::DATABASE_RESERVATION_MIB)).small()).wrap());
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new("Changes apply to new opens. Existing work stays open.")
+                        .small(),
+                )
+                .wrap(),
+            );
+        });
+        if before
+            != (
+                self.preferences.memory_budget_mib,
+                self.preferences.database_limit,
+            )
+        {
+            self.preferences.normalize();
+            self.store.save(&self.preferences);
+        }
     }
 
     pub(super) fn saved_queries_ui(&mut self, ui: &mut egui::Ui) {
@@ -468,6 +609,22 @@ fn setting(
     });
 }
 
+// These controls supply explicit names through widget_info instead of using the
+// short visual caption as their accessibility name.
+fn named_setting(
+    ui: &mut egui::Ui,
+    label: &str,
+    tooltip: &str,
+    control: impl FnOnce(&mut egui::Ui) -> egui::Response,
+) {
+    ui.horizontal(|ui| {
+        ui.label(label).on_hover_text(tooltip);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            control(ui).on_hover_text(tooltip);
+        });
+    });
+}
+
 fn search(ui: &mut egui::Ui, value: &mut String, hint: &str) {
     ui.add_sized(
         [ui.available_width(), 28.0],
@@ -650,6 +807,57 @@ mod tests {
         click(&mut app, &ctx, ToolPanel::Settings, "Reset font size");
         assert_eq!(app.preferences.font_size, 14);
         assert_eq!(crate::appearance::monospace(&ctx, 12.0).size, 12.0);
+    }
+
+    #[test]
+    fn resource_settings_expose_and_adjust_both_limits_immediately() {
+        let (ctx, mut app) = crate::app::test_ui::app();
+        let panel = ToolPanel::Settings;
+        let output = frame(&mut app, &ctx, panel, 240.0, vec![]);
+        for name in ["Automatic budget", "Automatic limit"] {
+            crate::app::test_ui::control(&output, name);
+        }
+        assert_eq!(app.memory.limits(&app.preferences).database_limit, 8);
+        click(&mut app, &ctx, panel, "Automatic budget");
+        assert_eq!(app.preferences.memory_budget_mib, Some(4096));
+        let edit = |app: &mut App, name: &str, value: &str| {
+            let output = frame(app, &ctx, panel, 240.0, vec![]);
+            let position = crate::app::test_ui::control(&output, name).center();
+            for _ in 0..2 {
+                for pressed in [true, false] {
+                    frame(
+                        app,
+                        &ctx,
+                        panel,
+                        240.0,
+                        crate::app::test_ui::pointer(position, pressed),
+                    );
+                }
+            }
+            frame(
+                app,
+                &ctx,
+                panel,
+                240.0,
+                vec![
+                    crate::app::test_ui::key_event(egui::Key::A, true, egui::Modifiers::CTRL),
+                    egui::Event::Text(value.into()),
+                    crate::app::test_ui::key_event(egui::Key::Enter, true, egui::Modifiers::NONE),
+                ],
+            );
+        };
+        edit(&mut app, "Database memory budget", "2048");
+        assert_eq!(app.preferences.memory_budget_mib, Some(2048));
+        assert_eq!(app.memory.limits(&app.preferences).database_limit, 4);
+        click(&mut app, &ctx, panel, "Automatic limit");
+        edit(&mut app, "Maximum open databases", "2");
+        assert_eq!(app.preferences.database_limit, Some(2));
+        assert_eq!(app.memory.limits(&app.preferences).database_limit, 2);
+        click(&mut app, &ctx, panel, "Automatic budget");
+        click(&mut app, &ctx, panel, "Automatic limit");
+        assert_eq!(app.preferences.memory_budget_mib, None);
+        assert_eq!(app.preferences.database_limit, None);
+        assert_eq!(app.memory.limits(&app.preferences).database_limit, 8);
     }
 
     #[test]

@@ -421,7 +421,12 @@ impl App {
     fn occupied_database_slots(&self) -> usize {
         std::iter::once(&self.database)
             .chain(self.parked.values())
-            .filter(|d| d.retained() || d.id == self.database.id && !d.path.is_empty())
+            .filter(|d| {
+                d.retained()
+                    || d.id == self.database.id
+                        && !d.path.is_empty()
+                        && self.database_admission_available()
+            })
             .count()
     }
 
@@ -456,41 +461,22 @@ impl App {
             .map(DatabaseRow::from)
             .collect();
         rows.sort_by_key(|row| row.id);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.small("OPEN DATABASES");
-            if self.database.session.is_some()
-                && icons::button(ui, Icon::Refresh, "Refresh schema", "F5").clicked()
-            {
-                self.refresh_catalog();
-                self.load_diagram();
+            if self.database.session.is_some() && icons::button(ui, Icon::Refresh, "Refresh schema", "F5").clicked() {
+                self.refresh_catalog(); self.load_diagram();
             }
-            let wide = ui.max_rect().width() >= 240.0;
             let slots = self.occupied_database_slots();
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if wide {
-                    ui.small(format!("{slots}/{}", super::sessions::MAX_DATABASES));
-                }
-                let (rect, response) =
-                    ui.allocate_exact_size(egui::vec2(23.0, 6.0), egui::Sense::hover());
-                for slot in 0..super::sessions::MAX_DATABASES {
-                    let pip = egui::Rect::from_min_size(
-                        rect.min + egui::vec2(slot as f32 * 6.0, 0.0),
-                        egui::vec2(5.0, 6.0),
-                    );
-                    ui.painter().rect_filled(
-                        pip,
-                        2.0,
-                        if slot < slots {
-                            ui.visuals().selection.stroke.color
-                        } else {
-                            ui.visuals().faint_bg_color
-                        },
-                    );
-                }
-                response.on_hover_text(format!(
-                    "{slots} of 4 workspaces retained. Access review reserves a slot."
-                ));
-            });
+            let limits = self.memory.limits(&self.preferences);
+            let hint = format!("{slots} of {} workspaces retained. {} admission budget at {} MiB per database. Adjust Settings → Database resources.", limits.database_limit, crate::resources::format_mib(limits.budget_mib), crate::resources::DATABASE_RESERVATION_MIB);
+            ui.small(format!("{slots}/{}", limits.database_limit)).on_hover_text(&hint);
+            if ui.available_width() >= 24.0 {
+                let (rect,response) = ui.allocate_exact_size(egui::vec2(23.0,6.0),egui::Sense::hover());
+                ui.painter().rect_filled(rect,2.0,ui.visuals().faint_bg_color);
+                let fraction = if limits.database_limit == 0 { 0.0 } else { (slots as f32 / limits.database_limit as f32).min(1.0) };
+                ui.painter().rect_filled(egui::Rect::from_min_size(rect.min,egui::vec2(rect.width()*fraction,rect.height())),2.0,ui.visuals().selection.stroke.color);
+                response.on_hover_text(hint);
+            }
         });
         if rows.is_empty() {
             ui.weak("Nothing open. Choose a database below.");

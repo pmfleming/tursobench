@@ -113,7 +113,7 @@ The large footer icons switch between Tables, History, Saved queries, Checks and
 Settings in the left panel. Hover controls for their names; F1 opens keyboard help.
 
 Database navigation stays in the sidebar. **Open databases** shows each live session,
-its RO/RW access, transaction and staged-edit status, a close button, and the four-slot
+its RO/RW access, transaction and staged-edit status, a close button, and the retained/limit
 meter. Selecting a row expands that database’s schema and collapses the previous tree.
 Ctrl PageUp/PageDown cycles retained workspaces, including disconnected sessions
 with drafts or uncertain outcomes. Switching preserves results and drafts.
@@ -134,8 +134,7 @@ Read-only is the default for a new path; likely SQLite files still require a per
 override. Errors, recheck and retry stay in the card. Right-click a file to forget it;
 the gear opens discovery settings. Available can be collapsed. Its list renders only
 visible rows and uses cached file identities; file checks run during discovery or
-explicit selection/opening. Access review reserves a workspace slot, and a
-fifth workspace cannot open until another is closed.
+explicit selection/opening. Access review reserves a workspace slot, and another workspace opens only when the configured count and memory budget allow it.
 
 Closing a writable session with drafts or a transaction shows **Keep open** and
 **Roll back & close** beneath its row. Clean sessions close directly. Cancellation
@@ -328,16 +327,42 @@ not disabled. Checkpoint and verified backup reuse the existing maintenance pane
 ### Multiple database workspaces
 
 Open database now opens a separate workspace while preserving the current database.
-Up to four workspaces retain independent sessions, SQL documents, results, layouts,
+Workspaces retain independent sessions, SQL documents, results, layouts,
 transactions and staged edits. Use sidebar rows or Ctrl PageUp/PageDown to switch;
 Ctrl P searches across open databases or within the selected scope. Duplicate
 paths, symlinks and file identities focus an existing session. New opens still require
 access review and default to read-only. Close database closes only the selected session.
 Application exit waits for every session/export and retains writable-close confirmation;
 uncertain outcomes pause exit. Inactive requests continue draining to their owning views.
-Each workspace retains the existing 16-view limit and per-session quotas; the four-session
-cap bounds aggregate application retention, not engine allocations. No database is
+Each workspace retains the existing 16-view limit and per-session quotas.
+Settings → Database resources controls overall admission. No database is
 silently reopened writable after restart. Connection-local state never crosses database workspaces.
+
+### Database count and memory budget
+
+Settings → **Database resources** shows usable total and available RAM detected once
+at startup. Linux detection uses `MemAvailable` and includes cgroup v2 limits for the
+process and its ancestors when present. **Automatic budget** uses 25% of that available
+memory. If available RAM cannot be detected, the fallback is at most 1 GiB, also bounded
+by a quarter of known total RAM. Automatic settings are recalculated on each launch.
+
+Turn off Automatic budget to enter a budget in MiB. **Automatic limit** derives the
+number of retained databases using a 512 MiB planning allowance per workspace. Turn
+it off to enter a maximum database count. The effective limit is the lower of that
+count and the budget-derived ceiling; for example, 8 GiB allows 16 workspaces, or six
+when the manual count is six. The sidebar shows retained workspaces / effective limit.
+Both overrides save immediately and persist across restarts.
+
+Lowering either setting leaves current sessions, drafts and exports intact and blocks
+additional opens until there is capacity. Access-mode reopening reuses its existing
+workspace slot. Retained disconnected workspaces also count.
+CLI opening and pending access review use the same admission check. Selecting an
+already-open database remains possible at the limit. A budget below 512 MiB admits no
+new workspace; Settings remains available to adjust it.
+
+This is an admission budget using estimates. Actual engine and allocator memory can
+differ, and no OS memory limit is imposed. Query, per-view and per-session quotas
+continue to apply independently.
 
 ### Schema comparison and migration drafts
 

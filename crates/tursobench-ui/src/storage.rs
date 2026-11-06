@@ -144,6 +144,8 @@ pub struct Bookmark {
 #[serde(default)]
 pub struct Preferences {
     pub sql_recovery: bool,
+    pub database_limit: Option<usize>,
+    pub memory_budget_mib: Option<u64>,
     pub row_limit: usize,
     pub busy_timeout_ms: u64,
     pub query_timeout_ms: u64,
@@ -173,6 +175,8 @@ impl Default for Preferences {
     fn default() -> Self {
         Self {
             sql_recovery: true,
+            database_limit: None,
+            memory_budget_mib: None,
             row_limit: 1000,
             busy_timeout_ms: 250,
             query_timeout_ms: 30_000,
@@ -276,6 +280,10 @@ impl Preferences {
             layout_bytes += layout.database.len() + layout.selected.as_ref().map_or(0, String::len);
             layout_bytes <= 256 * 1024
         });
+        self.database_limit = self.database_limit.map(|limit| limit.max(1));
+        self.memory_budget_mib = self
+            .memory_budget_mib
+            .map(|budget| budget.clamp(1, u64::MAX / crate::resources::MIB));
         self.row_limit = self.row_limit.clamp(1, 10_000);
         self.query_timeout_ms = self.query_timeout_ms.min(3_600_000);
         self.busy_timeout_ms = self.busy_timeout_ms.min(5000);
@@ -476,6 +484,8 @@ mod tests {
         assert_eq!(prefs.font_size, 14);
         assert!(prefs.saved_queries.is_empty());
         prefs.font_size = 18;
+        prefs.memory_budget_mib = Some(12 * 1024);
+        prefs.database_limit = Some(17);
         prefs.appearance = Some(crate::appearance::Mode::Light);
         for i in 0..150 {
             prefs.record_query("db-a", &format!("SELECT {i}"), Some(i), false);
@@ -504,6 +514,8 @@ mod tests {
         assert_eq!(loaded.saved_queries[0].sql, "SELECT ';'");
         assert_eq!(loaded.map_layouts, prefs.map_layouts);
         assert_eq!(loaded.inspector_visibility, prefs.inspector_visibility);
+        assert_eq!(loaded.memory_budget_mib, Some(12 * 1024));
+        assert_eq!(loaded.database_limit, Some(17));
         drop(reader);
         assert_eq!(std::fs::read(&legacy).unwrap(), original);
     }
@@ -522,6 +534,20 @@ mod tests {
         let db = tursobench_db::preferences::Store::open(&path).unwrap();
         assert!(db.payload().unwrap().contains("SELECT 1"));
     }
+    #[test]
+    fn resource_preferences_default_to_auto_and_normalize_without_overflow() {
+        let old = decode("{}").unwrap();
+        assert_eq!(old.database_limit, None);
+        assert_eq!(old.memory_budget_mib, None);
+        let prefs =
+            decode(r#"{"database_limit":0,"memory_budget_mib":18446744073709551615}"#).unwrap();
+        assert_eq!(prefs.database_limit, Some(1));
+        assert_eq!(
+            prefs.memory_budget_mib,
+            Some(u64::MAX / crate::resources::MIB)
+        );
+    }
+
     #[test]
     fn font_and_discovery_preferences_normalize_without_legacy_migration() {
         let mut prefs = decode(r#"{"font_size":100,"discovery":{"enabled":false}}"#).unwrap();

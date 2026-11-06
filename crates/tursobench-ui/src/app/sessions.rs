@@ -100,7 +100,6 @@ impl DatabaseWorkspace {
         }
     }
 }
-pub(super) const MAX_DATABASES: usize = 4;
 #[cfg(test)]
 thread_local! { pub(super) static IDENTITY_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 fn same_file(a: &Path, b: &Path) -> bool {
@@ -145,6 +144,10 @@ impl App {
         if self.picker.is_some() || self.quit || self.database.confirm_close {
             return false;
         }
+        if !self.database_admission_available() {
+            self.database.status = self.database_limit_message();
+            return false;
+        }
         if self.database.session.is_none()
             && !self.has_drafts()
             && self.database.export_job.is_none()
@@ -156,12 +159,6 @@ impl App {
         }
         // Closed, clean tabs can be released; live sessions and uncertain state cannot.
         self.parked.retain(|_, d| d.retained());
-        if self.parked.len() + 1 >= MAX_DATABASES {
-            self.database.status =
-                "Four database workspaces are already retained; close one before opening another"
-                    .into();
-            return false;
-        }
         self.save_recovery();
         self.save_workspace();
         let id = self.next_workspace;
@@ -181,8 +178,23 @@ impl App {
         if self.picker.is_some() || self.quit || self.database.confirm_close {
             return false;
         }
-        !self.database.retained()
-            || self.parked.values().filter(|d| d.retained()).count() + 1 < MAX_DATABASES
+        self.database_admission_available()
+    }
+    pub(super) fn database_admission_available(&self) -> bool {
+        let retained = std::iter::once(&self.database)
+            .chain(self.parked.values())
+            .filter(|d| d.retained())
+            .count();
+        retained < self.memory.limits(&self.preferences).database_limit
+    }
+    pub(super) fn database_limit_message(&self) -> String {
+        let limits = self.memory.limits(&self.preferences);
+        format!(
+            "Database limit {} reached ({} budget, {} MiB per database). Close a database or adjust Settings → Database resources.",
+            limits.database_limit,
+            crate::resources::format_mib(limits.budget_mib),
+            crate::resources::DATABASE_RESERVATION_MIB
+        )
     }
     pub(super) fn request_database(&mut self, ctx: &egui::Context, path: PathBuf) {
         if let Some(id) = self.duplicate_workspace(&path) {

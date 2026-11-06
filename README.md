@@ -24,7 +24,8 @@ Independent project. Not affiliated with the Turso team.
 ## Workspace
 
 Each database workspace has five fixed tiles sharing its own database session.
-Keep up to four databases open and switch from the sidebar or with Ctrl PageUp/PageDown.
+Open multiple databases within a configurable memory budget and switch from the
+sidebar or with Ctrl PageUp/PageDown. Settings shows startup RAM and the effective limit.
 Resize the dividers. Expand a tile or minimize it to a header.
 Keep table browsing, typed records, structure, relationships and SQL together.
 External commits refresh clean views while drafts and SQL results stay retained.

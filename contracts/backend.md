@@ -85,6 +85,13 @@ qualified scope and process-diagnostic limits.
 
 ## Budgets and large values
 
+Database workspace admission is configurable in the desktop's Database resources
+settings. Available memory is sampled at startup (including detectable Linux cgroup v2
+ancestor limits); automatic policy uses 25%, with 512 MiB estimated per retained
+workspace. The lower of a user count and budget-derived capacity controls new opens,
+including CLI/pending opens. Reductions never close existing sessions or discard
+retained drafts/unknown outcomes. This estimate does not cap engine allocations or RSS.
+
 Query defaults are 1,000 rows / 8 MiB / 64 KiB per cell, with 10,000-row maximum,
 512 columns and 1 MiB column metadata. Chunks flush at 64 rows or 64 KiB; one row
 can exceed the chunk target. Budgets estimate owned data, not allocator overhead.

@@ -136,6 +136,7 @@ impl App {
                 }
                 let enabled = !self.database.path.is_empty()
                     && self.picker.is_none()
+                    && self.database_admission_available()
                     && self.databases.inspection.allows_open(&self.database.path)
                     && !self.has_drafts();
                 let response = ui.horizontal_wrapped(|ui| {

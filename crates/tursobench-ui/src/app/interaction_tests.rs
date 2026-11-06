@@ -3398,6 +3398,7 @@ fn database_workspaces_isolate_transactions_drafts_and_inactive_results() {
 #[test]
 fn workspace_limit_and_quit_settle_every_live_session() {
     let (dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
+    app.preferences.database_limit = Some(4);
     for i in 1..4 {
         let path = dir.path().join(format!("db{i}.db"));
         crate::test_support::create(&path, &["CREATE TABLE t(id INTEGER PRIMARY KEY)"]);
@@ -3408,7 +3409,7 @@ fn workspace_limit_and_quit_settle_every_live_session() {
     }
     assert_eq!(app.parked.len(), 3);
     assert!(!app.new_workspace(&ctx));
-    assert!(app.database.status.contains("Four database"));
+    assert!(app.database.status.contains("Database limit 4"));
     app.quit = true;
     app.continue_quit(&ctx);
     wait_until(&mut app, &ctx, |a| {
@@ -3735,3 +3736,5 @@ fn record_structure_selection_value_visuals_and_revert_preserve_stored_values() 
     assert_retained(&app, 0, 4, Value::Blob(vec![0, 255]));
     app.close();
 }
+
+mod resources;

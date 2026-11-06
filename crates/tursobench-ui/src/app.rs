@@ -60,6 +60,7 @@ pub struct App {
     sidebar_search: database_navigation::Search,
     smoke: Option<smoke::Smoke>,
     preferences: crate::storage::Preferences,
+    memory: crate::resources::MemorySnapshot,
     appearance: crate::appearance::Appearance,
     store: crate::storage::Store,
     picker: Option<std::sync::mpsc::Receiver<files::PickResult>>,
@@ -122,6 +123,15 @@ impl App {
                 !cfg!(test) && (!smoke || std::env::var_os("TURSOBENCH_CAPTURE_DIR").is_some()),
             ),
             preferences,
+            memory: if cfg!(test) {
+                crate::resources::MemorySnapshot {
+                    total_mib: Some(32768),
+                    available_mib: Some(16384),
+                    process_limited: false,
+                }
+            } else {
+                crate::resources::MemorySnapshot::detect()
+            },
             store,
             picker: None,
             quit: false,
@@ -145,6 +155,10 @@ impl App {
         app
     }
     fn open(&mut self, ctx: &egui::Context) {
+        self.open_with_slot(ctx, false);
+    }
+    // An acknowledged access-mode reopen reuses the existing workspace's slot.
+    fn open_with_slot(&mut self, ctx: &egui::Context, retained_slot: bool) {
         if self.database.session.is_none()
             && let Some(id) = self.duplicate_workspace(std::path::Path::new(&self.database.path))
         {
@@ -165,6 +179,10 @@ impl App {
         }
         if self.has_drafts() {
             self.database.status = "Drafts retained after disconnect; inspect the database and discard drafts before reopening".into();
+            return;
+        }
+        if !retained_slot && !self.database_admission_available() {
+            self.database.status = self.database_limit_message();
             return;
         }
         self.poll_database_inspection(ctx);

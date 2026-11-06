@@ -1,5 +1,23 @@
 # UI screenshots
 
+## Database resource settings — native Wayland
+
+The two `resources/` images were captured on 2026-11-06 with the configurable
+resource policy, against isolated baseline `ea2c182` plus the memory-policy changes.
+Concurrent record UI edits in the shared checkout were kept outside this validation.
+The startup snapshot detected 33.2 GiB usable headroom after process limits, giving
+an automatic 8,497 MiB budget and a 16-database admission limit. These values are
+recalculated on launch; manual overrides persist.
+
+- `navigator-settings.png`: startup memory, automatic/manual budget and count,
+  effective limit and planning estimate.
+- `sidebar-open-databases.png`: the visible retained/effective limit counter.
+
+Reproduce with `nix develop -c bash scripts/capture-sidebar.sh /tmp/resource-captures`.
+The capture set uses synthetic files and isolated preferences. Native desktop,
+discovery, four local-project fixture smoke checks, the engine probe, formatting,
+Clippy, the workspace build and 229 active tests (one existing ignored test) passed.
+
 ## Sidebar database navigation v9 — native Wayland
 
 The review fixes refreshed these 24 captures using the isolated `db866fa` baseline
