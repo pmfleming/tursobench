@@ -289,6 +289,7 @@ impl App {
         }
     }
     pub(super) fn record_inspector(&mut self, ui: &mut egui::Ui, row: usize) {
+        self.record_keys(ui.ctx(), row);
         if !self.database.workspace.enabled {
             ui.horizontal(|ui| {
                 ui.strong(format!("Record {}", row + 1));
@@ -312,6 +313,33 @@ impl App {
             }
         }
         self.related_list(ui, row);
+    }
+    fn record_keys(&mut self, ctx: &egui::Context, row: usize) {
+        if self.database.workspace.enabled
+            && self.database.workspace.active != super::tiling::Kind::Record
+            || self.database.document.tools.inline.is_some()
+            || ctx.egui_wants_keyboard_input()
+            || egui::Popup::is_any_open(ctx)
+            || self.database.ui.palette_open
+        {
+            return;
+        }
+        let column = self.database.document.inspect.map_or(0, |(_, col)| col);
+        for (key, delta) in [(egui::Key::ArrowUp, -1), (egui::Key::ArrowDown, 1)] {
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key)) {
+                let col = column.saturating_add_signed(delta).min(
+                    self.database
+                        .document
+                        .result
+                        .columns
+                        .len()
+                        .saturating_sub(1),
+                );
+                self.select_cell(row, col, false);
+                self.database.document.tools.record_scroll_to = Some(col);
+                break;
+            }
+        }
     }
     /// A parent link is usable only when every component has a resolved target and a retained non-NULL value.
     fn record_parent_ready(&self, row: usize, key: &tursobench_core::ForeignKey) -> bool {
@@ -394,6 +422,9 @@ impl App {
                     ),
                 )
             });
+            if response.clicked() {
+                response.request_focus();
+            }
             if scroll_to == Some(col) {
                 response.scroll_to_me(Some(egui::Align::Center));
             }

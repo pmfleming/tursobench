@@ -402,8 +402,12 @@ impl App {
                 let title_size = ui
                     .painter()
                     .layout_no_wrap(
-                        if kind == Kind::Structure {
-                            self.database.document.object.clone().unwrap_or_default()
+                        if matches!(kind, Kind::Record | Kind::Structure) {
+                            self.database
+                                .document
+                                .object
+                                .clone()
+                                .unwrap_or_else(|| kind.label().into())
                         } else {
                             kind.label().into()
                         },
@@ -411,7 +415,7 @@ impl App {
                         ui.visuals().text_color(),
                     )
                     .size();
-                let mut title_width = (if kind == Kind::Structure {
+                let mut title_width = (if matches!(kind, Kind::Record | Kind::Structure) {
                     title_size.x + 4.0
                 } else {
                     (remaining * 0.25).max(title_size.x + 4.0)
@@ -473,7 +477,7 @@ impl App {
     fn pane_actions(&mut self, ui: &mut egui::Ui, kind: Kind, available: bool) {
         ui.add_enabled_ui(available, |ui| {
             if kind == Kind::Record {
-                self.ribbon_record_slider(ui);
+                self.ribbon_record_stepper(ui);
             }
             let mut group = None;
             for &(action, icon, label) in kind.ribbon_actions() {
@@ -549,11 +553,7 @@ impl App {
             self.ribbon_table_selector(ui, available);
             return;
         }
-        if kind == Kind::Record {
-            self.ribbon_field_selector(ui, available);
-            return;
-        }
-        if kind == Kind::Structure {
+        if matches!(kind, Kind::Record | Kind::Structure) {
             if available && let Some(name) = &self.database.document.object {
                 ui.add(egui::Label::new(egui::RichText::new(name).strong()).truncate())
                     .on_hover_text(name);
@@ -583,80 +583,60 @@ impl App {
             .on_hover_text(title);
     }
 
-    fn ribbon_record_slider(&mut self, ui: &mut egui::Ui) {
+    fn ribbon_record_stepper(&mut self, ui: &mut egui::Ui) {
         let count = self.database.document.result.rows.len();
         let (row, column) = self.database.document.inspect.unwrap_or((0, 0));
         let mut position = if count == 0 { 0 } else { (row + 1).min(count) };
-        let response = ui
-            .scope(|ui| {
-                ui.spacing_mut().slider_width = 140.0;
-                ui.visuals_mut().widgets.inactive.bg_fill =
-                    crate::appearance::Tokens::of(ui.ctx()).line_strong;
-                ui.add_enabled(
-                    count > 1,
-                    egui::Slider::new(&mut position, usize::from(count > 0)..=count)
-                        .step_by(1.0)
-                        .suffix(format!(" / {count}")),
-                )
-            })
-            .inner;
+        let previous = ui.add_enabled(
+            position > 1,
+            egui::Button::new("‹").min_size(egui::vec2(20.0, icons::RIBBON_BUTTON_SIZE)),
+        );
+        previous.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::Role::Button,
+                position > 1 && ui.is_enabled(),
+                "Previous record",
+            )
+        });
+        let mut changed = previous.on_hover_text("Previous loaded record").clicked();
+        if changed {
+            position -= 1;
+        }
+        let response = ui.add_enabled(
+            count > 0,
+            egui::DragValue::new(&mut position)
+                .range(usize::from(count > 0)..=count)
+                .speed(0.0)
+                .custom_formatter(move |n, _| format!("{} / {count}", n as usize))
+                .custom_parser(|text| text.split('/').next()?.trim().parse().ok()),
+        );
         response.widget_info(|| {
             egui::WidgetInfo::slider(
-                count > 1 && ui.is_enabled(),
+                count > 0 && ui.is_enabled(),
                 position as f64,
                 "Record position",
             )
         });
-        let changed = response.changed();
-        response.on_hover_text("Move through loaded records while keeping the selected field. Drag the slider or enter a record number.");
+        changed |= response.changed();
+        response.on_hover_text("Click to enter a loaded record number");
+        let next = ui.add_enabled(
+            position < count,
+            egui::Button::new("›").min_size(egui::vec2(20.0, icons::RIBBON_BUTTON_SIZE)),
+        );
+        next.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::Role::Button,
+                position < count && ui.is_enabled(),
+                "Next record",
+            )
+        });
+        if next.on_hover_text("Next loaded record").clicked() {
+            position += 1;
+            changed = true;
+        }
         if changed && count > 0 {
             self.select_cell(position - 1, column, false);
             self.database.document.tools.record_scroll_to = Some(column);
-        }
-    }
-
-    fn ribbon_field_selector(&mut self, ui: &mut egui::Ui, available: bool) {
-        let current = self.database.document.inspect.filter(|(row, col)| {
-            available
-                && self.database.document.result.rows.get(*row).is_some()
-                && self.database.document.result.columns.get(*col).is_some()
-        });
-        let mut selected = current.map(|(_, col)| col);
-        let mut chosen = false;
-        let name = selected
-            .and_then(|col| self.database.document.result.columns.get(col))
-            .map_or("Choose field", |column| column.name.as_str());
-        let response = ui
-            .add_enabled_ui(current.is_some(), |ui| {
-                egui::ComboBox::from_id_salt("record-field-selector")
-                    .selected_text(name)
-                    .width(ui.available_width())
-                    .truncate()
-                    .show_ui(ui, |ui| {
-                        ui.style_mut().override_font_id = None;
-                        ui.spacing_mut().interact_size.y = 28.0;
-                        for (col, column) in
-                            self.database.document.result.columns.iter().enumerate()
-                        {
-                            ui.push_id(col, |ui| {
-                                chosen |= ui
-                                    .selectable_value(&mut selected, Some(col), &column.name)
-                                    .clicked();
-                            });
-                        }
-                    })
-                    .response
-            })
-            .inner;
-        response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::Role::ComboBox, current.is_some(), "Choose field")
-        });
-        response.on_hover_text(name);
-        if let (Some((row, _)), Some(col)) = (current, selected)
-            && chosen
-        {
-            self.open_cell(row, col);
-            self.database.document.tools.record_scroll_to = Some(col);
         }
     }
 

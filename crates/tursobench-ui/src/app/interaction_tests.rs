@@ -2671,15 +2671,16 @@ fn record_controls_move_rows_and_hidden_fields_without_fetching_or_losing_drafts
     app.expand_pane(tiling::Kind::Record);
     let sequence = app.database.sequence;
     let ticket = visible_result(&app).current;
-    for (x_offset, row, value) in [(139.0, 2, "third"), (1.0, 0, "first")] {
+    for (label, row, value) in [
+        ("Next record", 1, "second"),
+        ("Next record", 2, "third"),
+        ("Previous record", 1, "second"),
+    ] {
         frame(&mut app, &ctx, vec![]);
         let output = frame(&mut app, &ctx, vec![]);
-        let bounds = control(&output, "Record position");
-        click(
-            &mut app,
-            &ctx,
-            egui::pos2(bounds.left() + x_offset, bounds.center().y),
-        );
+        let bounds = control(&output, label);
+        assert!(control(&output, "Record position").width() < 90.0);
+        click(&mut app, &ctx, bounds.center());
         assert_eq!(app.database.document.inspect, Some((row, 1)));
         assert_eq!(app.database.document.tools.detail, Some(row));
         assert_eq!(app.database.document.tools.cell_editor.input, value);
@@ -2687,7 +2688,7 @@ fn record_controls_move_rows_and_hidden_fields_without_fetching_or_losing_drafts
         assert_eq!(visible_result(&app).current, ticket);
         assert_eq!(
             app.database.sequence, sequence,
-            "slider must not fetch more rows"
+            "stepper must not fetch more rows"
         );
     }
     app.open_record_window(1, 0);
@@ -2695,12 +2696,8 @@ fn record_controls_move_rows_and_hidden_fields_without_fetching_or_losing_drafts
     app.stage_cell(1, 2, Value::Integer(999));
     app.database.document.tools.columns.hidden.insert(6);
     let ticket = visible_result(&app).current;
-    for label in ["Choose field", "field_4"] {
-        frame(&mut app, &ctx, vec![]);
-        let output = frame(&mut app, &ctx, vec![]);
-        let left = pane(&app, tiling::Kind::Record).left();
-        let bounds = control_from(&output, label, left);
-        click(&mut app, &ctx, bounds.center());
+    for _ in 0..6 {
+        press_key(&mut app, &ctx, egui::Key::ArrowDown, egui::Modifiers::NONE);
     }
     assert_eq!(app.database.document.inspect, Some((1, 6)));
     assert_eq!(visible_result(&app).current, ticket);
