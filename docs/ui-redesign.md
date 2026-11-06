@@ -25,10 +25,10 @@ columns. Tile proportions are saved per database.
   related actions. A two-point accent marks the focused tile's top edge. A subtle
   divider separates each header from its contents. Narrow ribbons scroll horizontally; actions never
   collapse into a More menu. Column visibility and open SQL editors have dedicated
-  selectors. Tile navigation is not repeated in each ribbon. Open Relationships
-  and SQL tiles have no title
-  text; Structure shows only its object name. Minimized headers retain their tile
-  names. Table and record selectors remain visible. Restore all tiles sits beside
+  selectors. Tile navigation is not repeated in each ribbon. Open Relationships,
+  Record, Structure and SQL tiles have no title text; the table name stays in the
+  Table data selector. Minimized headers retain their tile names. Table selection
+  and record navigation remain visible. Restore all tiles sits beside
   minimize/expand and appears only when a tile is minimized or expanded; review appears in Data and
   Record when their rows have staged edits. The labelled Discard results control
   appears only for an active request; it suppresses delivery without stopping SQL

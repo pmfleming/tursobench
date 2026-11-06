@@ -395,34 +395,22 @@ impl App {
                 super::presentation::BAR_INSET
             };
             ui.add_space(leading);
-            let show_title = matches!(kind, Kind::Data | Kind::Record | Kind::Result)
-                || kind == Kind::Structure && available && self.database.document.object.is_some();
+            let show_title = matches!(kind, Kind::Data | Kind::Result);
             if show_title {
                 let remaining = (ui.available_width() - controls_width).max(0.0);
                 let title_size = ui
                     .painter()
                     .layout_no_wrap(
-                        if matches!(kind, Kind::Record | Kind::Structure) {
-                            self.database
-                                .document
-                                .object
-                                .clone()
-                                .unwrap_or_else(|| kind.label().into())
-                        } else {
-                            kind.label().into()
-                        },
+                        kind.label().into(),
                         crate::appearance::proportional(ui.ctx(), icons::RIBBON_TEXT_SIZE),
                         ui.visuals().text_color(),
                     )
                     .size();
-                let mut title_width = (if matches!(kind, Kind::Record | Kind::Structure) {
-                    title_size.x + 4.0
-                } else {
-                    (remaining * 0.25).max(title_size.x + 4.0)
-                })
-                .min(200.0)
-                .min((remaining - 32.0).max(0.0));
-                if matches!(kind, Kind::Data | Kind::Record) {
+                let mut title_width = (remaining * 0.25)
+                    .max(title_size.x + 4.0)
+                    .min(200.0)
+                    .min((remaining - 32.0).max(0.0));
+                if kind == Kind::Data {
                     title_width = title_width.max(48.0).min((remaining - 6.0).max(0.0));
                 }
                 ui.allocate_ui_with_layout(
@@ -551,13 +539,6 @@ impl App {
     fn ribbon_title(&mut self, ui: &mut egui::Ui, kind: Kind, available: bool) {
         if kind == Kind::Data {
             self.ribbon_table_selector(ui, available);
-            return;
-        }
-        if matches!(kind, Kind::Record | Kind::Structure) {
-            if available && let Some(name) = &self.database.document.object {
-                ui.add(egui::Label::new(egui::RichText::new(name).strong()).truncate())
-                    .on_hover_text(name);
-            }
             return;
         }
         let title = if available && let Some(name) = &self.database.document.object {
