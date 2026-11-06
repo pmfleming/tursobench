@@ -1,3 +1,6 @@
+mod foreign_map;
+pub(super) use foreign_map::ForeignMap;
+
 use super::icons::{self, Icon};
 use eframe::egui;
 use tursobench_core::{DiagramTable, Inspection, SchemaDiagram, Ticket};
@@ -243,7 +246,15 @@ fn route(
     ty: f32,
     part: usize,
 ) -> (Vec<egui::Pos2>, f32) {
-    let bend = 25.0 + (part % 4) as f32 * 10.0;
+    route_with_bend(source, target, sy, ty, 25.0 + (part % 4) as f32 * 10.0)
+}
+fn route_with_bend(
+    source: egui::Rect,
+    target: egui::Rect,
+    sy: f32,
+    ty: f32,
+    bend: f32,
+) -> (Vec<egui::Pos2>, f32) {
     if (source.center().x - target.center().x).abs() < 1.0 {
         let start = egui::pos2(source.right(), sy);
         let end = egui::pos2(target.right(), ty);
@@ -298,6 +309,43 @@ struct DiagramDrawing<'a> {
     zoom: f32,
     pan: egui::Vec2,
     selected: Option<&'a str>,
+}
+/// Shared table-card treatment for the full diagram and the compact Structure map.
+fn node_frame(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    selected: bool,
+    related: bool,
+    header_height: f32,
+) {
+    let tokens = crate::appearance::Tokens::of(ui.ctx());
+    painter.rect_filled(rect, 4.0, ui.visuals().panel_fill);
+    painter.rect_stroke(
+        rect,
+        4.0,
+        egui::Stroke::new(
+            if selected || related { 2.0 } else { 1.0 },
+            if selected {
+                ui.visuals().selection.stroke.color
+            } else if related {
+                tokens.relationship
+            } else {
+                tokens.line
+            },
+        ),
+        egui::StrokeKind::Inside,
+    );
+    let header = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), header_height));
+    painter.rect_filled(
+        header,
+        3.0,
+        if selected {
+            ui.visuals().selection.bg_fill
+        } else {
+            tokens.raised
+        },
+    );
 }
 fn paint_grid(painter: &egui::Painter, canvas: egui::Rect, pan: egui::Vec2, color: egui::Color32) {
     let grid_origin = canvas.min + egui::vec2(pan.x.rem_euclid(18.0), pan.y.rem_euclid(18.0));
@@ -410,7 +458,6 @@ impl DiagramDrawing<'_> {
         let canvas = self.canvas;
         let zoom = self.zoom;
         let accent = ui.visuals().selection.stroke.color;
-        let tokens = crate::appearance::Tokens::of(ui.ctx());
         let mut clicked = false;
         let is_selected = self.selected == Some(node.name.as_str());
         if is_selected {
@@ -422,32 +469,8 @@ impl DiagramDrawing<'_> {
             );
         }
         let painter = painter.with_clip_rect(r.intersect(canvas));
-        painter.rect_filled(r, 7.0, ui.visuals().panel_fill);
-        painter.rect_stroke(
-            r,
-            4.0,
-            egui::Stroke::new(
-                if is_selected || related { 2.0 } else { 1.0 },
-                if is_selected {
-                    accent
-                } else if related {
-                    tokens.relationship
-                } else {
-                    ui.visuals().widgets.noninteractive.bg_stroke.color
-                },
-            ),
-            egui::StrokeKind::Inside,
-        );
+        node_frame(ui, &painter, r, is_selected, related, 34.0 * zoom);
         let header = egui::Rect::from_min_size(r.min, egui::vec2(r.width(), 34.0 * zoom));
-        painter.rect_filled(
-            header,
-            6.0,
-            if is_selected {
-                ui.visuals().selection.bg_fill
-            } else {
-                tokens.raised
-            },
-        );
         painter.text(
             self.point(world.min + egui::vec2(10.0, 17.0)),
             egui::Align2::LEFT_CENTER,

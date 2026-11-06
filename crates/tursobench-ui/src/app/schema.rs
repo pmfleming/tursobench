@@ -1,4 +1,4 @@
-mod presentation;
+pub(super) mod presentation;
 use super::{
     App, View,
     icons::{self, Icon},
@@ -225,6 +225,8 @@ impl App {
             object,
             schema: &self.database.schema,
             loading: self.database.document.tools.inspection_ticket.is_some(),
+            graph: self.database.ui.diagram.data.as_ref(),
+            incomplete: self.schema_incomplete(),
             selected: self
                 .database
                 .document

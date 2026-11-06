@@ -4,7 +4,7 @@ use crate::app::{
     shell::StructureSection,
 };
 use eframe::egui;
-use tursobench_core::{ForeignKey, IndexInfo, Inspection, SchemaObject};
+use tursobench_core::{IndexInfo, Inspection, SchemaObject};
 
 pub(super) enum Action {
     Load,
@@ -17,6 +17,8 @@ pub(super) struct Structure<'a> {
     pub object: Option<&'a SchemaObject>,
     pub schema: &'a [SchemaObject],
     pub loading: bool,
+    pub graph: Option<&'a tursobench_core::SchemaDiagram>,
+    pub incomplete: bool,
     pub selected: Option<&'a str>,
 }
 impl Structure<'_> {
@@ -99,7 +101,14 @@ impl Structure<'_> {
                                 ForeignKeys,
                                 Icon::Link,
                                 "Foreign keys",
-                                self.info.map(|i| i.foreign_keys.len()),
+                                self.info.map(|info| {
+                                    crate::app::diagram::ForeignMap {
+                                        info,
+                                        graph: self.graph,
+                                        incomplete: self.incomplete,
+                                    }
+                                    .count()
+                                }),
                             ),
                             (
                                 Triggers,
@@ -212,7 +221,12 @@ impl Structure<'_> {
                     .show(&mut panes[1], |ui| {
                         ui.strong("Foreign keys");
                         if let Some(info) = self.info
-                            && let Some(target) = foreign_keys(ui, &info.foreign_keys)
+                            && let Some(target) = (crate::app::diagram::ForeignMap {
+                                info,
+                                graph: self.graph,
+                                incomplete: self.incomplete,
+                            })
+                            .show(ui)
                         {
                             action = Some(Action::Browse(target));
                         }
@@ -248,7 +262,12 @@ impl Structure<'_> {
                         Indexes => action = self.indexes(ui),
                         ForeignKeys => {
                             if let Some(info) = self.info
-                                && let Some(target) = foreign_keys(ui, &info.foreign_keys)
+                                && let Some(target) = (crate::app::diagram::ForeignMap {
+                                    info,
+                                    graph: self.graph,
+                                    incomplete: self.incomplete,
+                                })
+                                .show(ui)
                             {
                                 action = Some(Action::Browse(target));
                             }
@@ -672,34 +691,7 @@ fn definition_row(
     None
 }
 
-fn foreign_keys(ui: &mut egui::Ui, keys: &[ForeignKey]) -> Option<String> {
-    if keys.is_empty() {
-        ui.weak("No declared foreign keys");
-    }
-    let mut browse = None;
-    for key in keys {
-        ui.horizontal(|ui| {
-            if ui.link(&key.target).clicked() {
-                browse = Some(key.target.clone());
-            }
-            ui.label(
-                key.columns
-                    .iter()
-                    .map(|(from, to)| {
-                        format!("{from} → {}", to.as_deref().unwrap_or("unresolved PK"))
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            )
-            .on_hover_text(format!(
-                "ON UPDATE {} · ON DELETE {}",
-                key.on_update, key.on_delete
-            ));
-        });
-    }
-    browse
-}
-pub(super) fn text_at(
+pub(in crate::app) fn text_at(
     ui: &egui::Ui,
     rect: egui::Rect,
     text: &str,
@@ -739,7 +731,7 @@ fn sql_view(ui: &mut egui::Ui, mut ddl: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tursobench_core::{Table, TableColumn};
+    use tursobench_core::{ForeignKey, Table, TableColumn};
 
     fn metadata() -> Inspection {
         Inspection {
@@ -806,6 +798,8 @@ mod tests {
                 object: None,
                 schema: &schema,
                 loading: false,
+                graph: None,
+                incomplete: false,
                 selected: Some("field_2"),
             };
             let mut section = StructureSection::Columns;
@@ -818,6 +812,9 @@ mod tests {
                 .iter()
                 .filter_map(|s| {
                     if let egui::Shape::Text(t) = &s.shape {
+                        if width >= 720.0 && t.pos.x >= width / 2.0 {
+                            return None;
+                        }
                         t.galley
                             .job
                             .text
@@ -872,6 +869,8 @@ mod tests {
                 object: None,
                 schema: &schema,
                 loading: false,
+                graph: None,
+                incomplete: false,
                 selected: None,
             };
             let output =
@@ -889,6 +888,8 @@ mod tests {
             object: None,
             schema: &[],
             loading: false,
+            graph: None,
+            incomplete: false,
             selected: None,
         };
         let mut section = StructureSection::Columns;
@@ -933,6 +934,8 @@ mod action_tests {
             object: Some(&object),
             schema: &schema,
             loading: false,
+            graph: None,
+            incomplete: false,
             selected: None,
         };
         let mut section = StructureSection::Columns;
