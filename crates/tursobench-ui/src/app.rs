@@ -536,7 +536,11 @@ impl App {
             self.database.status = "Wait for the staged commit outcome before closing".into();
             return;
         }
-        if self.database.writable && !self.database.closing {
+        if !self.database.closing
+            && (self.has_drafts()
+                || self.database.writable
+                    && self.database.transaction != TransactionState::Autocommit)
+        {
             self.database.confirm_close = true;
         } else {
             self.close();

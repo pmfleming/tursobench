@@ -120,8 +120,7 @@ impl App {
                 self.database.workspace.expanded = None;
             }
             if was_confirming_close && !self.database.confirm_close {
-                self.database.pending_database = None;
-                self.quit = false;
+                self.cancel_sidebar_close();
             }
         }
     }
@@ -509,7 +508,7 @@ impl App {
                 Err(e) => self.database.status = e,
             },
             Command::RefreshTable => self.refresh_table(),
-            Command::Close => self.request_close(),
+            Command::Close => self.request_sidebar_close(self.database.id),
             Command::Refresh => {
                 self.refresh_catalog();
                 self.load_diagram();

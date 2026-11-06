@@ -364,9 +364,7 @@ impl App {
                 // large font sizes and in the minimum-width sidebar.
                 ui.horizontal_wrapped(|ui| {
                     if ui.button("Keep open").clicked() {
-                        self.database.confirm_close = false;
-                        self.quit = false;
-                        self.database.pending_database = None;
+                        self.cancel_sidebar_close();
                     }
                     if ui.add(super::presentation::action(ui, "Roll back & close", super::presentation::Intent::Pending)).clicked() {
                         self.close();
@@ -559,10 +557,7 @@ impl App {
             self.select_workspace(id);
         }
         if let Some(id) = close {
-            self.select_workspace(id);
-            if self.database.id == id {
-                self.request_close();
-            }
+            self.request_sidebar_close(id);
         }
     }
 }

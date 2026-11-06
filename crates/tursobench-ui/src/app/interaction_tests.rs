@@ -701,7 +701,7 @@ fn failed_open_completes_pending_exit_after_any_export() {
         app.open(&ctx);
         app.quit = true;
         app.request_close();
-        assert!(app.database.confirm_close);
+        assert!(!app.database.confirm_close);
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         if pending_export {
             app.database.export_job = Some(rx);
@@ -3271,6 +3271,9 @@ fn database_workspaces_isolate_transactions_drafts_and_inactive_results() {
     assert!(app.database.ui.sidebar_rect.contains_rect(keep));
     click(&mut app, &ctx, keep.center());
     assert!(!app.database.confirm_close);
+    assert_eq!(app.database.id, second);
+    assert!(app.has_drafts());
+    app.select_workspace(first);
     assert_eq!(app.database.transaction, TransactionState::Active);
     app.request_close();
     assert!(app.database.confirm_close);

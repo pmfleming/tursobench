@@ -20,6 +20,8 @@ pub(super) struct DatabaseWorkspace {
     pub(super) coordination: Option<tursobench_core::Coordination>,
     pub(super) confirm_close: bool,
     pub(super) pending_access: Option<bool>,
+    pub(super) review_origin: Option<u64>,
+    pub(super) close_origin: Option<u64>,
     pub(super) session: Option<Session>,
     pub(super) ready: bool,
     pub(super) closing: bool,
@@ -75,6 +77,8 @@ impl DatabaseWorkspace {
             coordination: Default::default(),
             confirm_close: Default::default(),
             pending_access: Default::default(),
+            review_origin: None,
+            close_origin: None,
             session: Default::default(),
             ready: Default::default(),
             closing: Default::default(),
@@ -157,6 +161,7 @@ impl App {
         let id = self.next_workspace;
         self.next_workspace += 1;
         let previous = std::mem::replace(&mut self.database, DatabaseWorkspace::new(ctx, id));
+        self.database.review_origin = Some(previous.id);
         self.parked.insert(previous.id, previous);
         true
     }
@@ -175,7 +180,12 @@ impl App {
     }
     pub(super) fn request_database(&mut self, ctx: &egui::Context, path: PathBuf) {
         if let Some(id) = self.duplicate_workspace(&path) {
+            let abandoned = (!self.database.retained() && self.database.review_origin.is_some())
+                .then_some(self.database.id);
             self.select_workspace(id);
+            if let Some(abandoned) = abandoned.filter(|id| *id != self.database.id) {
+                self.parked.remove(&abandoned);
+            }
             return;
         }
         if path.to_str().is_none() {
@@ -199,10 +209,96 @@ impl App {
         self.swap_workspace(focused);
         self.polling_background = false;
         self.poll_active(ctx);
+        self.settle_sidebar_closes();
         if self.quit {
             self.continue_quit(ctx);
         }
     }
+    pub(super) fn cancel_database_review(&mut self) {
+        if self.database.retained() {
+            return;
+        }
+        let pending = self.database.id;
+        let origin = self.database.review_origin.take();
+        self.set_database_path(String::new());
+        self.database.writable = false;
+        self.databases.editing_path = false;
+        if let Some(origin) = origin {
+            self.select_workspace(origin);
+            if self.database.id != pending {
+                self.parked.remove(&pending);
+            }
+        }
+    }
+
+    pub(super) fn request_sidebar_close(&mut self, id: u64) {
+        let origin = self.database.id;
+        self.select_workspace(id);
+        if self.database.id != id
+            || self.picker.is_some()
+            || self.quit
+            || self.database.confirm_close
+        {
+            return;
+        }
+        self.database.close_origin = Some(origin);
+        self.request_close();
+        if !self.database.confirm_close && origin != id {
+            self.select_workspace(origin);
+        }
+        self.settle_sidebar_closes();
+    }
+
+    pub(super) fn cancel_sidebar_close(&mut self) {
+        self.database.confirm_close = false;
+        self.quit = false;
+        self.database.pending_database = None;
+        if let Some(origin) = self.database.close_origin.take() {
+            self.select_workspace(origin);
+        }
+    }
+
+    fn settle_sidebar_closes(&mut self) {
+        if self.quit || self.picker.is_some() {
+            return;
+        }
+        let mut completed = Vec::new();
+        for database in std::iter::once(&mut self.database).chain(self.parked.values_mut()) {
+            if database.close_origin.is_some()
+                && database.session.is_none()
+                && !database.closing
+                && !database.confirm_close
+            {
+                let origin = database.close_origin.take().unwrap();
+                if !database.retained() {
+                    completed.push((database.id, origin));
+                }
+            }
+        }
+        for (id, origin) in completed {
+            if self.database.id != id {
+                continue;
+            }
+            self.set_database_path(String::new());
+            self.database.writable = false;
+            let next = self
+                .parked
+                .get(&origin)
+                .filter(|d| d.retained())
+                .map(|d| d.id)
+                .or_else(|| {
+                    self.parked
+                        .values()
+                        .find(|d| d.session.is_some())
+                        .map(|d| d.id)
+                })
+                .or_else(|| self.parked.values().find(|d| d.retained()).map(|d| d.id));
+            if let Some(next) = next {
+                self.select_workspace(next);
+            }
+        }
+    }
+
     pub(super) fn continue_quit(&mut self, ctx: &egui::Context) {
         if self.polling_background || !self.quit {
             return;

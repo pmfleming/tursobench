@@ -109,7 +109,17 @@ impl App {
         match result {
             Ok(Some(path)) if self.database.session.is_none() => {
                 if let Some(path) = path.to_str() {
-                    self.set_database_path(path.to_owned());
+                    if let Some(id) = self.duplicate_workspace(std::path::Path::new(path)) {
+                        let abandoned = self.database.id;
+                        self.select_workspace(id);
+                        if abandoned != id
+                            && self.parked.get(&abandoned).is_some_and(|d| !d.retained())
+                        {
+                            self.parked.remove(&abandoned);
+                        }
+                        return;
+                    }
+                    self.set_database_path(path.into());
                     self.database.document.ui.nav = shell::Nav::Databases;
                     self.database.status = "File selected. Review access before opening.".into();
                 } else {
@@ -123,10 +133,16 @@ impl App {
                     "File selection ignored because a database is already open".into();
             }
             Ok(None) => {
+                if self.database.review_origin.is_some() {
+                    self.cancel_database_review();
+                }
                 // rfd reports both cancellation and some backend failures as None.
                 self.database.status = "No file selected. If the dialog did not appear, enter the database path manually.".into();
             }
             Err(error) => {
+                if self.database.review_origin.is_some() {
+                    self.cancel_database_review();
+                }
                 self.database.status = format!(
                     "Could not choose a file: {error}. Enter the database path manually or try again."
                 );

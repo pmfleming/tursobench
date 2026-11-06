@@ -147,8 +147,7 @@ impl App {
                         self.databases.inspection.recheck();
                     }
                     if ui.button("Cancel").clicked() {
-                        self.set_database_path(String::new());
-                        self.databases.editing_path = false;
+                        self.cancel_database_review();
                     }
                     response
                 }).inner;

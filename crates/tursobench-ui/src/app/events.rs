@@ -190,6 +190,7 @@ impl App {
         }
     }
     fn opened(&mut self) {
+        self.database.review_origin = None;
         self.initialize_workspace();
         self.database.ready = true;
         self.record_database_open();
