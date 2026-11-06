@@ -78,7 +78,7 @@ unsupported. Shared access is an experimental Linux preview feature.
   total/filtered counts, multi-column sorting, grouped AND/OR and typed IN filters,
   cell filtering, sampled facets and cached FK previews.
 - Virtualized results, keyboard range selection and numeric summaries, inline staged edits, typed inspection and selection copy.
-- Ctrl K command/table/column search; Ctrl J SQL view with highlighting, selection execution, completion and EXPLAIN.
+- Ctrl P sidebar database/object search and Ctrl K actions; Ctrl J SQL view with highlighting, selection execution, completion and EXPLAIN.
 - Single statements including CTEs, PRAGMAs and RETURNING; sequential or atomic
   run-all scripts, per-step results, convenient JSON bindings and query deadlines.
 - Native Turso FTS and experimental index methods enabled: open existing FTS
@@ -112,17 +112,33 @@ shortcuts, evidence and the remaining gaps—not a claim of complete parity.
 The large footer icons switch between Tables, History, Saved queries, Checks and
 Settings in the left panel. Hover controls for their names; F1 opens keyboard help.
 
-The database card at the top opens a recent-database switcher that grows into the
-available screen space, scrolling only when the list needs more room.
-Each row shows its filename, two nearest folders and the same engine icon as the
-database chooser; hover shows only its full path. The active database is highlighted.
-Search matches full paths as well as filenames; Enter selects a single matching
-result. Selecting the active database simply dismisses the switcher.
-**Open database…** returns to the chooser, and **Close database** closes the database.
-Switching between open workspaces retains their sessions. Opening another database
-uses fresh access review; closing a writable session retains managed close/rollback confirmation.
+Database navigation stays in the sidebar. **Open databases** shows each live session,
+its RO/RW access, transaction and staged-edit status, a close button, and the four-slot
+meter. Selecting a row expands that database’s schema and collapses the previous tree.
+Ctrl PageUp/PageDown cycles open sessions. Switching preserves results and drafts.
 
-- **Tables:** search names or columns, then use the refresh icon to reload schema.
+The search at the top has **All open**, **This database**, and **Databases** scopes.
+Ctrl P or `/` focuses it; arrows choose, Enter opens, and Escape clears the query.
+Object results group by database; selecting one switches to its session and opens the
+object. Column metadata loads for the searched sessions, with loading/errors and
+metadata limits shown inline. Results stop at 100; refine the query to see others.
+**Databases** matches filenames and containing paths, including files not yet open.
+Ctrl K remains an actions-only palette.
+
+**Available** lists recent and discovered files that are not open. Select a row to
+review read-only/read-write access beneath it, then click **Open**. The folder button
+or Ctrl O opens the native file chooser; **Enter a path…** works without a portal.
+Read-only is the default for a new path; likely SQLite files still require a per-file
+override. Errors, recheck and retry stay in the card. Right-click a file to forget it;
+the gear opens discovery settings. Access review reserves a workspace slot, and a
+fifth workspace cannot open until another is closed.
+
+Closing a writable session shows **Keep open** and **Roll back & close** beneath its
+row. Cancellation preserves its transaction and drafts. Confirmation discards local
+drafts and waits for execution and rollback acknowledgement; committed writes remain.
+Database switching is disabled while a file picker, close confirmation or exit is active.
+
+- **Tables:** browse the active database’s schema; refresh reloads catalog and columns.
 - **History:** the filter icon shows only slow queries; the down-arrow orders by
   duration. Each card shows SQL, timing and any failed/slow status. Click its SQL
   preview or editor icon to load it. Loading clears bindings and does not execute
@@ -304,15 +320,15 @@ not disabled. Checkpoint and verified backup reuse the existing maintenance pane
 
 Open database now opens a separate workspace while preserving the current database.
 Up to four workspaces retain independent sessions, SQL documents, results, layouts,
-transactions and staged edits. Use the database tabs or Ctrl PageUp/PageDown to switch;
-Ctrl P searches objects/columns across open databases using cached metadata. Duplicate
+transactions and staged edits. Use sidebar rows or Ctrl PageUp/PageDown to switch;
+Ctrl P searches across open databases or within the selected scope. Duplicate
 paths, symlinks and file identities focus an existing session. New opens still require
 access review and default to read-only. Close database closes only the selected session.
 Application exit waits for every session/export and retains writable-close confirmation;
 uncertain outcomes pause exit. Inactive requests continue draining to their owning views.
 Each workspace retains the existing 16-view limit and per-session quotas; the four-session
 cap bounds aggregate application retention, not engine allocations. No database is
-silently reopened writable after restart. Connection-local state never crosses tabs.
+silently reopened writable after restart. Connection-local state never crosses database workspaces.
 
 ### Schema comparison and migration drafts
 

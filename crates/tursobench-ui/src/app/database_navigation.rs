@@ -39,6 +39,11 @@ struct SearchResult {
 
 impl App {
     pub(super) fn database_navigation_keys(&mut self, ctx: &egui::Context) {
+        for (key, direction) in [(egui::Key::PageDown, 1), (egui::Key::PageUp, -1)] {
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, key)) {
+                self.cycle_database(direction);
+            }
+        }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::P))
             || !ctx.egui_wants_keyboard_input()
                 && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Slash))
@@ -99,16 +104,8 @@ impl App {
             }
         });
         ui.horizontal_wrapped(|ui| {
-            if self.database.session.is_some()
-                && ui
-                    .small_button("↻")
-                    .on_hover_text("Refresh schema · F5")
-                    .clicked()
-            {
-                self.refresh_catalog();
-                self.load_diagram();
-            }
             ui.spacing_mut().item_spacing.x = 3.0;
+            ui.spacing_mut().button_padding.x = 5.0;
             for (scope, label) in [
                 (Scope::AllOpen, "All open"),
                 (Scope::ThisDatabase, "This database"),
@@ -183,7 +180,12 @@ impl App {
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned();
-            if scope != Scope::ThisDatabase && super::commands::fuzzy(&database.path, query) {
+            if scope != Scope::ThisDatabase
+                && query
+                    .to_lowercase()
+                    .split_whitespace()
+                    .all(|word| database.path.to_lowercase().contains(word))
+            {
                 results.push(SearchResult {
                     group: file.clone(),
                     label: file.clone(),
@@ -246,8 +248,11 @@ impl App {
                         ui.small(&result.group);
                         group = Some(&result.group);
                     }
-                    let enabled =
-                        self.picker.is_none() && !self.database.confirm_close && !self.quit;
+                    let enabled = self.picker.is_none()
+                        && !self.database.confirm_close
+                        && !self.quit
+                        && (!matches!(result.target, Target::Available(_))
+                            || self.can_request_database());
                     let response = ui.add_enabled(
                         enabled,
                         egui::Button::new(&result.label)
@@ -296,6 +301,10 @@ impl App {
             if self.picker.is_some() || self.database.confirm_close || self.quit {
                 return;
             }
+            if matches!(results[index].target, Target::Available(_)) && !self.can_request_database()
+            {
+                return;
+            }
             match results.swap_remove(index).target {
                 Target::Database(id) => self.select_workspace(id),
                 Target::Object(id, command) => {
@@ -342,6 +351,48 @@ impl From<&DatabaseWorkspace> for DatabaseRow {
 }
 
 impl App {
+    fn occupied_database_slots(&self) -> usize {
+        std::iter::once(&self.database)
+            .chain(self.parked.values())
+            .filter(|d| {
+                d.session.is_some()
+                    || d.export_job.is_some()
+                    || d.uncertain_edit
+                    || d.transaction == TransactionState::Unknown
+                    || d.documents
+                        .values()
+                        .chain(std::iter::once(&d.document))
+                        .any(|v| v.has_drafts())
+                    || d.id == self.database.id && !d.path.is_empty()
+            })
+            .count()
+    }
+
+    fn inline_close_confirmation_ui(&mut self, ui: &mut egui::Ui) {
+        let color = ui.visuals().warn_fg_color;
+        egui::Frame::new().fill(color.gamma_multiply(0.08))
+            .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.4)))
+            .corner_radius(6).inner_margin(8.0).show(ui, |ui| {
+                ui.strong("Close database?");
+                // Put the actions before the explanation so they remain reachable at
+                // large font sizes and in the minimum-width sidebar.
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Keep open").clicked() {
+                        self.database.confirm_close = false;
+                        self.quit = false;
+                        self.database.pending_database = None;
+                    }
+                    if ui.add(super::presentation::action(ui, "Roll back & close", super::presentation::Intent::Pending)).clicked() {
+                        self.close();
+                    }
+                });
+                let drafts: usize = self.database.documents.values().chain(std::iter::once(&self.database.document))
+                    .filter_map(|d| d.drafts.as_ref()).map(|d| d.edits.len()).sum();
+                if drafts > 0 { ui.small(format!("{drafts} staged edits will be discarded.")); }
+                ui.small("Waits for active execution and rolls back any remaining transaction. Committed writes are not undone.");
+            });
+    }
+
     pub(super) fn open_databases_ui(&mut self, ui: &mut egui::Ui) {
         let mut rows: Vec<_> = std::iter::once(&self.database)
             .chain(self.parked.values())
@@ -351,11 +402,19 @@ impl App {
         rows.sort_by_key(|row| row.id);
         ui.horizontal(|ui| {
             ui.small("OPEN DATABASES");
+            if self.database.session.is_some()
+                && icons::button(ui, Icon::Refresh, "Refresh schema", "F5").clicked()
+            {
+                self.refresh_catalog();
+                self.load_diagram();
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.small(format!("{}/{}", rows.len(), super::sessions::MAX_DATABASES))
-                    .on_hover_text(
-                        "Up to four database workspaces; access review reserves a slot.",
-                    );
+                ui.small(format!(
+                    "{}/{}",
+                    self.occupied_database_slots(),
+                    super::sessions::MAX_DATABASES
+                ))
+                .on_hover_text("Up to four database workspaces; access review reserves a slot.");
             });
         });
         let enabled = self.picker.is_none() && !self.database.confirm_close && !self.quit;
@@ -394,11 +453,7 @@ impl App {
                             }
                         )
                     } else {
-                        Path::new(&row.path)
-                            .parent()
-                            .unwrap_or(Path::new("."))
-                            .display()
-                            .to_string()
+                        super::databases::folder_label(Path::new(&row.path))
                     };
                     let response = ui
                         .add_enabled_ui(enabled, |ui| {
@@ -500,7 +555,9 @@ impl App {
                         }
                     });
                 });
-                if row.id == self.database.id {
+                if row.id == self.database.id && self.database.confirm_close {
+                    self.inline_close_confirmation_ui(ui);
+                } else if row.id == self.database.id {
                     ui.indent(("active-database", row.id), |ui| {
                         self.active_database_tree_ui(ui)
                     });

@@ -1,5 +1,32 @@
 # UI screenshots
 
+## Sidebar database navigation v9 — native Wayland
+
+These 24 native captures were generated on 2026-11-06 from the sidebar implementation,
+using isolated preferences and two disposable synthetic databases under headless
+Weston/Mesa. The files in `v9/` are application screenshots without compositing or
+retouching. No personal databases are read or modified.
+
+```sh
+nix develop -c bash scripts/capture-sidebar.sh
+# Optional output directory is the first argument.
+```
+
+- `sidebar-open-databases.png`: two live read-only sessions, one expanded schema tree,
+  the slot meter, close controls and Available.
+- `sidebar-search.png`: grouped object/column results across those sessions.
+- `database-access.png`: Available files and inline access/SQLite review.
+- `close-confirmation.png`: inline managed close while an edit remains staged.
+- The remaining 20 images cover the six workspace size/theme states, navigator tools,
+  staged-edit review and insert, action palette, export, outcomes, keyboard help,
+  access switching, cell detail and discovery settings.
+
+The opening pass checks typed queries, read-only enforcement, session cycling and
+schema comparison. The visual pass reopens the primary fixture writable, stages a
+local change and closes without committing it. Capture dimensions and the sidebar
+scene files are verified by the script. Historical captures below retain their
+original provenance.
+
 ## Current README — native Wayland
 
 The `current/` images were captured on 2026-11-04 from the native Wayland app,

@@ -1372,6 +1372,9 @@ fn sql_tile_keeps_result_identity_and_read_transactions_visible() {
     app.sidebar_search.focus = true;
     app.sidebar_search.query = "a.id".into();
     frame(&mut app, &ctx, vec![]);
+    wait(&mut app, &ctx);
+    let output = frame_at(&mut app, &ctx, egui::vec2(1280.0, 720.0), vec![]);
+    control(&output, "a.id · column");
     press_key(&mut app, &ctx, egui::Key::Enter, egui::Modifiers::NONE);
     wait(&mut app, &ctx);
     assert_eq!(app.database.document.table.as_ref().unwrap().name, "a");
@@ -3144,7 +3147,7 @@ fn redesigned_dialog_actions_remain_visible_at_minimum_and_laptop_sizes() {
                 (0, "COMMIT staged edits to database"),
                 (1, "Stage insert (no database write)"),
                 (2, "Close cleanly and reopen"),
-                (3, "Wait, roll back transaction, and close"),
+                (3, "Roll back & close"),
                 (4, "Export retained result…"),
                 (5, "Copy stored value"),
             ] {
@@ -3255,15 +3258,32 @@ fn database_workspaces_isolate_transactions_drafts_and_inactive_results() {
     app.request_database(&ctx, alias);
     assert_eq!(app.database.id, first);
     assert_eq!(app.parked.len(), 1);
-    // Cancelling close preserves the active transaction and owning session.
+    // Close a background row through the sidebar, preserving the other database's drafts.
+    app.select_workspace(second);
+    let output = frame_at(&mut app, &ctx, egui::vec2(1280.0, 720.0), vec![]);
+    let close = control(&output, &format!("Close database: {first_path}"));
+    click(&mut app, &ctx, close.center());
+    assert_eq!(app.database.id, first);
+    assert!(app.database.confirm_close);
     let session = app.database.session.as_ref().unwrap().id;
+    let output = frame_at(&mut app, &ctx, egui::vec2(1280.0, 720.0), vec![]);
+    let keep = control(&output, "Keep open");
+    assert!(app.database.ui.sidebar_rect.contains_rect(keep));
+    click(&mut app, &ctx, keep.center());
+    assert!(!app.database.confirm_close);
+    assert_eq!(app.database.transaction, TransactionState::Active);
     app.request_close();
     assert!(app.database.confirm_close);
     press_key(&mut app, &ctx, egui::Key::Escape, egui::Modifiers::NONE);
     assert!(!app.database.closing && !app.database.confirm_close);
     assert_eq!(app.database.session.as_ref().unwrap().id, session);
-    // Closing the first rolls back only its own pending transaction.
-    close_and_wait(&mut app, &ctx);
+    // Confirming inline rolls back only the selected session.
+    app.request_close();
+    let output = frame_at(&mut app, &ctx, egui::vec2(1280.0, 720.0), vec![]);
+    let confirm = control(&output, "Roll back & close");
+    assert!(app.database.ui.sidebar_rect.contains_rect(confirm));
+    click(&mut app, &ctx, confirm.center());
+    wait_closed(&mut app, &ctx);
     app.select_workspace(second);
     assert!(app.has_drafts());
     app.database.document.drafts = None;
@@ -3273,6 +3293,20 @@ fn database_workspaces_isolate_transactions_drafts_and_inactive_results() {
         vec![vec![Value::Text("second".into())]]
     );
     frame(&mut app, &ctx, vec![]);
+    close_and_wait(&mut app, &ctx);
+    // Closed background workspaces must not steal the global header inspection.
+    app.select_workspace(first);
+    app.databases.inspection.recheck();
+    wait_until(&mut app, &ctx, |a| {
+        a.databases.inspection.ready(&a.database.path)
+    });
+    app.open(&ctx);
+    wait(&mut app, &ctx);
+    execute_and_wait(&mut app, &ctx, "SELECT count(*) FROM t");
+    assert_eq!(
+        app.database.document.result.rows,
+        vec![vec![Value::Integer(1)]]
+    );
     close_and_wait(&mut app, &ctx);
 }
 

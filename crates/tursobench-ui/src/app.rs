@@ -452,11 +452,16 @@ impl App {
                 Err(_) => {}
             }
         }
-        self.poll_picker();
-        if self.database.session.is_none() {
-            self.poll_database_inspection(ctx);
+        // Selection, file picking and discovery belong to the application, not
+        // a parked workspace. Background polling must not replace the selected
+        // path's header check with a closed workspace's path.
+        if !self.polling_background {
+            self.poll_picker();
+            if self.database.session.is_none() {
+                self.poll_database_inspection(ctx);
+            }
+            self.poll_discovery(ctx);
         }
-        self.poll_discovery(ctx);
         let mut events = Vec::new();
         let mut disconnected = false;
         let polled_session = self.database.session.as_ref().map(|s| s.id);
@@ -522,6 +527,10 @@ impl App {
         }
     }
     fn request_close(&mut self) {
+        if self.database.session.is_none() && !self.has_drafts() {
+            return;
+        }
+        self.sidebar_search.query.clear();
         if self.database.commit_ticket.is_some() {
             self.database.pending_database = None;
             self.database.status = "Wait for the staged commit outcome before closing".into();
@@ -565,7 +574,6 @@ impl App {
         }
     }
     pub fn render(&mut self, ui: &mut egui::Ui) {
-        self.database_tabs(ui);
         ui.push_id(self.database.id, |ui| self.shell(ui));
         self.large_value_ui(ui.ctx());
         self.transfer_ui(ui.ctx());

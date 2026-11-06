@@ -34,7 +34,7 @@ impl Entry {
 }
 
 /// Keep the two nearest containing folders; shallow and relative paths stay valid.
-pub(super) fn folder_label(path: &Path) -> String {
+pub(in crate::app) fn folder_label(path: &Path) -> String {
     let folder = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())

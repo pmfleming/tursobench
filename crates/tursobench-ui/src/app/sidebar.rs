@@ -84,7 +84,7 @@ impl App {
 
     pub(super) fn navigation_sidebar(&mut self, ui: &mut egui::Ui) {
         self.sidebar_search_ui(ui);
-        if !self.sidebar_search.query.trim().is_empty() {
+        if !self.sidebar_search.query.trim().is_empty() && !self.database.confirm_close {
             self.sidebar_search_results_ui(ui);
             return;
         }
@@ -92,6 +92,11 @@ impl App {
             .id_salt("database-navigation")
             .show(ui, |ui| {
                 self.open_databases_ui(ui);
+                if self.database.session.is_none()
+                    && self.database.ui.sidebar == ToolPanel::Settings
+                {
+                    self.settings_ui(ui);
+                }
                 self.available_databases_ui(ui);
             });
     }

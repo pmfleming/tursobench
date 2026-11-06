@@ -174,15 +174,6 @@ impl App {
         }
         self.status_bar(ui);
         egui::CentralPanel::default().show(ui, |ui| self.workspace_ui(ui));
-        if self.database.confirm_close {
-            egui::Window::new("Close writable database?").frame(crate::app::presentation::window_frame(&ctx)).default_pos(ctx.content_rect().center()-egui::vec2(280.0,180.0)).anchor(egui::Align2::CENTER_CENTER,egui::Vec2::ZERO).collapsible(false).max_width((ctx.content_rect().width()-48.0).min(520.0)).show(&ctx,|ui|{
-                presentation::notice(ui,Icon::Disconnect,Intent::Pending,"Local drafts will be discarded. Active execution will finish. Any remaining editor transaction will be explicitly rolled back. This does not undo committed writes.");
-                presentation::footer(ui, |ui| {
-                    if ui.add(presentation::action(ui,"Wait, roll back transaction, and close",Intent::Pending)).clicked(){self.close();}
-                    if ui.button("Keep open").clicked(){self.database.confirm_close=false;self.quit=false;self.database.pending_database=None;}
-                });
-            });
-        }
         self.edit_windows(&ctx);
         self.inspection_surfaces(&ctx);
         self.command_palette(&ctx);

@@ -24,7 +24,6 @@ pub(super) enum Icon {
     Sun,
     Moon,
     Close,
-    Disconnect,
     Lock,
     Fit,
     Arrange,
@@ -427,16 +426,6 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
         Close => {
             line(&[(6., 6.), (18., 18.)]);
             line(&[(6., 18.), (18., 6.)]);
-        }
-        Disconnect => {
-            let arc: Vec<_> = (0..=24)
-                .map(|step| {
-                    let angle = (-50.0 + step as f32 * 280.0 / 24.0).to_radians();
-                    (12.0 + 9.0 * angle.cos(), 12.0 + 9.0 * angle.sin())
-                })
-                .collect();
-            line(&arc);
-            line(&[(12., 2.), (12., 12.)]);
         }
         Lock => {
             box_(4., 11., 16., 11.);

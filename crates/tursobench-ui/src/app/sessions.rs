@@ -241,71 +241,23 @@ impl App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
-    pub(super) fn database_tabs(&mut self, ui: &mut egui::Ui) {
-        if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::PageDown)) {
-            self.cycle_database(1);
-        }
-        if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::PageUp)) {
-            self.cycle_database(-1);
-        }
-        if self.parked.is_empty() {
-            return;
-        }
-        let mut selected = None;
-        egui::Panel::top("database-tabs").show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                for d in std::iter::once(&self.database).chain(self.parked.values()) {
-                    let file = Path::new(&d.path)
-                        .file_name()
-                        .map_or_else(|| "Open database".into(), |s| s.to_string_lossy());
-                    let label = format!(
-                        "{}{}{}",
-                        file,
-                        if d.transaction == tursobench_core::TransactionState::Active {
-                            " · transaction"
-                        } else {
-                            ""
-                        },
-                        if d.closing { " · closing" } else { "" }
-                    );
-                    if ui
-                        .selectable_label(d.id == self.database.id, label)
-                        .on_hover_text(&d.path)
-                        .clicked()
-                    {
-                        selected = Some(d.id);
-                    }
-                }
-                if ui
-                    .button("+")
-                    .on_hover_text("Open another database")
-                    .clicked()
-                {
-                    selected = Some(0);
-                }
-            });
-        });
-        if let Some(id) = selected {
-            if id == 0 {
-                self.new_workspace(ui.ctx());
-            } else {
-                self.select_workspace(id);
-            }
-        }
-    }
-    fn cycle_database(&mut self, direction: isize) {
-        let mut ids: Vec<_> = self
-            .parked
-            .keys()
-            .copied()
-            .chain(std::iter::once(self.database.id))
+    pub(super) fn cycle_database(&mut self, direction: isize) {
+        let mut ids: Vec<_> = std::iter::once(&self.database)
+            .chain(self.parked.values())
+            .filter(|d| d.session.is_some())
+            .map(|d| d.id)
             .collect();
         ids.sort();
-        let index = ids
-            .iter()
-            .position(|id| *id == self.database.id)
-            .unwrap_or(0);
-        let next = (index as isize + direction).rem_euclid(ids.len() as isize) as usize;
+        if ids.is_empty() {
+            return;
+        }
+        let next = if let Some(index) = ids.iter().position(|id| *id == self.database.id) {
+            (index as isize + direction).rem_euclid(ids.len() as isize) as usize
+        } else if direction > 0 {
+            0
+        } else {
+            ids.len() - 1
+        };
         self.select_workspace(ids[next]);
     }
 }

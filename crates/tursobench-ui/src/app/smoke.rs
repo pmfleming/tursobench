@@ -242,7 +242,7 @@ impl App {
                 });
                 smoke.stage = 60;
             }
-            60..=70 => self.smoke_workbench(ctx, &mut smoke),
+            60..=74 => self.smoke_workbench(ctx, &mut smoke),
             5 if self.database.session.is_none() => {
                 assert!(
                     self.database.status.contains("cleanup confirmed"),
@@ -254,15 +254,25 @@ impl App {
                     // access. Stage locally to exercise edit surfaces; never commit.
                     self.database.writable = true;
 
-                    self.open(ctx);
-                    smoke.stage = 40;
+                    smoke.stage = 39;
                 } else {
                     eprintln!(
-                        "DESKTOP SMOKE PASSED: open, schema, page, diagram, typed query, read-only rejection, profile, admin, close; elapsed {:?}",
+                        "DESKTOP SMOKE PASSED: open, schema, page, diagram, typed query, read-only rejection, profile, admin, database cycling, close; elapsed {:?}",
                         smoke.start.elapsed()
                     );
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     return;
+                }
+            }
+            39 => {
+                if self.databases.inspection.kind(&self.database.path)
+                    == crate::discovery::DatabaseKind::LikelySqlite
+                {
+                    self.databases.inspection.override_sqlite = true;
+                }
+                self.open(ctx);
+                if self.database.session.is_some() {
+                    smoke.stage = 40;
                 }
             }
             40 if self.database.ready
@@ -324,7 +334,7 @@ impl App {
                 } else if smoke.scene == VISUAL_SCENES.len() {
                     assert!(self.database.session.is_none());
                     eprintln!(
-                        "DESKTOP VISUAL SMOKE PASSED: six workspace sizes/themes, navigator tools, staged edits, dialogs, chooser and search settings; elapsed {:?}",
+                        "DESKTOP VISUAL SMOKE PASSED: six workspace sizes/themes, navigator tools, staged edits, dialogs, sidebar access and search settings; elapsed {:?}",
                         smoke.start.elapsed()
                     );
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -414,9 +424,11 @@ impl App {
                     vec![vec![Value::Integer(100)]]
                 );
                 let second = self.database.id;
-                self.select_workspace(smoke.first_workspace.unwrap());
+                self.cycle_database(-1);
+                assert_eq!(self.database.id, smoke.first_workspace.unwrap());
                 assert!(self.database.ready);
-                self.select_workspace(second);
+                self.cycle_database(1);
+                assert_eq!(self.database.id, second);
                 self.comparison.open = true;
                 self.comparison.source = smoke.first_workspace.unwrap();
                 self.comparison.target = second;
@@ -424,7 +436,44 @@ impl App {
                 self.capture_schema(second);
                 smoke.stage = 69;
             }
-            69 if self.comparison_ready() => smoke.stage = 70,
+            69 if self.comparison_ready() => {
+                if smoke.capture_dir.is_some() && !smoke.readme {
+                    self.comparison.open = false;
+                    self.sidebar_search.query = "name".into();
+                    self.sidebar_search.scope = super::database_navigation::Scope::AllOpen;
+                    smoke.capture_frames = 0;
+                    smoke.stage = 71;
+                } else {
+                    smoke.stage = 70;
+                }
+            }
+            71 | 73 => {
+                smoke.capture_frames += 1;
+                if smoke.capture_frames >= 8 {
+                    smoke.capture_pending = Some(
+                        if smoke.stage == 71 {
+                            "sidebar-search.png"
+                        } else {
+                            "sidebar-open-databases.png"
+                        }
+                        .into(),
+                    );
+                    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+                    let wake = ctx.clone();
+                    ctx.request_screenshot(move |image| {
+                        let _ = tx.try_send(image);
+                        wake.request_repaint();
+                    });
+                    smoke.capture_result = Some(rx);
+                    smoke.capture_frames = 0;
+                    smoke.stage += 1;
+                }
+            }
+            72 if smoke.capture_pending.is_none() => {
+                self.sidebar_search.query.clear();
+                smoke.stage = 73;
+            }
+            74 if smoke.capture_pending.is_none() => smoke.stage = 67,
             70 => {
                 self.comparison.open = false;
                 smoke.stage = 67;
@@ -442,6 +491,7 @@ impl App {
         }
     }
     fn prepare_visual_scene(&mut self, scene: usize) {
+        self.sidebar_search.query.clear();
         self.preferences.appearance = Some(crate::appearance::Mode::Dark);
         self.database.ui.sidebar = shell::ToolPanel::Schema;
         self.database.ui.palette_open = false;
@@ -577,7 +627,7 @@ const VISUAL_SCENES: &[&str] = &[
     "keyboard-reference.png",
     "access-dialog.png",
     "cell-detail.png",
-    "close-dialog.png",
-    "database-chooser.png",
+    "close-confirmation.png",
+    "database-access.png",
     "search-settings.png",
 ];

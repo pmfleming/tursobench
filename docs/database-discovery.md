@@ -1,27 +1,25 @@
 # Local database discovery
 
-TursoBench starts one background search when the application launches. The Open
-database screen immediately shows remembered files, then appends new candidates
-without changing the selected path, access mode, keyboard focus or scroll
-position. Recent successful opens appear first on the next launch. **Ctrl+O**
-returns to this chooser and focuses its name/path filter. **Browse files…** beside
-the search field opens the native file dialog; **Alt+Enter** does the same while
-search is focused. Manual entry is available under **Enter a path…**, and a selected
-file's path can be changed with **Edit path…**.
+TursoBench starts one background search when the application launches. The sidebar’s
+**Available** section immediately shows remembered files, then appends new candidates
+without changing the selected path or access mode. Recent successful opens appear
+first on the next launch. Files that are already open appear under **Open databases**.
 
-The centered chooser has a rounded search field above full-width filename/path
-rows. Recent successful opens appear first and carry a **Recent** label; other
-rows show their discovery or availability status. A selected file has a filled
-row, while keyboard navigation uses a separate browsing marker. Down from search enters the first selectable
-result; Up/Down browses results, skipping unavailable files. Up from the first
-result returns to search. PageUp/PageDown moves through longer lists and reveals
-the highlighted row. Typing or pasting while browsing edits the search at its
-retained cursor/selection. Enter selects the highlighted file for access review;
-clicking a row also selects it. Browsing alone does not replace a command-line or
-previously selected path, and incoming discoveries preserve the highlight.
+**Ctrl+P** or `/` focuses the sidebar search. Choose **Databases** to match filenames
+and paths, **All open** to search open sessions and matching available files, or
+**This database** to search only the current session’s objects and columns.
+Up/Down chooses results, PageUp/PageDown moves through longer lists, and Enter selects.
+Typing or pasting retains the search editor’s cursor. Escape clears the query.
+Selecting an open database focuses its existing session. Selecting an available file
+starts access review. Results are capped at 100; refine the query for omitted results.
+
+The folder button or **Ctrl+O** opens the native file dialog. Manual entry is available
+under **Enter a path…**, and **Edit path…** changes a pending file’s path. Selecting a
+new path defaults to read-only and resets the SQLite override. Opening a file from the
+sidebar preserves other open database sessions; up to four workspaces are retained.
 
 Selecting a candidate does not connect to it. A compact access panel directly
-below the results shows the selected file, path, read-only/write choice and
+beneath the selected row shows the selected file, path, read-only/write choice and
 **Open**. A non-writing background check identifies missing/invalid files and
 incompatible locks before enabling Open. Known blockers appear inline, including
 the locking application when available. Blocked files are rechecked periodically;
@@ -30,7 +28,7 @@ stay visible with **Retry** until another attempt or selection/access change.
 Admission locks are still checked authoritatively on Open. Long paths are truncated with the full path
 on hover. Changing the selected path resets write access and
 the SQLite classification override.
-Command-line paths keep priority.
+Discovery never replaces a command-line path.
 
 ## Scope and controls
 

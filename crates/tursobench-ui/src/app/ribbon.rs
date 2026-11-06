@@ -134,7 +134,10 @@ impl App {
             ArrangeMap => self.database.ui.diagram.arrange_nodes(),
             MapColumns => self.database.ui.diagram.toggle_columns(),
             SystemTables => self.database.ui.diagram.toggle_system(),
-            Find => self.open_palette(),
+            Find => {
+                self.sidebar_search.focus = true;
+                self.database.ui.sidebar = super::shell::ToolPanel::Schema;
+            }
             Zoom100 => self.database.ui.diagram.camera.reset_zoom(),
             ZoomOut => self.database.ui.diagram.camera.step_zoom(1.0 / 1.25),
             ZoomIn => self.database.ui.diagram.camera.step_zoom(1.25),
@@ -716,7 +719,7 @@ impl Action {
             Export => "Ctrl E",
             CopyRows => "Ctrl Shift C",
             Inspect => "Space",
-            Find => "Ctrl K",
+            Find => "Ctrl P",
             Run => "Ctrl Enter",
             Completion => "Ctrl Space",
             SaveSql => "Ctrl S",
