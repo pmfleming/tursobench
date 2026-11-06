@@ -5,7 +5,7 @@ mod chooser;
 mod connection;
 mod inspection;
 mod presentation;
-pub(super) use presentation::folder_label;
+pub(super) use presentation::{folder_label, opened_database_icon};
 mod settings;
 use crate::{
     discovery::{self, Availability, DatabaseKind, Event, Job, Request, Root, Summary},
@@ -525,18 +525,43 @@ impl App {
             })
             .map(|d| d.id)
     }
-    pub(super) fn available_database_paths(&self, query: &str) -> Vec<PathBuf> {
+    pub(super) fn available_search_results(&self, query: &str) -> Vec<(usize, String)> {
         let query = query.to_lowercase();
         self.databases
             .entries
             .iter()
-            .filter(|entry| entry.selectable() && self.listed_workspace(&entry.path).is_none())
-            .filter(|entry| {
+            .enumerate()
+            .filter(|(_, e)| e.selectable() && self.listed_workspace(&e.path).is_none())
+            .filter(|(_, e)| {
                 query
                     .split_whitespace()
-                    .all(|word| entry.path.to_string_lossy().to_lowercase().contains(word))
+                    .all(|word| e.path.to_string_lossy().to_lowercase().contains(word))
             })
-            .map(|entry| entry.path.clone())
+            .map(|(i, e)| (i, e.path.display().to_string()))
+            .collect()
+    }
+    pub(super) fn available_result_ui(
+        &self,
+        ui: &mut egui::Ui,
+        index: usize,
+        highlighted: bool,
+        enabled: bool,
+    ) -> (egui::Response, bool) {
+        self.databases.entries[index].row_ui(ui, false, highlighted, enabled)
+    }
+    pub(super) fn choose_available_result(&mut self, ctx: &egui::Context, index: usize) {
+        let path = self.databases.entries[index].path.clone();
+        self.request_database(ctx, path);
+    }
+    pub(super) fn forget_available_result(&mut self, index: usize) {
+        let path = self.databases.entries[index].path.clone();
+        self.forget_database(&path);
+    }
+    #[cfg(test)]
+    fn available_database_paths(&self, query: &str) -> Vec<PathBuf> {
+        self.available_search_results(query)
+            .into_iter()
+            .map(|(i, _)| self.databases.entries[i].path.clone())
             .collect()
     }
 }
@@ -755,6 +780,41 @@ mod tests {
         crate::app::sessions::IDENTITY_PROBES
             .with(|count| assert!(count.get() > 0, "explicit selection checks identity"));
         app.close();
+    }
+
+    #[test]
+    fn available_search_keeps_filenames_visible_and_selection_opens_access_review() {
+        use crate::app::test_ui::{control, pointer, render};
+        use eframe::egui;
+        let (ctx, mut app) = crate::app::test_ui::app();
+        let path = format!(
+            "/home/demo/{}/notifications-v2.db",
+            "long-folder/".repeat(12)
+        );
+        app.discovery_event(found(&path));
+        app.databases.entries[0].kind = DatabaseKind::LikelySqlite;
+        app.sidebar_search.query = "notifications".into();
+        let frame = |app: &mut crate::app::App, events| {
+            render(&ctx, egui::vec2(272.0, 600.0), events, |ui| {
+                app.navigation_sidebar(ui)
+            })
+        };
+        frame(&mut app, vec![]);
+        let output = frame(&mut app, vec![]);
+        assert!(output.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.job.text == "notifications-v2.db")));
+        assert!(
+            output
+                .shapes
+                .iter()
+                .any(|s| matches!(&s.shape,egui::Shape::Text(t) if t.galley.job.text == "SQLite"))
+        );
+        let row = control(&output, &format!("{path} · Likely SQLite"));
+        for pressed in [true, false] {
+            frame(&mut app, pointer(row.center(), pressed));
+        }
+        assert_eq!(app.database.path, path);
+        assert!(!app.database.writable);
+        assert!(app.database.session.is_none());
     }
 
     #[test]

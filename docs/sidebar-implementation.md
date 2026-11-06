@@ -31,3 +31,29 @@ tests and one existing ignored test; native Wayland desktop smoke and visual
 capture smoke. The final stage also fixes foreground selection checks being
 overwritten by polling closed background workspaces, covered by reopening a
 previously closed session while another closed workspace remains parked.
+
+
+Review remediation (five separate commits):
+
+1. `86d6564` keeps disconnected drafts, exports and unknown outcomes reachable,
+   including close confirmation without a session and retained-draft review.
+2. `2b10356` restores database focus after close, cancelled access and picker
+   dismissal; clean writable sessions close directly and the last close resets access.
+3. `f5f7c71` corrects Escape, empty-query Enter and first-arrow/page selection.
+4. `db866fa` caches discovery/open identities and virtualizes Available rows; a
+   500-entry regression checks zero repaint identity probes and bounded row rendering.
+5. Presentation alignment uses shared engine marks and filename/folder search rows,
+   disables unavailable tools, names the active database, adds slot pips, collapse and
+   close progress, and implements This database schema filtering. The source HTML
+   proposal is now versioned alongside the implementation.
+
+The review's seven saved reproductions are retained as regression tests in
+`crates/tursobench-ui/src/app/interaction_tests/sidebar_review.rs`, with further
+coverage for picker dismissal, last-close defaults, retained outcomes and keyboard paging.
+
+Final review validation used an isolated checkout at `db866fa` plus these changes,
+so concurrent record/structure edits in the shared checkout were preserved and
+excluded from the sidebar verification. Formatting, warning-free workspace Clippy,
+219 active workspace tests (one existing ignored test), the engine probe and workspace
+build passed. Native Wayland desktop, startup discovery, all four local-project
+fixture smoke tests and the refreshed 24-image capture set passed.

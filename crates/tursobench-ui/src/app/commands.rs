@@ -47,6 +47,15 @@ pub(super) struct ObjectRef<'a> {
     column: Option<&'a str>,
 }
 impl ObjectRef<'_> {
+    pub(super) fn matches_name(&self, query: &str) -> bool {
+        fuzzy(
+            &self
+                .column
+                .map_or_else(|| self.name.into(), |c| format!("{}.{}", self.name, c)),
+            query,
+        )
+    }
+
     pub(super) fn label(&self) -> String {
         match self.column {
             Some(column) => format!("{}.{} · column", self.name, column),

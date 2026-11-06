@@ -62,6 +62,12 @@ pub(super) fn database_icon(ui: &egui::Ui, rect: egui::Rect, entry: &Entry, avai
         return;
     }
 
+    turso_icon(ui, rect, mark == EngineMark::OpenedTurso, available);
+}
+pub(in crate::app) fn opened_database_icon(ui: &egui::Ui, rect: egui::Rect, available: bool) {
+    turso_icon(ui, rect, true, available);
+}
+fn turso_icon(ui: &egui::Ui, rect: egui::Rect, checked: bool, available: bool) {
     let texture = turso_texture(ui.ctx(), ui.visuals().dark_mode);
     let size = texture.size_vec2();
     let scale = ((rect.width() - 2.0) / size.x).min((rect.height() - 2.0) / size.y);
@@ -76,7 +82,7 @@ pub(super) fn database_icon(ui: &egui::Ui, rect: egui::Rect, entry: &Entry, avai
             egui::Color32::from_white_alpha(100)
         },
     );
-    if mark == EngineMark::OpenedTurso {
+    if checked {
         let center = rect.right_bottom() - egui::vec2(3.0, 3.0);
         ui.painter()
             .circle_filled(center, 6.5, ui.visuals().panel_fill);

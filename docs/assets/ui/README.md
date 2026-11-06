@@ -2,6 +2,11 @@
 
 ## Sidebar database navigation v9 — native Wayland
 
+The review fixes refreshed these 24 captures using the isolated `db866fa` baseline
+plus the sidebar corrections. Concurrent record/structure changes made later in the
+shared checkout are outside this capture set. The access capture now shows the
+read-only default with a fresh per-file SQLite compatibility choice.
+
 These 24 native captures were generated on 2026-11-06 from the sidebar implementation,
 using isolated preferences and two disposable synthetic databases under headless
 Weston/Mesa. The files in `v9/` are application screenshots without compositing or

@@ -529,7 +529,13 @@ impl App {
                 self.database.document.ui.inspector = shell::DetailMode::Cell;
             }
             13 => self.database.confirm_close = true,
-            14 => self.database.document.ui.nav = shell::Nav::Databases,
+            14 => {
+                self.database.document.ui.nav = shell::Nav::Databases;
+                if self.database.session.is_none() {
+                    self.database.writable = false;
+                    self.databases.inspection.override_sqlite = false;
+                }
+            }
             15 => self.databases.settings_open = true,
             _ => {}
         }

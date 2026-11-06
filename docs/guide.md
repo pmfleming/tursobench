@@ -115,12 +115,14 @@ Settings in the left panel. Hover controls for their names; F1 opens keyboard he
 Database navigation stays in the sidebar. **Open databases** shows each live session,
 its RO/RW access, transaction and staged-edit status, a close button, and the four-slot
 meter. Selecting a row expands that database’s schema and collapses the previous tree.
-Ctrl PageUp/PageDown cycles open sessions. Switching preserves results and drafts.
+Ctrl PageUp/PageDown cycles retained workspaces, including disconnected sessions
+with drafts or uncertain outcomes. Switching preserves results and drafts.
 
 The search at the top has **All open**, **This database**, and **Databases** scopes.
 Ctrl P or `/` focuses it; arrows choose, Enter opens, and Escape clears the query.
 Object results group by database; selecting one switches to its session and opens the
-object. Column metadata loads for the searched sessions, with loading/errors and
+object. All open shows six object matches per database, with an omitted-match count.
+This database filters its schema tree and matching columns. Column metadata loads for the searched sessions, with loading/errors and
 metadata limits shown inline. Results stop at 100; refine the query to see others.
 **Databases** matches filenames and containing paths, including files not yet open.
 Ctrl K remains an actions-only palette.
@@ -130,13 +132,20 @@ review read-only/read-write access beneath it, then click **Open**. The folder b
 or Ctrl O opens the native file chooser; **Enter a path…** works without a portal.
 Read-only is the default for a new path; likely SQLite files still require a per-file
 override. Errors, recheck and retry stay in the card. Right-click a file to forget it;
-the gear opens discovery settings. Access review reserves a workspace slot, and a
+the gear opens discovery settings. Available can be collapsed. Its list renders only
+visible rows and uses cached file identities; file checks run during discovery or
+explicit selection/opening. Access review reserves a workspace slot, and a
 fifth workspace cannot open until another is closed.
 
-Closing a writable session shows **Keep open** and **Roll back & close** beneath its
-row. Cancellation preserves its transaction and drafts. Confirmation discards local
+Closing a writable session with drafts or a transaction shows **Keep open** and
+**Roll back & close** beneath its row. Clean sessions close directly. Cancellation
+preserves the transaction and drafts. Closing a background row preserves the active
+database; closing the active row selects another retained workspace. Cancelling
+access review or dismissing its file picker restores the previous database. Confirmation discards local
 drafts and waits for execution and rollback acknowledgement; committed writes remain.
 Database switching is disabled while a file picker, close confirmation or exit is active.
+Disconnected workspaces with local drafts, pending exports or uncertain outcomes remain
+reachable in the sidebar. Their path cannot be edited or cleared by cancelling an open.
 
 - **Tables:** browse the active database’s schema; refresh reloads catalog and columns.
 - **History:** the filter icon shows only slow queries; the down-arrow orders by

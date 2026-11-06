@@ -2,10 +2,7 @@ use super::{
     App, Entry,
     presentation::{database_icon, folder_label},
 };
-use crate::app::{
-    database_navigation::Scope,
-    icons::{self, Icon},
-};
+use crate::app::icons::{self, Icon};
 use eframe::egui;
 use std::path::Path;
 
@@ -20,6 +17,24 @@ impl App {
             .map(|(index, _)| index)
             .collect();
         ui.horizontal(|ui| {
+            if icons::button(
+                ui,
+                if self.sidebar_search.available_collapsed {
+                    Icon::Next
+                } else {
+                    Icon::Down
+                },
+                if self.sidebar_search.available_collapsed {
+                    "Expand available databases"
+                } else {
+                    "Collapse available databases"
+                },
+                "",
+            )
+            .clicked()
+            {
+                self.sidebar_search.available_collapsed = !self.sidebar_search.available_collapsed;
+            }
             ui.small(format!("AVAILABLE · {}", indices.len()));
             if self.databases.job.is_some() {
                 ui.spinner().on_hover_text("Finding local databases…");
@@ -61,18 +76,22 @@ impl App {
                     };
                     &synthetic
                 };
-                let (row, remove) = entry.row_ui(ui, true, false, can_select && entry.selectable());
+                let (_row, remove) =
+                    entry.row_ui(ui, true, false, can_select && entry.selectable());
                 #[cfg(test)]
-                if ui.is_rect_visible(row.rect) {
+                if ui.is_rect_visible(_row.rect) {
                     self.databases
                         .row_rects
-                        .push((entry.path.clone(), row.rect));
+                        .push((entry.path.clone(), _row.rect));
                 }
                 if remove {
                     forget = Some(entry.path.clone());
                 }
             }
             self.pending_database_ui(ui);
+        }
+        if self.sidebar_search.available_collapsed {
+            return;
         }
         if !can_select && self.picker.is_none() && !self.database.confirm_close && !self.quit {
             ui.small("4 of 4 workspaces retained. Close a database to open another.");
@@ -165,10 +184,6 @@ impl App {
         }
         if self.databases.entries.is_empty() {
             ui.weak("No databases found. Browse files or enter a path.");
-        }
-        if ui.link("Find a database…").clicked() {
-            self.sidebar_search.scope = Scope::Databases;
-            self.sidebar_search.focus = true;
         }
     }
 }

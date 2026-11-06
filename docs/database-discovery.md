@@ -7,16 +7,20 @@ first on the next launch. Files that are already open appear under **Open databa
 
 **Ctrl+P** or `/` focuses the sidebar search. Choose **Databases** to match filenames
 and paths, **All open** to search open sessions and matching available files, or
-**This database** to search only the current session’s objects and columns.
+**This database** to filter the current session’s schema tree and matching columns.
 Up/Down chooses results, PageUp/PageDown moves through longer lists, and Enter selects.
 Typing or pasting retains the search editor’s cursor. Escape clears the query.
 Selecting an open database focuses its existing session. Selecting an available file
-starts access review. Results are capped at 100; refine the query for omitted results.
+starts access review. All open shows up to six object matches per database; a count identifies omitted matches.
+The overall search is capped at 100 results; refine the query for omitted results.
 
 The folder button or **Ctrl+O** opens the native file dialog. Manual entry is available
 under **Enter a path…**, and **Edit path…** changes a pending file’s path. Selecting a
 new path defaults to read-only and resets the SQLite override. Opening a file from the
 sidebar preserves other open database sessions; up to four workspaces are retained.
+Cancelling access review or dismissing the picker restores the previous database.
+Available is collapsible, renders visible rows, and uses file identities cached by
+discovery/opening. Repainting never probes candidate files.
 
 Selecting a candidate does not connect to it. A compact access panel directly
 beneath the selected row shows the selected file, path, read-only/write choice and

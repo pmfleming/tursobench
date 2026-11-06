@@ -330,21 +330,11 @@ impl App {
         {
             return;
         }
-        if self.database.session.is_some() {
+        if self.database.session.is_some() || self.has_drafts() {
             self.request_close();
             return;
         }
-        if let Some(id) = self
-            .parked
-            .values()
-            .find(|d| {
-                d.session.is_some()
-                    || d.export_job.is_some()
-                    || d.uncertain_edit
-                    || d.transaction == tursobench_core::TransactionState::Unknown
-            })
-            .map(|d| d.id)
-        {
+        if let Some(id) = self.parked.values().find(|d| d.retained()).map(|d| d.id) {
             self.swap_workspace(id);
             self.continue_quit(ctx);
         } else {

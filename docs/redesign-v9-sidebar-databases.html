@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TursoBench · Sidebar-first database navigation</title>
+<style>
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+html{background:var(--background,#0b0f14)}
+body{margin:0;color:var(--foreground,#e6edf3);font:14px/1.55 var(--font-sans,Inter,system-ui,sans-serif)}
+.wrap{max-width:1080px;margin:0 auto;padding:8px 8px 40px}
+h1{font-size:24px;letter-spacing:-.4px;margin:6px 0 4px}
+h2{font-size:17px;margin:34px 0 8px;letter-spacing:-.2px}
+h3{font-size:13px;margin:0 0 4px}
+p{margin:6px 0}
+.mut{color:var(--muted-foreground,#8b98a9)}
+code,kbd{font-family:var(--font-mono,ui-monospace,monospace);font-size:.88em}
+code{background:var(--code-background,#ffffff12);padding:1px 5px;border-radius:4px}
+kbd{border:1px solid var(--border,#2a3646);border-bottom-width:2px;border-radius:4px;padding:0 5px;font-size:11px}
+.lead{font-size:15px;max-width:760px}
+.eyebrow{font:600 10.5px var(--font-mono,monospace);letter-spacing:.12em;text-transform:uppercase;color:var(--muted-foreground,#8b98a9)}
+table.t{width:100%;border-collapse:collapse;font-size:13px;margin:8px 0}
+.t th{text-align:left;font-weight:600;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted-foreground,#8b98a9);padding:6px 10px;border-bottom:1px solid var(--border,#2a3646)}
+.t td{padding:8px 10px;border-bottom:1px solid color-mix(in srgb,var(--border,#2a3646) 60%,transparent);vertical-align:top}
+.t td:first-child{white-space:nowrap}
+.n{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:50%;background:var(--warning,#e3b778);color:#111;font:700 11px var(--font-sans);margin-right:6px}
+.tag{display:inline-block;font:600 10px var(--font-mono,monospace);padding:1px 6px;border-radius:4px;margin-right:4px;letter-spacing:.04em}
+.tag.rm{background:#ee8b8625;color:#ee8b86}.tag.rp{background:#e3b77826;color:#e3b778}.tag.ok{background:#4cc38a22;color:#4cc38a}.tag.nw{background:#2f7cf630;color:#7fb0ff}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.card{border:1px solid var(--border,#2a3646);border-radius:10px;padding:12px 14px;background:var(--card,#ffffff06)}
+@media(max-width:700px){.cols{grid-template-columns:1fr}}
+
+/* ---------- Today schematic ---------- */
+.today{display:grid;grid-template-columns:minmax(300px,1fr) minmax(280px,1fr);gap:18px;align-items:start}
+.sch{border:1px solid var(--border,#2a3646);border-radius:10px;padding:10px;background:#0d1218;position:relative;font-size:11px;color:#8b98a9}
+.sch .bar{display:flex;gap:6px;border:1px dashed #33425a;border-radius:6px;padding:5px 8px;margin-bottom:8px;align-items:center}
+.sch .body{display:grid;grid-template-columns:34% 1fr;gap:8px}
+.sch .side,.sch .main{border:1px dashed #33425a;border-radius:6px;padding:8px;min-height:190px;position:relative}
+.sch .box{border:1px solid #33425a;border-radius:5px;padding:4px 6px;margin-bottom:6px;position:relative}
+.sch .pop{position:absolute;left:22px;top:62px;width:130px;background:#18202a;border:1px solid #4a5d7a;border-radius:6px;padding:6px;z-index:2;box-shadow:0 6px 16px #0008}
+.sch .win{position:absolute;right:10px;top:34px;width:44%;background:#18202a;border:1px solid #4a5d7a;border-radius:6px;padding:6px;z-index:2;box-shadow:0 6px 16px #0008}
+.sch .n{position:absolute;right:-6px;top:-8px;margin:0;z-index:3;width:18px;height:18px;font-size:10px}
+.sch .stat{margin-top:8px;border:1px dashed #33425a;border-radius:6px;padding:4px 8px;display:flex;justify-content:space-between;position:relative}
+
+/* ---------- Prototype ---------- */
+.toolbar{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0}
+.toolbar button{font:inherit;font-size:12px;color:inherit;background:transparent;border:1px solid var(--border,#2a3646);border-radius:6px;padding:4px 10px;cursor:pointer}
+.toolbar button:hover{background:#ffffff0d}
+.app{--bg:#0d1218;--panel:#121921;--raised:#18202a;--hover:#1e2834;--line:#263140;--fg:#e6edf3;--mut:#8b98a9;--faint:#5f6c7d;--pri:#2f7cf6;--teal:#43e3c4;--warn:#e3b778;--ok:#4cc38a;--err:#ee8b86;
+ display:grid;grid-template-columns:272px minmax(0,1fr);grid-template-rows:minmax(0,1fr) 28px;height:760px;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--bg);color:var(--fg);font:12px/1.4 Inter,system-ui,sans-serif;user-select:none}
+.app *{box-sizing:border-box}
+.app button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;padding:0}
+.app svg.i{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.side{background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
+.searchrow{display:flex;gap:6px;padding:10px 10px 6px}
+.search{flex:1;display:flex;align-items:center;gap:6px;background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:0 8px;height:30px;color:var(--mut);min-width:0}
+.search:focus-within{border-color:var(--pri);color:var(--fg)}
+.search input{flex:1;min-width:0;background:none;border:0;outline:0;color:var(--fg);font:inherit;font-size:12px;user-select:text}
+.search kbd{font-size:9px;color:var(--faint);border-color:var(--line)}
+.ibtn{width:30px;height:30px;border-radius:7px;display:grid;place-items:center;color:var(--mut);border:1px solid var(--line)!important;background:var(--bg)!important}
+.ibtn:hover{color:var(--fg);border-color:var(--pri)!important}
+.scopes{display:flex;gap:4px;padding:0 10px 8px}
+.scopes button{font-size:10.5px;color:var(--mut);padding:2px 8px;border-radius:10px;border:1px solid var(--line)}
+.scopes button.on{background:#2f7cf622;color:#8fbaff;border-color:#2f7cf666}
+.scroll{flex:1;overflow:auto;min-height:0;padding:0 6px 8px;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+.sec{display:flex;align-items:center;gap:6px;padding:10px 6px 4px;color:var(--faint);font:600 10px ui-monospace,monospace;letter-spacing:.1em;text-transform:uppercase}
+.sec button{color:inherit;display:flex;align-items:center;gap:5px;font:inherit;letter-spacing:inherit;text-transform:inherit}
+.sec .sp{flex:1}
+.pips{display:flex;gap:3px}.pips i{width:12px;height:4px;border-radius:2px;background:var(--line)}.pips i.on{background:var(--pri)}.pips.full i.on{background:var(--warn)}
+.db{border-radius:8px;position:relative;margin-bottom:2px}
+.dbh{display:flex;align-items:center;gap:8px;width:100%;padding:6px 8px;border-radius:8px;text-align:left;min-height:44px;position:relative}
+.dbh:hover{background:var(--hover)}
+.db.act>.dbh{background:#2f7cf61c}
+.db.act>.dbh:before{content:"";position:absolute;left:0;top:9px;bottom:9px;width:2px;border-radius:2px;background:var(--pri)}
+.ico{width:28px;height:28px;border-radius:7px;background:var(--raised);display:grid;place-items:center;color:var(--teal);position:relative;flex:none}
+.ico.sq{color:#f0a53b}
+.ico .ck{position:absolute;right:-4px;bottom:-4px;width:12px;height:12px;border-radius:50%;background:var(--panel);color:var(--pri);display:grid;place-items:center}
+.ico .ck svg{width:11px;height:11px;stroke-width:2.2}
+.nm{flex:1;min-width:0}.nm b{display:block;font-weight:600;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.nm small{display:block;color:var(--mut);font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chips{display:flex;gap:4px;align-items:center}
+.chip{font:600 9.5px ui-monospace,monospace;padding:1px 5px;border-radius:4px;background:var(--raised);color:var(--mut);white-space:nowrap}
+.chip.rw{background:#e3b77822;color:var(--warn)}.chip.tx{background:#e3b77822;color:var(--warn)}.chip.sq{background:#f0a53b22;color:#f0a53b}
+.x{opacity:0;width:20px;height:20px;border-radius:5px;display:grid;place-items:center;color:var(--mut)}
+.dbh:hover .x,.dbh:focus-within .x{opacity:1}.x:hover{background:var(--line);color:var(--fg)}
+.tree{padding:2px 0 6px 20px;margin-left:13px;border-left:1px solid var(--line)}
+.grp{display:flex;align-items:center;gap:5px;padding:4px 4px;color:var(--faint);font:600 9.5px ui-monospace,monospace;letter-spacing:.08em;text-transform:uppercase;width:100%}
+.grp svg{width:10px;height:10px}
+.row{display:flex;align-items:center;gap:7px;width:100%;height:24px;padding:0 6px;border-radius:5px;text-align:left;color:var(--fg)}
+.row:hover,.row.hi{background:var(--hover)}.row.sel{background:#2f7cf62a;color:#cfe0ff}
+.row .c{margin-left:auto;color:var(--faint);font:10px ui-monospace,monospace}
+.row svg{color:var(--mut)}.row.col{padding-left:24px;color:var(--mut);height:22px;font-size:11px}
+.row.more{color:var(--faint);font-size:11px;padding-left:20px}
+.row .arr{width:14px;height:14px;display:grid;place-items:center;border-radius:3px}.row .arr:hover{background:var(--line)}
+.res-db{display:flex;align-items:center;gap:6px;padding:8px 6px 3px;font-weight:600;font-size:11px;color:var(--mut)}
+.res-db .chip{margin-left:auto}
+mark{background:#2f7cf640;color:inherit;border-radius:2px}
+.avail{display:flex;align-items:center;gap:8px;width:100%;padding:4px 8px;border-radius:7px;text-align:left;min-height:34px}
+.avail:hover,.avail.hi{background:var(--hover)}.avail .ico{width:22px;height:22px}.avail .nm b{font-weight:500;font-size:12px}
+.avail .opn{font-size:10.5px;color:#8fbaff;opacity:0}.avail:hover .opn,.avail.hi .opn{opacity:1}
+.avail.dis{opacity:.5}
+.access{margin:2px 4px 6px;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg)}
+.access .path{font:10px ui-monospace,monospace;color:var(--mut);word-break:break-all;margin-bottom:8px}
+.seg{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden;margin-bottom:6px}
+.seg button{flex:1;padding:4px 0;font-size:11px;color:var(--mut)}.seg button.on{background:#2f7cf62a;color:#cfe0ff}.seg button.on.rw{background:#e3b77826;color:var(--warn)}
+.warn{color:var(--warn);font-size:10.5px;margin:2px 0 6px}.errn{color:var(--err);font-size:10.5px;margin:2px 0 6px}
+.chk{display:flex;gap:6px;align-items:center;font-size:11px;margin:4px 0 8px;color:var(--mut)}
+.btns{display:flex;gap:6px;justify-content:flex-end}
+.btn{padding:5px 12px;border-radius:6px;border:1px solid var(--line)!important;font-size:11.5px}.btn:hover{background:var(--hover)}
+.btn.pri{background:var(--pri)!important;border-color:var(--pri)!important;color:#fff!important;font-weight:600}.btn.pri[disabled]{opacity:.4;cursor:default}.btn.warn{background:#e3b77822!important;border-color:#e3b77880!important;color:var(--warn)!important;font-weight:600}
+.confirm{margin:2px 4px 6px;padding:10px;border:1px solid #e3b77860;border-radius:8px;background:#e3b7780f}
+.confirm p{margin:0 0 8px;font-size:11px;color:var(--fg)}
+.rail{display:flex;gap:2px;padding:6px 8px 4px;border-top:1px solid var(--line)}
+.rail button{flex:1;height:30px;border-radius:6px;display:grid;place-items:center;color:var(--mut)}.rail button:hover{background:var(--hover)}.rail button.on{background:#2f7cf61f;color:#8fbaff}
+.railcap{padding:0 10px 7px;font-size:10px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.noresult{padding:14px 8px;color:var(--faint);text-align:center;font-size:11.5px}
+.main{background:var(--bg);display:flex;flex-direction:column;min-width:0;min-height:0}
+.crumb{display:flex;gap:8px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line);font-size:12.5px}
+.crumb span{color:var(--mut)}
+.grid{padding:14px 16px;overflow:hidden}
+.grid .h,.grid .r{display:grid;gap:10px;padding:8px 0;border-bottom:1px solid #26314066}
+.grid .h{font:10.5px ui-monospace,monospace;color:var(--mut)}
+.sk{height:8px;border-radius:4px;background:var(--raised)}
+.hl{color:#8fbaff}
+.welcome{margin:auto;text-align:center;color:var(--mut);max-width:260px;padding:20px}
+.welcome b{display:block;color:var(--fg);font-size:14px;margin-bottom:6px}
+.status{grid-column:1/3;display:flex;align-items:center;gap:10px;padding:0 12px;border-top:1px solid var(--line);background:var(--panel);font-size:10.5px;color:var(--mut)}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--ok)}
+.toast{position:absolute;left:50%;bottom:40px;transform:translateX(-50%);background:#e6edf3;color:#0d1218;padding:6px 12px;border-radius:7px;font-size:11.5px;box-shadow:0 8px 24px #0008;pointer-events:none;opacity:0;transition:opacity .2s}
+.toast.on{opacity:1}
+.stage{position:relative}
+.legend{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:12px}
+@media(max-width:700px){.app{grid-template-columns:240px minmax(0,1fr)}.main{display:none}.status{grid-column:1/3}}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="s" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></symbol>
+<symbol id="fo" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M12 11v5m-2.5-2.5h5"/></symbol>
+<symbol id="ch" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+<symbol id="cd" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+<symbol id="xx" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+<symbol id="db" viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3"/></symbol>
+<symbol id="tb" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></symbol>
+<symbol id="co" viewBox="0 0 24 24"><path d="M5 5v14M12 5v14M19 5v14"/></symbol>
+<symbol id="ck" viewBox="0 0 24 24"><path d="m5 12 4.5 4.5L19 7"/></symbol>
+<symbol id="hi" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5M12 7v5l3 2"/></symbol>
+<symbol id="bk" viewBox="0 0 24 24"><path d="M6 3h12v18l-6-4-6 4Z"/></symbol>
+<symbol id="sh" viewBox="0 0 24 24"><path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6Z"/><path d="m9 12 2 2 4-4"/></symbol>
+<symbol id="se" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></symbol>
+<symbol id="lk" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+</defs></svg>
+
+<div class="wrap">
+<div class="eyebrow">TursoBench · redesign v9 · proposal</div>
+<h1>One sidebar for every database job</h1>
+<p class="lead">Opening, closing, switching, and searching across and within databases currently happen in <b>eight different places</b>. This proposal puts all of it in the left sidebar: one search box, one list of open databases (each expanding into its own schema), and one list of databases you can open.</p>
+
+<h2>1 · What the code does today</h2>
+<p class="mut">Reviewed from <code>crates/tursobench-ui/src/app/</code>. Numbers match the schematic.</p>
+<div class="today">
+<div class="sch" aria-label="Schematic of today's layout">
+ <div class="bar"><b style="color:#e6edf3">session.db</b> agenda.db <span style="margin-left:auto">+ &nbsp; Find object…</span><span class="n">1</span></div>
+ <div class="body">
+  <div class="side">
+   <div class="box" style="color:#e6edf3">session.db ⌄<span class="n">2</span></div>
+   <div class="box">Find tables or columns…<span class="n">3</span></div>
+   <div class="pop"><div class="box" style="margin-bottom:4px">Open… · Close</div><div class="box" style="margin-bottom:4px">Find database…</div>Recent ×4</div>
+   <div style="margin-top:96px" class="box">Chooser: 9 databases<span class="n">6</span></div>
+  </div>
+  <div class="main">Central “Open database” page<span class="n" style="right:4px">7</span>
+   <div class="win" style="top:30px">Find object across databases<span class="n">4</span></div>
+   <div class="box" style="margin-top:78px">Ctrl K palette<span class="n">5</span></div>
+  </div>
+ </div>
+ <div class="stat"><span>● Connected · Editing chip → access dialog</span><span>close confirm window</span><span class="n">8</span></div>
+</div>
+<div>
+<table class="t">
+<tr><td><span class="n">1</span></td><td><b>Tab strip</b> <code>sessions.rs · database_tabs</code><br><span class="mut">Appears only once a 2nd database exists. <code>+</code>, Find object…, Ctrl+PgUp/PgDn.</span></td></tr>
+<tr><td><span class="n">2</span></td><td><b>Header card + popup</b> <code>switcher.rs</code><br><span class="mut">Open… / Close / “Recent” filter. In your screenshot “Recent 4” is exactly the 4 open tabs, so Recent and Open are indistinguishable.</span></td></tr>
+<tr><td><span class="n">3</span></td><td><b>Tree filter</b> <code>sidebar.rs · navigation_sidebar</code><br><span class="mut">Current database only; matches columns only if the schema map has loaded.</span></td></tr>
+<tr><td><span class="n">4</span></td><td><b>Find object</b> <code>sessions.rs · object_search_ui</code><br><span class="mut">Floating window, the only cross-database search; 100-result cap.</span></td></tr>
+<tr><td><span class="n">5</span></td><td><b>Ctrl+K palette</b> <code>commands.rs</code><br><span class="mut">Tables, columns and actions (incl. Open/Close) for the current database.</span></td></tr>
+<tr><td><span class="n">6</span></td><td><b>Chooser list</b> <code>chooser.rs</code><br><span class="mut">Third database row style (56px). Shown only while no database is open.</span></td></tr>
+<tr><td><span class="n">7</span></td><td><b>Open page</b> <code>connection.rs · connect_ui</code><br><span class="mut">Read/write choice, SQLite override, errors, Open button live in the centre pane, far from the list that triggered them.</span></td></tr>
+<tr><td><span class="n">8</span></td><td><b>Status chip + close window</b> <code>shell.rs</code><br><span class="mut">Close confirmation is a modal; access change is another dialog.</span></td></tr>
+</table>
+</div>
+</div>
+<div class="card" style="margin-top:12px"><b>Net effect:</b> three lists of databases (open tabs, Recent popup, discovered chooser) in three row styles; three object searches (3, 4, 5) with different scopes; and the “open” step is split between the sidebar and the centre pane.</div>
+
+<h2>2 · Proposed sidebar — try it</h2>
+<p class="mut">This is a working prototype. Click databases, search, open and close. Shortcuts: <kbd>Ctrl</kbd>+<kbd>P</kbd> or <kbd>/</kbd> focuses search, <kbd>↑</kbd><kbd>↓</kbd> <kbd>Enter</kbd> pick a result, <kbd>Esc</kbd> clears, <kbd>Ctrl</kbd>+<kbd>PgUp/PgDn</kbd> cycles open databases. Hover an open row for its close button.</p>
+<div class="toolbar" id="presets">
+ <button data-p="reset">Reset</button>
+ <button data-p="search">Search “body” across open</button>
+ <button data-p="access">Open a database (access review)</button>
+ <button data-p="sqlite">Open a SQLite file</button>
+ <button data-p="full">Fill all 4 slots</button>
+ <button data-p="close">Close a writable db</button>
+ <button data-p="empty">No database open</button>
+</div>
+<div class="stage"><div class="app" id="app"></div><div class="toast" id="toast"></div></div>
+
+<div class="legend">
+ <div class="card"><h3>Open databases</h3><span class="mut">Accordion: the active one expands into its schema, the others collapse to one 44px row showing access, transaction and draft state. Slot meter shows the 4-database limit.</span></div>
+ <div class="card"><h3>Available</h3><span class="mut">Recent plus discovered files that are not open. Clicking one expands an inline access review instead of navigating to a page.</span></div>
+ <div class="card"><h3>Search</h3><span class="mut">One field. Scope chips: <b>All open</b> (default), <b>This database</b>, <b>Databases</b>. Results are grouped by database; picking one switches and opens the object.</span></div>
+</div>
+
+<h2>3 · Where each job lives</h2>
+<table class="t">
+<tr><th>Job</th><th>In the sidebar</th><th>Keyboard</th><th>Reuses</th></tr>
+<tr><td>Open a database</td><td>Folder-plus button (file picker) or click an Available row → inline access review → <b>Open</b></td><td><kbd>Ctrl</kbd>+<kbd>O</kbd> picker</td><td><code>browse_file</code>, <code>request_database</code>, <code>poll_database_inspection</code></td></tr>
+<tr><td>Close a database</td><td>× on the row. Read-only/clean closes at once; writable with drafts or a transaction shows the same warning inline</td><td>palette “Close database”</td><td><code>request_close</code>, <code>confirm_close</code> text</td></tr>
+<tr><td>Navigate between databases</td><td>Click an open row; arrow keys inside the list</td><td><kbd>Ctrl</kbd>+<kbd>PgUp/PgDn</kbd></td><td><code>select_workspace</code>, <code>cycle_database</code></td></tr>
+<tr><td>Search across databases</td><td>Search field, scope “All open”; “Not open” group also finds files to open</td><td><kbd>Ctrl</kbd>+<kbd>P</kbd></td><td><code>commands::objects</code>, <code>fuzzy</code></td></tr>
+<tr><td>Search within a database</td><td>Same field, scope “This database” (also shown as the active database’s tree filter)</td><td><kbd>/</kbd></td><td><code>commands::objects</code></td></tr>
+<tr><td>Per-database tools</td><td>Footer rail stays; caption names the database it applies to</td><td>—</td><td><code>navigator_utilities</code></td></tr>
+</table>
+
+<h2>4 · What changes in code</h2>
+<table class="t">
+<tr><th></th><th>Piece</th><th>Plan</th></tr>
+<tr><td><span class="tag rm">REMOVE</span></td><td>Tab strip <code>database_tabs</code> (keep its Ctrl+PgUp/PgDn and Ctrl+P key handling)</td><td>Vertical space returns to the workspace; the keys move to the sidebar.</td></tr>
+<tr><td><span class="tag rm">REMOVE</span></td><td><code>switcher.rs</code> popup (<code>database_switcher_ui</code>, <code>recent_databases_ui</code>) and <code>Chooser.switcher_filter</code></td><td>Replaced by the Open databases and Available sections. Its two tests move to sidebar tests.</td></tr>
+<tr><td><span class="tag rm">REMOVE</span></td><td><code>object_search_ui</code> window and its <code>object_search*</code> fields on <code>App</code></td><td>Becomes the search results view.</td></tr>
+<tr><td><span class="tag rp">REPLACE</span></td><td><code>navigation_sidebar</code> header + <code>tools.schema_filter</code></td><td>Split into <code>sidebar_search</code> (App-level query + scope), <code>open_databases_ui</code> and <code>available_databases_ui</code>. Existing tree code (<code>sidebar_object</code>, <code>sidebar_table</code>, <code>tree_row</code>) becomes the body of the active database’s node.</td></tr>
+<tr><td><span class="tag rp">REPLACE</span></td><td><code>connect_ui</code> / <code>database_access_ui</code> in the centre pane</td><td>Access review becomes an inline card in the sidebar. The centre pane keeps only a short empty state when nothing is open. Logic (<code>inspection.allows_open</code>, <code>open_failure</code>, SQLite override) is unchanged; only its container moves.</td></tr>
+<tr><td><span class="tag rp">REPLACE</span></td><td>Chooser list in the sidebar (<code>database_chooser_ui</code>)</td><td>Same data (<code>Chooser.entries</code>, discovery job, highlight/keys). Add a compact <code>Entry::row_ui</code> variant (34px) beside the 56px one; the gear and spinner move to the Available header.</td></tr>
+<tr><td><span class="tag rp">TRIM</span></td><td>Ctrl+K palette</td><td>Keep for actions; drop table/column items (search owns them). Open/Close stay as palette commands that call the same functions.</td></tr>
+<tr><td><span class="tag ok">KEEP</span></td><td>Status bar chips, access dialog, <code>MAX_DATABASES</code>, background polling, per-database <code>UiState</code></td><td>Unchanged.</td></tr>
+<tr><td><span class="tag nw">NEW</span></td><td><code>DatabaseRow</code> for parked workspaces</td><td>Read-only view of <code>self.parked[id]</code> (<code>path, writable, transaction, has_drafts, schema.len()</code>). Click calls <code>select_workspace(id)</code>; no swap while rendering.</td></tr>
+</table>
+
+<h2>5 · Constraints I found, and how the design handles them</h2>
+<div class="cols">
+<div class="card"><h3>Only one workspace is live</h3><span class="mut"><code>self.database</code> is the active workspace; others sit in <code>self.parked</code> and are swapped with <code>swap_workspace</code>. The sidebar must render parked rows from <code>parked</code> without swapping, and switch only on click. <code>select_workspace</code> is a no-op while a picker, close-confirm or quit is active, so rows disable themselves in those states.</span></div>
+<div class="card"><h3>Four-database cap</h3><span class="mut"><code>new_workspace</code> refuses a 5th and only writes to the status text. The slot meter makes the limit visible, and Available rows disable with a reason (“4/4 open, close one”). Reviewing access already occupies a slot today; that stays.</span></div>
+<div class="card"><h3>Close acts on the active database</h3><span class="mut"><code>request_close</code> and <code>confirm_close</code> belong to <code>self.database</code>. Closing a background row = <code>select_workspace(id)</code> then <code>request_close()</code>; the confirm is drawn inline under that row from the existing flag. Closing is async (<code>closing</code>), so the row shows a spinner.</span></div>
+<div class="card"><h3>Column search needs schema loaded</h3><span class="mut">Columns come from <code>ui.diagram.data</code>, which parked databases may never have loaded. Searching with “All open” should trigger <code>load_diagram</code> for those, and show “columns still indexing” until done. Tables always match.</span></div>
+<div class="card"><h3>Width budget</h3><span class="mut">The sidebar defaults to 272px (190px under 900px window width). Four 56px chooser rows plus a tree will not fit, hence collapsed rows (44px / 34px) and one expanded database at a time.</span></div>
+<div class="card"><h3>Pending open is already a workspace</h3><span class="mut"><code>request_database</code> creates a blank workspace and sets its path before the Open click. The inline card is just a different view of that pending workspace, so no new state machine is needed.</span></div>
+</div>
+
+<h2>6 · Suggested rollout</h2>
+<table class="t">
+<tr><td>1</td><td><b>Open databases section.</b> Add <code>DatabaseRow</code> and the slot meter above the existing tree. Tab strip and popup still work.</td></tr>
+<tr><td>2</td><td><b>Unified search.</b> App-level query + scope; delete <code>object_search_ui</code>, the “Find object…” button and palette object items.</td></tr>
+<tr><td>3</td><td><b>Available + inline access.</b> Compact row, access card, reduce <code>connect_ui</code> to an empty state; delete the switcher popup.</td></tr>
+<tr><td>4</td><td><b>Inline close confirm, remove tab strip.</b> Update <code>docs/guide.md</code> (Navigator tools), the desktop smoke script and screenshot captures.</td></tr>
+</table>
+
+<h2>7 · Decisions for you</h2>
+<ol>
+<li><b>Ctrl+K</b>: keep it as an actions-only palette (my recommendation), or fold actions into the search box behind a <code>&gt;</code> prefix?</li>
+<li><b>Auto-collapse</b>: should switching databases always collapse the previous one (as drawn), or let several trees stay open?</li>
+<li><b>Available</b>: show every discovered file (9 in your screenshot) or only recents until you search?</li>
+</ol>
+</div>
+
+<script>
+(function(){
+const SCH={
+ session:{sessions:['id','title','created_at','model'],messages:['id','session_id','role','body','created_at'],tool_calls:['id','message_id','name','args','result'],attachments:['id','message_id','path','bytes'],scratch_notes:['id','body','pinned']},
+ agenda:{events:['id','title','starts_at','ends_at','calendar_id'],calendars:['id','name','color'],reminders:['id','event_id','offset_min']},
+ history:{clips:['id','body','kind','created_at','pinned'],sources:['id','app','title']},
+ notif2:{notifications:['id','app','title','body','received_at','read'],rules:['id','pattern','action']},
+ notif1:{notifications:['id','app','title','body','read']},
+ inbox:{messages:['id','from','subject','body'],labels:['id','name']},
+ bench:{runs:['id','name','started_at'],samples:['id','run_id','ms']},
+ todo:{tasks:['id','title','done','due'],lists:['id','name']},
+ cache:{entries:['key','value','expires_at']}
+};
+const BASE={
+ session:{name:'session.db',dir:'state/scratchpad',extra:13,idx:12},
+ agenda:{name:'agenda.db',dir:'bar-daemon/agenda',extra:4,idx:5},
+ history:{name:'history.db',dir:'clip-daemon/history',extra:1,idx:3},
+ notif2:{name:'notifications-turso-v2.db',dir:'state/bar-daemon',extra:3,idx:4},
+ notif1:{name:'notifications-turso-v1.db',dir:'state/bar-daemon',extra:2,idx:3},
+ sqlite:{name:'notifications.sqlite',dir:'state/bar-daemon',sq:1,extra:0,idx:0},
+ bench:{name:'bench-fixtures.db',dir:'tests/fixtures',extra:0,idx:2},
+ todo:{name:'todo.db',dir:'notes/todo',extra:0,idx:1},
+ cache:{name:'cache.db',dir:'app/cache',extra:0,idx:0},
+ inbox:{name:'inbox.db',dir:'Downloads',extra:0,idx:2}
+};
+const MAX=4;
+let S;
+function fresh(){return{order:['session','agenda','history'],active:'session',meta:{session:{rw:0},agenda:{rw:0},history:{rw:0}},avail:['notif2','notif1','sqlite','bench','todo','cache'],
+ q:'',scope:'open',hi:0,sel:{db:'session',table:'messages',col:null},exp:{},groups:{},availOpen:true,access:null,mode:'ro',ovr:false,confirm:null}}
+S=fresh();
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const ic=(n,c)=>`<svg class="i ${c||''}"><use href="#${n}"/></svg>`;
+const hl=(t,q)=>{if(!q)return esc(t);const i=t.toLowerCase().indexOf(q.toLowerCase());return i<0?esc(t):esc(t.slice(0,i))+'<mark>'+esc(t.slice(i,i+q.length))+'</mark>'+esc(t.slice(i+q.length))};
+const tblCount=id=>Object.keys(SCH[id]||{}).length+(BASE[id].extra||0);
+let toastT;function toast(m){const t=$('toast');t.textContent=m;t.classList.add('on');clearTimeout(toastT);toastT=setTimeout(()=>t.classList.remove('on'),2200)}
+const isOpen=id=>S.order.includes(id);
+const full=()=>S.order.length>=MAX;
+const meta=id=>S.meta[id]||(S.meta[id]={rw:0});
+
+function icoHtml(id,open){const b=BASE[id];return`<span class="ico ${b.sq?'sq':''}">${ic(b.sq?'tb':'db')}${open?`<span class="ck">${ic('ck')}</span>`:''}</span>`}
+
+function chips(id){const m=meta(id),a=[];if(m.rw)a.push('<span class="chip rw">RW</span>');else a.push('<span class="chip">RO</span>');return`<span class="chips">${a.join('')}</span>`}
+
+function results(){
+ const q=S.q.trim().toLowerCase(),items=[];if(!q)return items;
+ const ids=S.scope==='this'?[S.active].filter(Boolean):S.scope==='dbs'?[]:[S.active,...S.order.filter(i=>i!==S.active)].filter(Boolean);
+ ids.forEach(id=>{const g=[];const sc=SCH[id]||{};
+  Object.keys(sc).forEach(t=>{if(t.includes(q))g.push({k:'obj',db:id,t,c:null,label:t,kind:'table'});sc[t].forEach(c=>{if(!t.includes(q)&&(t+'.'+c).includes(q))g.push({k:'obj',db:id,t,c,label:t+'.'+c,kind:'column'})})});
+  if(g.length||BASE[id].name.toLowerCase().includes(q))items.push({k:'dbh',db:id},...g.slice(0,6),...(g.length>6?[{k:'more',n:g.length-6}]:[]))});
+ const dbs=[...S.order,...S.avail].filter(id=>BASE[id].name.toLowerCase().includes(q)||BASE[id].dir.toLowerCase().includes(q));
+ if(S.scope==='dbs'){dbs.forEach(id=>items.push(isOpen(id)?{k:'dbh',db:id,flat:1}:{k:'avail',db:id}))}
+ else if(S.scope==='open'){S.avail.filter(id=>dbs.includes(id)).forEach(id=>items.push({k:'avail',db:id,grp:1}))}
+ return items}
+
+function activate(it){
+ if(!it)return;
+ if(it.k==='obj'){S.active=it.db;S.sel={db:it.db,table:it.t,col:it.c};S.exp[it.db]=it.t;S.q='';S.hi=0;toast('Opened '+it.label+' in '+BASE[it.db].name)}
+ else if(it.k==='dbh'){S.active=it.db;S.q='';S.hi=0}
+ else if(it.k==='avail'){S.access=it.db;S.mode='ro';S.ovr=false;S.q='';S.hi=0}
+ render()}
+
+function sw(id){if(S.confirm)return;S.active=id;if(!S.sel||S.sel.db!==id)S.sel={db:id,table:Object.keys(SCH[id]||{})[0]||null,col:null};if(S.exp[id]===undefined)S.exp[id]=S.sel.table;render()}
+function doClose(id){S.order=S.order.filter(i=>i!==id);delete S.meta[id];if(!S.avail.includes(id))S.avail.unshift(id);if(S.active===id){S.active=S.order[0]||null;if(S.active)S.sel={db:S.active,table:Object.keys(SCH[S.active]||{})[0],col:null}}S.confirm=null;toast('Closed '+BASE[id].name);render()}
+function reqClose(id){const m=meta(id);if(m.rw&&(m.drafts||m.tx)){S.confirm=id;render()}else doClose(id)}
+function doOpen(id){if(full())return;S.avail=S.avail.filter(i=>i!==id);S.order.push(id);S.meta[id]={rw:S.mode==='rw'?1:0};S.active=id;S.sel={db:id,table:Object.keys(SCH[id]||{})[0],col:null};S.exp[id]=S.sel.table;S.access=null;toast('Opened '+BASE[id].name+(S.mode==='rw'?' for editing':' read-only'));render()}
+
+function openRow(id,noTree){
+ const b=BASE[id],act=S.active===id,m=meta(id),closing=S.confirm===id;
+ let h=`<div class="db ${act?'act':''}"><div class="dbh" data-a="sw" data-id="${id}" tabindex="0" role="button" aria-expanded="${act}" title="${esc(b.dir)}/${esc(b.name)}">${icoHtml(id,1)}<span class="nm"><b>${esc(b.name)}</b><small>${(m.tx||m.drafts)?`<span style="color:var(--warn)">${m.tx?'● transaction':''}${m.tx&&m.drafts?' · ':''}${m.drafts?m.drafts+' staged edits':''}</span>`:esc(b.dir)}</small></span>${chips(id)}<button class="x" data-a="close" data-id="${id}" aria-label="Close ${esc(b.name)}" title="Close database">${ic('xx')}</button></div>`;
+ if(closing)h+=`<div class="confirm"><p><b>Close ${esc(b.name)}?</b><br>${m.drafts?m.drafts+' staged edits will be discarded. ':''}${m.tx?'The open transaction will be rolled back. ':''}Committed writes are not undone.</p><div class="btns"><button class="btn" data-a="keep">Keep open</button><button class="btn warn" data-a="close-yes" data-id="${id}">Roll back &amp; close</button></div></div>`;
+ if(act&&!closing&&!noTree)h+=tree(id);
+ return h+'</div>'}
+
+function tree(id){
+ const sc=SCH[id]||{},b=BASE[id],fq=S.scope==='this'?S.q.toLowerCase():'';
+ let h='<div class="tree"><button class="grp" data-a="grp" data-g="t'+id+'">'+ic(S.groups['t'+id]===0?'ch':'cd')+' Tables · '+tblCount(id)+'</button>';
+ if(S.groups['t'+id]!==0){
+  Object.keys(sc).forEach(t=>{const e=S.exp[id]===t,sel=S.sel&&S.sel.db===id&&S.sel.table===t&&!S.sel.col;
+   h+=`<button class="row ${sel?'sel':''}" data-a="tbl" data-id="${id}" data-t="${t}"><span class="arr" data-a="exp" data-id="${id}" data-t="${t}">${ic(e?'cd':'ch')}</span>${ic('tb')}<span>${esc(t)}</span><span class="c">${(Math.abs(t.length*37)%900)+12}</span></button>`;
+   if(e)sc[t].forEach(c=>{const s2=S.sel&&S.sel.db===id&&S.sel.table===t&&S.sel.col===c;h+=`<button class="row col ${s2?'sel':''}" data-a="colr" data-id="${id}" data-t="${t}" data-c="${c}">${ic('co')}<span>${esc(c)}</span></button>`})});
+  if(b.extra)h+=`<div class="row more">+ ${b.extra} more tables…</div>`}
+ h+=`<button class="grp" data-a="noop">${ic('ch')} Views · 0</button><button class="grp" data-a="noop">${ic('ch')} Indexes · ${b.idx}</button><button class="grp" data-a="noop">${ic('ch')} Triggers · 0</button></div>`;
+ return h}
+
+function availRow(id,hi){
+ const b=BASE[id],dis=full(),open=S.access===id;
+ let h=`<button class="avail ${dis?'dis':''} ${hi?'hi':''}" data-a="avail" data-id="${id}" title="${dis?'4/4 databases open. Close one first.':esc(b.dir)+'/'+esc(b.name)}">${icoHtml(id,0)}<span class="nm"><b>${hl(b.name,S.q)}</b><small>${esc(b.dir)}</small></span>${b.sq?'<span class="chip sq">SQLite</span>':''}<span class="opn">${open?'Cancel':'Open…'}</span></button>`;
+ if(open){const bad=b.sq&&!S.ovr;
+  h+=`<div class="access"><div class="path">/home/you/${esc(b.dir)}/${esc(b.name)}</div>
+  ${b.sq?`<div class="warn">Likely SQLite, not a Turso file.</div><label class="chk"><input type="checkbox" data-a="ovr" ${S.ovr?'checked':''}> Open with Turso anyway</label>`:''}
+  <div class="seg"><button class="${S.mode==='ro'?'on':''}" data-a="mode" data-m="ro">Read only</button><button class="${S.mode==='rw'?'on rw':''}" data-a="mode" data-m="rw">Read and write</button></div>
+  ${S.mode==='rw'?'<div class="warn">Opening for writes may change the file. Back up first.</div>':''}
+  ${full()?'<div class="errn">4 of 4 databases are open. Close one to continue.</div>':''}
+  <div class="btns"><button class="btn" data-a="cancel">Cancel</button><button class="btn pri" data-a="open" data-id="${id}" ${bad||full()?'disabled':''}>Open</button></div></div>`}
+ return h}
+
+function render(){
+ const q=S.q.trim(),res=results(),hasQ=!!q;
+ if(S.hi>=res.filter(r=>r.k!=='dbh'&&r.k!=='more'||r.flat).length)S.hi=0;
+ let h=`<div class="side"><div class="searchrow"><label class="search">${ic('s')}<input id="q" placeholder="${S.scope==='dbs'?'Find databases…':S.scope==='this'?'Find in '+(S.active?BASE[S.active].name:'database')+'…':'Find in open databases…'}" value="${esc(S.q)}" autocomplete="off"><kbd>Ctrl P</kbd></label><button class="ibtn" data-a="pick" aria-label="Open database file…" title="Open database file… · Ctrl O">${ic('fo')}</button></div>
+ <div class="scopes">${[['open','All open'],['this','This database'],['dbs','Databases']].map(([k,l])=>`<button class="${S.scope===k?'on':''}" data-a="scope" data-k="${k}">${l}</button>`).join('')}</div><div class="scroll">`;
+ if(hasQ){
+  let i=0,any=false,lastDb=null;
+  res.forEach(r=>{
+   if(r.k==='dbh'&&!r.flat){any=true;const b=BASE[r.db];h+=`<div class="res-db">${ic('db')} ${hl(b.name,q)}${r.db===S.active?'<span class="chip">active</span>':chips(r.db).replace('class="chips"','class="chips" style="margin-left:auto"')}</div>`}
+   else if(r.k==='dbh'&&r.flat){any=true;h+=openRow(r.db,1).replace('class="dbh"',`class="dbh ${i===S.hi?'hi':''}"`);i++}
+   else if(r.k==='obj'){any=true;h+=`<button class="row ${i===S.hi?'hi':''}" data-a="res" data-i="${i}">${ic(r.kind==='column'?'co':'tb')}<span>${hl(r.label,q)}</span><span class="c">${r.kind}</span></button>`;i++}
+   else if(r.k==='more'){h+=`<div class="row more">+ ${r.n} more in this database</div>`}
+   else if(r.k==='avail'){if(!any||r.grp&&lastDb!=='av'){h+=`<div class="sec"><span>Not open</span></div>`;lastDb='av'}any=true;h+=availRow(r.db,i===S.hi).replace('<button class="avail',`<button data-i="${i}" class="avail`);i++}
+  });
+  if(!any)h+=`<div class="noresult">No match for “${esc(q)}” ${S.scope==='this'?'in this database':'in '+(S.scope==='dbs'?'databases':'open databases')}.<br>${S.scope!=='dbs'?'Try “Databases” to search files you can open.':''}</div>`;
+ } else {
+  h+=`<div class="sec"><span>Open databases</span><span class="sp"></span><span class="pips ${full()?'full':''}" title="${S.order.length} of ${MAX} open">${Array.from({length:MAX},(_,i)=>`<i class="${i<S.order.length?'on':''}"></i>`).join('')}</span><span>${S.order.length}/${MAX}</span></div>`;
+  if(!S.order.length)h+=`<div class="noresult">Nothing open.<br>Pick a database below or use the folder button.</div>`;
+  S.order.forEach(id=>h+=openRow(id));
+  h+=`<div class="sec"><button data-a="availtoggle">${ic(S.availOpen?'cd':'ch')} Available · ${S.avail.length}</button><span class="sp"></span><button data-a="settings" title="Search settings" style="color:inherit">${ic('se')}</button></div>`;
+  if(S.availOpen)S.avail.forEach(id=>h+=availRow(id,false));
+ }
+ h+=`</div><div class="railcap">${S.active?'Tools apply to '+esc(BASE[S.active].name):'Tools need an open database'}</div><div class="rail">${[['db','Tables',1],['hi','History'],['bk','Saved queries'],['sh','Checks'],['se','Settings']].map(([n,l,o])=>`<button class="${o?'on':''}" title="${l}" aria-label="${l}">${ic(n)}</button>`).join('')}</div></div>`;
+ h+=`<div class="main">${S.active?mainPane():`<div class="welcome"><b>No database open</b>Choose one from the sidebar, or press <kbd>Ctrl</kbd>+<kbd>O</kbd> to browse for a file.</div>`}</div>`;
+ const m=S.active?meta(S.active):null;
+ h+=`<div class="status">${S.active?`<span class="dot"></span><span>Connected</span><span class="chip ${m.rw?'rw':''}">${m.rw?'Editing':'Read-only'}</span>${m.tx?'<span class="chip tx">● Transaction</span>':''}${m.drafts?`<span class="chip tx">Review ${m.drafts}</span>`:''}<span style="margin-left:auto">Turso 0.8.3</span>`:'<span>Not connected</span>'}</div>`;
+ const keep=document.activeElement&&document.activeElement.id==='q';
+ $('app').innerHTML=h;
+ if(keep){const i=$('q');i.focus();i.setSelectionRange(i.value.length,i.value.length)}
+}
+
+function mainPane(){
+ const s=S.sel&&S.sel.db===S.active?S.sel:null,t=s&&s.table,cols=t?(SCH[S.active][t]||[]):[];
+ if(!t)return`<div class="welcome"><b>${esc(BASE[S.active].name)}</b>Pick a table in the sidebar.</div>`;
+ const g=`grid-template-columns:36px repeat(${cols.length},1fr)`;
+ return`<div class="crumb"><span>${esc(BASE[S.active].name)}</span><span>›</span><b>${esc(t)}</b>${s.col?`<span>›</span><b class="hl">${esc(s.col)}</b>`:''}</div><div class="grid"><div class="h" style="${g}"><span></span>${cols.map(c=>`<span class="${c===s.col?'hl':''}">${esc(c)}</span>`).join('')}</div>${Array.from({length:9},(_,r)=>`<div class="r" style="${g}"><span class="mut" style="font:10px ui-monospace">${r+1}</span>${cols.map((c,i)=>`<span class="sk" style="width:${35+((r*17+i*29)%55)}%;${c===s.col?'background:#2f7cf655':''}"></span>`).join('')}</div>`).join('')}</div>`}
+
+const app=$('app');
+app.addEventListener('input',e=>{if(e.target.id==='q'){S.q=e.target.value;S.hi=0;render()}});
+app.addEventListener('change',e=>{if(e.target.dataset.a==='ovr'){S.ovr=e.target.checked;render()}});
+app.addEventListener('click',e=>{
+ const el=e.target.closest('[data-a]');if(!el)return;const a=el.dataset.a,id=el.dataset.id;
+ if(a==='sw'){if(e.target.closest('[data-a=close]'))return;sw(id)}
+ else if(a==='close'){e.stopPropagation();reqClose(id)}
+ else if(a==='close-yes')doClose(id);
+ else if(a==='keep'){S.confirm=null;render()}
+ else if(a==='tbl'){if(e.target.closest('[data-a=exp]')){S.exp[id]=S.exp[id]===el.dataset.t?null:el.dataset.t}else{S.sel={db:id,table:el.dataset.t,col:null};S.exp[id]=el.dataset.t}render()}
+ else if(a==='exp'){}
+ else if(a==='colr'){S.sel={db:id,table:el.dataset.t,col:el.dataset.c};render()}
+ else if(a==='grp'){S.groups[el.dataset.g]=S.groups[el.dataset.g]===0?1:0;render()}
+ else if(a==='avail'){S.access=S.access===id?null:id;S.mode='ro';S.ovr=false;render()}
+ else if(a==='mode'){S.mode=el.dataset.m;render()}
+ else if(a==='cancel'){S.access=null;render()}
+ else if(a==='open')doOpen(id);
+ else if(a==='scope'){S.scope=el.dataset.k;S.hi=0;render()}
+ else if(a==='availtoggle'){S.availOpen=!S.availOpen;render()}
+ else if(a==='pick'){if(!BASE.inbox.used){BASE.inbox.used=1;S.avail.unshift('inbox')}S.access='inbox';S.mode='ro';S.availOpen=true;S.q='';toast('Picked ~/Downloads/inbox.db — review access');render()}
+ else if(a==='settings')toast('Opens Search settings (folders, exclusions)');
+ else if(a==='res'){const flat=results().filter(r=>r.k!=='dbh'&&r.k!=='more'||r.flat);activate(flat[+el.dataset.i])}
+});
+document.addEventListener('keydown',e=>{
+ const inApp=app.contains(document.activeElement)||document.activeElement===document.body;
+ if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='p'&&(inApp||true)&&app.getBoundingClientRect().top<innerHeight){e.preventDefault();const i=$('q');i&&i.focus();return}
+ if(!inApp)return;
+ if(e.key==='/'&&document.activeElement.id!=='q'){e.preventDefault();$('q')&&$('q').focus();return}
+ if((e.ctrlKey)&&(e.key==='PageDown'||e.key==='PageUp')&&S.order.length){e.preventDefault();const i=S.order.indexOf(S.active),n=S.order.length;sw(S.order[(i+(e.key==='PageDown'?1:-1)+n)%n]);return}
+ if(document.activeElement.id==='q'){
+  const flat=results().filter(r=>r.k!=='dbh'&&r.k!=='more'||r.flat);
+  if(e.key==='ArrowDown'){e.preventDefault();S.hi=Math.min(S.hi+1,flat.length-1);render()}
+  else if(e.key==='ArrowUp'){e.preventDefault();S.hi=Math.max(S.hi-1,0);render()}
+  else if(e.key==='Enter'){e.preventDefault();activate(flat[S.hi])}
+  else if(e.key==='Escape'){S.q='';S.hi=0;render();document.activeElement.blur()}
+ }
+});
+$('presets').addEventListener('click',e=>{const p=e.target.dataset.p;if(!p)return;
+ if(p==='reset'){S=fresh()}
+ else if(p==='search'){S=fresh();S.q='body';S.scope='open'}
+ else if(p==='access'){S=fresh();S.access='notif2';S.mode='rw'}
+ else if(p==='sqlite'){S=fresh();S.access='sqlite';S.mode='ro'}
+ else if(p==='full'){S=fresh();['notif2'].forEach(id=>{S.avail=S.avail.filter(i=>i!==id);S.order.push(id);S.meta[id]={rw:1,drafts:2,tx:1}});S.access='notif1'}
+ else if(p==='close'){S=fresh();S.avail=S.avail.filter(i=>i!=='notif2');S.order.push('notif2');S.meta.notif2={rw:1,drafts:2,tx:1};S.active='notif2';S.sel={db:'notif2',table:'notifications',col:null};S.exp.notif2='notifications';S.confirm='notif2'}
+ else if(p==='empty'){S=fresh();S.avail=[...S.order,...S.avail];S.order=[];S.meta={};S.active=null}
+ render()});
+render();
+const h0=location.hash.slice(1);if(h0){const b=document.querySelector('[data-p="'+h0+'"]');b&&b.click()}
+})();
+</script>
+</body>
+</html>

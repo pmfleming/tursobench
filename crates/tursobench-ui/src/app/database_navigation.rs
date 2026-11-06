@@ -26,17 +26,20 @@ pub(super) struct Search {
     pub key_delta: Option<isize>,
     pub reveal: bool,
     pub available_highlight: Option<std::path::PathBuf>,
+    pub available_collapsed: bool,
+    pub tree_highlight: Option<(String, Option<String>)>,
 }
 
 enum Target {
     Database(u64),
     Object(u64, super::commands::Command),
-    Available(std::path::PathBuf),
+    Available(usize),
 }
 struct SearchResult {
     group: String,
     label: String,
     target: Target,
+    more: usize,
 }
 
 impl App {
@@ -181,9 +184,7 @@ impl App {
         let mut results = Vec::new();
         for database in std::iter::once(&self.database)
             .chain(self.parked.values())
-            .filter(|d| {
-                d.session.is_some() && (scope != Scope::ThisDatabase || d.id == self.database.id)
-            })
+            .filter(|d| d.retained() && (scope != Scope::ThisDatabase || d.id == self.database.id))
         {
             let file = Path::new(&database.path)
                 .file_name()
@@ -200,6 +201,7 @@ impl App {
                     group: file.clone(),
                     label: file.clone(),
                     target: Target::Database(database.id),
+                    more: 0,
                 });
             }
             if scope != Scope::Databases {
@@ -209,23 +211,34 @@ impl App {
                     .data
                     .as_ref()
                     .filter(|_| !database.ui.diagram.stale);
-                for object in super::commands::objects(&database.schema, graph) {
-                    if super::commands::fuzzy(&object.label(), query) {
-                        results.push(SearchResult {
-                            group: file.clone(),
-                            label: object.label(),
-                            target: Target::Object(database.id, object.command()),
-                        });
-                    }
+                let objects: Vec<_> = super::commands::objects(&database.schema, graph)
+                    .filter(|object| {
+                        if scope == Scope::ThisDatabase {
+                            object.matches_name(query)
+                        } else {
+                            super::commands::fuzzy(&object.label(), query)
+                        }
+                    })
+                    .collect();
+                let limit = if scope == Scope::AllOpen { 6 } else { 100 };
+                let extra = objects.len().saturating_sub(limit);
+                for (index, object) in objects.into_iter().take(limit).enumerate() {
+                    results.push(SearchResult {
+                        group: file.clone(),
+                        label: object.label(),
+                        target: Target::Object(database.id, object.command()),
+                        more: if index + 1 == limit { extra } else { 0 },
+                    });
                 }
             }
         }
         if scope != Scope::ThisDatabase {
-            for path in self.available_database_paths(query) {
+            for (index, path) in self.available_search_results(query) {
                 results.push(SearchResult {
                     group: "Not open".into(),
-                    label: path.display().to_string(),
-                    target: Target::Available(path),
+                    label: path,
+                    target: Target::Available(index),
+                    more: 0,
                 });
             }
         }
@@ -249,11 +262,31 @@ impl App {
         results.truncate(100);
         let focused = ui.memory(|m| m.has_focus(egui::Id::unique("sidebar-search")));
         let mut chosen = self.sidebar_selection_keys(ui, results.len());
+        let mut forgotten = None;
+        let tree_mode = self.sidebar_search.scope == Scope::ThisDatabase;
+        self.sidebar_search.tree_highlight = if tree_mode && focused {
+            results
+                .get(self.sidebar_search.index)
+                .and_then(|r| match &r.target {
+                    Target::Object(_, super::commands::Command::Table(name, column)) => {
+                        Some((name.clone(), column.clone()))
+                    }
+                    Target::Object(_, super::commands::Command::Definition(name)) => {
+                        Some((name.clone(), None))
+                    }
+                    _ => None,
+                })
+        } else {
+            None
+        };
         egui::ScrollArea::vertical()
             .id_salt("sidebar-search-results")
             .show(ui, |ui| {
+                if tree_mode {
+                    self.schema_tree_ui(ui);
+                }
                 let mut group = None;
-                for (index, result) in results.iter().enumerate() {
+                for (index, result) in results.iter().enumerate().filter(|_| !tree_mode) {
                     if group != Some(&result.group) {
                         ui.small(&result.group);
                         group = Some(&result.group);
@@ -263,18 +296,41 @@ impl App {
                         && !self.quit
                         && (!matches!(result.target, Target::Available(_))
                             || self.can_request_database());
-                    let response = ui.add_enabled(
-                        enabled,
-                        egui::Button::new(&result.label)
-                            .truncate()
-                            .selected(focused && index == self.sidebar_search.index)
-                            .min_size(egui::vec2(ui.available_width(), 24.0)),
-                    );
+                    let response = if let Target::Available(entry) = result.target {
+                        let (response, forget) = ui
+                            .push_id(("available-search", entry), |ui| {
+                                self.available_result_ui(
+                                    ui,
+                                    entry,
+                                    focused && index == self.sidebar_search.index,
+                                    enabled,
+                                )
+                            })
+                            .inner;
+                        if forget {
+                            forgotten = Some(entry);
+                        }
+                        response
+                    } else {
+                        ui.add_enabled(
+                            enabled,
+                            egui::Button::new(&result.label)
+                                .truncate()
+                                .selected(focused && index == self.sidebar_search.index)
+                                .min_size(egui::vec2(ui.available_width(), 24.0)),
+                        )
+                    };
                     if focused && index == self.sidebar_search.index {
                         response.scroll_to_me(None);
                     }
                     if response.on_hover_text(&result.label).clicked() {
                         chosen = Some(index);
+                    }
+                    if result.more > 0 {
+                        ui.weak(format!(
+                            "+ {} more in this database; refine the query",
+                            result.more
+                        ));
                     }
                 }
                 if results.is_empty() {
@@ -307,6 +363,10 @@ impl App {
                     }
                 }
             });
+        if let Some(entry) = forgotten {
+            self.forget_available_result(entry);
+            return;
+        }
         if let Some(index) = chosen.filter(|&i| i < results.len()) {
             if self.picker.is_some() || self.database.confirm_close || self.quit {
                 return;
@@ -323,7 +383,7 @@ impl App {
                         self.execute_command(ui.ctx(), command);
                     }
                 }
-                Target::Available(path) => self.request_database(ui.ctx(), path),
+                Target::Available(index) => self.choose_available_result(ui.ctx(), index),
             }
             self.sidebar_search.query.clear();
             self.sidebar_search.index = 0;
@@ -370,7 +430,8 @@ impl App {
         egui::Frame::new().fill(color.gamma_multiply(0.08))
             .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.4)))
             .corner_radius(6).inner_margin(8.0).show(ui, |ui| {
-                ui.strong("Close database?");
+                let filename = Path::new(&self.database.path).file_name().unwrap_or_default().to_string_lossy();
+                ui.add(egui::Label::new(egui::RichText::new(format!("Close {filename}?")).strong()).wrap());
                 // Put the actions before the explanation so they remain reachable at
                 // large font sizes and in the minimum-width sidebar.
                 ui.horizontal_wrapped(|ui| {
@@ -382,7 +443,8 @@ impl App {
                     }
                 });
                 let drafts = self.database.draft_count();
-                if drafts > 0 { ui.small(format!("{drafts} staged edits will be discarded.")); }
+                if drafts > 0 { ui.small(format!("{drafts} staged edit{} will be discarded.", if drafts == 1 { "" } else { "s" })); }
+                if self.database.transaction == TransactionState::Active { ui.small("The open transaction will be rolled back."); }
                 ui.small("Waits for active execution and rolls back any remaining transaction. Committed writes are not undone.");
             });
     }
@@ -402,15 +464,37 @@ impl App {
                 self.refresh_catalog();
                 self.load_diagram();
             }
+            let wide = ui.max_rect().width() >= 240.0;
+            let slots = self.occupied_database_slots();
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.small(format!(
-                    "{}/{}",
-                    self.occupied_database_slots(),
-                    super::sessions::MAX_DATABASES
-                ))
-                .on_hover_text("Up to four database workspaces; access review reserves a slot.");
+                if wide {
+                    ui.small(format!("{slots}/{}", super::sessions::MAX_DATABASES));
+                }
+                let (rect, response) =
+                    ui.allocate_exact_size(egui::vec2(23.0, 6.0), egui::Sense::hover());
+                for slot in 0..super::sessions::MAX_DATABASES {
+                    let pip = egui::Rect::from_min_size(
+                        rect.min + egui::vec2(slot as f32 * 6.0, 0.0),
+                        egui::vec2(5.0, 6.0),
+                    );
+                    ui.painter().rect_filled(
+                        pip,
+                        2.0,
+                        if slot < slots {
+                            ui.visuals().selection.stroke.color
+                        } else {
+                            ui.visuals().faint_bg_color
+                        },
+                    );
+                }
+                response.on_hover_text(format!(
+                    "{slots} of 4 workspaces retained. Access review reserves a slot."
+                ));
             });
         });
+        if rows.is_empty() {
+            ui.weak("Nothing open. Choose a database below.");
+        }
         let enabled = self.picker.is_none() && !self.database.confirm_close && !self.quit;
         let mut select = None;
         let mut close = None;
@@ -441,7 +525,11 @@ impl App {
                                 ""
                             },
                             if row.drafts > 0 {
-                                format!("{} staged edits", row.drafts)
+                                format!(
+                                    "{} staged edit{}",
+                                    row.drafts,
+                                    if row.drafts == 1 { "" } else { "s" }
+                                )
                             } else {
                                 String::new()
                             }
@@ -476,14 +564,13 @@ impl App {
                                     egui::Stroke::new(2.0, ui.visuals().selection.stroke.color),
                                 );
                             }
-                            icons::paint(
-                                &painter,
+                            super::databases::opened_database_icon(
+                                ui,
                                 egui::Rect::from_center_size(
                                     rect.left_center() + egui::vec2(14.0, 0.0),
-                                    egui::vec2(18.0, 18.0),
+                                    egui::vec2(22.0, 22.0),
                                 ),
-                                Icon::Database,
-                                crate::appearance::Tokens::of(ui.ctx()).relationship,
+                                enabled,
                             );
                             painter.text(
                                 rect.right_top() + egui::vec2(-4.0, 7.0),
@@ -538,18 +625,22 @@ impl App {
                     if response.on_hover_text(&row.path).clicked() {
                         select = Some(row.id);
                     }
-                    ui.add_enabled_ui(enabled && !row.closing, |ui| {
-                        if icons::button(
-                            ui,
-                            Icon::Close,
-                            &format!("Close database: {}", row.path),
-                            "",
-                        )
-                        .clicked()
-                        {
-                            close = Some(row.id);
-                        }
-                    });
+                    if row.closing {
+                        ui.add_sized([28.0, 28.0], egui::Spinner::new());
+                    } else {
+                        ui.add_enabled_ui(enabled, |ui| {
+                            if icons::button(
+                                ui,
+                                Icon::Close,
+                                &format!("Close database: {}", row.path),
+                                "",
+                            )
+                            .clicked()
+                            {
+                                close = Some(row.id);
+                            }
+                        });
+                    }
                 });
                 if row.id == self.database.id && self.database.confirm_close {
                     self.inline_close_confirmation_ui(ui);

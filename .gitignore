@@ -6,6 +6,7 @@
 /.direnv/
 /docs/*
 !/docs/redesign-v5-tiling.html
+!/docs/redesign-v9-sidebar-databases.html
 !/docs/guide.md
 !/docs/database-discovery.md
 !/docs/fts.md

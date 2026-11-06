@@ -292,3 +292,70 @@ fn search_keyboard_pages_and_opens_the_highlighted_result() {
     );
     close_and_wait(&mut app, &ctx);
 }
+
+#[test]
+fn this_database_filters_the_schema_tree_and_opens_a_matching_column() {
+    let (_dir, ctx, mut app) = fixture(
+        &[
+            "CREATE TABLE messages(id INTEGER PRIMARY KEY, needle TEXT, unrelated TEXT)",
+            "CREATE TABLE other(id INTEGER PRIMARY KEY)",
+        ],
+        false,
+    );
+    app.sidebar_search.scope = super::super::database_navigation::Scope::ThisDatabase;
+    app.sidebar_search.query = "needle".into();
+    app.sidebar_search.focus = true;
+    frame_at(&mut app, &ctx, SIZE, vec![]);
+    wait(&mut app, &ctx);
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    control(&output, "messages · table");
+    control(&output, "needle");
+    assert!(!label_exists(&output, "other · table"));
+    assert!(!label_exists(&output, "unrelated"));
+    press_key(&mut app, &ctx, egui::Key::Enter, egui::Modifiers::NONE);
+    wait(&mut app, &ctx);
+    assert_eq!(
+        app.database.document.tools.highlight_column,
+        Some(("messages".into(), "needle".into()))
+    );
+    close_and_wait(&mut app, &ctx);
+}
+#[test]
+fn empty_sidebar_disables_tools_and_keeps_settings_available() {
+    let (ctx, mut app) = crate::app::test_ui::app();
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    assert!(output.shapes.iter().any(|s| matches!(&s.shape,egui::Shape::Text(t) if t.galley.job.text == "Tools need an open database")));
+    for label in ["History", "Saved queries", "Database checks"] {
+        let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+        let button = control(&output, label);
+        click(&mut app, &ctx, button.center());
+        assert_eq!(app.database.ui.sidebar, shell::ToolPanel::Schema);
+    }
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    let settings = control(&output, "Settings");
+    click(&mut app, &ctx, settings.center());
+    assert_eq!(app.database.ui.sidebar, shell::ToolPanel::Settings);
+}
+
+#[test]
+fn disconnected_drafts_require_a_decision_before_exit() {
+    let (_dir, ctx, mut app) = fixture(
+        &[
+            "CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT)",
+            "INSERT INTO t VALUES(1,'x')",
+        ],
+        true,
+    );
+    browse_and_wait(&mut app, &ctx, "t");
+    app.stage_cell(0, 1, Value::Text("retained".into()));
+    app.database.session = None;
+    app.database.ready = false;
+    app.quit = true;
+    app.continue_quit(&ctx);
+    assert!(app.database.confirm_close && app.quit);
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    let keep = control(&output, "Keep open");
+    click(&mut app, &ctx, keep.center());
+    assert!(!app.quit && !app.database.confirm_close);
+    assert!(app.has_drafts());
+}

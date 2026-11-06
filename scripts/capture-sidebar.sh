@@ -41,8 +41,9 @@ export TURSOBENCH_SECOND_DB="$work/second.db"
 cargo build --locked -p tursobench-ui
 export XDG_CONFIG_HOME="$work/config"
 export TURSOBENCH_CAPTURE_DIR="$output"
+binary=${TURSOBENCH_BINARY:-target/debug/tursobench}
 # Leave room for Wayland decorations around the largest 3440x1440 client scene.
-python3 scripts/wayland-run.py --width 3520 --height 1520 -- timeout 75 target/debug/tursobench --smoke-test "$work/sample.db"
+python3 scripts/wayland-run.py --width 3520 --height 1520 -- timeout 75 "$binary" --smoke-test "$work/sample.db"
 python3 - "$output" <<'PY'
 from pathlib import Path
 import struct
