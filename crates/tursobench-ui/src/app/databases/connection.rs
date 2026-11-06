@@ -123,8 +123,12 @@ impl App {
                 ui.add_space(8.0);
                 let writable = self.database.writable;
                 ui.horizontal_wrapped(|ui| {
-                    ui.selectable_value(&mut self.database.writable, false, "Read only");
-                    ui.selectable_value(&mut self.database.writable, true, "Read and write");
+                    ui.small("Access");
+                    for mode in [false, true] {
+                        if crate::app::icons::access_button(ui, mode, Some(self.database.writable == mode)).clicked() {
+                            self.database.writable = mode;
+                        }
+                    }
                 });
                 if self.database.writable != writable { self.databases.open_failure = None; }
                 if self.database.writable {
@@ -327,6 +331,29 @@ mod tests {
                 .any(|t| t == "Check again" || t == "Edit path…")
         );
         assert!(!app.database.writable);
+        for (name, writable) in [("Read/write", true), ("Read only", false)] {
+            let output =
+                crate::app::test_ui::render(&ctx, egui::vec2(1280.0, 720.0), vec![], |ui| {
+                    app.render(ui)
+                });
+            let icon = crate::app::test_ui::control(&output, name);
+            click(&mut app, &ctx, icon.center());
+            assert_eq!(app.database.writable, writable);
+            let output =
+                crate::app::test_ui::render(&ctx, egui::vec2(1280.0, 720.0), vec![], |ui| {
+                    app.render(ui)
+                });
+            assert!(
+                crate::app::test_ui::nodes(&output)
+                    .iter()
+                    .any(|(_, node)| node.label() == Some(name)
+                        && node.toggled() == Some(egui::accesskit::Toggled::True))
+            );
+            assert!(
+                app.database.session.is_none(),
+                "mode choice must not open the file"
+            );
+        }
         let (_tx, rx) = std::sync::mpsc::sync_channel(1);
         app.picker = Some(rx);
         frame(&mut app, &ctx, vec![], egui::vec2(1280.0, 720.0));

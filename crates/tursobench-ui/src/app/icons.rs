@@ -59,6 +59,72 @@ pub(super) fn button(ui: &mut egui::Ui, icon: Icon, name: &str, shortcut: &str) 
     widget(ui, icon, name, shortcut, None, false, 1.0)
 }
 
+/// The same access-mode symbols, names and colours are used throughout the app.
+pub(super) struct AccessMode {
+    pub icon: Icon,
+    pub name: &'static str,
+    pub color: egui::Color32,
+}
+
+pub(super) fn access_mode(ctx: &egui::Context, writable: bool) -> AccessMode {
+    let tokens = crate::appearance::Tokens::of(ctx);
+    if writable {
+        AccessMode {
+            icon: Icon::Edit,
+            name: "Read/write",
+            color: tokens.pending,
+        }
+    } else {
+        AccessMode {
+            icon: Icon::Lock,
+            name: "Read only",
+            color: tokens.muted,
+        }
+    }
+}
+
+pub(super) fn access_button(
+    ui: &mut egui::Ui,
+    writable: bool,
+    selected: Option<bool>,
+) -> egui::Response {
+    let mode = access_mode(ui.ctx(), writable);
+    ui.scope(|ui| {
+        let visuals = ui.visuals_mut();
+        for widget in [
+            &mut visuals.widgets.inactive,
+            &mut visuals.widgets.hovered,
+            &mut visuals.widgets.active,
+            &mut visuals.widgets.open,
+        ] {
+            widget.fg_stroke.color = mode.color;
+        }
+        widget(ui, mode.icon, mode.name, "", selected, false, 1.0)
+    })
+    .inner
+}
+
+pub(super) fn access_indicator(ui: &mut egui::Ui, rect: egui::Rect, writable: bool, enabled: bool) {
+    let mode = access_mode(ui.ctx(), writable);
+    paint(
+        ui.painter(),
+        rect,
+        mode.icon,
+        if enabled {
+            mode.color
+        } else {
+            mode.color.gamma_multiply(0.5)
+        },
+    );
+    let response = ui.interact(
+        rect,
+        ui.scope_id().with("database-access"),
+        egui::Sense::hover(),
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, enabled, mode.name));
+    response.on_hover_text(mode.name);
+}
+
 pub(super) const RIBBON_BUTTON_SIZE: f32 = 30.0;
 pub(super) const RIBBON_TEXT_SIZE: f32 = 13.5;
 

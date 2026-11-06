@@ -585,34 +585,7 @@ impl App {
                                         rect.right_top() + egui::vec2(-12.0, 13.0),
                                         egui::Vec2::splat(16.0),
                                     );
-                                    icons::paint(
-                                        &painter,
-                                        access_rect,
-                                        if row.writable { Icon::Edit } else { Icon::Lock },
-                                        if row.writable {
-                                            ui.visuals().warn_fg_color
-                                        } else {
-                                            ui.visuals().weak_text_color()
-                                        },
-                                    );
-                                    let access_label = if row.writable {
-                                        "Read/write"
-                                    } else {
-                                        "Read only"
-                                    };
-                                    let access = ui.interact(
-                                        access_rect,
-                                        ui.scope_id().with("database-access"),
-                                        egui::Sense::hover(),
-                                    );
-                                    access.widget_info(|| {
-                                        egui::WidgetInfo::labeled(
-                                            egui::Role::Image,
-                                            enabled,
-                                            access_label,
-                                        )
-                                    });
-                                    access.on_hover_text(access_label);
+                                    icons::access_indicator(ui, access_rect, row.writable, enabled);
                                     for (text, y, size, budget, color) in [
                                         (
                                             name.to_string(),

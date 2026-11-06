@@ -1390,14 +1390,46 @@ fn sql_tile_keeps_result_identity_and_read_transactions_visible() {
 fn access_switch_waits_for_closed_then_opens_a_new_session() {
     let (_dir, ctx, mut app) = fixture(&["CREATE TABLE a(id INTEGER PRIMARY KEY)"], false);
     let old_session = app.database.session.as_ref().unwrap().id;
+    let output = frame(&mut app, &ctx, vec![]);
+    app.database.ui.diagram.freeze_camera();
     app.database.ui.diagram.camera.zoom = 0.7;
     app.database.ui.diagram.camera.pan = egui::vec2(30.0, 42.0);
-    app.database.pending_access = Some(true);
-    app.close();
+    let bounds = crate::app::test_ui::nodes(&output)
+        .iter()
+        .find_map(|(_, node)| {
+            (node.label() == Some("Read only") && node.role() == egui::Role::Button)
+                .then(|| node.bounds())
+                .flatten()
+        })
+        .expect("status-bar access icon");
+    click(
+        &mut app,
+        &ctx,
+        egui::pos2(
+            ((bounds.x0 + bounds.x1) / 2.0) as f32,
+            ((bounds.y0 + bounds.y1) / 2.0) as f32,
+        ),
+    );
+    assert!(app.database.ui.access_dialog);
+    assert_eq!(app.database.session.as_ref().unwrap().id, old_session);
+    let output = frame(&mut app, &ctx, vec![]);
+    click(
+        &mut app,
+        &ctx,
+        control(&output, "Close cleanly and reopen").center(),
+    );
     assert!(app.database.closing);
     assert!(!app.database.writable);
     wait(&mut app, &ctx);
     assert!(app.database.writable);
+    let output = frame(&mut app, &ctx, vec![]);
+    assert!(
+        crate::app::test_ui::nodes(&output)
+            .iter()
+            .any(
+                |(_, node)| node.label() == Some("Read/write") && node.role() == egui::Role::Button
+            )
+    );
     assert_ne!(app.database.session.as_ref().unwrap().id, old_session);
     assert_eq!(app.database.document.ui.nav, shell::Nav::Overview);
     assert!(app.database.pending_access.is_none());

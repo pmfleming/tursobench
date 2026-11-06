@@ -112,6 +112,11 @@ shortcuts, evidence and the remaining gaps—not a claim of complete parity.
 The large footer icons switch between Tables, History, Saved queries, Checks and
 Settings in the left panel. Hover controls for their names; F1 opens keyboard help.
 
+Access mode uses the same icons throughout the app: a lock for **Read only** and a
+pencil for **Read/write**, with matching tooltips and accessible names. The opening
+card highlights the selected icon. The status-bar icon shows the current mode;
+clicking it asks for confirmation before closing and reopening with different access.
+
 Database navigation stays in the sidebar. **Open databases** shows each live session,
 its access mode (lock for read only, pencil for read/write, with tooltips), transaction
 and staged-edit status, an integrated close button, and the retained/limit
@@ -133,7 +138,7 @@ Ctrl K remains an actions-only palette.
 
 The separate **Open database** section contains **Browse database files** and the
 **Available** list of recent and discovered files that are not open. Select a row to
-review read-only/read-write access beneath it, then click **Open**. **Browse database
+choose the lock or pencil access icon beneath it, then click **Open**. **Browse database
 files** or Ctrl O opens the native file chooser; **Enter a path…** works without a portal.
 Read-only is the default for a new path; likely SQLite files still require a per-file
 override. Errors, recheck and retry stay in the card. Right-click a file to forget it;

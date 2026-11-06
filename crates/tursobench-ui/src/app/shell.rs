@@ -332,29 +332,16 @@ impl App {
             });
     }
     fn connection_controls(&mut self, ui: &mut egui::Ui) {
-        let tokens = crate::appearance::Tokens::of(ui.ctx());
         if self.database.session.is_some()
-            && presentation::chip(
-                ui,
-                if self.database.writable {
-                    "Editing"
-                } else {
-                    "Read-only"
-                },
-                if self.database.writable {
-                    tokens.pending
-                } else {
-                    tokens.muted
-                },
-            )
-            .on_hover_text(format!(
-                "Turso 0.8.3 · {} · click to close cleanly and change access",
-                self.database
-                    .coordination
-                    .filter(|_| self.database.ready)
-                    .map_or("Connecting", |c| c.label())
-            ))
-            .clicked()
+            && icons::access_button(ui, self.database.writable, None)
+                .on_hover_text(format!(
+                    "Turso 0.8.3 · {} · click to close cleanly and change access",
+                    self.database
+                        .coordination
+                        .filter(|_| self.database.ready)
+                        .map_or("Connecting", |c| c.label())
+                ))
+                .clicked()
         {
             self.database.ui.access_dialog = true;
         }

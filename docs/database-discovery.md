@@ -26,7 +26,7 @@ Available is collapsible, renders visible rows, and uses file identities cached 
 discovery/opening. Repainting never probes candidate files.
 
 Selecting a candidate does not connect to it. A compact access panel directly
-beneath the selected row shows the selected file, path, read-only/write choice and
+beneath the selected row shows the selected file, path, lock/pencil access choice and
 **Open**. A non-writing background check identifies missing/invalid files and
 incompatible locks before enabling Open. Known blockers appear inline, including
 the locking application when available. Blocked files are rechecked periodically;

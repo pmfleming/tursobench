@@ -262,9 +262,10 @@ impl App {
             return;
         }
         let mut open = true;
-        egui::Window::new(if self.database.writable { "Reopen read-only?" } else { "Enable editing?" }).frame(crate::app::presentation::window_frame(ctx)).default_pos(ctx.content_rect().center()-egui::vec2(280.0,180.0))
+        let access = super::icons::access_mode(ctx, !self.database.writable);
+        egui::Window::new(format!("Reopen: {}?", access.name)).frame(crate::app::presentation::window_frame(ctx)).default_pos(ctx.content_rect().center()-egui::vec2(280.0,180.0))
             .open(&mut open).anchor(egui::Align2::LEFT_BOTTOM, [12.0,-48.0]).max_width((ctx.content_rect().width()-40.0).min(520.0)).collapsible(false).show(ctx, |ui| {
-                presentation::notice(ui, super::icons::Icon::Lock, Intent::Pending,"The current session will close and roll back any open transaction before reopening. Local drafts will be discarded. Committed writes are not undone.");
+                presentation::notice(ui, access.icon, Intent::Pending,"The current session will close and roll back any open transaction before reopening. Local drafts will be discarded. Committed writes are not undone.");
                 if !self.database.writable { ui.label("Back up the closed database with its WAL state before editing. SQL writes autocommit unless you BEGIN; grid edits are staged for review."); }
                 ui.label("File locks and shared WAL coordination will be checked again when reopening.");
                 if presentation::footer(ui, |ui| ui.add_enabled(self.database.ready && !self.database.closing && self.database.commit_ticket.is_none() && !self.database.uncertain_edit,

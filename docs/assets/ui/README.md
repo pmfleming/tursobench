@@ -1,36 +1,29 @@
 # UI screenshots
 
-## Selected-file access card — native Wayland
+## Shared access icons and sidebar controls — native Wayland
 
-`resources/database-access.png` was captured on 2026-11-06 after `96452cb`, with
-path editing and the always-visible refresh icon removed from the selected-file card.
-The picker above the list chooses another file. A labelled Check again action appears
-only with a blocking file-check error. The manual-path fallback remains outside the card.
+The five `resources/` images were captured on 2026-11-06 after `83f8088`, with
+one shared definition for access-mode icons, colours, tooltips and accessible names:
+a lock for Read only and a pencil for Read/write. Native captures use synthetic
+databases, isolated preferences and headless Weston/Mesa.
 
-The native capture used synthetic files and isolated preferences under headless
-Weston/Mesa. The visual smoke checks, formatting, Clippy and all 154 active UI tests
-passed (one existing ignored test), including failed-file recovery and picker consent.
-
-## Sidebar search and resource settings — native Wayland
-
-The three `resources/` images were captured on 2026-11-06 after `fd175c4`, with
-close buttons integrated into database rows and lock/pencil access-mode icons.
-They also show the separate search/opening sections and simplified resource settings.
-The captures use synthetic databases, isolated preferences and headless Weston/Mesa.
-
-- `navigator-settings.png`: one database-count slider, estimated memory, system
-  recommendation and Reset. This launch recommended nine databases (4.5 GiB estimate);
-  the recommendation is recalculated from available memory on each normal launch.
-- `sidebar-open-databases.png`: search scope icons, retained/limit counter and the
-  folder picker in the separate Open database section. The close button shares the
-  database row background; access icons have Read only / Read/write tooltips.
-- `sidebar-search.png`: grouped object/column search results.
+- `database-access.png`: icon choices with the selected mode highlighted. The file
+  picker remains above the list; the card contains access review and Open/Cancel.
+  Check again appears only with a blocking file-check error.
+- `sidebar-open-databases.png`: shared access indicators and integrated close buttons.
+- `navigator-settings.png`: database-count slider, memory estimate, Reset, and the
+  shared access icon in the status bar. The captured recommendation is recalculated
+  from available memory on each normal launch.
+- `sidebar-search.png`: grouped database/object/column search results.
+- `access-dialog.png`: explicit confirmation before the status-bar access switch
+  closes and reopens the session, using the target mode's shared icon.
 
 Reproduce with `nix develop -c bash scripts/capture-sidebar.sh /tmp/resource-captures`.
-The native visual smoke checks passed across six workspace sizes/themes, navigator
+Native visual smoke checks passed across six workspace sizes/themes, navigator
 panels, dialogs, staged edits and database controls; capture dimensions were checked.
-Formatting, Clippy and 154 active UI tests passed (one existing ignored test),
-including background-row closing, inline confirmation and narrow sidebar layouts.
+Formatting, Clippy and all 229 active workspace tests passed (one existing ignored
+test), including mode-icon selection, picker consent and confirmed access switching.
+The access-switch interaction test also passed after shortening the dialog title.
 
 ## Sidebar database navigation v9 — native Wayland
 
