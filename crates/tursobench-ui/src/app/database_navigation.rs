@@ -329,6 +329,7 @@ struct DatabaseRow {
     transaction: TransactionState,
     drafts: usize,
     closing: bool,
+    connected: bool,
 }
 
 impl From<&DatabaseWorkspace> for DatabaseRow {
@@ -338,14 +339,9 @@ impl From<&DatabaseWorkspace> for DatabaseRow {
             path: database.path.clone(),
             writable: database.writable,
             transaction: database.transaction,
-            drafts: database
-                .documents
-                .values()
-                .chain(std::iter::once(&database.document))
-                .filter_map(|document| document.drafts.as_ref())
-                .map(|drafts| drafts.edits.len())
-                .sum(),
+            drafts: database.draft_count(),
             closing: database.closing,
+            connected: database.session.is_some(),
         }
     }
 }
@@ -354,17 +350,7 @@ impl App {
     fn occupied_database_slots(&self) -> usize {
         std::iter::once(&self.database)
             .chain(self.parked.values())
-            .filter(|d| {
-                d.session.is_some()
-                    || d.export_job.is_some()
-                    || d.uncertain_edit
-                    || d.transaction == TransactionState::Unknown
-                    || d.documents
-                        .values()
-                        .chain(std::iter::once(&d.document))
-                        .any(|v| v.has_drafts())
-                    || d.id == self.database.id && !d.path.is_empty()
-            })
+            .filter(|d| d.retained() || d.id == self.database.id && !d.path.is_empty())
             .count()
     }
 
@@ -386,8 +372,7 @@ impl App {
                         self.close();
                     }
                 });
-                let drafts: usize = self.database.documents.values().chain(std::iter::once(&self.database.document))
-                    .filter_map(|d| d.drafts.as_ref()).map(|d| d.edits.len()).sum();
+                let drafts = self.database.draft_count();
                 if drafts > 0 { ui.small(format!("{drafts} staged edits will be discarded.")); }
                 ui.small("Waits for active execution and rolls back any remaining transaction. Committed writes are not undone.");
             });
@@ -396,7 +381,7 @@ impl App {
     pub(super) fn open_databases_ui(&mut self, ui: &mut egui::Ui) {
         let mut rows: Vec<_> = std::iter::once(&self.database)
             .chain(self.parked.values())
-            .filter(|database| database.session.is_some())
+            .filter(|database| database.retained() || database.confirm_close)
             .map(DatabaseRow::from)
             .collect();
         rows.sort_by_key(|row| row.id);
@@ -452,6 +437,8 @@ impl App {
                                 String::new()
                             }
                         )
+                    } else if !row.connected {
+                        "Disconnected · retained data".into()
                     } else {
                         super::databases::folder_label(Path::new(&row.path))
                     };
@@ -559,7 +546,11 @@ impl App {
                     self.inline_close_confirmation_ui(ui);
                 } else if row.id == self.database.id {
                     ui.indent(("active-database", row.id), |ui| {
-                        self.active_database_tree_ui(ui)
+                        if self.database.session.is_none() {
+                            self.retained_database_ui(ui);
+                        } else {
+                            self.active_database_tree_ui(ui);
+                        }
                     });
                 }
             });

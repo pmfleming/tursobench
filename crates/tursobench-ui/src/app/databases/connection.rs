@@ -10,6 +10,9 @@ impl App {
     }
 
     pub(in crate::app) fn pending_database_ui(&mut self, ui: &mut egui::Ui) {
+        if self.database.retained() {
+            return;
+        }
         if self.database.path.is_empty() {
             let edit = ui.link("Enter a path…");
             #[cfg(test)]
@@ -27,13 +30,35 @@ impl App {
         } else {
             self.database_access_ui(ui);
         }
+    }
+
+    pub(in crate::app) fn retained_database_ui(&mut self, ui: &mut egui::Ui) {
+        ui.label("Disconnected · retained data");
+        ui.add(egui::Label::new(&self.database.path).truncate())
+            .on_hover_text(&self.database.path);
+        ui.colored_label(ui.visuals().warn_fg_color, &self.database.status);
         if self.has_drafts() {
-            ui.colored_label(ui.visuals().error_fg_color, "Drafts retained after disconnect. Inspect the uncertain outcome before discarding or retrying.");
+            ui.label(
+                "Local drafts are retained. Review the outcome before discarding or retrying.",
+            );
             if ui.button("Review retained drafts…").clicked() {
+                if let Some(id) = self
+                    .database
+                    .documents
+                    .values()
+                    .chain(std::iter::once(&self.database.document))
+                    .find(|d| d.has_drafts())
+                    .map(|d| d.id)
+                {
+                    self.switch_document(id);
+                }
                 self.database.document.show_preview = true;
             }
             if ui.button("Discard retained local drafts").clicked() {
                 self.database.document.drafts = None;
+                for document in self.database.documents.values_mut() {
+                    document.drafts = None;
+                }
             }
         }
     }

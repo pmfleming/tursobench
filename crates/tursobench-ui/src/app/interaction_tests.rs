@@ -3506,3 +3506,5 @@ fn sidebar_search_loads_parked_columns_and_respects_scopes_and_keyboard() {
     app.select_workspace(first);
     close_and_wait(&mut app, &ctx);
 }
+
+mod sidebar_review;

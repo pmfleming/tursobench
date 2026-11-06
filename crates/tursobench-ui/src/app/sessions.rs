@@ -38,6 +38,26 @@ pub(super) struct DatabaseWorkspace {
     pub(super) uncertain_edit: bool,
 }
 impl DatabaseWorkspace {
+    pub(super) fn retained(&self) -> bool {
+        self.session.is_some()
+            || self.export_job.is_some()
+            || self.uncertain_edit
+            || self.transaction == TransactionState::Unknown
+            || self
+                .documents
+                .values()
+                .chain(std::iter::once(&self.document))
+                .any(|d| d.has_drafts())
+    }
+    pub(super) fn draft_count(&self) -> usize {
+        self.documents
+            .values()
+            .chain(std::iter::once(&self.document))
+            .filter_map(|d| d.drafts.as_ref())
+            .map(|d| d.edits.len())
+            .sum()
+    }
+
     pub(super) fn new(ctx: &egui::Context, id: u64) -> Self {
         Self {
             id,
@@ -125,16 +145,7 @@ impl App {
             return true;
         }
         // Closed, clean tabs can be released; live sessions and uncertain state cannot.
-        self.parked.retain(|_, d| {
-            d.session.is_some()
-                || d.export_job.is_some()
-                || d.uncertain_edit
-                || d.transaction == tursobench_core::TransactionState::Unknown
-                || d.documents
-                    .values()
-                    .chain(std::iter::once(&d.document))
-                    .any(|v| v.has_drafts())
-        });
+        self.parked.retain(|_, d| d.retained());
         if self.parked.len() + 1 >= MAX_DATABASES {
             self.database.status =
                 "Four database workspaces are already retained; close one before opening another"
@@ -152,25 +163,15 @@ impl App {
     pub(super) fn duplicate_workspace(&self, path: &Path) -> Option<u64> {
         std::iter::once(&self.database)
             .chain(self.parked.values())
-            .find(|d| d.session.is_some() && same_file(Path::new(&d.path), path))
+            .find(|d| d.retained() && same_file(Path::new(&d.path), path))
             .map(|d| d.id)
     }
     pub(super) fn can_request_database(&self) -> bool {
         if self.picker.is_some() || self.quit || self.database.confirm_close {
             return false;
         }
-        let retained = |d: &DatabaseWorkspace| {
-            d.session.is_some()
-                || d.export_job.is_some()
-                || d.uncertain_edit
-                || d.transaction == TransactionState::Unknown
-                || d.documents
-                    .values()
-                    .chain(std::iter::once(&d.document))
-                    .any(|v| v.has_drafts())
-        };
-        !retained(&self.database)
-            || self.parked.values().filter(|d| retained(d)).count() + 1 < MAX_DATABASES
+        !self.database.retained()
+            || self.parked.values().filter(|d| d.retained()).count() + 1 < MAX_DATABASES
     }
     pub(super) fn request_database(&mut self, ctx: &egui::Context, path: PathBuf) {
         if let Some(id) = self.duplicate_workspace(&path) {
@@ -244,7 +245,7 @@ impl App {
     pub(super) fn cycle_database(&mut self, direction: isize) {
         let mut ids: Vec<_> = std::iter::once(&self.database)
             .chain(self.parked.values())
-            .filter(|d| d.session.is_some())
+            .filter(|d| d.retained())
             .map(|d| d.id)
             .collect();
         ids.sort();
