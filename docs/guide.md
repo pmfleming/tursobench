@@ -113,7 +113,8 @@ The large footer icons switch between Tables, History, Saved queries, Checks and
 Settings in the left panel. Hover controls for their names; F1 opens keyboard help.
 
 Database navigation stays in the sidebar. **Open databases** shows each live session,
-its RO/RW access, transaction and staged-edit status, a close button, and the retained/limit
+its access mode (lock for read only, pencil for read/write, with tooltips), transaction
+and staged-edit status, an integrated close button, and the retained/limit
 meter. Selecting a row expands that database’s schema and collapses the previous tree.
 Ctrl PageUp/PageDown cycles retained workspaces, including disconnected sessions
 with drafts or uncertain outcomes. Switching preserves results and drafts.

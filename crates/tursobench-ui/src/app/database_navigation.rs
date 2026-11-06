@@ -494,148 +494,195 @@ impl App {
         let mut close = None;
         for row in rows {
             ui.push_id(("database-row", row.id), |ui| {
-                ui.horizontal(|ui| {
-                    let width =
-                        (ui.available_width() - 28.0 - ui.spacing().item_spacing.x).max(40.0);
-                    let name = Path::new(&row.path)
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy();
-                    let detail = if row.closing {
-                        "Closing…".into()
-                    } else if row.transaction != TransactionState::Autocommit || row.drafts > 0 {
-                        format!(
-                            "{}{}{}",
-                            if row.transaction == TransactionState::Unknown {
-                                "Unknown transaction"
-                            } else if row.transaction == TransactionState::Active {
-                                "Transaction"
-                            } else {
-                                ""
-                            },
-                            if row.transaction != TransactionState::Autocommit && row.drafts > 0 {
-                                " · "
-                            } else {
-                                ""
-                            },
-                            if row.drafts > 0 {
-                                format!(
-                                    "{} staged edit{}",
-                                    row.drafts,
-                                    if row.drafts == 1 { "" } else { "s" }
-                                )
-                            } else {
-                                String::new()
-                            }
-                        )
-                    } else if !row.connected {
-                        "Disconnected · retained data".into()
+                let active = row.id == self.database.id;
+                egui::Frame::new()
+                    .fill(if active {
+                        ui.visuals().selection.bg_fill
                     } else {
-                        super::databases::folder_label(Path::new(&row.path))
-                    };
-                    let response = ui
-                        .add_enabled_ui(enabled, |ui| {
-                            let (rect, response) = ui
-                                .allocate_exact_size(egui::vec2(width, 44.0), egui::Sense::click());
-                            let painter =
-                                ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
-                            let active = row.id == self.database.id;
-                            if active || response.hovered() || response.has_focus() {
-                                painter.rect_filled(
-                                    rect,
-                                    6.0,
-                                    if active {
-                                        ui.visuals().selection.bg_fill
-                                    } else {
-                                        ui.visuals().faint_bg_color
-                                    },
-                                );
-                            }
-                            if active {
-                                painter.vline(
-                                    rect.left() + 1.0,
-                                    rect.y_range().shrink(5.0),
-                                    egui::Stroke::new(2.0, ui.visuals().selection.stroke.color),
-                                );
-                            }
-                            super::databases::opened_database_icon(
-                                ui,
-                                egui::Rect::from_center_size(
-                                    rect.left_center() + egui::vec2(14.0, 0.0),
-                                    egui::vec2(22.0, 22.0),
-                                ),
-                                enabled,
-                            );
-                            painter.text(
-                                rect.right_top() + egui::vec2(-4.0, 7.0),
-                                egui::Align2::RIGHT_TOP,
-                                if row.writable { "RW" } else { "RO" },
-                                crate::appearance::monospace(ui.ctx(), 10.0),
-                                if row.writable {
-                                    ui.visuals().warn_fg_color
-                                } else {
-                                    ui.visuals().weak_text_color()
-                                },
-                            );
-                            for (text, y, size, budget, color) in [
-                                (name.to_string(), 5.0, 12.0, 56.0, ui.visuals().text_color()),
-                                (
-                                    detail.clone(),
-                                    24.0,
-                                    10.0,
-                                    34.0,
-                                    if row.drafts > 0
-                                        || row.transaction != TransactionState::Autocommit
-                                    {
-                                        ui.visuals().warn_fg_color
-                                    } else {
-                                        ui.visuals().weak_text_color()
-                                    },
-                                ),
-                            ] {
-                                let galley = egui::WidgetText::from(
-                                    egui::RichText::new(text)
-                                        .size(crate::appearance::text_size(ui.ctx(), size)),
-                                )
-                                .into_galley(
-                                    ui,
-                                    Some(egui::TextWrapMode::Truncate),
-                                    (width - budget).max(1.0),
-                                    egui::TextStyle::Body,
-                                );
-                                painter.galley(rect.min + egui::vec2(30.0, y), galley, color);
-                            }
-                            response
-                        })
-                        .inner;
-                    response.widget_info(|| {
-                        egui::WidgetInfo::selected(
-                            egui::Role::Button,
-                            response.enabled(),
-                            row.id == self.database.id,
-                            format!("Select database: {}", row.path),
-                        )
-                    });
-                    if response.on_hover_text(&row.path).clicked() {
-                        select = Some(row.id);
-                    }
-                    if row.closing {
-                        ui.add_sized([28.0, 28.0], egui::Spinner::new());
-                    } else {
-                        ui.add_enabled_ui(enabled, |ui| {
-                            if icons::button(
-                                ui,
-                                Icon::Close,
-                                &format!("Close database: {}", row.path),
-                                "",
-                            )
-                            .clicked()
+                        ui.visuals().faint_bg_color
+                    })
+                    .corner_radius(6)
+                    .inner_margin(0.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            let width = (ui.available_width() - 28.0 - ui.spacing().item_spacing.x)
+                                .max(40.0);
+                            let name = Path::new(&row.path)
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy();
+                            let detail = if row.closing {
+                                "Closing…".into()
+                            } else if row.transaction != TransactionState::Autocommit
+                                || row.drafts > 0
                             {
-                                close = Some(row.id);
+                                format!(
+                                    "{}{}{}",
+                                    if row.transaction == TransactionState::Unknown {
+                                        "Unknown transaction"
+                                    } else if row.transaction == TransactionState::Active {
+                                        "Transaction"
+                                    } else {
+                                        ""
+                                    },
+                                    if row.transaction != TransactionState::Autocommit
+                                        && row.drafts > 0
+                                    {
+                                        " · "
+                                    } else {
+                                        ""
+                                    },
+                                    if row.drafts > 0 {
+                                        format!(
+                                            "{} staged edit{}",
+                                            row.drafts,
+                                            if row.drafts == 1 { "" } else { "s" }
+                                        )
+                                    } else {
+                                        String::new()
+                                    }
+                                )
+                            } else if !row.connected {
+                                "Disconnected · retained data".into()
+                            } else {
+                                super::databases::folder_label(Path::new(&row.path))
+                            };
+                            let response = ui
+                                .add_enabled_ui(enabled, |ui| {
+                                    let (rect, response) = ui.allocate_exact_size(
+                                        egui::vec2(width, 44.0),
+                                        egui::Sense::click(),
+                                    );
+                                    let painter =
+                                        ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+                                    if response.has_focus() {
+                                        painter.rect_stroke(
+                                            rect,
+                                            6.0,
+                                            ui.visuals().selection.stroke,
+                                            egui::StrokeKind::Inside,
+                                        );
+                                    }
+                                    if active {
+                                        painter.vline(
+                                            rect.left() + 1.0,
+                                            rect.y_range().shrink(5.0),
+                                            egui::Stroke::new(
+                                                2.0,
+                                                ui.visuals().selection.stroke.color,
+                                            ),
+                                        );
+                                    }
+                                    super::databases::opened_database_icon(
+                                        ui,
+                                        egui::Rect::from_center_size(
+                                            rect.left_center() + egui::vec2(14.0, 0.0),
+                                            egui::vec2(22.0, 22.0),
+                                        ),
+                                        enabled,
+                                    );
+                                    let access_rect = egui::Rect::from_center_size(
+                                        rect.right_top() + egui::vec2(-12.0, 13.0),
+                                        egui::Vec2::splat(16.0),
+                                    );
+                                    icons::paint(
+                                        &painter,
+                                        access_rect,
+                                        if row.writable { Icon::Edit } else { Icon::Lock },
+                                        if row.writable {
+                                            ui.visuals().warn_fg_color
+                                        } else {
+                                            ui.visuals().weak_text_color()
+                                        },
+                                    );
+                                    let access_label = if row.writable {
+                                        "Read/write"
+                                    } else {
+                                        "Read only"
+                                    };
+                                    let access = ui.interact(
+                                        access_rect,
+                                        ui.scope_id().with("database-access"),
+                                        egui::Sense::hover(),
+                                    );
+                                    access.widget_info(|| {
+                                        egui::WidgetInfo::labeled(
+                                            egui::Role::Image,
+                                            enabled,
+                                            access_label,
+                                        )
+                                    });
+                                    access.on_hover_text(access_label);
+                                    for (text, y, size, budget, color) in [
+                                        (
+                                            name.to_string(),
+                                            5.0,
+                                            12.0,
+                                            56.0,
+                                            ui.visuals().text_color(),
+                                        ),
+                                        (
+                                            detail.clone(),
+                                            24.0,
+                                            10.0,
+                                            34.0,
+                                            if row.drafts > 0
+                                                || row.transaction != TransactionState::Autocommit
+                                            {
+                                                ui.visuals().warn_fg_color
+                                            } else {
+                                                ui.visuals().weak_text_color()
+                                            },
+                                        ),
+                                    ] {
+                                        let galley = egui::WidgetText::from(
+                                            egui::RichText::new(text)
+                                                .size(crate::appearance::text_size(ui.ctx(), size)),
+                                        )
+                                        .into_galley(
+                                            ui,
+                                            Some(egui::TextWrapMode::Truncate),
+                                            (width - budget).max(1.0),
+                                            egui::TextStyle::Body,
+                                        );
+                                        painter.galley(
+                                            rect.min + egui::vec2(30.0, y),
+                                            galley,
+                                            color,
+                                        );
+                                    }
+                                    response
+                                })
+                                .inner;
+                            response.widget_info(|| {
+                                egui::WidgetInfo::selected(
+                                    egui::Role::Button,
+                                    response.enabled(),
+                                    row.id == self.database.id,
+                                    format!("Select database: {}", row.path),
+                                )
+                            });
+                            if response.on_hover_text(&row.path).clicked() {
+                                select = Some(row.id);
+                            }
+                            if row.closing {
+                                ui.add_sized([28.0, 28.0], egui::Spinner::new());
+                            } else {
+                                ui.add_enabled_ui(enabled, |ui| {
+                                    if icons::button(
+                                        ui,
+                                        Icon::Close,
+                                        &format!("Close database: {}", row.path),
+                                        "",
+                                    )
+                                    .clicked()
+                                    {
+                                        close = Some(row.id);
+                                    }
+                                });
                             }
                         });
-                    }
-                });
+                    });
                 if row.id == self.database.id && self.database.confirm_close {
                     self.inline_close_confirmation_ui(ui);
                 } else if row.id == self.database.id {

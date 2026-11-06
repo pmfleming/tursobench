@@ -2,22 +2,24 @@
 
 ## Sidebar search and resource settings — native Wayland
 
-The three `resources/` images were captured on 2026-11-06 after `551a624`, with
-separate search/opening sections, tooltip scope icons and simplified resource settings.
+The three `resources/` images were captured on 2026-11-06 after `fd175c4`, with
+close buttons integrated into database rows and lock/pencil access-mode icons.
+They also show the separate search/opening sections and simplified resource settings.
 The captures use synthetic databases, isolated preferences and headless Weston/Mesa.
 
 - `navigator-settings.png`: one database-count slider, estimated memory, system
   recommendation and Reset. This launch recommended nine databases (4.5 GiB estimate);
   the recommendation is recalculated from available memory on each normal launch.
 - `sidebar-open-databases.png`: search scope icons, retained/limit counter and the
-  folder picker in the separate Open database section.
+  folder picker in the separate Open database section. The close button shares the
+  database row background; access icons have Read only / Read/write tooltips.
 - `sidebar-search.png`: grouped object/column search results.
 
 Reproduce with `nix develop -c bash scripts/capture-sidebar.sh /tmp/resource-captures`.
 The native visual smoke checks passed across six workspace sizes/themes, navigator
 panels, dialogs, staged edits and database controls; capture dimensions were checked.
-Formatting, Clippy and 229 active workspace tests passed (one existing ignored test).
-The updated slider interaction test also passed after the final contrast adjustment.
+Formatting, Clippy and 154 active UI tests passed (one existing ignored test),
+including background-row closing, inline confirmation and narrow sidebar layouts.
 
 ## Sidebar database navigation v9 — native Wayland
 
