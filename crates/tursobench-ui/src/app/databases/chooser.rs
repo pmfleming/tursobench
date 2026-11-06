@@ -55,13 +55,13 @@ impl App {
             if self.databases.job.is_some() {
                 ui.spinner().on_hover_text("Finding local databases…");
             }
-            let settings = icons::button(ui, Icon::Settings, "Search settings", "");
+            let refresh = icons::button(ui, Icon::Refresh, "Refresh databases", "");
             #[cfg(test)]
             {
-                self.databases.settings_rect = Some(settings.rect);
+                self.databases.refresh_rect = Some(refresh.rect);
             }
-            if settings.clicked() {
-                self.databases.settings_open = true;
+            if refresh.clicked() {
+                self.start_discovery(ui.ctx(), None);
             }
         });
         let can_select = self.can_request_database();

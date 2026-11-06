@@ -17,6 +17,7 @@ pub(super) enum Command {
     Close,
     Refresh,
     Panel(ToolPanel),
+    Settings,
     Help,
     Theme,
     Begin,
@@ -98,6 +99,14 @@ pub(super) fn objects<'a>(
 
 impl App {
     fn dismiss_surface(&mut self, ctx: &egui::Context) {
+        if self.settings.open {
+            if egui::Popup::is_any_open(ctx) {
+                egui::Popup::close_all(ctx);
+            } else {
+                self.settings.open = false;
+            }
+            return;
+        }
         if self.database.document.tools.inline.take().is_some() {
             return;
         }
@@ -213,11 +222,7 @@ impl App {
             ),
             (Modifiers::CTRL, Key::O, Command::Open),
             (Modifiers::CTRL, Key::T, Command::Theme),
-            (
-                Modifiers::CTRL,
-                Key::Comma,
-                Command::Panel(ToolPanel::Settings),
-            ),
+            (Modifiers::CTRL, Key::Comma, Command::Settings),
             (Modifiers::ALT, Key::ArrowLeft, Command::Back),
         ] {
             if !consumed(modifiers, key) {
@@ -405,7 +410,7 @@ impl App {
                 "Database info and checks".into(),
                 Command::Panel(ToolPanel::Diagnostics),
             ),
-            ("Settings".into(), Command::Panel(ToolPanel::Settings)),
+            ("Settings".into(), Command::Settings),
             (
                 "Export and copy retained result".into(),
                 Command::Action(Action::Export),
@@ -524,6 +529,7 @@ impl App {
                 self.refresh_catalog();
                 self.load_diagram();
             }
+            Command::Settings => self.settings.open = true,
             Command::Panel(panel) => {
                 self.select_tool(panel);
             }

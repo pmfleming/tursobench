@@ -30,6 +30,7 @@ mod schema;
 mod schema_compare;
 mod selection;
 mod sessions;
+mod settings;
 mod shell;
 mod sidebar;
 mod smoke;
@@ -51,6 +52,7 @@ enum View {
 }
 use sessions::DatabaseWorkspace;
 pub struct App {
+    settings: settings::State,
     comparison: schema_compare::State,
     database: DatabaseWorkspace,
     parked: std::collections::BTreeMap<u64, DatabaseWorkspace>,
@@ -106,6 +108,7 @@ impl App {
         let smoke = args.get(1).is_some_and(|a| a == "--smoke-test");
         let recovery_wake = ctx.clone();
         let mut app = Self {
+            settings: Default::default(),
             comparison: Default::default(),
             database: DatabaseWorkspace::new(ctx, 1),
             parked: Default::default(),

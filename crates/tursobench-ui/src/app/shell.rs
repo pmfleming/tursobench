@@ -14,7 +14,6 @@ pub(super) enum ToolPanel {
     History,
     Saved,
     Diagnostics,
-    Settings,
 }
 /// Presentation routes never own or duplicate the retained engine result.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
@@ -158,21 +157,6 @@ impl App {
                     egui::Panel::bottom("navigator-utilities")
                         .resizable(false)
                         .show(ui, |ui| {
-                            let caption = if self.database.session.is_some() {
-                                format!(
-                                    "Tools apply to {}",
-                                    std::path::Path::new(&self.database.path)
-                                        .file_name()
-                                        .unwrap_or_default()
-                                        .to_string_lossy()
-                                )
-                            } else {
-                                "Tools need an open database".into()
-                            };
-                            ui.add(
-                                egui::Label::new(egui::RichText::new(&caption).small()).truncate(),
-                            )
-                            .on_hover_text(caption);
                             self.navigator_utilities(ui);
                         });
                     self.navigation_sidebar(ui);
@@ -190,7 +174,7 @@ impl App {
         self.inspection_surfaces(&ctx);
         self.command_palette(&ctx);
         self.access_dialog(&ctx);
-        self.discovery_settings_window(&ctx);
+        self.settings_window(&ctx);
 
         if self.database.ui.outcomes {
             let mut open = true;

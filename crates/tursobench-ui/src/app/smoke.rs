@@ -504,14 +504,17 @@ impl App {
         self.database.document.show_insert = false;
         self.database.document.ui.inspector_detached = false;
         self.database.document.ui.inspector_open = false;
-        self.databases.settings_open = false;
+        self.settings.open = false;
         match scene {
             1 => self.database.document.show_preview = true,
             2 => self.begin_insert(),
             3 => self.database.ui.sidebar = shell::ToolPanel::History,
             4 => self.database.ui.sidebar = shell::ToolPanel::Saved,
             5 => self.database.ui.sidebar = shell::ToolPanel::Diagnostics,
-            6 => self.database.ui.sidebar = shell::ToolPanel::Settings,
+            6 => {
+                self.settings.page = super::settings::Page::Appearance;
+                self.settings.open = true;
+            }
             7 => {
                 self.database.ui.palette_open = true;
                 self.database.ui.palette_query.clear();
@@ -536,7 +539,10 @@ impl App {
                     self.databases.inspection.override_sqlite = false;
                 }
             }
-            15 => self.databases.settings_open = true,
+            15 => {
+                self.settings.page = super::settings::Page::Discovery;
+                self.settings.open = true;
+            }
             _ => {}
         }
     }

@@ -70,27 +70,6 @@ impl App {
         }
     }
 
-    pub(in crate::app) fn discovery_settings_window(&mut self, ctx: &egui::Context) {
-        let mut open = self.databases.settings_open;
-        egui::Window::new("Search settings")
-            .frame(crate::app::presentation::window_frame(ctx))
-            .default_pos(ctx.content_rect().center() - egui::vec2(280.0, 180.0))
-            .id(egui::Id::unique("database-search-settings"))
-            .open(&mut open)
-            .collapsible(false)
-            .default_width(420.0)
-            .min_width(280.0)
-            .max_height(480.0)
-            .vscroll(true)
-            .show(ctx, |ui| {
-                self.discovery_settings_ui(ui);
-                if let Some(message) = &self.databases.message {
-                    ui.label(message);
-                }
-            });
-        self.databases.settings_open = open;
-    }
-
     fn database_access_ui(&mut self, ui: &mut egui::Ui) {
         self.poll_database_inspection(ui.ctx());
         egui::Frame::new()
@@ -398,16 +377,18 @@ mod tests {
         ] {
             assert!(!texts.iter().any(|text| text == hidden), "{hidden}");
         }
-        assert!(app.databases.settings_rect.unwrap().width() <= 30.0);
-        let settings = app.databases.settings_rect.unwrap().center();
-        click(&mut app, &ctx, settings);
+        assert!(app.databases.refresh_rect.unwrap().width() <= 30.0);
+        assert!(!app.settings.open);
+        app.execute_command(&ctx, crate::app::commands::Command::Settings);
+        app.settings.page = crate::app::settings::Page::Discovery;
+        frame(&mut app, &ctx, vec![], egui::vec2(1280.0, 720.0));
         let texts = frame(&mut app, &ctx, vec![], egui::vec2(1280.0, 720.0));
-        assert!(app.databases.settings_open);
+        assert!(app.settings.open);
         assert!(texts.iter().any(|text| text == "Search folders"));
         // The default folder list makes this dialog scrollable. Feedback remains
         // accessible below it, independently of the file access controls.
         let settings_rect = ctx
-            .memory(|memory| memory.area_rect(egui::Id::unique("database-search-settings")))
+            .memory(|memory| memory.area_rect(egui::Id::unique("application-settings")))
             .unwrap();
         frame(
             &mut app,

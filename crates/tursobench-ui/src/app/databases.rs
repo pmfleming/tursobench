@@ -83,7 +83,6 @@ pub(super) struct Chooser {
     exclude_input: String,
     pub picking_folder: bool,
     pub editing_path: bool,
-    pub(super) settings_open: bool,
     pub message: Option<String>,
     summary: Option<Summary>,
     cancelling: bool,
@@ -105,7 +104,7 @@ pub(super) struct Chooser {
     #[cfg(test)]
     pub open_enabled: bool,
     #[cfg(test)]
-    pub settings_rect: Option<egui::Rect>,
+    pub refresh_rect: Option<egui::Rect>,
     #[cfg(test)]
     pub override_rect: Option<egui::Rect>,
 }

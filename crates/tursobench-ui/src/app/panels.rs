@@ -3,261 +3,10 @@ use super::{
     App, View,
     icons::{self, Icon},
 };
-use crate::appearance::Mode;
 use eframe::egui;
 use tursobench_db::{Diagnostic, Operation};
 
 impl App {
-    pub(super) fn settings_ui(&mut self, ui: &mut egui::Ui) {
-        if heading_action(ui, "Settings", Icon::Saved, "Save settings", true) {
-            self.preferences.normalize();
-            self.store.save(&self.preferences);
-            self.database.status = "Saving preferences…".into();
-        }
-        section(ui, "Appearance", |ui| {
-            ui.horizontal(|ui| {
-                for (mode, icon, name) in [
-                    (Mode::System, Icon::Desktop, "Follow system"),
-                    (Mode::Light, Icon::Sun, "Light theme"),
-                    (Mode::Dark, Icon::Moon, "Dark theme"),
-                ] {
-                    let response = icons::control(
-                        ui,
-                        icon,
-                        name,
-                        "",
-                        self.preferences.appearance == Some(mode),
-                        false,
-                    );
-                    if response.clicked() {
-                        self.preferences.appearance = Some(mode);
-                        self.apply_theme(ui.ctx());
-                        self.store.save(&self.preferences);
-                    }
-                }
-                ui.weak("Aa").on_hover_text(&self.database.ui.font_label);
-            });
-            let before = self.preferences.font_size;
-            ui.horizontal(|ui| {
-                ui.label("Font size");
-                if icons::button(ui, Icon::Undo, "Reset font size", "").clicked() {
-                    self.preferences.font_size = 14;
-                }
-            });
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled_ui(self.preferences.font_size > 10, |ui| {
-                        icons::button(ui, Icon::Minimize, "Decrease font size", "")
-                    })
-                    .inner
-                    .clicked()
-                {
-                    self.preferences.font_size -= 1;
-                }
-                let size = ui.add(
-                    egui::DragValue::new(&mut self.preferences.font_size)
-                        .range(10..=20)
-                        .suffix(" pt"),
-                );
-                size.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::Role::SpinButton, true, "Font size")
-                });
-                size.on_hover_text("Type or drag to change text size");
-                if ui
-                    .add_enabled_ui(self.preferences.font_size < 20, |ui| {
-                        icons::button(ui, Icon::Plus, "Increase font size", "")
-                    })
-                    .inner
-                    .clicked()
-                {
-                    self.preferences.font_size += 1;
-                }
-            });
-            if before != self.preferences.font_size {
-                self.apply_theme(ui.ctx());
-                for document in std::iter::once(&mut self.database.document)
-                    .chain(self.database.documents.values_mut())
-                {
-                    document.tools.columns.refit = true;
-                    for columns in document.tools.column_layouts.values_mut() {
-                        columns.refit = true;
-                    }
-                }
-                self.store.save(&self.preferences);
-            }
-        });
-        self.resource_settings(ui);
-        self.recovery_settings(ui);
-        section(ui, "Queries", |ui| {
-            setting(ui, "Rows", "Maximum retained query rows", |ui| {
-                ui.add(egui::DragValue::new(&mut self.preferences.row_limit).range(1..=10_000))
-            });
-            setting(
-                ui,
-                "Busy wait",
-                "Busy timeout; applies after reopening the database",
-                |ui| {
-                    ui.add(
-                        egui::DragValue::new(&mut self.preferences.busy_timeout_ms)
-                            .range(0..=5000)
-                            .suffix(" ms"),
-                    )
-                },
-            );
-            setting(
-                ui,
-                "Deadline",
-                "Statement deadline after reopen; 0 disables. Prior committed work is not rolled back.",
-                |ui| {
-                    ui.add(
-                        egui::DragValue::new(&mut self.preferences.query_timeout_ms)
-                            .range(0..=3_600_000)
-                            .suffix(" ms"),
-                    )
-                },
-            );
-            setting(ui, "Slow ≥", "Slow query threshold", |ui| {
-                ui.add(
-                    egui::DragValue::new(&mut self.preferences.slow_query_ms)
-                        .range(1..=60_000)
-                        .suffix(" ms"),
-                )
-            });
-        });
-        section(ui, "Display", |ui| {
-            setting(
-                ui,
-                "NULL",
-                "Display marker only; stored values are unchanged",
-                |ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.preferences.null_display)
-                            .char_limit(32)
-                            .desired_width(ui.available_width().min(90.0)),
-                    )
-                },
-            );
-        });
-        section(ui, "Discovery", |ui| {
-            self.discovery_settings_ui(ui);
-            if let Some(message) = &self.databases.message {
-                ui.label(message);
-            }
-        });
-    }
-
-    fn resource_settings(&mut self, ui: &mut egui::Ui) {
-        let before = (
-            self.preferences.memory_budget_mib,
-            self.preferences.database_limit,
-        );
-        section(ui, "Database resources", |ui| {
-            let automatic =
-                self.memory.automatic_budget_mib() / crate::resources::DATABASE_RESERVATION_MIB;
-            let mut count = self.memory.limits(&self.preferences).database_limit;
-            let maximum = usize::try_from(
-                self.memory
-                    .available_mib
-                    .or(self.memory.total_mib)
-                    .unwrap_or_else(|| self.memory.automatic_budget_mib().saturating_mul(4))
-                    / crate::resources::DATABASE_RESERVATION_MIB,
-            )
-            .unwrap_or(usize::MAX)
-            .max(count)
-            .max(1);
-            let mut reset = false;
-            ui.horizontal_wrapped(|ui| {
-                ui.label(format!("{count} databases"));
-                reset = ui
-                    .button("Reset")
-                    .on_hover_text(format!(
-                        "Restore the system recommendation: {automatic} databases"
-                    ))
-                    .clicked();
-            });
-            let response = ui
-                .scope(|ui| {
-                    ui.spacing_mut().slider_width = ui.available_width();
-                    let tokens = crate::appearance::Tokens::of(ui.ctx());
-                    ui.visuals_mut().widgets.inactive.bg_fill = tokens.line_strong;
-                    ui.visuals_mut().selection.bg_fill = tokens.primary;
-                    let minimum = usize::from(count > 0);
-                    ui.add(
-                        egui::Slider::new(&mut count, minimum..=maximum)
-                            .show_value(false)
-                            .trailing_fill(true),
-                    )
-                })
-                .inner;
-            response.widget_info(|| {
-                egui::WidgetInfo::slider(response.enabled(), count as f64, "Maximum open databases")
-            });
-            if response.changed() {
-                self.preferences.database_limit = Some(count.max(1));
-                self.preferences.memory_budget_mib = Some(
-                    (count as u64)
-                        .saturating_mul(crate::resources::DATABASE_RESERVATION_MIB)
-                        .max(1),
-                );
-            }
-            if reset {
-                self.preferences.database_limit = None;
-                self.preferences.memory_budget_mib = None;
-            }
-            let limits = self.memory.limits(&self.preferences);
-            let estimated = (limits.database_limit as u64)
-                .saturating_mul(crate::resources::DATABASE_RESERVATION_MIB);
-            ui.strong(format!(
-                "Estimated memory: {}",
-                crate::resources::format_mib(estimated)
-            ));
-            let detected = match (self.memory.available_mib, self.memory.total_mib) {
-                (Some(available), Some(total)) => format!(
-                    "At startup: {} available / {} total. Uses 25% of available memory for the system recommendation.{}",
-                    crate::resources::format_mib(available),
-                    crate::resources::format_mib(total),
-                    if self.memory.process_limited {
-                        " Process memory limits included."
-                    } else {
-                        ""
-                    },
-                ),
-                _ => format!(
-                    "Available memory could not be detected. Fallback budget: {}.",
-                    crate::resources::format_mib(self.memory.automatic_budget_mib())
-                ),
-            };
-            ui.small(format!("System recommendation: {automatic} databases"))
-                .on_hover_text(detected);
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(format!(
-                        "{} MiB per database; actual use varies.",
-                        crate::resources::DATABASE_RESERVATION_MIB,
-                    ))
-                    .small(),
-                )
-                .wrap(),
-            );
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new("Changes apply to new opens. Existing work stays open.")
-                        .small(),
-                )
-                .wrap(),
-            );
-        });
-        if before
-            != (
-                self.preferences.memory_budget_mib,
-                self.preferences.database_limit,
-            )
-        {
-            self.preferences.normalize();
-            self.store.save(&self.preferences);
-        }
-    }
-
     pub(super) fn saved_queries_ui(&mut self, ui: &mut egui::Ui) {
         if heading_action(
             ui,
@@ -543,7 +292,7 @@ fn heading_action(ui: &mut egui::Ui, title: &str, icon: Icon, name: &str, enable
     .inner
 }
 
-fn section(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut egui::Ui)) {
+pub(super) fn section(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut egui::Ui)) {
     ui.add_space(4.0);
     ui.label(
         egui::RichText::new(title.to_uppercase())
@@ -554,7 +303,7 @@ fn section(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut egui::Ui))
     card(ui, contents);
 }
 
-fn card<R>(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
+pub(super) fn card<R>(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::new()
         .fill(ui.visuals().faint_bg_color)
         .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
@@ -565,20 +314,6 @@ fn card<R>(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
             contents(ui)
         })
         .inner
-}
-
-fn setting(
-    ui: &mut egui::Ui,
-    label: &str,
-    tooltip: &str,
-    control: impl FnOnce(&mut egui::Ui) -> egui::Response,
-) {
-    ui.horizontal(|ui| {
-        let label = ui.label(label).on_hover_text(tooltip);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            control(ui).labelled_by(label.id).on_hover_text(tooltip);
-        });
-    });
 }
 
 fn search(ui: &mut egui::Ui, value: &mut String, hint: &str) {
@@ -695,8 +430,16 @@ fn sql_preview(sql: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{App, Diagnostic, Mode, egui};
-    use crate::app::shell::ToolPanel;
+    use super::{App, Diagnostic, egui};
+    use crate::{app::settings::Page, appearance::Mode};
+    // Render individual pages without requiring an open database.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum ToolPanel {
+        Settings,
+        History,
+        Saved,
+        Diagnostics,
+    }
 
     fn frame(
         app: &mut App,
@@ -710,7 +453,6 @@ mod tests {
             ToolPanel::History => app.query_history_ui(ui),
             ToolPanel::Saved => app.saved_queries_ui(ui),
             ToolPanel::Diagnostics => app.diagnostics_ui(ui),
-            _ => unreachable!(),
         })
     }
 
@@ -729,13 +471,10 @@ mod tests {
     }
 
     #[test]
-    fn settings_expose_discovery_and_font_controls_and_apply_size_without_drift() {
+    fn appearance_controls_apply_size_without_drift() {
         let (ctx, mut app) = crate::app::test_ui::app();
         let output = frame(&mut app, &ctx, ToolPanel::Settings, 240.0, vec![]);
         for name in [
-            "Search folder path",
-            "Excluded folder path",
-            "Refresh databases",
             "Decrease font size",
             "Increase font size",
             "Reset font size",
@@ -769,6 +508,7 @@ mod tests {
     fn resource_slider_updates_admission_and_reset_restores_system_choice() {
         let (ctx, mut app) = crate::app::test_ui::app();
         let panel = ToolPanel::Settings;
+        app.settings.page = Page::Resources;
         let output = frame(&mut app, &ctx, panel, 240.0, vec![]);
         let slider = crate::app::test_ui::control(&output, "Maximum open databases");
         assert_eq!(app.memory.limits(&app.preferences).database_limit, 8);
@@ -800,7 +540,7 @@ mod tests {
         let limits = app.memory.limits(&app.preferences);
         assert!(limits.database_limit > 0 && limits.database_limit < 8);
         assert_eq!(limits.budget_mib, limits.database_limit as u64 * 512);
-        click(&mut app, &ctx, panel, "Reset");
+        click(&mut app, &ctx, panel, "Reset database resources");
         assert_eq!(app.preferences.memory_budget_mib, None);
         assert_eq!(app.preferences.database_limit, None);
         assert_eq!(app.memory.limits(&app.preferences).database_limit, 8);
@@ -825,12 +565,7 @@ mod tests {
             app.preferences
                 .bookmark("/work/current.db", &"long name ".repeat(6), "SELECT 1");
             for width in [180.0, 240.0, 300.0] {
-                for panel in [
-                    ToolPanel::Settings,
-                    ToolPanel::History,
-                    ToolPanel::Saved,
-                    ToolPanel::Diagnostics,
-                ] {
+                for panel in [ToolPanel::History, ToolPanel::Saved, ToolPanel::Diagnostics] {
                     frame(&mut app, &ctx, panel, width, vec![]);
                     let output = frame(&mut app, &ctx, panel, width, vec![]);
                     let tree = output.platform_output.accesskit_update.as_ref().unwrap();

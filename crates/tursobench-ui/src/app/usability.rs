@@ -36,7 +36,6 @@ impl App {
         match self.database.ui.sidebar {
             shell::ToolPanel::Saved => self.saved_queries_ui(ui),
             shell::ToolPanel::History => self.query_history_ui(ui),
-            shell::ToolPanel::Settings => self.settings_ui(ui),
             _ => {}
         }
     }

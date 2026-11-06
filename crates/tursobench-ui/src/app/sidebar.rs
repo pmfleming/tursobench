@@ -92,11 +92,6 @@ impl App {
             .id_salt("database-navigation")
             .show(ui, |ui| {
                 self.open_databases_ui(ui);
-                if self.database.session.is_none()
-                    && self.database.ui.sidebar == ToolPanel::Settings
-                {
-                    self.settings_ui(ui);
-                }
                 self.available_databases_ui(ui);
             });
     }
@@ -105,8 +100,6 @@ impl App {
         if self.database.ui.sidebar != ToolPanel::Schema {
             if self.database.ui.sidebar == ToolPanel::Diagnostics {
                 self.diagnostics_ui(ui);
-            } else if self.database.ui.sidebar == ToolPanel::Settings {
-                self.settings_ui(ui);
             } else {
                 self.history_controls(ui);
             }
@@ -372,9 +365,7 @@ impl App {
     }
 
     pub(super) fn select_tool(&mut self, panel: ToolPanel) {
-        if self.database.session.is_none()
-            && !matches!(panel, ToolPanel::Schema | ToolPanel::Settings)
-        {
+        if self.database.session.is_none() && panel != ToolPanel::Schema {
             self.database.status = "Open a database to use this tool".into();
             return;
         }
@@ -382,9 +373,40 @@ impl App {
     }
 
     pub(super) fn navigator_utilities(&mut self, ui: &mut egui::Ui) {
+        let width = ((ui.available_width() - 18.0) / 5.0).max(18.0);
+        let tools_width = width * 4.0 + 6.0;
+        let open = self.database.session.is_some();
+        let name = std::path::Path::new(&self.database.path)
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy();
+        let caption = if open {
+            name.as_ref()
+        } else {
+            "Tools need an open database"
+        };
+        let tooltip = if open {
+            format!("Tools apply to {name}")
+        } else {
+            caption.into()
+        };
+        ui.allocate_ui(egui::vec2(tools_width, 18.0), |ui| {
+            ui.set_max_width(tools_width);
+            ui.add(egui::Label::new(egui::RichText::new(caption).small()).truncate())
+                .on_hover_text(tooltip);
+        });
+        let start = ui.cursor().min;
+        let stroke = egui::Stroke::new(1.0, crate::appearance::Tokens::of(ui.ctx()).line_strong);
+        ui.painter()
+            .line_segment([start, start + egui::vec2(tools_width, 0.0)], stroke);
+        for x in [0.0, tools_width] {
+            ui.painter().line_segment(
+                [start + egui::vec2(x, 0.0), start + egui::vec2(x, 4.0)],
+                stroke,
+            );
+        }
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            let width = ((ui.available_width() - 8.0) / 5.0).max(18.0);
             for (icon, label, name, panel) in [
                 (Icon::Data, "Tables", "Tables", ToolPanel::Schema),
                 (Icon::History, "History", "History", ToolPanel::History),
@@ -395,19 +417,37 @@ impl App {
                     "Database checks",
                     ToolPanel::Diagnostics,
                 ),
-                (Icon::Settings, "Settings", "Settings", ToolPanel::Settings),
             ] {
-                let selected = panel == self.database.ui.sidebar;
-                let enabled = self.database.session.is_some() || panel == ToolPanel::Settings;
                 if ui
-                    .add_enabled_ui(enabled, |ui| {
-                        icons::rail_button(ui, icon, label, name, selected, width)
+                    .add_enabled_ui(open, |ui| {
+                        icons::rail_button(
+                            ui,
+                            icon,
+                            label,
+                            name,
+                            panel == self.database.ui.sidebar,
+                            width,
+                        )
                     })
                     .inner
                     .clicked()
                 {
                     self.select_tool(panel);
                 }
+            }
+            ui.separator();
+            if icons::rail_button(
+                ui,
+                Icon::Settings,
+                "Settings",
+                "Settings",
+                self.settings.open,
+                width,
+            )
+            .on_hover_text("Application settings · Ctrl+,")
+            .clicked()
+            {
+                self.settings.open = !self.settings.open;
             }
         });
     }

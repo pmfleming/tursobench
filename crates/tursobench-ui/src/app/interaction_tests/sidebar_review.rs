@@ -334,7 +334,8 @@ fn empty_sidebar_disables_tools_and_keeps_settings_available() {
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
     let settings = control(&output, "Settings");
     click(&mut app, &ctx, settings.center());
-    assert_eq!(app.database.ui.sidebar, shell::ToolPanel::Settings);
+    assert!(app.settings.open);
+    assert_eq!(app.database.ui.sidebar, shell::ToolPanel::Schema);
 }
 
 #[test]

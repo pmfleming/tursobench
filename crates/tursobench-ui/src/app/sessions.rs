@@ -329,6 +329,7 @@ impl App {
         if self.polling_background || !self.quit {
             return;
         }
+        self.save_settings();
         if self.database.transaction == tursobench_core::TransactionState::Unknown
             || self.database.uncertain_edit
         {

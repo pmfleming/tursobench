@@ -1494,31 +1494,29 @@ fn navigation_restores_typed_browse_context_and_query_return_without_dropping_dr
 }
 
 #[test]
-fn settings_shortcut_uses_the_left_panel_before_a_database_is_open() {
+fn settings_shortcut_opens_a_window_without_replacing_the_database_tool() {
     let (ctx, mut app) = crate::app::test_ui::app();
     frame(&mut app, &ctx, vec![]);
     press_key(&mut app, &ctx, egui::Key::Comma, egui::Modifiers::CTRL);
     let output = frame_at(&mut app, &ctx, egui::vec2(1280.0, 720.0), vec![]);
-    assert_eq!(app.database.ui.sidebar, shell::ToolPanel::Settings);
+    assert!(app.settings.open);
+    assert_eq!(app.database.ui.sidebar, shell::ToolPanel::Schema);
     assert_eq!(app.database.document.ui.nav, shell::Nav::Databases);
-    let heading = output
-        .shapes
-        .iter()
-        .find_map(|shape| match &shape.shape {
-            egui::Shape::Text(text) if text.galley.job.text == "Settings" => Some(text),
-            _ => None,
-        })
-        .expect("Settings is visible before opening a database");
-    assert!(
-        app.database
-            .ui
-            .sidebar_rect
-            .contains_rect(heading.galley.rect.translate(heading.pos.to_vec2()))
-    );
-    app.select_tool(shell::ToolPanel::Schema);
-    frame(&mut app, &ctx, vec![]);
+    for name in [
+        "Appearance",
+        "Discovery",
+        "Database resources",
+        "Queries and SQL recovery",
+    ] {
+        control(&output, name);
+    }
+    app.settings.page = super::settings::Page::Queries;
+    press_key(&mut app, &ctx, egui::Key::Escape, egui::Modifiers::NONE);
+    assert!(!app.settings.open);
+    app.execute_command(&ctx, super::commands::Command::Settings);
+    assert_eq!(app.settings.page, super::settings::Page::Queries);
+    assert!(app.settings.open);
     assert!(app.database.session.is_none());
-    assert_eq!(app.database.document.ui.nav, shell::Nav::Databases);
 }
 
 #[test]
@@ -1542,7 +1540,6 @@ fn sidebar_catalog_includes_views_when_map_is_incomplete_and_tools_preserve_rows
         shell::ToolPanel::History,
         shell::ToolPanel::Saved,
         shell::ToolPanel::Diagnostics,
-        shell::ToolPanel::Settings,
     ] {
         let nav = app.database.document.ui.nav;
         app.select_tool(panel);
@@ -1550,27 +1547,6 @@ fn sidebar_catalog_includes_views_when_map_is_incomplete_and_tools_preserve_rows
         assert_eq!(app.database.document.ui.nav, nav);
         let output = frame_at(&mut app, &ctx, egui::vec2(1280.0, 720.0), vec![]);
         assert!(output.shapes.len() > 10);
-        if panel == shell::ToolPanel::Settings {
-            let heading = output
-                .shapes
-                .iter()
-                .find_map(|shape| match &shape.shape {
-                    egui::Shape::Text(text) if text.galley.job.text == "Settings" => Some(text),
-                    _ => None,
-                })
-                .expect("Settings is visible in the navigator");
-            assert!(
-                app.database
-                    .ui
-                    .sidebar_rect
-                    .contains_rect(heading.galley.rect.translate(heading.pos.to_vec2()))
-            );
-            assert!(app.database.ui.sidebar_rect.width() <= 300.0);
-            assert!(
-                app.database.ui.visible_rows > 0,
-                "Settings must keep the data workspace visible"
-            );
-        }
         app.select_tool(shell::ToolPanel::Schema);
         assert_eq!(visible_result(&app).current, ticket);
         assert_eq!(visible_result(&app).rows, rows);
