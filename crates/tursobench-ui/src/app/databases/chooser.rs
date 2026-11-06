@@ -11,15 +11,16 @@ use std::path::Path;
 
 impl App {
     pub(in crate::app) fn available_databases_ui(&mut self, ui: &mut egui::Ui) {
-        let mut paths: Vec<_> = self
+        let mut indices: Vec<_> = self
             .databases
             .entries
             .iter()
-            .filter(|entry| self.duplicate_workspace(&entry.path).is_none())
-            .map(|entry| entry.path.clone())
+            .enumerate()
+            .filter(|(_, entry)| self.listed_workspace(&entry.path).is_none())
+            .map(|(index, _)| index)
             .collect();
         ui.horizontal(|ui| {
-            ui.small(format!("AVAILABLE · {}", paths.len()));
+            ui.small(format!("AVAILABLE · {}", indices.len()));
             if self.databases.job.is_some() {
                 ui.spinner().on_hover_text("Finding local databases…");
             }
@@ -32,85 +33,135 @@ impl App {
                 self.databases.settings_open = true;
             }
         });
-        if self.database.session.is_none() {
-            if self.database.path.is_empty() {
-                self.pending_database_ui(ui);
-            } else if !paths.iter().any(|p| p == Path::new(&self.database.path)) {
-                paths.insert(0, self.database.path.clone().into());
-            }
-        }
         let can_select = self.can_request_database();
-        if !can_select && self.picker.is_none() && !self.database.confirm_close && !self.quit {
-            ui.small("4 of 4 workspaces retained. Close a database to open another.");
-        }
         let mut selected = None;
         let mut forget = None;
         #[cfg(test)]
         {
             self.databases.row_rects.clear();
+            self.databases.rendered_candidates = 0;
         }
-        let focused = ui.memory(|m| m.has_focus(egui::Id::unique("sidebar-search")));
-        let selectable: Vec<_> = paths
-            .iter()
-            .filter(|path| {
-                self.databases
-                    .entries
-                    .iter()
-                    .any(|e| e.path == **path && e.selectable())
-            })
-            .cloned()
-            .collect();
-        if let Some(index) = self.sidebar_selection_keys(ui, selectable.len()) {
-            selected = selectable.get(index).cloned();
-        }
-        for path in paths {
-            let entry = self
-                .databases
-                .entries
-                .iter()
-                .find(|e| e.path == path)
-                .cloned()
-                .unwrap_or_else(|| Entry {
-                    path: path.clone(),
-                    state: super::State::Remembered,
-                    size: None,
-                    last_opened: None,
-                    kind: crate::discovery::DatabaseKind::Unknown,
+        // The variable-height access card is kept above the fixed-height list so
+        // it cannot invalidate virtual row positions or disappear off-screen.
+        if !self.database.retained() {
+            if !self.database.path.is_empty() {
+                let pending = indices.iter().position(|&i| {
+                    self.databases.entries[i].path == Path::new(&self.database.path)
                 });
-            let highlighted = focused
-                && self.sidebar_search.navigating
-                && selectable.get(self.sidebar_search.index) == Some(&path);
-            let (row, remove) = entry.row_ui(
-                ui,
-                Path::new(&self.database.path) == path,
-                highlighted,
-                can_select && entry.selectable(),
-            );
-            if highlighted {
-                row.scroll_to_me(None);
-            }
-            #[cfg(test)]
-            {
+                let synthetic;
+                let entry = if let Some(pending) = pending {
+                    &self.databases.entries[indices.remove(pending)]
+                } else {
+                    synthetic = Entry {
+                        path: self.database.path.clone().into(),
+                        state: super::State::Remembered,
+                        size: None,
+                        last_opened: None,
+                        kind: crate::discovery::DatabaseKind::Unknown,
+                    };
+                    &synthetic
+                };
+                let (row, remove) = entry.row_ui(ui, true, false, can_select && entry.selectable());
+                #[cfg(test)]
                 if ui.is_rect_visible(row.rect) {
-                    self.databases.row_rects.push((path.clone(), row.rect));
+                    self.databases
+                        .row_rects
+                        .push((entry.path.clone(), row.rect));
+                }
+                if remove {
+                    forget = Some(entry.path.clone());
                 }
             }
+            self.pending_database_ui(ui);
+        }
+        if !can_select && self.picker.is_none() && !self.database.confirm_close && !self.quit {
+            ui.small("4 of 4 workspaces retained. Close a database to open another.");
+        }
+        let selectable: Vec<_> = indices
+            .iter()
+            .copied()
+            .filter(|&i| self.databases.entries[i].selectable())
+            .collect();
+        if self.sidebar_search.navigating
+            && self.sidebar_search.key_delta.is_none()
+            && let Some(path) = &self.sidebar_search.available_highlight
+            && let Some(index) = selectable
+                .iter()
+                .position(|&i| self.databases.entries[i].path == *path)
+        {
+            self.sidebar_search.index = index;
+        }
+        if let Some(index) = self.sidebar_selection_keys(ui, selectable.len()) {
+            selected = selectable
+                .get(index)
+                .map(|&i| self.databases.entries[i].path.clone());
+        }
+        let focused = ui.memory(|m| m.has_focus(egui::Id::unique("sidebar-search")));
+        let highlighted = (focused && self.sidebar_search.navigating)
+            .then(|| selectable.get(self.sidebar_search.index))
+            .flatten()
+            .copied();
+        self.sidebar_search.available_highlight =
+            highlighted.map(|i| self.databases.entries[i].path.clone());
+        let row_height = 34.0;
+        let stride = row_height + ui.spacing().item_spacing.y;
+        let top = ui.cursor().min;
+        if let Some(position) = (std::mem::take(&mut self.sidebar_search.reveal))
+            .then_some(highlighted)
+            .flatten()
+            .and_then(|i| indices.iter().position(|&index| index == i))
+        {
+            ui.scroll_to_rect(
+                egui::Rect::from_min_size(
+                    top + egui::vec2(0.0, position as f32 * stride),
+                    egui::vec2(ui.available_width(), row_height),
+                ),
+                None,
+            );
+        }
+        let start = (((ui.clip_rect().top() - top.y) / stride).floor().max(0.0) as usize)
+            .min(indices.len());
+        let end = ((((ui.clip_rect().bottom() - top.y) / stride).ceil().max(0.0) as usize) + 1)
+            .min(indices.len())
+            .max(start);
+        ui.add_space(start as f32 * stride);
+        ui.skip_ahead_auto_ids(start);
+        for &index in &indices[start..end] {
+            #[cfg(test)]
+            {
+                self.databases.rendered_candidates += 1;
+            }
+            let entry = &self.databases.entries[index];
+            let (row, remove) = ui
+                .push_id(&entry.path, |ui| {
+                    entry.row_ui(
+                        ui,
+                        false,
+                        highlighted == Some(index),
+                        can_select && entry.selectable(),
+                    )
+                })
+                .inner;
+            #[cfg(test)]
+            if ui.is_rect_visible(row.rect) {
+                self.databases
+                    .row_rects
+                    .push((entry.path.clone(), row.rect));
+            }
             if row.clicked() && can_select && entry.selectable() {
-                selected = Some(path.clone());
+                selected = Some(entry.path.clone());
             }
             if remove {
-                forget = Some(path.clone());
-            }
-            if self.database.session.is_none() && Path::new(&self.database.path) == path {
-                self.pending_database_ui(ui);
+                forget = Some(entry.path.clone());
             }
         }
+        ui.add_space((indices.len() - end) as f32 * stride);
+        ui.skip_ahead_auto_ids(indices.len() - end);
         if let Some(path) = forget {
             self.forget_database(&path);
         }
         if let Some(path) = selected.filter(|_| can_select) {
             self.request_database(ui.ctx(), path);
-            self.sidebar_search.query.clear();
         }
         if self.databases.entries.is_empty() {
             ui.weak("No databases found. Browse files or enter a path.");

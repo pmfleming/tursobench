@@ -57,6 +57,7 @@ pub struct Candidate {
     pub size: u64,
     pub modified: Option<u64>,
     pub kind: DatabaseKind,
+    pub identity: Option<Identity>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -233,6 +234,7 @@ fn read_candidate(path: &Path) -> io::Result<Option<(Metadata, Candidate)>> {
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
             .map(|t| t.as_secs()),
         kind: DatabaseKind::from_header(&header),
+        identity: Some(identity(&metadata, path)),
     };
     Ok(Some((metadata, candidate)))
 }
@@ -485,14 +487,14 @@ fn unescape_mount(value: &str) -> PathBuf {
     }
 }
 
-#[derive(Hash, PartialEq, Eq, Clone)]
-enum Identity {
+#[derive(Debug, Hash, PartialEq, Eq, Clone)]
+pub enum Identity {
     #[cfg(unix)]
     Inode(u64, u64),
     #[cfg(not(unix))]
     Path(PathBuf),
 }
-fn identity(metadata: &Metadata, _path: &Path) -> Identity {
+pub(crate) fn identity(metadata: &Metadata, _path: &Path) -> Identity {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;

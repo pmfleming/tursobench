@@ -89,8 +89,11 @@ pub(super) struct Chooser {
     cancelling: bool,
     pending_folder: Option<PathBuf>,
     forgotten: HashSet<PathBuf>,
+    identities: std::collections::HashMap<PathBuf, crate::discovery::Identity>,
     #[cfg(test)]
     pub row_rects: Vec<(PathBuf, egui::Rect)>,
+    #[cfg(test)]
+    pub rendered_candidates: usize,
     #[cfg(test)]
     pub browse_rect: Option<egui::Rect>,
     #[cfg(test)]
@@ -309,6 +312,11 @@ impl App {
                 {
                     return;
                 }
+                if let Some(identity) = candidate.identity {
+                    self.databases
+                        .identities
+                        .insert(candidate.path.clone(), identity);
+                }
                 self.preferences.discovery.remember(CachedDatabase {
                     path: candidate.path.clone(),
                     size: candidate.size,
@@ -335,6 +343,7 @@ impl App {
                 }
             }
             Event::Checked(path, state) => {
+                self.databases.identities.remove(&path);
                 if let Some(entry) = self.databases.entries.iter_mut().find(|e| e.path == path) {
                     entry.state = State::Checked(state);
                     entry.kind = DatabaseKind::Unknown;
@@ -354,6 +363,9 @@ impl App {
                 }
             }
             Event::Alias { path, original } => {
+                if let Some(identity) = self.databases.identities.get(&original).cloned() {
+                    self.databases.identities.insert(path.clone(), identity);
+                }
                 let recent = self
                     .databases
                     .entries
@@ -383,6 +395,15 @@ impl App {
     }
 
     pub(super) fn record_database_open(&mut self) {
+        // Resolve file identity once after opening; paint paths use this snapshot.
+        self.database.identity = std::fs::metadata(&self.database.path)
+            .ok()
+            .map(|metadata| crate::discovery::identity(&metadata, Path::new(&self.database.path)));
+        if let Some(identity) = self.database.identity.clone() {
+            self.databases
+                .identities
+                .insert(self.database.path.clone().into(), identity);
+        }
         let Some(path) = normalized_absolute(Path::new(&self.database.tools.database_scope)) else {
             return;
         };
@@ -481,6 +502,7 @@ impl App {
     }
 
     fn forget_database(&mut self, path: &Path) {
+        self.databases.identities.remove(path);
         self.databases.forgotten.insert(path.into());
         self.databases.entries.retain(|e| e.path != path);
         self.preferences.discovery.cached.retain(|e| e.path != path);
@@ -490,12 +512,25 @@ impl App {
 }
 
 impl App {
+    pub(super) fn listed_workspace(&self, path: &Path) -> Option<u64> {
+        let identity = self.databases.identities.get(path);
+        std::iter::once(&self.database)
+            .chain(self.parked.values())
+            .find(|d| {
+                d.retained()
+                    && (Path::new(&d.path) == path
+                        || identity
+                            .zip(d.identity.as_ref())
+                            .is_some_and(|(a, b)| a == b))
+            })
+            .map(|d| d.id)
+    }
     pub(super) fn available_database_paths(&self, query: &str) -> Vec<PathBuf> {
         let query = query.to_lowercase();
         self.databases
             .entries
             .iter()
-            .filter(|entry| entry.selectable() && self.duplicate_workspace(&entry.path).is_none())
+            .filter(|entry| entry.selectable() && self.listed_workspace(&entry.path).is_none())
             .filter(|entry| {
                 query
                     .split_whitespace()
@@ -556,6 +591,7 @@ mod tests {
             size: 4096,
             modified: Some(1),
             kind: DatabaseKind::Unknown,
+            identity: None,
         })
     }
     #[test]
@@ -642,6 +678,83 @@ mod tests {
         }
         assert_eq!(app.database.path, "/work/a.db");
         assert!(app.database.session.is_none() && app.picker.is_none());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn cached_identity_and_virtual_rows_bound_database_list_repaints() {
+        use crate::app::test_ui::{inspect_selected, key_event, render};
+        use eframe::egui;
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.db");
+        let alias = dir.path().join("alias.db");
+        crate::test_support::create(&source, &["CREATE TABLE example(id INTEGER PRIMARY KEY)"]);
+
+        let (ctx, mut app) = crate::app::test_ui::app();
+        app.set_database_path(source.to_str().unwrap().into());
+        inspect_selected(&mut app, &ctx);
+        app.open(&ctx);
+        let start = std::time::Instant::now();
+        while !app.database.ready || app.database.catalog_ticket.is_some() {
+            app.poll(&ctx);
+            assert!(start.elapsed() < std::time::Duration::from_secs(5));
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        std::os::unix::fs::symlink(&source, &alias).unwrap();
+        let identity = app.database.identity.clone().expect("opened identity");
+        app.discovery_event(Event::Found(Candidate {
+            path: alias.clone(),
+            size: 4096,
+            modified: None,
+            kind: DatabaseKind::LikelyTurso,
+            identity: Some(identity),
+        }));
+        for index in 0..500 {
+            app.discovery_event(found(&format!("/work/{index:03}.db")));
+        }
+        assert!(!app.available_database_paths("").contains(&alias));
+        let frame = |app: &mut crate::app::App, events| {
+            render(&ctx, egui::vec2(272.0, 600.0), events, |ui| {
+                app.navigation_sidebar(ui)
+            })
+        };
+        crate::app::sessions::IDENTITY_PROBES.with(|count| count.set(0));
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![]);
+        assert!(app.databases.rendered_candidates < 20);
+        crate::app::sessions::IDENTITY_PROBES
+            .with(|count| assert_eq!(count.get(), 0, "painting must not stat paths"));
+        frame(
+            &mut app,
+            vec![key_event(egui::Key::ArrowDown, true, egui::Modifiers::NONE)],
+        );
+        for _ in 0..6 {
+            frame(
+                &mut app,
+                vec![key_event(egui::Key::PageDown, true, egui::Modifiers::NONE)],
+            );
+        }
+        for _ in 0..15 {
+            frame(&mut app, vec![]);
+        }
+        assert_eq!(app.sidebar_search.index, 30);
+        assert!(
+            app.databases
+                .row_rects
+                .iter()
+                .any(|(p, _)| p == Path::new("/work/030.db"))
+        );
+        app.discovery_event(found("/work/new.db"));
+        frame(&mut app, vec![]);
+        assert_eq!(
+            app.sidebar_search.available_highlight.as_deref(),
+            Some(Path::new("/work/030.db"))
+        );
+        assert!(app.databases.rendered_candidates < 20);
+        assert_eq!(app.duplicate_workspace(&alias), Some(app.database.id));
+        crate::app::sessions::IDENTITY_PROBES
+            .with(|count| assert!(count.get() > 0, "explicit selection checks identity"));
+        app.close();
     }
 
     #[test]

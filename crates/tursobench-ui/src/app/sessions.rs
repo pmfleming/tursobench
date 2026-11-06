@@ -9,6 +9,7 @@ pub(super) struct DatabaseWorkspace {
     pub(super) recovery: recovery::State,
     pub(super) pending_database: Option<std::path::PathBuf>,
     pub(super) path: String,
+    pub(super) identity: Option<crate::discovery::Identity>,
     pub(super) tools: tools::Tools,
     pub(super) document: document::Document,
     pub(super) workspace: workspace::Workspace,
@@ -66,6 +67,7 @@ impl DatabaseWorkspace {
             recovery: recovery::State::new(ctx),
             pending_database: Default::default(),
             path: Default::default(),
+            identity: None,
             tools: Default::default(),
             document: Default::default(),
             workspace: Default::default(),
@@ -99,7 +101,11 @@ impl DatabaseWorkspace {
     }
 }
 pub(super) const MAX_DATABASES: usize = 4;
+#[cfg(test)]
+thread_local! { pub(super) static IDENTITY_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 fn same_file(a: &Path, b: &Path) -> bool {
+    #[cfg(test)]
+    IDENTITY_PROBES.with(|count| count.set(count.get() + 1));
     if a == b {
         return true;
     }
@@ -195,10 +201,17 @@ impl App {
         }
         if self.new_workspace(ctx) {
             self.sidebar_search.query.clear();
+            self.sidebar_search.navigating = false;
+            self.sidebar_search.available_highlight = None;
             self.set_database_path(path.to_str().unwrap().into());
         }
     }
     pub(super) fn poll(&mut self, ctx: &egui::Context) {
+        self.poll_picker();
+        self.poll_discovery(ctx);
+        if self.database.session.is_none() {
+            self.poll_database_inspection(ctx);
+        }
         let focused = self.database.id;
         let ids: Vec<_> = self.parked.keys().copied().collect();
         self.polling_background = true;

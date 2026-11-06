@@ -452,16 +452,6 @@ impl App {
                 Err(_) => {}
             }
         }
-        // Selection, file picking and discovery belong to the application, not
-        // a parked workspace. Background polling must not replace the selected
-        // path's header check with a closed workspace's path.
-        if !self.polling_background {
-            self.poll_picker();
-            if self.database.session.is_none() {
-                self.poll_database_inspection(ctx);
-            }
-            self.poll_discovery(ctx);
-        }
         let mut events = Vec::new();
         let mut disconnected = false;
         let polled_session = self.database.session.as_ref().map(|s| s.id);

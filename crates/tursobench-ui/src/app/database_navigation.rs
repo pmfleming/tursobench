@@ -24,6 +24,8 @@ pub(super) struct Search {
     pub navigating: bool,
     pub activate: bool,
     pub key_delta: Option<isize>,
+    pub reveal: bool,
+    pub available_highlight: Option<std::path::PathBuf>,
 }
 
 enum Target {
@@ -143,6 +145,7 @@ impl App {
         }
         let results_mode = !self.sidebar_search.query.trim().is_empty();
         if let Some(delta) = self.sidebar_search.key_delta.take() {
+            self.sidebar_search.reveal = true;
             if results_mode {
                 self.sidebar_search.index = self.sidebar_search.index.saturating_add_signed(delta);
                 self.sidebar_search.navigating = true;
@@ -324,6 +327,7 @@ impl App {
             }
             self.sidebar_search.query.clear();
             self.sidebar_search.index = 0;
+            self.sidebar_search.navigating = false;
         }
     }
 }
