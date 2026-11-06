@@ -85,7 +85,7 @@ pub(super) struct Chooser {
     pub picking_folder: Option<FolderList>,
     pub editing_path: bool,
     pub message: Option<String>,
-    summary: Option<Summary>,
+    pub summary: Option<Summary>,
     cancelling: bool,
     pending_folder: Option<PathBuf>,
     forgotten: HashSet<PathBuf>,

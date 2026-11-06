@@ -1,5 +1,34 @@
 # UI screenshots
 
+## Application-wide Settings — native Wayland
+
+The `v11/` captures show the
+[application-wide Settings window](../../guide.md#navigator-tools), captured on
+2026-11-06 using synthetic databases and isolated application preferences.
+Search feedback and the extra folder paths are seeded visual fixtures; the capture
+scenes do not traverse those locations.
+
+| Capture | Behaviour |
+| --- | --- |
+| [Appearance](v11/navigator-settings.png) | One Settings window over the database workspace; the four database tools remain grouped separately. |
+| [Discovery](v11/search-settings.png) | Counted tabs, one folder input and list, and fixed search results. Available has Refresh only. |
+| [Excluded](v11/settings-excluded.png) | Exclusions use the same folder controls, including Browse. |
+| [Resources](v11/settings-resources.png) | Database-count slider, recommendation tick, Undo and memory estimate. |
+| [Queries](v11/settings-queries.png) | Limits, recovery and independent all-databases clearing actions with counts, with no database connected. |
+| [Queries, light](v11/settings-queries-light.png) | The same settings in the light theme. |
+| [Discovery, 20 pt](v11/settings-discovery-large-text.png) | The window scales to a 1024×600 viewport; the input and results remain visible around the scrollable list. |
+
+Reproduce with:
+
+```sh
+nix develop -c bash scripts/capture-sidebar.sh target/settings-captures
+```
+
+The script also checks viewport dimensions and that all Settings captures exist.
+Headless interaction tests cover the icon navigation row below 480 px, controls
+at 280 px and 20 pt, automatic saving, picker destinations, search cancellation,
+and the per-database and all-databases clearing rules.
+
 ## Shared access icons and sidebar controls — native Wayland
 
 The five `resources/` images were captured on 2026-11-06 after `83f8088`, with

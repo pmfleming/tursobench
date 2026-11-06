@@ -100,7 +100,9 @@ pub(super) fn objects<'a>(
 impl App {
     fn dismiss_surface(&mut self, ctx: &egui::Context) {
         if self.settings.open {
-            if egui::Popup::is_any_open(ctx) {
+            if self.database.ui.palette_open {
+                self.database.ui.palette_open = false;
+            } else if egui::Popup::is_any_open(ctx) {
                 egui::Popup::close_all(ctx);
             } else {
                 self.settings.open = false;

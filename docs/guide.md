@@ -97,8 +97,12 @@ See the [UI guide and capability map](ui-redesign.md) for workspace navigation,
 responsive behavior, diagram limits and validation. Relationships sits above Table data;
 Record and Structure follow the selected table. SQL editors keep drafts and linked results
 inside the SQL tile. Within each database workspace, views share its editor session and transaction; different database workspaces are independent.
-Settings opens in the left navigator, like History, Saved queries and Database checks,
-while the current workspace stays visible. The Settings command and Ctrl+, use the same panel.
+Settings opens in one application-wide, resizable window over the workspace.
+The separate Settings button, the Settings command and Ctrl+, open the same window.
+Its Appearance, Discovery, Resources and Queries pages keep the selected database tool
+intact. Escape closes Settings; reopening remembers the last page during this run.
+Below 480 px wide, the page rail becomes a row of icons. Long pages scroll while
+navigation stays visible; Discovery scrolls only its folder list.
 Back restores typed filters, sorting, the retained browse window and matching row selection. Explicit
 table/related counts preserve the grid and drafts; automatic counts remain deferred. Painter icons include accessible names;
 native AccessKit integration is enabled. At 1280×720, the default table view shows
@@ -109,8 +113,11 @@ shortcuts, evidence and the remaining gaps—not a claim of complete parity.
 
 ### Navigator tools
 
-The large footer icons switch between Tables, History, Saved queries, Checks and
-Settings in the left panel. Hover controls for their names; F1 opens keyboard help.
+The four grouped footer icons switch between Tables, History, Saved queries and
+Checks for the selected database. Its filename appears above the group, with the
+full scope caption on hover. The Settings button sits beside the group, separated
+by a divider, and also works without an open database. Hover controls for their
+names; F1 opens keyboard help.
 
 Access mode uses the same icons throughout the app: a lock for **Read only** and a
 pencil for **Read/write**, with matching tooltips and accessible names. The opening
@@ -143,7 +150,8 @@ choose the lock or pencil access icon beneath it, then click **Open**. **Browse 
 files** or Ctrl O opens the native file chooser; **Enter a path…** works without a portal.
 Read-only is the default for a new path; likely SQLite files still require a per-file
 override. Errors, recheck and retry stay in the card. Right-click a file to forget it;
-the gear opens discovery settings. Available can be collapsed. Its list renders only
+Refresh reruns discovery and becomes Stop while a search is running. Configure
+search folders only in Settings → Discovery. Available can be collapsed. Its list renders only
 visible rows and uses cached file identities; file checks run during discovery or
 explicit selection/opening. Access review reserves a workspace slot, and another workspace opens only when the configured count and memory budget allow it.
 
@@ -167,8 +175,13 @@ reachable in the sidebar. Their path cannot be edited or cleared by cancelling a
   Names can be edited directly in each card. The editor icon loads SQL without
   running it and clears bindings. Search matches both names and SQL.
 - The trash icon on a query card removes that entry. The trash icon in the History
-  or Saved queries header clears stored entries **for all databases**; its tooltip
-  identifies that scope.
+  or Saved queries header clears entries **for the current database**, regardless
+  of search/slow filters; its tooltip names the file. It is disabled when that file
+  has no entries. Older entries with no database scope remain visible under every
+  database and are preserved by this action. Remove them individually or use
+  Settings → Queries → **All databases** to clear all history or all saved queries,
+  including older entries. Those buttons show total counts, work without an open
+  database, and are disabled at zero. Clearing is immediate, with no undo.
 - **Checks:** Storage contains database files, journal mode, page count and free
   pages; Validation contains integrity and foreign-key checks. All six actions
   are read-only. They run on the browse worker and may take time; discarding result
@@ -176,13 +189,18 @@ reachable in the sidebar. Their path cannot be edited or cleared by cancelling a
   Transfers and maintenance opens the separate import/export/checkpoint/backup panel.
   Checkpoint and backup require writable access and editor autocommit. Backup closes
   the source and verifies the new copy before publication.
-- **Settings:** the monitor, sun and moon select system, light and dark appearance.
-  Appearance saves immediately; hover **Aa** for font information. Use the save
-  icon in the header after changing query limits, timeouts or the NULL marker.
-  Busy wait and Query deadline apply after reopening the database; zero deadline
-  disables the statement limit. Slow ≥ controls history's slow
-  filter and labels. The NULL marker changes display only. Expand Discovery for
-  the [search-folder controls](database-discovery.md).
+- **Settings:** Appearance groups theme, font size and the NULL display marker.
+  The monitor, sun and moon select system, light and dark appearance; hover **Aa**
+  for font information. Theme and font changes preview live. Settings save
+  automatically: buttons and toggles immediately, drags on release, text fields
+  on focus loss. Switching pages or closing the window saves pending changes.
+  Queries groups row limits, Slow ≥, busy wait, deadline, SQL recovery and the
+  all-databases clearing actions. Refresh marks identify values that apply after
+  reopening a database: busy wait and deadline; zero deadline disables that limit.
+  Slow ≥ controls history's slow filter and labels. The NULL marker changes display
+  only. Discovery contains all [search-folder controls](database-discovery.md).
+  Resources contains the database-count slider and memory estimate. See the
+  [native Settings captures](assets/ui/README.md#application-wide-settings--native-wayland).
 
 Parameters accept native JSON such as `[1,"a",null]` or `{":id":42}`, and tagged
 values for explicit types/blobs (cell editing also has a typed form), for example:
@@ -280,13 +298,13 @@ own licenses; consult generated package notices before redistribution.
 
 ### SQL recovery
 
-Settings → Recover SQL documents enables debounced saves of SQL text, document order
+Settings → Queries → Recover SQL documents enables debounced saves of SQL text, document order
 and cursor selections. Recovery is separate from preferences, in `sql-recovery.json`
 under the application configuration directory (32 MiB total, 64 database entries,
 16 documents per database, 1 MiB SQL per document). Reopen a database explicitly to
 restore its editors; nothing executes and parameter values/results/table edits are
 never saved. SQL literals may contain sensitive information. Disable saving or clear
-saved recovery in Settings. Clearing preserves live editors; subsequent edits can
+saved recovery in Settings → Queries. Clearing preserves live editors; subsequent edits can
 be saved again. Errors remain visible in Settings and preserve the last good save.
 Only one application instance can write recovery at a time. A damaged/newer recovery
 file is preserved and disables saving until it is moved aside while the app is closed.
@@ -346,25 +364,25 @@ access review and default to read-only. Close database closes only the selected 
 Application exit waits for every session/export and retains writable-close confirmation;
 uncertain outcomes pause exit. Inactive requests continue draining to their owning views.
 Each workspace retains the existing 16-view limit and per-session quotas.
-Settings → Database resources controls overall admission. No database is
+Settings → Resources controls overall admission. No database is
 silently reopened writable after restart. Connection-local state never crosses database workspaces.
 
 ### Database count and memory budget
 
-Settings → **Database resources** has one slider for the maximum number of databases
+Settings → **Resources** has one slider for the maximum number of databases
 and shows the estimated memory needed at 512 MiB per workspace. Moving it updates both
-the admission count and its memory allowance, saves immediately and persists across
+the admission count and its memory allowance, saves on release and persists across
 restarts. For example, selecting six databases shows an estimate of 3 GiB.
 The sidebar shows retained workspaces / effective limit.
 
-**Reset** restores the system recommendation, calculated using 25% of available memory
-detected at startup. Hover the recommendation to see detected available/total RAM.
+The Undo icon restores the system recommendation, calculated using 25% of available memory
+detected at startup. A tick on the slider marks the recommendation; hover it to see detected available/total RAM.
 Linux detection uses `MemAvailable` and includes cgroup v2 limits for the process and
 its ancestors when present. If available RAM cannot be detected, the fallback is at
 most 1 GiB, also bounded by a quarter of known total RAM. The recommendation is
 recalculated on each launch. The slider extends to the estimated capacity of available
 memory, or an existing larger limit. Previously saved resource settings remain in
-effect until the slider is adjusted or Reset is clicked.
+effect until the slider is adjusted or Undo is clicked.
 
 Lowering the setting leaves current sessions, drafts and exports intact and blocks
 additional opens until there is capacity. Access-mode reopening reuses its existing

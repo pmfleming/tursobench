@@ -307,7 +307,7 @@ impl App {
                     "Sample table",
                     &sql,
                 );
-                self.prepare_visual_scene(0);
+                self.prepare_visual_scene(ctx, 0);
                 smoke.stage = 42;
             }
             42 => {
@@ -328,24 +328,24 @@ impl App {
             43 if smoke.capture_pending.is_none() => {
                 smoke.scene += 1;
                 if smoke.scene == 14 {
-                    self.prepare_visual_scene(14);
+                    self.prepare_visual_scene(ctx, 14);
                     self.close();
                     smoke.stage = 44;
                 } else if smoke.scene == VISUAL_SCENES.len() {
                     assert!(self.database.session.is_none());
                     eprintln!(
-                        "DESKTOP VISUAL SMOKE PASSED: six workspace sizes/themes, navigator tools, staged edits, dialogs, sidebar access and search settings; elapsed {:?}",
+                        "DESKTOP VISUAL SMOKE PASSED: six workspace sizes/themes, navigator tools, staged edits, dialogs, sidebar access and all Settings pages; elapsed {:?}",
                         smoke.start.elapsed()
                     );
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     return;
                 } else {
-                    self.prepare_visual_scene(smoke.scene);
+                    self.prepare_visual_scene(ctx, smoke.scene);
                     smoke.stage = 42;
                 }
             }
             44 if self.database.session.is_none() => {
-                self.prepare_visual_scene(14);
+                self.prepare_visual_scene(ctx, 14);
                 smoke.stage = 42;
             }
             _ => {}
@@ -490,9 +490,10 @@ impl App {
             _ => {}
         }
     }
-    fn prepare_visual_scene(&mut self, scene: usize) {
+    fn prepare_visual_scene(&mut self, ctx: &egui::Context, scene: usize) {
         self.sidebar_search.query.clear();
         self.preferences.appearance = Some(crate::appearance::Mode::Dark);
+        self.preferences.font_size = 14;
         self.database.ui.sidebar = shell::ToolPanel::Schema;
         self.database.ui.palette_open = false;
         self.database.ui.export_open = false;
@@ -539,9 +540,44 @@ impl App {
                     self.databases.inspection.override_sqlite = false;
                 }
             }
-            15 => {
-                self.settings.page = super::settings::Page::Discovery;
+            15..=20 => {
+                if scene == 15 {
+                    // Display search feedback without traversing the user's folders.
+                    self.preferences.discovery.roots =
+                        ["/work/projects", "/srv/analytics", "/mnt/scratch/databases"]
+                            .into_iter()
+                            .map(Into::into)
+                            .collect();
+                    self.preferences.discovery.excluded = vec!["/work/projects/private".into()];
+                    self.databases.summary = Some(crate::discovery::Summary {
+                        probes: 300,
+                        directories: 1000,
+                        unavailable: 1,
+                        skipped: 1,
+                        limited: true,
+                        ..Default::default()
+                    });
+                }
                 self.settings.open = true;
+                self.settings.page = match scene {
+                    16 => super::settings::Page::Resources,
+                    17 | 19 => super::settings::Page::Queries,
+                    _ => super::settings::Page::Discovery,
+                };
+                self.databases.folder_list = if scene == 18 {
+                    super::databases::FolderList::Excluded
+                } else {
+                    super::databases::FolderList::Search
+                };
+                if scene == 19 {
+                    self.preferences.appearance = Some(crate::appearance::Mode::Light);
+                }
+                if scene == 20 {
+                    self.preferences.font_size = 20;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+                        1024.0, 600.0,
+                    )));
+                }
             }
             _ => {}
         }
@@ -648,4 +684,9 @@ const VISUAL_SCENES: &[&str] = &[
     "close-confirmation.png",
     "database-access.png",
     "search-settings.png",
+    "settings-resources.png",
+    "settings-queries.png",
+    "settings-excluded.png",
+    "settings-queries-light.png",
+    "settings-discovery-large-text.png",
 ];

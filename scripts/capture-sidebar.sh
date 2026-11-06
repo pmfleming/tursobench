@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Native sidebar navigation captures using synthetic data and the invoking desktop's GTK colours.
+# Native sidebar and Settings captures using synthetic data and the invoking desktop's GTK colours.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 output=$(realpath -m "${1:-docs/assets/ui/v9}")
@@ -59,7 +59,9 @@ for name, expected in {
 }.items():
     dimensions = struct.unpack(">II", (root / name).read_bytes()[16:24])
     assert dimensions == expected, (name, dimensions, expected)
-for name in ("sidebar-search.png", "sidebar-open-databases.png", "close-confirmation.png", "database-access.png"):
+for name in ("sidebar-search.png", "sidebar-open-databases.png", "close-confirmation.png", "database-access.png",
+             "navigator-settings.png", "search-settings.png", "settings-resources.png", "settings-queries.png",
+             "settings-excluded.png", "settings-queries-light.png", "settings-discovery-large-text.png"):
     assert (root / name).is_file(), name
 print("Wayland capture dimensions and sidebar scenes verified")
 PY

@@ -1516,6 +1516,10 @@ fn settings_shortcut_opens_a_window_without_replacing_the_database_tool() {
     app.execute_command(&ctx, super::commands::Command::Settings);
     assert_eq!(app.settings.page, super::settings::Page::Queries);
     assert!(app.settings.open);
+    app.open_palette();
+    press_key(&mut app, &ctx, egui::Key::Escape, egui::Modifiers::NONE);
+    assert!(!app.database.ui.palette_open);
+    assert!(app.settings.open);
     assert!(app.database.session.is_none());
 }
 

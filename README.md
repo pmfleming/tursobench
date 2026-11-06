@@ -25,7 +25,7 @@ Independent project. Not affiliated with the Turso team.
 
 Each database workspace has five fixed tiles sharing its own database session.
 Open multiple databases within a configurable memory budget and switch from the
-sidebar or with Ctrl PageUp/PageDown. Settings shows startup RAM and the effective limit.
+sidebar or with Ctrl PageUp/PageDown. Settings → Resources shows the memory estimate and effective limit; hover its recommendation tick for startup RAM.
 Resize the dividers. Expand a tile or minimize it to a header.
 Keep table browsing, typed records, structure, relationships and SQL together.
 External commits refresh clean views while drafts and SQL results stay retained.

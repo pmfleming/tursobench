@@ -115,7 +115,6 @@ impl App {
         self.database.recovery.changed = None;
     }
     pub(super) fn recovery_settings(&mut self, ui: &mut egui::Ui) {
-        ui.separator();
         if ui
             .checkbox(&mut self.preferences.sql_recovery, "Recover SQL documents")
             .changed()

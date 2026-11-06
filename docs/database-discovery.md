@@ -19,7 +19,7 @@ The folder button in **Open database** or **Ctrl+O** opens the native file dialo
 under **Enter a path…** when no file is selected. Choose a different file with the picker
 above the list; the selected-file card reviews access and opens that file. Selecting a
 new path defaults to read-only and resets the SQLite override. Opening a file from the
-sidebar preserves other open database sessions. The slider in Settings → Database resources sets
+sidebar preserves other open database sessions. The slider in Settings → Resources sets
 the retained-database count and matching memory allowance; the sidebar shows the limit.
 Cancelling access review or dismissing the picker restores the previous database.
 Available is collapsible, renders visible rows, and uses file identities cached by
@@ -48,32 +48,34 @@ development folders (`Projects`, `projects`, `Code`, `code`, `Developer`,
 recursion limit, recent parents one, application data/state three,
 and home zero. Launching from home never makes all of home recursive.
 
-The **Search settings** icon beside the database count opens a compact scrollable
-dialog containing all search-folder controls and search feedback. **At startup** toggles
-automatic discovery. The refresh icon reruns the configured search and becomes a
-stop control while searching. Icon buttons have tooltips and accessible names.
+All discovery preferences live in **Settings → Discovery**. Open the Settings
+button at the bottom of the navigator, use **Ctrl+,**, or choose Settings in the
+command palette. **At startup** toggles automatic discovery. The refresh icon
+reruns the configured search and becomes Stop while searching. The same
+Refresh/Stop actions appear beside **Available**; Available has no Settings link
+or limit indicator. Icon buttons have tooltips and accessible names.
 
 **Search folders** lists the effective search locations: default application,
 home/development and launch folders, recent-file parent folders, and folders you
 add. Duplicate paths appear once, preserving their search depth and explicit
 opt-in rules. Excluded roots are omitted. The list scrolls independently.
 
-Use the folder icon to pick a location, or enter an
-absolute path and press **Enter** or **+** to save and search it. Under **Excluded**,
-enter a path and press **Enter** or **+** to exclude it. The **×** on each folder
+The **Search folders** and **Excluded** tabs show counts and share one path input
+and a list that fills the page. Browse on either tab fills the input; press **Enter**
+or **+** to add the selected absolute path. Search folders saves and searches the
+folder; Excluded adds an exclusion. Picker results return to the tab that opened
+the picker, even if the tab changed while the picker was open. The **×** on each folder
 row removes that search location; it never deletes files. Removed defaults and
 recent-parent roots stay removed across refresh/restart; add a path again to
 restore it. Up to 128 root removals are remembered. Other configured parent roots
 can still search their children; use **Excluded** to prevent every search under a
 path. Cached/recent files remain remembered and can still be checked directly.
 Refresh after removing an
-exclusion. Long paths show in full on hover. The footer shows header, folder,
-unavailable and skipped counts with labels on hover; **Limit reached** means
-only part of the configured locations was searched.
-
-These controls are also available as Database discovery in Settings.
-When a search reaches its budget, use the folder icon in **Search folders** to
-search a narrower location directly.
+exclusion. Long paths show in full on hover. The fixed footer shows header,
+folder, unavailable and skipped counts with labels on hover, plus search feedback.
+It stays visible while folders scroll. **Limit reached** appears only here and
+means only part of the configured locations was searched. Add a narrower location
+on the Search folders tab to search it directly.
 **Add and search folder** saves an absolute folder and searches that folder
 immediately, including extensionless files, to five levels. This manual search
 also works when startup discovery is disabled. Use a narrower folder to look

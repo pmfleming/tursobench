@@ -601,7 +601,11 @@ impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll(ctx);
         self.smoke_tick(ctx);
-        if ctx.input(|i| i.viewport().close_requested())
+        let closing = ctx.input(|i| i.viewport().close_requested());
+        if closing {
+            self.save_settings();
+        }
+        if closing
             && (self.database.session.is_some()
                 || self.database.export_job.is_some()
                 || self

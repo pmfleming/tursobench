@@ -7,15 +7,30 @@ use eframe::egui;
 use tursobench_db::{Diagnostic, Operation};
 
 impl App {
+    fn query_database_name(&self) -> String {
+        let path = std::path::Path::new(&self.database.tools.database_scope);
+        path.file_name()
+            .unwrap_or(path.as_os_str())
+            .to_string_lossy()
+            .into_owned()
+    }
+
     pub(super) fn saved_queries_ui(&mut self, ui: &mut egui::Ui) {
         if heading_action(
             ui,
             "Saved queries",
             Icon::Trash,
-            "Clear saved queries for all databases",
-            !self.preferences.saved_queries.is_empty(),
+            &format!("Clear saved queries for {}", self.query_database_name()),
+            !self.database.tools.database_scope.is_empty()
+                && self
+                    .preferences
+                    .saved_queries
+                    .iter()
+                    .any(|q| q.database == self.database.tools.database_scope),
         ) {
-            self.preferences.saved_queries.clear();
+            self.preferences
+                .saved_queries
+                .retain(|q| q.database != self.database.tools.database_scope);
             self.store.save(&self.preferences);
         }
         ui.horizontal(|ui| {
@@ -126,10 +141,17 @@ impl App {
             ui,
             "History",
             Icon::Trash,
-            "Clear history for all databases",
-            !self.preferences.query_history.is_empty(),
+            &format!("Clear history for {}", self.query_database_name()),
+            !self.database.tools.database_scope.is_empty()
+                && self
+                    .preferences
+                    .query_history
+                    .iter()
+                    .any(|q| q.database == self.database.tools.database_scope),
         ) {
-            self.preferences.query_history.clear();
+            self.preferences
+                .query_history
+                .retain(|q| q.database != self.database.tools.database_scope);
             self.store.save(&self.preferences);
         }
         search(
@@ -434,7 +456,7 @@ mod tests {
     use crate::{app::settings::Page, appearance::Mode};
     // Render individual pages without requiring an open database.
     #[derive(Clone, Copy, Debug, PartialEq)]
-    enum ToolPanel {
+    enum TestPanel {
         Settings,
         History,
         Saved,
@@ -444,19 +466,19 @@ mod tests {
     fn frame(
         app: &mut App,
         ctx: &egui::Context,
-        panel: ToolPanel,
+        panel: TestPanel,
         width: f32,
         events: Vec<egui::Event>,
     ) -> egui::FullOutput {
         crate::app::test_ui::render(ctx, egui::vec2(width, 1400.0), events, |ui| match panel {
-            ToolPanel::Settings => app.settings_ui(ui),
-            ToolPanel::History => app.query_history_ui(ui),
-            ToolPanel::Saved => app.saved_queries_ui(ui),
-            ToolPanel::Diagnostics => app.diagnostics_ui(ui),
+            TestPanel::Settings => app.settings_ui(ui),
+            TestPanel::History => app.query_history_ui(ui),
+            TestPanel::Saved => app.saved_queries_ui(ui),
+            TestPanel::Diagnostics => app.diagnostics_ui(ui),
         })
     }
 
-    fn click(app: &mut App, ctx: &egui::Context, panel: ToolPanel, name: &str) {
+    fn click(app: &mut App, ctx: &egui::Context, panel: TestPanel, name: &str) {
         let output = frame(app, ctx, panel, 240.0, vec![]);
         let pos = crate::app::test_ui::control(&output, name).center();
         for pressed in [true, false] {
@@ -473,7 +495,7 @@ mod tests {
     #[test]
     fn appearance_controls_apply_size_without_drift() {
         let (ctx, mut app) = crate::app::test_ui::app();
-        let output = frame(&mut app, &ctx, ToolPanel::Settings, 240.0, vec![]);
+        let output = frame(&mut app, &ctx, TestPanel::Settings, 240.0, vec![]);
         for name in [
             "Decrease font size",
             "Increase font size",
@@ -481,7 +503,7 @@ mod tests {
         ] {
             crate::app::test_ui::control(&output, name).center();
         }
-        click(&mut app, &ctx, ToolPanel::Settings, "Increase font size");
+        click(&mut app, &ctx, TestPanel::Settings, "Increase font size");
         assert_eq!(app.preferences.font_size, 15);
         assert_eq!(
             ctx.global_style().text_styles[&egui::TextStyle::Body].size,
@@ -496,10 +518,10 @@ mod tests {
             app.apply_theme(&ctx);
             assert_eq!(crate::appearance::monospace(&ctx, 12.0).size, larger);
         }
-        click(&mut app, &ctx, ToolPanel::Settings, "Decrease font size");
+        click(&mut app, &ctx, TestPanel::Settings, "Decrease font size");
         assert_eq!(app.preferences.font_size, 14);
-        click(&mut app, &ctx, ToolPanel::Settings, "Increase font size");
-        click(&mut app, &ctx, ToolPanel::Settings, "Reset font size");
+        click(&mut app, &ctx, TestPanel::Settings, "Increase font size");
+        click(&mut app, &ctx, TestPanel::Settings, "Reset font size");
         assert_eq!(app.preferences.font_size, 14);
         assert_eq!(crate::appearance::monospace(&ctx, 12.0).size, 12.0);
     }
@@ -507,7 +529,7 @@ mod tests {
     #[test]
     fn resource_slider_updates_admission_and_reset_restores_system_choice() {
         let (ctx, mut app) = crate::app::test_ui::app();
-        let panel = ToolPanel::Settings;
+        let panel = TestPanel::Settings;
         app.settings.page = Page::Resources;
         let output = frame(&mut app, &ctx, panel, 240.0, vec![]);
         let slider = crate::app::test_ui::control(&output, "Maximum open databases");
@@ -565,7 +587,7 @@ mod tests {
             app.preferences
                 .bookmark("/work/current.db", &"long name ".repeat(6), "SELECT 1");
             for width in [180.0, 240.0, 300.0] {
-                for panel in [ToolPanel::History, ToolPanel::Saved, ToolPanel::Diagnostics] {
+                for panel in [TestPanel::History, TestPanel::Saved, TestPanel::Diagnostics] {
                     frame(&mut app, &ctx, panel, width, vec![]);
                     let output = frame(&mut app, &ctx, panel, width, vec![]);
                     let tree = output.platform_output.accesskit_update.as_ref().unwrap();
@@ -585,7 +607,7 @@ mod tests {
                             );
                         }
                     }
-                    if panel == ToolPanel::Diagnostics {
+                    if panel == TestPanel::Diagnostics {
                         for diagnostic in Diagnostic::ALL {
                             crate::app::test_ui::control(&output, diagnostic.label());
                         }
@@ -610,9 +632,9 @@ mod tests {
             .record_query("/work/current.db", "SELECT 'slow'", Some(900), false);
         app.database.document.params = "[42]".into();
         let sequence = app.database.sequence;
-        click(&mut app, &ctx, ToolPanel::History, "Slow queries only");
+        click(&mut app, &ctx, TestPanel::History, "Slow queries only");
         assert!(app.database.tools.slow_only);
-        let output = frame(&mut app, &ctx, ToolPanel::History, 240.0, vec![]);
+        let output = frame(&mut app, &ctx, TestPanel::History, 240.0, vec![]);
         assert_eq!(
             crate::app::test_ui::nodes(&output)
                 .iter()
@@ -620,12 +642,12 @@ mod tests {
                 .count(),
             1
         );
-        click(&mut app, &ctx, ToolPanel::History, "Load history query");
+        click(&mut app, &ctx, TestPanel::History, "Load history query");
         assert_eq!(app.database.document.sql, "SELECT 'slow'");
         assert_eq!(app.database.document.params, "[]");
         assert_eq!(app.database.sequence, sequence);
         assert!(app.database.document.active.is_none());
-        click(&mut app, &ctx, ToolPanel::History, "Delete history entry");
+        click(&mut app, &ctx, TestPanel::History, "Delete history entry");
         assert_eq!(app.preferences.query_history.len(), 2);
         assert!(
             app.preferences
@@ -643,9 +665,9 @@ mod tests {
         }
         app.preferences
             .record_query("", "SELECT 'λ legacy'", None, true);
-        click(&mut app, &ctx, ToolPanel::History, "Slow queries only");
-        click(&mut app, &ctx, ToolPanel::History, "Slowest first");
-        let output = frame(&mut app, &ctx, ToolPanel::History, 240.0, vec![]);
+        click(&mut app, &ctx, TestPanel::History, "Slow queries only");
+        click(&mut app, &ctx, TestPanel::History, "Slowest first");
+        let output = frame(&mut app, &ctx, TestPanel::History, 240.0, vec![]);
         let queries = output
             .shapes
             .iter()
@@ -667,14 +689,14 @@ mod tests {
             ]
         );
         app.database.tools.history_search = "Λ LEGACY".into();
-        let output = frame(&mut app, &ctx, ToolPanel::History, 240.0, vec![]);
+        let output = frame(&mut app, &ctx, TestPanel::History, 240.0, vec![]);
         for badge in ["Failed", "Legacy"] {
             assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == badge)));
         }
-        click(&mut app, &ctx, ToolPanel::History, "Load history query");
+        click(&mut app, &ctx, TestPanel::History, "Load history query");
         assert_eq!(app.database.document.sql, "SELECT 'λ legacy'");
         assert_eq!(app.database.sequence, sequence);
-        click(&mut app, &ctx, ToolPanel::History, "Delete history entry");
+        click(&mut app, &ctx, TestPanel::History, "Delete history entry");
         assert!(
             app.preferences
                 .query_history
@@ -685,7 +707,7 @@ mod tests {
         app.database.tools.bookmark_name = "Example".into();
         app.preferences
             .bookmark("/work/other.db", "Other", "SELECT 'other'");
-        click(&mut app, &ctx, ToolPanel::Saved, "Save current SQL");
+        click(&mut app, &ctx, TestPanel::Saved, "Save current SQL");
         assert_eq!(
             app.preferences.saved_queries[0].database,
             "/work/current.db"
@@ -693,11 +715,11 @@ mod tests {
         assert_eq!(app.preferences.saved_queries[0].name, "Example");
         app.database.document.sql.clear();
         app.database.document.params = "[42]".into();
-        click(&mut app, &ctx, ToolPanel::Saved, "Load saved query");
+        click(&mut app, &ctx, TestPanel::Saved, "Load saved query");
         assert_eq!(app.database.document.sql, "SELECT 'saved'");
         assert_eq!(app.database.document.params, "[]");
         assert!(app.database.document.active.is_none());
-        click(&mut app, &ctx, ToolPanel::Saved, "Delete saved query");
+        click(&mut app, &ctx, TestPanel::Saved, "Delete saved query");
         assert_eq!(app.preferences.saved_queries.len(), 1);
         assert_eq!(app.preferences.saved_queries[0].database, "/work/other.db");
         for (name, mode) in [
@@ -705,8 +727,94 @@ mod tests {
             ("Dark theme", Mode::Dark),
             ("Follow system", Mode::System),
         ] {
-            click(&mut app, &ctx, ToolPanel::Settings, name);
+            click(&mut app, &ctx, TestPanel::Settings, name);
             assert_eq!(app.preferences.appearance, Some(mode));
+        }
+    }
+    #[test]
+    fn heading_clears_only_the_current_database_and_settings_clears_every_database() {
+        let (ctx, mut app) = crate::app::test_ui::app();
+        for db in ["/work/current.db", "/work/other.db", ""] {
+            app.preferences
+                .record_query(db, "SELECT 1", Some(10), false);
+            app.preferences.bookmark(db, "Example", "SELECT 1");
+        }
+        app.database.tools.database_scope = "/work/current.db".into();
+        // Filters affect the list, but clearing still applies to this entire file.
+        app.database.tools.history_search = "no match".into();
+        app.database.tools.bookmark_search = "no match".into();
+        click(
+            &mut app,
+            &ctx,
+            TestPanel::History,
+            "Clear history for current.db",
+        );
+        click(
+            &mut app,
+            &ctx,
+            TestPanel::Saved,
+            "Clear saved queries for current.db",
+        );
+        assert_eq!(app.preferences.query_history.len(), 2);
+        assert_eq!(app.preferences.saved_queries.len(), 2);
+        for db in ["/work/other.db", ""] {
+            assert!(
+                app.preferences
+                    .query_history
+                    .iter()
+                    .any(|q| q.database == db)
+            );
+            assert!(
+                app.preferences
+                    .saved_queries
+                    .iter()
+                    .any(|q| q.database == db)
+            );
+        }
+        for (panel, name) in [
+            (TestPanel::History, "Clear history for current.db"),
+            (TestPanel::Saved, "Clear saved queries for current.db"),
+        ] {
+            let output = frame(&mut app, &ctx, panel, 240.0, vec![]);
+            assert!(
+                crate::app::test_ui::nodes(&output)
+                    .iter()
+                    .any(|(_, n)| n.label() == Some(name) && n.is_disabled())
+            );
+        }
+        // A missing database scope must never classify legacy entries as local.
+        app.database.tools.database_scope.clear();
+        click(&mut app, &ctx, TestPanel::History, "Clear history for ");
+        click(&mut app, &ctx, TestPanel::Saved, "Clear saved queries for ");
+        assert_eq!(app.preferences.query_history.len(), 2);
+        assert_eq!(app.preferences.saved_queries.len(), 2);
+        assert!(app.database.session.is_none());
+        app.settings.page = Page::Queries;
+        click(
+            &mut app,
+            &ctx,
+            TestPanel::Settings,
+            "Clear history for all databases",
+        );
+        assert!(app.preferences.query_history.is_empty());
+        assert_eq!(app.preferences.saved_queries.len(), 2);
+        click(
+            &mut app,
+            &ctx,
+            TestPanel::Settings,
+            "Clear saved queries for all databases",
+        );
+        assert!(app.preferences.saved_queries.is_empty());
+        let output = frame(&mut app, &ctx, TestPanel::Settings, 240.0, vec![]);
+        for name in [
+            "Clear history for all databases",
+            "Clear saved queries for all databases",
+        ] {
+            assert!(
+                crate::app::test_ui::nodes(&output)
+                    .iter()
+                    .any(|(_, n)| n.label() == Some(name) && n.is_disabled())
+            );
         }
     }
 }

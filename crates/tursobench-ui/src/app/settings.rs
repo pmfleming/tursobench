@@ -21,6 +21,7 @@ pub(super) struct State {
     pub open: bool,
     pub page: Page,
     dirty: bool,
+    displayed_font: Option<u16>,
 }
 
 impl App {
@@ -31,9 +32,13 @@ impl App {
         }
         let mut open = true;
         let scale = f32::from(self.preferences.font_size) / 14.0;
-        let size = (egui::vec2(640.0, 500.0) * scale)
+        let size = (egui::vec2(640.0, 540.0) * scale)
             .min(ctx.content_rect().size() - egui::vec2(32.0, 56.0));
-        egui::Window::new("Settings")
+        let previous_font = self
+            .settings
+            .displayed_font
+            .replace(self.preferences.font_size);
+        let mut window = egui::Window::new("Settings")
             .id(egui::Id::unique("application-settings"))
             .frame(super::presentation::window_frame(ctx))
             .default_pos(ctx.content_rect().center() - size * 0.5)
@@ -41,8 +46,18 @@ impl App {
             .min_size(egui::vec2(280.0, 240.0))
             .max_size(ctx.content_rect().size() - egui::vec2(24.0, 48.0))
             .collapsible(false)
-            .open(&mut open)
-            .show(ctx, |ui| self.settings_ui(ui));
+            .open(&mut open);
+        if let Some(previous) =
+            previous_font.filter(|previous| *previous != self.preferences.font_size)
+            && let Some(rect) =
+                ctx.memory(|m| m.area_rect(egui::Id::unique("application-settings")))
+        {
+            let scaled = (rect.size()
+                * (f32::from(self.preferences.font_size) / f32::from(previous)))
+            .min(ctx.content_rect().size() - egui::vec2(32.0, 56.0));
+            window = window.fixed_size(scaled);
+        }
+        window.show(ctx, |ui| self.settings_ui(ui));
         self.settings.open = open;
         if !open {
             self.save_settings();
@@ -301,8 +316,24 @@ impl App {
             response.widget_info(|| {
                 egui::WidgetInfo::slider(response.enabled(), count as f64, "Maximum open databases")
             });
+            let detected = match (self.memory.available_mib, self.memory.total_mib) {
+                (Some(available), Some(total)) => format!(
+                    "At startup: {} available / {} total.{}",
+                    crate::resources::format_mib(available),
+                    crate::resources::format_mib(total),
+                    if self.memory.process_limited {
+                        " Process memory limits included."
+                    } else {
+                        ""
+                    }
+                ),
+                _ => format!(
+                    "Available memory could not be detected. Fallback budget: {}.",
+                    crate::resources::format_mib(self.memory.automatic_budget_mib())
+                ),
+            };
             let recommendation = format!(
-                "System recommendation: {automatic} databases. Uses 25% of memory available at startup. 512 MiB per database; actual use varies."
+                "{detected} System recommendation: {automatic} databases. Uses 25% of memory available at startup. 512 MiB per database; actual use varies."
             );
             let track = response
                 .rect
@@ -351,6 +382,7 @@ impl App {
     }
 
     fn query_settings(&mut self, ui: &mut egui::Ui) {
+        ui.spacing_mut().item_spacing.y = 3.0;
         section(ui, "Limits", |ui| {
             let response = preference_row(ui, "Rows", "Maximum retained query rows", false, |ui| {
                 ui.add(egui::DragValue::new(&mut self.preferences.row_limit).range(1..=10_000))
@@ -395,7 +427,44 @@ impl App {
             ui.small("Applies after reopening the database.");
         });
         section(ui, "SQL recovery", |ui| self.recovery_settings(ui));
+        section(ui, "All databases", |ui| {
+            if clear_queries_row(
+                ui,
+                Icon::History,
+                "History",
+                self.preferences.query_history.len(),
+                "Clear history for all databases",
+            ) {
+                self.preferences.query_history.clear();
+                self.store.save(&self.preferences);
+            }
+            if clear_queries_row(
+                ui,
+                Icon::Saved,
+                "Saved queries",
+                self.preferences.saved_queries.len(),
+                "Clear saved queries for all databases",
+            ) {
+                self.preferences.saved_queries.clear();
+                self.store.save(&self.preferences);
+            }
+        });
     }
+}
+
+fn clear_queries_row(ui: &mut egui::Ui, icon: Icon, title: &str, count: usize, name: &str) -> bool {
+    ui.push_id(title, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+            icons::paint(ui.painter(), rect, icon, ui.visuals().weak_text_color());
+            ui.label(format!("{title} · {count}"));
+            let response = ui.add_enabled(count > 0, egui::Button::new("Clear for all databases"));
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, count > 0, name));
+            response.on_hover_text(name).clicked()
+        })
+        .inner
+    })
+    .inner
 }
 
 fn pages() -> [(Page, Icon, &'static str, &'static str); 4] {
@@ -530,5 +599,44 @@ mod tests {
         }
         assert_eq!(app.settings.page, Page::Queries);
         assert!(!app.settings.dirty);
+    }
+    #[test]
+    fn settings_window_keeps_its_title_and_scales_when_font_changes() {
+        let (ctx, mut app) = crate::app::test_ui::app();
+        let size = egui::vec2(1280.0, 720.0);
+        app.settings.open = true;
+        for _ in 0..3 {
+            render(&ctx, size, vec![], |ui| app.render(ui));
+        }
+        for page in [
+            Page::Appearance,
+            Page::Discovery,
+            Page::Resources,
+            Page::Queries,
+            Page::Discovery,
+            Page::Queries,
+        ] {
+            app.settings.page = page;
+            for _ in 0..3 {
+                let output = render(&ctx, size, vec![], |ui| app.render(ui));
+                let rect = ctx
+                    .memory(|m| m.area_rect(egui::Id::unique("application-settings")))
+                    .unwrap();
+                assert!(output.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.job.text == "Settings" && rect.contains(t.pos))), "missing window title on {page:?}");
+            }
+        }
+        let before = ctx
+            .memory(|m| m.area_rect(egui::Id::unique("application-settings")))
+            .unwrap();
+        app.preferences.font_size = 20;
+        app.apply_theme(&ctx);
+        for _ in 0..3 {
+            render(&ctx, size, vec![], |ui| app.render(ui));
+        }
+        let after = ctx
+            .memory(|m| m.area_rect(egui::Id::unique("application-settings")))
+            .unwrap();
+        assert!(after.width() > before.width());
+        assert!(after.width() <= size.x && after.height() <= size.y);
     }
 }

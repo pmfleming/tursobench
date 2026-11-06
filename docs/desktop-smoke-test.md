@@ -14,7 +14,7 @@ for a retained fixture use `python3 tests/fixtures/generate.py /tmp/sample.db`.
    first result returns to search. Enter selects the file for review; typing from
    results resumes search at the retained cursor. PageDown reveals later rows.
    The folder icon inside search (also Alt+Enter) opens the native file dialog
-   and remains available during discovery. In Search options, stop, refresh, add a
+   and remains available during discovery. In Settings → Discovery, stop, refresh, add a
    search folder and exclude one. Restart to check cached entries, successful-open
    history and the startup toggle. Changing roots must not change the selected
    database or change write access.
@@ -68,7 +68,16 @@ For the workbench additions, also check on a disposable database:
 - Clone a row (keys omitted), stage/revert cells and deletions, remove an individual
   preview operation, and verify overlays disappear without issuing SQL writes.
 - Name/search/rename/delete a bookmark; check scoped timed history and slow filters.
-  Loading saved SQL must clear bindings. Toggle theme and open F1 help.
+  Loading saved SQL must clear bindings. The heading trash clears only the selected
+  database and preserves other files and older unscoped entries. Settings → Queries
+  shows all-databases counts and independent clear actions, including with no file
+  open. Verify disabled buttons when empty. Toggle theme and open F1 help.
+- Open Settings from its separate footer button, Ctrl+, and the command palette.
+  Check all four pages, automatic saving on focus loss/drag release, remembered page
+  on reopen, and Escape without changing the selected database tool. Resize below
+  480 px to check the icon navigation row. Check 20 pt text at 1024×600.
+  In Discovery, switch tabs, browse/add/exclude a folder, scroll a long list and
+  confirm the input and results remain visible. Available offers Refresh/Stop only.
 - Export every format to a NEW file, check scope notices and extension enforcement,
   and verify existing files cannot be overwritten. CSV/TSV require skipping the
   metadata line; SQL export must name its target explicitly. Exports/copies retain
