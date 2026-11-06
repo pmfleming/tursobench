@@ -158,9 +158,21 @@ impl App {
                     egui::Panel::bottom("navigator-utilities")
                         .resizable(false)
                         .show(ui, |ui| {
-                            if self.database.session.is_some() {
-                                ui.small("Tools apply to the active database");
-                            }
+                            let caption = if self.database.session.is_some() {
+                                format!(
+                                    "Tools apply to {}",
+                                    std::path::Path::new(&self.database.path)
+                                        .file_name()
+                                        .unwrap_or_default()
+                                        .to_string_lossy()
+                                )
+                            } else {
+                                "Tools need an open database".into()
+                            };
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(&caption).small()).truncate(),
+                            )
+                            .on_hover_text(caption);
                             self.navigator_utilities(ui);
                         });
                     self.navigation_sidebar(ui);
@@ -507,8 +519,18 @@ impl App {
         }
     }
 }
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash, Debug)]
+pub(super) enum StructureSection {
+    #[default]
+    Columns,
+    Indexes,
+    ForeignKeys,
+    Triggers,
+    Ddl,
+}
 #[derive(Default)]
 pub(super) struct ViewUi {
+    pub structure_section: StructureSection,
     pub nav: Nav,
     pub table_view: TableView,
     pub inspector: DetailMode,

@@ -4,6 +4,7 @@ use eframe::egui::{self, Pos2, Stroke};
 #[derive(Clone, Copy)]
 pub(super) enum Icon {
     Next,
+    Trigger,
     Search,
     Database,
     Folder,
@@ -273,6 +274,17 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
     };
     use Icon::*;
     match icon {
+        Trigger => {
+            line(&[
+                (13.0, 2.0),
+                (5.0, 14.0),
+                (12.0, 14.0),
+                (11.0, 22.0),
+                (19.0, 10.0),
+                (12.0, 10.0),
+                (13.0, 2.0),
+            ]);
+        }
         Next => {
             line(&[(5., 12.), (19., 12.)]);
             line(&[(13., 6.), (19., 12.), (13., 18.)]);

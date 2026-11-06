@@ -498,12 +498,7 @@ impl App {
     fn pane_content(&mut self, ui: &mut egui::Ui, kind: Kind) {
         match kind {
             Kind::Map => self.diagram_ui(ui),
-            Kind::Structure => {
-                egui::ScrollArea::both()
-                    .id_salt("structure-scroll")
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| self.structure_inspector(ui));
-            }
+            Kind::Structure => self.structure_inspector(ui),
             Kind::Record => {
                 if self.database.document.has_drafts()
                     || self.database.commit_owner == Some(self.database.document.id)

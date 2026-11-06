@@ -194,6 +194,7 @@ impl App {
             );
             return;
         };
+        let mut section = self.database.document.ui.structure_section;
         let info = self.loaded_inspection(name);
         let object = self
             .database
@@ -213,9 +214,6 @@ impl App {
         {
             ui.colored_label(ui.visuals().error_fg_color, error);
         }
-        if self.database.document.tools.inspection_ticket.is_some() {
-            ui.small("Loading structure…");
-        }
         if !self.database.document.tools.inspection_error.is_empty() {
             ui.colored_label(
                 ui.visuals().error_fg_color,
@@ -227,9 +225,21 @@ impl App {
             object,
             schema: &self.database.schema,
             loading: self.database.document.tools.inspection_ticket.is_some(),
+            selected: self
+                .database
+                .document
+                .tools
+                .highlight_column
+                .as_ref()
+                .filter(|(table, _)| table == name)
+                .map(|(_, column)| column.as_str()),
         }
-        .show(ui);
+        .show(ui, &mut section);
+        self.database.document.ui.structure_section = section;
         match action {
+            Some(presentation::Action::Column(column)) => {
+                self.database.document.tools.highlight_column = Some((name.into(), column));
+            }
             Some(presentation::Action::Load) => self.request_inspection(name.into()),
             Some(presentation::Action::Browse(table)) => self.browse_table(table),
             Some(presentation::Action::Definition(name)) => {

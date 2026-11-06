@@ -99,7 +99,7 @@ fn completion_span(text: &str, cursor: usize) -> Option<std::ops::Range<usize>> 
             .map_or(0, |(i, c)| i + c.len_utf8());
     Some(start..end)
 }
-fn highlighted(ui: &egui::Ui, text: &str, width: f32) -> std::sync::Arc<egui::Galley> {
+pub(super) fn highlighted(ui: &egui::Ui, text: &str, width: f32) -> std::sync::Arc<egui::Galley> {
     let mut job = egui::text::LayoutJob::default();
     job.wrap.max_width = width;
     let plain = ui.visuals().text_color();
