@@ -1,5 +1,16 @@
 # UI screenshots
 
+## Selected-file access card — native Wayland
+
+`resources/database-access.png` was captured on 2026-11-06 after `96452cb`, with
+path editing and the always-visible refresh icon removed from the selected-file card.
+The picker above the list chooses another file. A labelled Check again action appears
+only with a blocking file-check error. The manual-path fallback remains outside the card.
+
+The native capture used synthetic files and isolated preferences under headless
+Weston/Mesa. The visual smoke checks, formatting, Clippy and all 154 active UI tests
+passed (one existing ignored test), including failed-file recovery and picker consent.
+
 ## Sidebar search and resource settings — native Wayland
 
 The three `resources/` images were captured on 2026-11-06 after `fd175c4`, with

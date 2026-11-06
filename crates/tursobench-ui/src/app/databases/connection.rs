@@ -13,8 +13,14 @@ impl App {
         if self.database.retained() {
             return;
         }
+        #[cfg(test)]
+        {
+            self.databases.edit_path_rect = None;
+        }
+        let mut focus_path = false;
         if self.database.path.is_empty() {
             let edit = ui.link("Enter a path…");
+            focus_path = edit.clicked();
             #[cfg(test)]
             {
                 self.databases.edit_path_rect = Some(edit.rect);
@@ -24,10 +30,11 @@ impl App {
             if edit.clicked() {
                 self.databases.editing_path = !self.databases.editing_path;
             }
-            if self.databases.editing_path {
-                self.database_path_ui(ui, edit.clicked());
-            }
-        } else {
+        }
+        if self.databases.editing_path {
+            self.database_path_ui(ui, focus_path);
+        }
+        if !self.database.path.is_empty() {
             self.database_access_ui(ui);
         }
     }
@@ -101,17 +108,6 @@ impl App {
                 );
                 ui.add(egui::Label::new(&self.database.path).truncate())
                     .on_hover_text(&self.database.path);
-                let edit = ui.link(if self.databases.editing_path { "Done" } else { "Edit path…" });
-                #[cfg(test)]
-                {
-                    self.databases.edit_path_rect = Some(edit.rect);
-                }
-                if edit.clicked() {
-                    self.databases.editing_path = !self.databases.editing_path;
-                }
-                if self.databases.editing_path {
-                    self.database_path_ui(ui, edit.clicked());
-                }
                 let inspection = &mut self.databases.inspection;
                 #[cfg(test)]
                 { self.databases.override_rect = None; }
@@ -143,10 +139,6 @@ impl App {
                     let response = ui.add_enabled(enabled, crate::app::presentation::action(ui,
                         if self.databases.open_failure.is_some() { "Retry" } else { "Open" },
                         crate::app::presentation::Intent::Primary).min_size(egui::vec2(70.0,30.0)));
-                    if crate::app::icons::control(ui,crate::app::icons::Icon::Refresh,"Check again","",false,false).clicked() {
-                        self.databases.open_failure = None;
-                        self.databases.inspection.recheck();
-                    }
                     if ui.button("Cancel").clicked() {
                         self.cancel_database_review();
                     }
@@ -160,6 +152,8 @@ impl App {
                 if response.clicked() {
                     self.open(ui.ctx());
                 }
+                let blocked = self.databases.inspection.blocked(&self.database.path).is_some();
+                let mut recheck = false;
                 let issue = self.databases.open_failure.as_ref()
                     .or_else(|| self.databases.inspection.blocked(&self.database.path));
                 if let Some(error) = issue {
@@ -172,9 +166,18 @@ impl App {
                         .corner_radius(6).inner_margin(10.0).show(ui, |ui| {
                             ui.colored_label(color, egui::RichText::new(title).strong());
                             ui.add(egui::Label::new(&error.message).wrap());
+                            if blocked {
+                                recheck = ui.button("Check again")
+                                    .on_hover_text("Recheck this file’s availability and locks")
+                                    .clicked();
+                            }
                         });
                 } else if !self.databases.inspection.ready(&self.database.path) {
                     ui.horizontal(|ui| { ui.spinner(); ui.weak("Checking file…"); });
+                }
+                if recheck {
+                    self.databases.open_failure = None;
+                    self.databases.inspection.recheck();
                 }
                 ui.add_space(8.0);
 
@@ -302,7 +305,7 @@ mod tests {
     }
 
     #[test]
-    fn access_panel_uses_automatic_lock_checks_and_path_editing_resets_write_access() {
+    fn access_panel_uses_automatic_checks_and_picker_selection_resets_write_access() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("example.db");
         crate::test_support::create(&path, &["CREATE TABLE example(id INTEGER)"]);
@@ -315,8 +318,14 @@ mod tests {
         assert!(app.database.session.is_none());
 
         inspect(&mut app, &ctx);
-        frame(&mut app, &ctx, vec![], egui::vec2(1280.0, 720.0));
+        let texts = frame(&mut app, &ctx, vec![], egui::vec2(1280.0, 720.0));
         assert!(app.databases.open_enabled);
+        assert!(app.databases.edit_path_rect.is_none());
+        assert!(
+            !texts
+                .iter()
+                .any(|t| t == "Check again" || t == "Edit path…")
+        );
         assert!(!app.database.writable);
         let (_tx, rx) = std::sync::mpsc::sync_channel(1);
         app.picker = Some(rx);
@@ -324,20 +333,16 @@ mod tests {
         assert!(!app.databases.open_enabled);
         app.picker = None;
 
-        let edit = app.databases.edit_path_rect.unwrap().center();
-        click(&mut app, &ctx, edit);
-        assert!(app.databases.editing_path);
-        assert!(ctx.memory(|m| m.has_focus(egui::Id::unique("database-path"))));
+        let other = dir.path().join("other.db");
+        crate::test_support::create(&other, &["CREATE TABLE other(id INTEGER)"]);
         app.database.writable = true;
-        frame(
-            &mut app,
-            &ctx,
-            vec![egui::Event::Text("x".into())],
-            egui::vec2(1280.0, 720.0),
-        );
-        assert_ne!(app.database.path, path.to_str().unwrap());
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        app.picker = Some(rx);
+        tx.send(Ok(Some(other.clone()))).unwrap();
+        app.poll_picker();
+        assert_eq!(app.database.path, other.to_str().unwrap());
         assert!(!app.database.writable);
-        assert!(!app.databases.open_enabled);
+        assert!(!app.databases.inspection.ready(&app.database.path));
         assert!(app.database.session.is_none());
     }
 
@@ -426,6 +431,7 @@ mod tests {
             let texts = frame(&mut app, &ctx, vec![], egui::vec2(960.0, 640.0));
             assert!(texts.iter().any(|t| t == "Cannot open database"));
             assert!(texts.iter().any(|t| t == "File not found."));
+            assert!(texts.iter().any(|t| t == "Check again"));
             assert!(!app.databases.open_enabled);
             assert!(app.databases.open_rect.unwrap().bottom() < 640.0);
             assert!(
@@ -447,6 +453,7 @@ mod tests {
             let texts = frame(&mut app, &ctx, vec![], egui::vec2(960.0, 640.0));
             assert!(app.databases.open_enabled);
             assert!(!texts.iter().any(|t| t == "Cannot open database"));
+            assert!(!texts.iter().any(|t| t == "Check again"));
             std::fs::remove_file(&path).unwrap();
             let _ = std::fs::remove_file(path.with_extension("db-wal"));
         }

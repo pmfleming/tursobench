@@ -16,7 +16,8 @@ starts access review. All open shows up to six object matches per database; a co
 The overall search is capped at 100 results; refine the query for omitted results.
 
 The folder button in **Open database** or **Ctrl+O** opens the native file dialog. Manual entry is available
-under **Enter a path…**, and **Edit path…** changes a pending file’s path. Selecting a
+under **Enter a path…** when no file is selected. Choose a different file with the picker
+above the list; the selected-file card reviews access and opens that file. Selecting a
 new path defaults to read-only and resets the SQLite override. Opening a file from the
 sidebar preserves other open database sessions. The slider in Settings → Database resources sets
 the retained-database count and matching memory allowance; the sidebar shows the limit.
@@ -29,7 +30,8 @@ beneath the selected row shows the selected file, path, read-only/write choice a
 **Open**. A non-writing background check identifies missing/invalid files and
 incompatible locks before enabling Open. Known blockers appear inline, including
 the locking application when available. Blocked files are rechecked periodically;
-the refresh icon checks again immediately. Failures from the actual engine open
+**Check again** in the error panel reruns file and lock checks immediately. This action
+is hidden for files with no blocking check failure. Failures from the actual engine open
 stay visible with **Retry** until another attempt or selection/access change.
 Admission locks are still checked authoritatively on Open. Long paths are truncated with the full path
 on hover. Changing the selected path resets write access and

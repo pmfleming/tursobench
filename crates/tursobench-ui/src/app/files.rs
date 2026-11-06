@@ -109,6 +109,7 @@ impl App {
         self.sidebar_search.focus = true;
         match result {
             Ok(Some(path)) if self.database.session.is_none() => {
+                self.databases.editing_path = false;
                 if let Some(path) = path.to_str() {
                     if let Some(id) = self.duplicate_workspace(std::path::Path::new(path)) {
                         let abandoned = self.database.id;

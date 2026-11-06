@@ -212,6 +212,7 @@ impl App {
             return;
         }
         if self.new_workspace(ctx) {
+            self.databases.editing_path = false;
             self.sidebar_search.query.clear();
             self.sidebar_search.navigating = false;
             self.sidebar_search.available_highlight = None;
