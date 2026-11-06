@@ -1,22 +1,23 @@
 # UI screenshots
 
-## Database resource settings — native Wayland
+## Sidebar search and resource settings — native Wayland
 
-The two `resources/` images were captured on 2026-11-06 with the configurable
-resource policy, against isolated baseline `ea2c182` plus the memory-policy changes.
-Concurrent record UI edits in the shared checkout were kept outside this validation.
-The startup snapshot detected 33.2 GiB usable headroom after process limits, giving
-an automatic 8,497 MiB budget and a 16-database admission limit. These values are
-recalculated on launch; manual overrides persist.
+The three `resources/` images were captured on 2026-11-06 after `551a624`, with
+separate search/opening sections, tooltip scope icons and simplified resource settings.
+The captures use synthetic databases, isolated preferences and headless Weston/Mesa.
 
-- `navigator-settings.png`: startup memory, automatic/manual budget and count,
-  effective limit and planning estimate.
-- `sidebar-open-databases.png`: the visible retained/effective limit counter.
+- `navigator-settings.png`: one database-count slider, estimated memory, system
+  recommendation and Reset. This launch recommended nine databases (4.5 GiB estimate);
+  the recommendation is recalculated from available memory on each normal launch.
+- `sidebar-open-databases.png`: search scope icons, retained/limit counter and the
+  folder picker in the separate Open database section.
+- `sidebar-search.png`: grouped object/column search results.
 
 Reproduce with `nix develop -c bash scripts/capture-sidebar.sh /tmp/resource-captures`.
-The capture set uses synthetic files and isolated preferences. Native desktop,
-discovery, four local-project fixture smoke checks, the engine probe, formatting,
-Clippy, the workspace build and 229 active tests (one existing ignored test) passed.
+The native visual smoke checks passed across six workspace sizes/themes, navigator
+panels, dialogs, staged edits and database controls; capture dimensions were checked.
+Formatting, Clippy and 229 active workspace tests passed (one existing ignored test).
+The updated slider interaction test also passed after the final contrast adjustment.
 
 ## Sidebar database navigation v9 — native Wayland
 

@@ -118,7 +118,10 @@ meter. Selecting a row expands that database’s schema and collapses the previo
 Ctrl PageUp/PageDown cycles retained workspaces, including disconnected sessions
 with drafts or uncertain outcomes. Switching preserves results and drafts.
 
-The search at the top has **All open**, **This database**, and **Databases** scopes.
+The **Search** section has three scope icons with tooltips:
+overlapping squares for **All open**, a database for **This database**, and a
+magnifying glass for **Databases** (names and paths). The selected icon is highlighted,
+and the search field hint follows the scope.
 Ctrl P or `/` focuses it; arrows choose, Enter opens, and Escape clears the query.
 Object results group by database; selecting one switches to its session and opens the
 object. All open shows six object matches per database, with an omitted-match count.
@@ -127,9 +130,10 @@ metadata limits shown inline. Results stop at 100; refine the query to see other
 **Databases** matches filenames and containing paths, including files not yet open.
 Ctrl K remains an actions-only palette.
 
-**Available** lists recent and discovered files that are not open. Select a row to
-review read-only/read-write access beneath it, then click **Open**. The folder button
-or Ctrl O opens the native file chooser; **Enter a path…** works without a portal.
+The separate **Open database** section contains **Browse database files** and the
+**Available** list of recent and discovered files that are not open. Select a row to
+review read-only/read-write access beneath it, then click **Open**. **Browse database
+files** or Ctrl O opens the native file chooser; **Enter a path…** works without a portal.
 Read-only is the default for a new path; likely SQLite files still require a per-file
 override. Errors, recheck and retry stay in the card. Right-click a file to forget it;
 the gear opens discovery settings. Available can be collapsed. Its list renders only
@@ -340,20 +344,22 @@ silently reopened writable after restart. Connection-local state never crosses d
 
 ### Database count and memory budget
 
-Settings → **Database resources** shows usable total and available RAM detected once
-at startup. Linux detection uses `MemAvailable` and includes cgroup v2 limits for the
-process and its ancestors when present. **Automatic budget** uses 25% of that available
-memory. If available RAM cannot be detected, the fallback is at most 1 GiB, also bounded
-by a quarter of known total RAM. Automatic settings are recalculated on each launch.
+Settings → **Database resources** has one slider for the maximum number of databases
+and shows the estimated memory needed at 512 MiB per workspace. Moving it updates both
+the admission count and its memory allowance, saves immediately and persists across
+restarts. For example, selecting six databases shows an estimate of 3 GiB.
+The sidebar shows retained workspaces / effective limit.
 
-Turn off Automatic budget to enter a budget in MiB. **Automatic limit** derives the
-number of retained databases using a 512 MiB planning allowance per workspace. Turn
-it off to enter a maximum database count. The effective limit is the lower of that
-count and the budget-derived ceiling; for example, 8 GiB allows 16 workspaces, or six
-when the manual count is six. The sidebar shows retained workspaces / effective limit.
-Both overrides save immediately and persist across restarts.
+**Reset** restores the system recommendation, calculated using 25% of available memory
+detected at startup. Hover the recommendation to see detected available/total RAM.
+Linux detection uses `MemAvailable` and includes cgroup v2 limits for the process and
+its ancestors when present. If available RAM cannot be detected, the fallback is at
+most 1 GiB, also bounded by a quarter of known total RAM. The recommendation is
+recalculated on each launch. The slider extends to the estimated capacity of available
+memory, or an existing larger limit. Previously saved resource settings remain in
+effect until the slider is adjusted or Reset is clicked.
 
-Lowering either setting leaves current sessions, drafts and exports intact and blocks
+Lowering the setting leaves current sessions, drafts and exports intact and blocks
 additional opens until there is capacity. Access-mode reopening reuses its existing
 workspace slot. Retained disconnected workspaces also count.
 CLI opening and pending access review use the same admission check. Selecting an

@@ -5,8 +5,9 @@ TursoBench starts one background search when the application launches. The sideb
 without changing the selected path or access mode. Recent successful opens appear
 first on the next launch. Files that are already open appear under **Open databases**.
 
-**Ctrl+P** or `/` focuses the sidebar search. Choose **Databases** to match filenames
-and paths, **All open** to search open sessions and matching available files, or
+**Ctrl+P** or `/` focuses the sidebar's **Search** section. Its three scope
+icons have descriptive tooltips and highlight the current selection. Choose
+**Databases** to match filenames and paths, **All open** to search open sessions and matching available files, or
 **This database** to filter the current session’s schema tree and matching columns.
 Up/Down chooses results, PageUp/PageDown moves through longer lists, and Enter selects.
 Typing or pasting retains the search editor’s cursor. Escape clears the query.
@@ -14,11 +15,11 @@ Selecting an open database focuses its existing session. Selecting an available 
 starts access review. All open shows up to six object matches per database; a count identifies omitted matches.
 The overall search is capped at 100 results; refine the query for omitted results.
 
-The folder button or **Ctrl+O** opens the native file dialog. Manual entry is available
+The folder button in **Open database** or **Ctrl+O** opens the native file dialog. Manual entry is available
 under **Enter a path…**, and **Edit path…** changes a pending file’s path. Selecting a
 new path defaults to read-only and resets the SQLite override. Opening a file from the
-sidebar preserves other open database sessions. Settings → Database resources sets
-the retained-database count and memory budget; the sidebar shows the effective limit.
+sidebar preserves other open database sessions. The slider in Settings → Database resources sets
+the retained-database count and matching memory allowance; the sidebar shows the limit.
 Cancelling access review or dismissing the picker restores the previous database.
 Available is collapsible, renders visible rows, and uses file identities cached by
 discovery/opening. Repainting never probes candidate files.
@@ -174,7 +175,7 @@ directories, depth limits, permissions, mount boundaries, symlinks, hard links,
 sidecars, native paths, cancellation and channel backpressure. A real Turso 0.8.3
 fixture is checked byte-for-byte, including sidecars, before and after discovery.
 Headless egui tests exercise filtering, native search-cursor retention, arrow-key
-and page navigation, scrolling, the Browse button beside the search field,
+and page navigation, scrolling, the Browse button in the **Open database** section,
 pointer selection, stable asynchronous result order, access resets and
 native-folder-result routing. Engine lifecycle tests
 verify successful-open-only history. Classification tests cover shared writer

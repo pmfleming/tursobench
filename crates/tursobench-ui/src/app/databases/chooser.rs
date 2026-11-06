@@ -8,6 +8,22 @@ use std::path::Path;
 
 impl App {
     pub(in crate::app) fn available_databases_ui(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.horizontal_wrapped(|ui| {
+            ui.small("OPEN DATABASE");
+            let browse = ui
+                .add_enabled_ui(self.can_request_database(), |ui| {
+                    icons::button(ui, Icon::Folder, "Browse database files", "Ctrl O")
+                })
+                .inner;
+            #[cfg(test)]
+            {
+                self.databases.browse_rect = Some(browse.rect);
+            }
+            if browse.clicked() {
+                self.begin_database_browse(ui.ctx());
+            }
+        });
         let mut indices: Vec<_> = self
             .databases
             .entries

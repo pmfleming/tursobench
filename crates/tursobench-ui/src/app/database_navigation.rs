@@ -76,64 +76,72 @@ impl App {
                 }
             }
         }
-        ui.horizontal(|ui| {
-            let width = (ui.available_width() - 28.0 - ui.spacing().item_spacing.x).max(40.0);
-            let response = ui.add_sized(
-                [width, 28.0],
-                egui::TextEdit::singleline(&mut self.sidebar_search.query)
-                    .id(egui::Id::unique("sidebar-search"))
-                    .event_filter(egui::EventFilter {
-                        escape: true,
-                        vertical_arrows: true,
-                        horizontal_arrows: true,
-                        tab: false,
-                    })
-                    .hint_text("Find in databases…"),
-            );
-            if std::mem::take(&mut self.sidebar_search.focus) {
-                response.request_focus();
-            }
-            if response.changed() {
-                self.sidebar_search.index = 0;
-                self.sidebar_search.navigating = false;
-            }
-            if response.has_focus() {
-                self.database.tools.tree_focus = Some(response.id);
-            }
-            let browse = ui
-                .add_enabled_ui(self.can_request_database(), |ui| {
-                    icons::button(ui, Icon::Folder, "Browse database files", "Ctrl O")
-                })
-                .inner;
-            #[cfg(test)]
-            {
-                self.databases.browse_rect = Some(browse.rect);
-                self.databases.search_rect = Some(response.rect.union(browse.rect));
-            }
-            if browse.clicked() {
-                self.begin_database_browse(ui.ctx());
-            }
-        });
         ui.horizontal_wrapped(|ui| {
+            ui.small("SEARCH").on_hover_text("Search databases");
             ui.spacing_mut().item_spacing.x = 3.0;
-            ui.spacing_mut().button_padding.x = 5.0;
-            for (scope, label) in [
-                (Scope::AllOpen, "All open"),
-                (Scope::ThisDatabase, "This database"),
-                (Scope::Databases, "Databases"),
+            for (scope, icon, tooltip) in [
+                (
+                    Scope::AllOpen,
+                    Icon::Copy,
+                    "All open: schema objects and available database files",
+                ),
+                (
+                    Scope::ThisDatabase,
+                    Icon::Database,
+                    "This database: tables, columns and schema objects",
+                ),
+                (
+                    Scope::Databases,
+                    Icon::Search,
+                    "Databases: names and paths, including unopened files",
+                ),
             ] {
-                if ui
-                    .selectable_value(
-                        &mut self.sidebar_search.scope,
-                        scope,
-                        egui::RichText::new(label).size(10.5),
-                    )
-                    .changed()
+                if icons::control(
+                    ui,
+                    icon,
+                    tooltip,
+                    "",
+                    self.sidebar_search.scope == scope,
+                    false,
+                )
+                .clicked()
                 {
+                    self.sidebar_search.scope = scope;
                     self.sidebar_search.index = 0;
                 }
             }
         });
+        let response = ui.add_sized(
+            [ui.available_width(), 28.0],
+            egui::TextEdit::singleline(&mut self.sidebar_search.query)
+                .id(egui::Id::unique("sidebar-search"))
+                .event_filter(egui::EventFilter {
+                    escape: true,
+                    vertical_arrows: true,
+                    horizontal_arrows: true,
+                    tab: false,
+                })
+                .hint_text(match self.sidebar_search.scope {
+                    Scope::AllOpen => "Find across databases…",
+                    Scope::ThisDatabase => "Find tables, columns…",
+                    Scope::Databases => "Find database names or paths…",
+                }),
+        );
+        if std::mem::take(&mut self.sidebar_search.focus) {
+            response.request_focus();
+        }
+        if response.changed() {
+            self.sidebar_search.index = 0;
+            self.sidebar_search.navigating = false;
+        }
+        if response.has_focus() {
+            self.database.tools.tree_focus = Some(response.id);
+        }
+        #[cfg(test)]
+        {
+            self.databases.search_rect = Some(response.rect);
+        }
+        ui.separator();
     }
 
     pub(super) fn sidebar_selection_keys(
