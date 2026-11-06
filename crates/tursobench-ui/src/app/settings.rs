@@ -105,9 +105,6 @@ impl App {
         if self.settings.page == Page::Discovery {
             // Discovery manages its own folder-list scroll area.
             self.discovery_settings_ui(ui);
-            if let Some(message) = &self.databases.message {
-                ui.label(message);
-            }
             return;
         }
         egui::ScrollArea::vertical()
@@ -467,7 +464,12 @@ mod tests {
                 app.preferences.query_timeout_ms = 3_600_000;
                 app.preferences.null_display = "n".repeat(32);
                 for width in [280.0, 440.0, 640.0, 900.0] {
-                    for page in [Page::Appearance, Page::Resources, Page::Queries] {
+                    for page in [
+                        Page::Appearance,
+                        Page::Discovery,
+                        Page::Resources,
+                        Page::Queries,
+                    ] {
                         app.settings.page = page;
                         for _ in 0..2 {
                             let output = render(&ctx, egui::vec2(width, 600.0), vec![], |ui| {

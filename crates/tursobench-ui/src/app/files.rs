@@ -1,4 +1,4 @@
-use super::{App, shell};
+use super::{App, databases::FolderList, shell};
 use eframe::egui;
 
 use std::{
@@ -41,7 +41,7 @@ impl App {
         if self.picker.is_some() || self.database.session.is_some() {
             return;
         }
-        self.databases.picking_folder = false;
+        self.databases.picking_folder = None;
         match start_picker(ctx.clone(), || {
             rfd::FileDialog::new()
                 .set_title("Open existing Turso database")
@@ -60,18 +60,23 @@ impl App {
     }
 
     pub(super) fn browse_search_folder(&mut self, ctx: &egui::Context) {
-        if self.picker.is_some() || self.databases.job.is_some() {
+        if self.picker.is_some() {
             return;
         }
-        match start_picker(ctx.clone(), || {
+        let list = self.databases.folder_list;
+        match start_picker(ctx.clone(), move || {
             rfd::FileDialog::new()
-                .set_title("Choose a database search folder")
+                .set_title(if list == FolderList::Excluded {
+                    "Choose a folder to exclude"
+                } else {
+                    "Choose a database search folder"
+                })
                 .pick_folder()
         }) {
             Ok(rx) => {
-                self.databases.picking_folder = true;
+                self.databases.picking_folder = Some(list);
                 self.picker = Some(rx);
-                self.databases.message = Some("Waiting for search folder selection…".into());
+                self.databases.message = Some("Waiting for folder selection…".into());
             }
             Err(error) => {
                 self.databases.message = Some(format!(
@@ -93,15 +98,25 @@ impl App {
             }
         };
         self.picker = None;
-        if std::mem::take(&mut self.databases.picking_folder) {
+        if let Some(list) = self.databases.picking_folder.take() {
             match result {
-                Ok(Some(path)) => self.add_search_folder(path),
+                Ok(Some(path)) => {
+                    if let Some(path) = path.to_str() {
+                        self.databases.folder_list = list;
+                        self.databases.folder_input = path.into();
+                        self.databases.message = None;
+                    } else {
+                        self.databases.message = Some(
+                            "Only UTF-8 folder paths are supported; enter a folder path manually."
+                                .into(),
+                        );
+                    }
+                }
                 Ok(None) => {
                     self.databases.message = None;
                 }
                 Err(error) => {
-                    self.databases.message =
-                        Some(format!("Could not choose a search folder: {error}"))
+                    self.databases.message = Some(format!("Could not choose a folder: {error}"))
                 }
             }
             return;

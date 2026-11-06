@@ -384,9 +384,12 @@ mod tests {
         frame(&mut app, &ctx, vec![], egui::vec2(1280.0, 720.0));
         let texts = frame(&mut app, &ctx, vec![], egui::vec2(1280.0, 720.0));
         assert!(app.settings.open);
-        assert!(texts.iter().any(|text| text == "Search folders"));
-        // The default folder list makes this dialog scrollable. Feedback remains
-        // accessible below it, independently of the file access controls.
+        assert!(
+            texts
+                .iter()
+                .any(|text| text.starts_with("Search folders ·"))
+        );
+        // Results stay pinned below the folder list when the window is scrolled.
         let settings_rect = ctx
             .memory(|memory| memory.area_rect(egui::Id::unique("application-settings")))
             .unwrap();

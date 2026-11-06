@@ -52,17 +52,13 @@ impl App {
                 self.sidebar_search.available_collapsed = !self.sidebar_search.available_collapsed;
             }
             ui.small(format!("AVAILABLE · {}", indices.len()));
-            if self.databases.job.is_some() {
-                ui.spinner().on_hover_text("Finding local databases…");
-            }
-            let refresh = icons::button(ui, Icon::Refresh, "Refresh databases", "");
-            #[cfg(test)]
-            {
-                self.databases.refresh_rect = Some(refresh.rect);
-            }
-            if refresh.clicked() {
-                self.start_discovery(ui.ctx(), None);
-            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let _action = self.discovery_actions(ui);
+                #[cfg(test)]
+                {
+                    self.databases.refresh_rect = Some(_action.rect);
+                }
+            });
         });
         let can_select = self.can_request_database();
         let mut selected = None;

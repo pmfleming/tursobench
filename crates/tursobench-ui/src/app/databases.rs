@@ -11,6 +11,7 @@ use crate::{
     discovery::{self, Availability, DatabaseKind, Event, Job, Request, Root, Summary},
     storage::{CachedDatabase, DiscoveryPreferences, normalized_absolute},
 };
+pub(super) use settings::FolderList;
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
@@ -79,9 +80,9 @@ pub(super) struct Chooser {
     pub open_failure: Option<tursobench_core::Failure>,
     pub job: Option<Job>,
     entries: Vec<Entry>,
-    folder_input: String,
-    exclude_input: String,
-    pub picking_folder: bool,
+    pub folder_input: String,
+    pub folder_list: FolderList,
+    pub picking_folder: Option<FolderList>,
     pub editing_path: bool,
     pub message: Option<String>,
     summary: Option<Summary>,
@@ -495,7 +496,7 @@ impl App {
             .retain(|e| !e.path.starts_with(&path));
         self.databases.cancel();
         self.databases.pending_folder = None;
-        self.databases.exclude_input.clear();
+        self.databases.folder_input.clear();
         self.store.save(&self.preferences);
         self.databases.message = Some("Folder excluded.".into());
     }
@@ -930,13 +931,21 @@ mod tests {
         app.database.path = "selected.db".into();
 
         app.database.writable = true;
-        app.databases.picking_folder = true;
+        app.databases.picking_folder = Some(super::FolderList::Search);
         let (tx, rx) = mpsc::sync_channel(1);
         app.picker = Some(rx);
         tx.send(Ok(Some(temp.path().into()))).unwrap();
         app.poll_picker();
         assert_eq!(app.database.path, "selected.db");
         assert!(app.database.writable);
+        assert_eq!(app.databases.folder_input, temp.path().to_str().unwrap());
+        assert!(
+            !app.preferences
+                .discovery
+                .roots
+                .contains(&temp.path().to_path_buf())
+        );
+        app.add_search_folder(app.databases.folder_input.clone().into());
         assert!(
             app.preferences
                 .discovery
