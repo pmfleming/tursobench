@@ -84,6 +84,7 @@ impl App {
 
     pub(super) fn navigation_sidebar(&mut self, ui: &mut egui::Ui) {
         self.database_switcher_ui(ui);
+        self.open_databases_ui(ui);
         if self.database.ui.sidebar != ToolPanel::Schema {
             egui::ScrollArea::vertical()
                 .id_salt("sidebar-tool")

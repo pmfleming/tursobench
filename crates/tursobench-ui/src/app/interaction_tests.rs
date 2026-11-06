@@ -3215,6 +3215,14 @@ fn database_workspaces_isolate_transactions_drafts_and_inactive_results() {
         vec![vec![Value::Text("second".into())]]
     );
     assert_eq!(app.database.transaction, TransactionState::Autocommit);
+    // Sidebar rendering must never exchange parked workspaces or retained buffers.
+    let focused = app.database.id;
+    let output = frame_at(&mut app, &ctx, egui::vec2(1280.0, 720.0), vec![]);
+    assert_eq!(app.database.id, focused);
+    let row = control(&output, &format!("Select database: {first_path}"));
+    click(&mut app, &ctx, row.center());
+    assert_eq!(app.database.id, first);
+    app.select_workspace(second);
     let first_state = &app.parked[&first];
     let result = if first_state.document.id == first_result {
         &first_state.document

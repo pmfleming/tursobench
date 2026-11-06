@@ -168,6 +168,7 @@ impl App {
                             .id_salt("sidebar-tool")
                             .show(ui, |ui| self.settings_ui(ui));
                     } else {
+                        self.open_databases_ui(ui);
                         self.database_chooser_ui(ui);
                     }
                 });

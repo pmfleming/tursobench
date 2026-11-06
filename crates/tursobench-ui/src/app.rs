@@ -3,6 +3,7 @@ mod admin;
 mod columns;
 mod commands;
 mod context;
+mod database_navigation;
 mod databases;
 mod diagram;
 mod document;

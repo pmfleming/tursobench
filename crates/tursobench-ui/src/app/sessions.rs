@@ -74,7 +74,7 @@ impl DatabaseWorkspace {
         }
     }
 }
-const MAX_DATABASES: usize = 4;
+pub(super) const MAX_DATABASES: usize = 4;
 fn same_file(a: &Path, b: &Path) -> bool {
     if a == b {
         return true;
