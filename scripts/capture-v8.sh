@@ -36,11 +36,14 @@ with sqlite3.connect(sys.argv[1]) as db:
          bytes([0,255,i%256]), i/10) for i in range(1000)
     ))
 PY
-cargo build --locked -p tursobench-ui
+if [ -z "${TURSOBENCH_BINARY:-}" ]; then
+  cargo build --locked -p tursobench-ui
+fi
 export XDG_CONFIG_HOME="$work/config"
 export TURSOBENCH_CAPTURE_DIR="$output"
+binary=${TURSOBENCH_BINARY:-target/debug/tursobench}
 # Leave room for Wayland decorations around the largest 3440x1440 client scene.
-python3 scripts/wayland-run.py --width 3520 --height 1520 -- timeout 75 target/debug/tursobench --smoke-test "$work/sample.db"
+python3 scripts/wayland-run.py --width 3520 --height 1520 -- timeout 75 "$binary" --smoke-test "$work/sample.db"
 python3 - "$output" <<'PY'
 from pathlib import Path
 import struct

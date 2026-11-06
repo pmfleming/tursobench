@@ -239,7 +239,7 @@ impl App {
         if self.database.document.result.rows.get(row).is_none() {
             return;
         }
-        self.database.document.inspect = Some((row, column));
+        self.select_cell(row, column, false);
         self.database.document.tools.detail = Some(row);
         self.database.document.ui.inspector = DetailMode::Record;
         if self.database.document.kind == Kind::Data {
@@ -363,30 +363,7 @@ impl App {
                     ui.set_max_size(content.size());
                     if self.database.workspace.minimized.contains(&kind) {
                         ui.horizontal(|ui| {
-                            if ui
-                                .add_sized(
-                                    [
-                                        (ui.available_width()
-                                            - icons::RIBBON_BUTTON_SIZE
-                                            - ui.spacing().item_spacing.x)
-                                            .max(0.0),
-                                        icons::RIBBON_BUTTON_SIZE,
-                                    ],
-                                    egui::Button::new(
-                                        egui::RichText::new(kind.label())
-                                            .size(crate::appearance::text_size(
-                                                ui.ctx(),
-                                                icons::RIBBON_TEXT_SIZE,
-                                            ))
-                                            .strong(),
-                                    )
-                                    .frame(false)
-                                    .truncate(),
-                                )
-                                .clicked()
-                            {
-                                self.focus_pane(kind);
-                            }
+                            self.minimized_pane_title(ui, kind);
                             if icons::ribbon_button(ui, Icon::Fit, "Expand to workspace", "", None)
                                 .clicked()
                             {
@@ -436,6 +413,108 @@ impl App {
             );
         }
         self.switch_document(self.database.workspace.focused);
+    }
+    fn minimized_pane_title(&mut self, ui: &mut egui::Ui, kind: Kind) {
+        let document = &self.database.document;
+        let name = document.object.as_deref().unwrap_or("");
+        let title = match kind {
+            Kind::Record => format!(
+                "Record · {name} · {} / {}",
+                document.inspect.map_or(0, |(r, _)| r + 1),
+                document.result.rows.len()
+            ),
+            Kind::Structure => format!("Structure · {name}"),
+            _ => kind.label().into(),
+        };
+        let width =
+            (ui.available_width() - icons::RIBBON_BUTTON_SIZE - ui.spacing().item_spacing.x)
+                .max(0.0);
+        let (rect, response) = ui.allocate_exact_size(
+            egui::vec2(width, icons::RIBBON_BUTTON_SIZE),
+            egui::Sense::click(),
+        );
+        if response.hovered() {
+            ui.painter()
+                .rect_filled(rect, 4.0, ui.visuals().widgets.hovered.bg_fill);
+        }
+        let mut right = rect.right() - 4.0;
+        let mut description = title.clone();
+        if kind == Kind::Structure
+            && let Some(info) = self.loaded_inspection(name)
+        {
+            let counts = [
+                (Icon::Columns, info.table.columns.len(), "columns"),
+                (Icon::Complete, info.indexes.len(), "indexes"),
+                (
+                    Icon::Link,
+                    super::diagram::ForeignMap {
+                        info,
+                        graph: self.database.ui.diagram.data.as_ref(),
+                        incomplete: self.schema_incomplete(),
+                    }
+                    .count(),
+                    "foreign keys",
+                ),
+            ];
+            for (icon, count, label) in counts.into_iter().rev() {
+                description.push_str(&format!(" · {count} {label}"));
+                let text = count.to_string();
+                let size = ui
+                    .painter()
+                    .layout_no_wrap(
+                        text.clone(),
+                        crate::appearance::proportional(ui.ctx(), 11.0),
+                        ui.visuals().weak_text_color(),
+                    )
+                    .size();
+                let group_width = 22.0 + size.x;
+                let area = egui::Rect::from_min_max(
+                    egui::pos2(right - group_width, rect.top()),
+                    egui::pos2(right, rect.bottom()),
+                );
+                icons::paint(
+                    ui.painter(),
+                    egui::Rect::from_center_size(
+                        area.left_center() + egui::vec2(7.0, 0.0),
+                        egui::vec2(13.0, 13.0),
+                    ),
+                    icon,
+                    ui.visuals().weak_text_color(),
+                );
+                super::schema::presentation::text_at(
+                    ui,
+                    egui::Rect::from_min_max(area.min + egui::vec2(18.0, 0.0), area.max),
+                    &text,
+                    ui.visuals().weak_text_color(),
+                    11.0,
+                );
+                right -= group_width + 4.0;
+            }
+        }
+        super::schema::presentation::text_at(
+            ui,
+            egui::Rect::from_min_max(
+                rect.min + egui::vec2(5.0, 0.0),
+                egui::pos2(right.max(rect.left() + 6.0), rect.bottom()),
+            ),
+            &title,
+            ui.visuals().text_color(),
+            icons::RIBBON_TEXT_SIZE,
+        );
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::Role::Button,
+                ui.is_enabled(),
+                if matches!(kind, Kind::Record | Kind::Structure) {
+                    format!("Restore {description}")
+                } else {
+                    kind.label().into()
+                },
+            )
+        });
+        if response.on_hover_text(description).clicked() {
+            self.focus_pane(kind);
+        }
     }
     fn workspace_dividers(&mut self, ui: &mut egui::Ui, panes: &[(Kind, egui::Rect)]) -> bool {
         let mut changed = false;
@@ -522,19 +601,34 @@ impl App {
                         .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(4, 0)))
                         .show(ui, |ui| self.related_list(ui, row));
                 }
-                egui::ScrollArea::vertical()
-                    .id_salt("record-scroll")
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        if let Some(row) = row {
-                            self.record_inspector(ui, row);
-                            if ui.available_width() > 600.0 {
-                                self.wide_related(ui);
-                            }
-                        } else {
-                            icons::empty_state(ui, Icon::Selection, "Select a row to inspect");
-                        }
+                if ui.available_width() > 600.0
+                    && !self.incoming_keys().is_empty()
+                    && let Some(row) = row
+                {
+                    ui.columns(2, |panes| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("record-fields-wide")
+                            .auto_shrink([false, false])
+                            .show(&mut panes[0], |ui| {
+                                self.record_inspector_with_types(ui, row, true)
+                            });
+                        egui::ScrollArea::vertical()
+                            .id_salt("record-related-wide")
+                            .auto_shrink([false, false])
+                            .show(&mut panes[1], |ui| self.wide_related(ui));
                     });
+                } else {
+                    egui::ScrollArea::vertical()
+                        .id_salt("record-scroll")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            if let Some(row) = row {
+                                self.record_inspector(ui, row);
+                            } else {
+                                icons::empty_state(ui, Icon::Selection, "Select a row to inspect");
+                            }
+                        });
+                }
             }
             Kind::Sql => self.sql_pane(ui),
             Kind::Data | Kind::Result => {

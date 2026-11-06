@@ -546,6 +546,12 @@ impl App {
                 || self.database.document.tools.inspection_ticket.is_some() => {}
             20 | 22 | 24 | 26 | 28 | 30 => {
                 if smoke.capture_frames == 0 {
+                    if std::env::var("TURSOBENCH_CAPTURE_STRUCTURE_SECTION").as_deref()
+                        == Ok("foreign-keys")
+                    {
+                        self.database.document.ui.structure_section =
+                            shell::StructureSection::ForeignKeys;
+                    }
                     ctx.send_viewport_cmd(egui::ViewportCommand::CursorPosition(egui::pos2(
                         1795.0, 995.0,
                     )));

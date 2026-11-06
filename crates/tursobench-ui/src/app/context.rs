@@ -299,7 +299,7 @@ impl App {
             ui.label("Loading parent preview…");
         }
     }
-    fn incoming_keys(&self) -> Vec<(String, ForeignKey)> {
+    pub(super) fn incoming_keys(&self) -> Vec<(String, ForeignKey)> {
         let Some(table) = &self.database.document.table else {
             return vec![];
         };
@@ -324,13 +324,12 @@ impl App {
     }
     pub(super) fn schema_incomplete(&self) -> bool {
         self.database.ui.diagram.stale
-            || self
-                .database
-                .ui
-                .diagram
-                .data
-                .as_ref()
-                .is_none_or(|g| g.limited || g.tables.iter().any(|n| n.error.is_some()))
+            || self.database.ui.diagram.data.as_ref().is_none_or(|g| {
+                g.limited
+                    || g.tables
+                        .iter()
+                        .any(|n| n.error.is_some() || n.inspection.is_none())
+            })
     }
     pub(super) fn related_list(&mut self, ui: &mut egui::Ui, row: usize) {
         if !self.related_visible() {
@@ -350,7 +349,18 @@ impl App {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().interact_size.y = 22.0;
-                    ui.weak("Related");
+                    let (rect, response) =
+                        ui.allocate_exact_size(egui::vec2(14.0, 22.0), egui::Sense::hover());
+                    icons::paint(
+                        ui.painter(),
+                        egui::Rect::from_center_size(rect.center(), egui::vec2(13.0, 13.0)),
+                        Icon::Link,
+                        crate::appearance::Tokens::of(ui.ctx()).muted,
+                    );
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::Role::Image, true, "Related records")
+                    });
+                    response.on_hover_text("Related records");
                     if self.schema_incomplete() {
                         ui.colored_label(ui.visuals().warn_fg_color, "Incomplete schema")
                             .on_hover_text(
@@ -387,7 +397,12 @@ impl App {
                                 available && spec.is_some(),
                                 egui::Button::new(
                                     egui::RichText::new(format!(
-                                        "↙ {child} · {}",
+                                        "{child}.{} · {}",
+                                        key.columns
+                                            .iter()
+                                            .map(|(from, _)| from.as_str())
+                                            .collect::<Vec<_>>()
+                                            .join(" + "),
                                         count.map_or("—".into(), |n| n.to_string())
                                     ))
                                     .color(crate::appearance::Tokens::of(ui.ctx()).relationship),

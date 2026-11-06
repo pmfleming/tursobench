@@ -301,6 +301,14 @@ impl Structure<'_> {
                 "Engine-managed storage · generated edits disabled",
             );
         }
+        let selection_id = ui.scope_id().with("structure-selected-column");
+        let selected_name = self.selected.map(str::to_owned);
+        let scroll = ui.ctx().data_mut(|data| {
+            let previous = data.get_temp::<Option<String>>(selection_id).flatten();
+            let changed = previous != selected_name;
+            data.insert_temp(selection_id, selected_name);
+            changed
+        });
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             let composite = info
@@ -337,6 +345,9 @@ impl Structure<'_> {
                     egui::vec2(ui.available_width(), 22.0),
                     egui::Sense::click(),
                 );
+                if selected && scroll {
+                    response.scroll_to_me(Some(egui::Align::Center));
+                }
                 if selected || response.hovered() {
                     ui.painter().rect_filled(
                         rect,
@@ -393,7 +404,7 @@ impl Structure<'_> {
                     egui::pos2(right - type_width, rect.top()),
                     egui::pos2(right, rect.bottom()),
                 );
-                text_at(ui, type_rect, &c.declared_type, tokens.faint, 11.0);
+                text_right_at(ui, type_rect, &c.declared_type, tokens.faint, 11.0);
                 right = type_rect.left() - 5.0;
                 if !indexes.is_empty() {
                     icons::paint(
@@ -434,10 +445,19 @@ impl Structure<'_> {
                         .unwrap_or("?");
                     text_at(
                         ui,
-                        link,
-                        &format!("→ {}.{target}", key.target),
+                        egui::Rect::from_min_max(link.min + egui::vec2(15.0, 0.0), link.max),
+                        &format!("{}.{target}", key.target),
                         tokens.relationship,
                         11.0,
+                    );
+                    icons::paint(
+                        ui.painter(),
+                        egui::Rect::from_center_size(
+                            link.left_center() + egui::vec2(6.0, 0.0),
+                            egui::vec2(11.0, 11.0),
+                        ),
+                        Icon::Next,
+                        tokens.relationship,
                     );
                     let go = ui.interact(
                         link,
@@ -715,6 +735,27 @@ pub(in crate::app) fn text_at(
             color,
         );
 }
+pub(in crate::app) fn text_right_at(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    text: &str,
+    color: egui::Color32,
+    size: f32,
+) {
+    let mut job = egui::text::LayoutJob::simple_singleline(
+        text.into(),
+        crate::appearance::proportional(ui.ctx(), size),
+        color,
+    );
+    job.wrap.max_width = rect.width().max(0.0);
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    let galley = ui.painter().layout_job(job);
+    let pos = rect.right_center() - egui::vec2(galley.size().x, galley.size().y / 2.0);
+    ui.painter()
+        .with_clip_rect(rect.intersect(ui.clip_rect()))
+        .galley(pos, galley, color);
+}
 fn sql_view(ui: &mut egui::Ui, mut ddl: &str) {
     let mut layouter = |ui: &egui::Ui, buffer: &dyn egui::TextBuffer, width| {
         crate::app::editor::highlighted(ui, buffer.as_str(), width)
@@ -949,7 +990,6 @@ mod action_tests {
         let pos = crate::app::test_ui::control(&output, "Load structure").center();
         render(crate::app::test_ui::pointer(pos, true));
         render(crate::app::test_ui::pointer(pos, false));
-        drop(render);
         assert!(matches!(action, Some(Action::Load)));
         let mut render = |events| {
             crate::app::test_ui::render(&ctx, egui::vec2(396.0, 300.0), events, |ui| {

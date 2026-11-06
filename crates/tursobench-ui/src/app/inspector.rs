@@ -13,6 +13,7 @@ enum RecordAction {
     Edit(usize),
     Stage(usize, Value),
     Follow(tursobench_core::ForeignKey),
+    Revert(usize),
 }
 struct RecordField<'a> {
     column: usize,
@@ -57,11 +58,12 @@ impl RecordField<'_> {
                 egui::StrokeKind::Inside,
             );
         }
+        let label_rect = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), 24.0));
         if let Some(icon) = icon {
             icons::paint(
                 ui.painter(),
                 egui::Rect::from_center_size(
-                    rect.left_center() + egui::vec2(10.0, 0.0),
+                    label_rect.left_center() + egui::vec2(10.0, 0.0),
                     egui::vec2(12.0, 12.0),
                 ),
                 icon,
@@ -70,7 +72,7 @@ impl RecordField<'_> {
         }
         let name = egui::Rect::from_min_max(
             rect.min + egui::vec2(20.0, 0.0),
-            egui::pos2(rect.left() + name_width, rect.bottom()),
+            egui::pos2(rect.left() + name_width, label_rect.bottom()),
         );
         record_text(ui, name, self.name, tokens.muted);
         egui::Rect::from_min_max(
@@ -78,12 +80,52 @@ impl RecordField<'_> {
             rect.max - egui::vec2(4.0, 0.0),
         )
     }
-    fn value(&self, ui: &egui::Ui, rect: egui::Rect) {
+    fn value(
+        &self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        style: super::columns::CellStyle,
+        wrapped: Option<std::sync::Arc<egui::Galley>>,
+    ) {
         let tokens = crate::appearance::Tokens::of(ui.ctx());
-        if self.shown == self.stored
-            && matches!(self.name.to_ascii_lowercase().as_str(), "status" | "state")
-            && super::columns::CellStyle::Status.paint(ui, rect, self.name, self.shown)
-        {
+        if let Some(galley) = wrapped {
+            ui.painter()
+                .with_clip_rect(rect.intersect(ui.clip_rect()))
+                .galley(
+                    rect.min + egui::vec2(0.0, 4.0),
+                    galley,
+                    if self.shown != self.stored {
+                        tokens.pending
+                    } else {
+                        ui.visuals().text_color()
+                    },
+                );
+            return;
+        }
+        let compact = match self.shown {
+            Value::Blob(bytes) => Some((Icon::Bytecode, byte_size(bytes.len() as u64))),
+            Value::Deferred(cell) => Some((Icon::Export, byte_size(cell.bytes))),
+            _ => None,
+        };
+        if let Some((icon, caption)) = compact {
+            icons::paint(
+                ui.painter(),
+                egui::Rect::from_center_size(
+                    rect.left_center() + egui::vec2(7.0, 0.0),
+                    egui::vec2(13.0, 13.0),
+                ),
+                icon,
+                tokens.faint,
+            );
+            record_text(
+                ui,
+                egui::Rect::from_min_max(rect.min + egui::vec2(20.0, 0.0), rect.max),
+                &caption,
+                tokens.faint,
+            );
+            return;
+        }
+        if self.shown == self.stored && style.paint(ui, rect, self.name, self.shown) {
             return;
         }
         record_text(
@@ -101,6 +143,48 @@ impl RecordField<'_> {
             },
         );
     }
+}
+fn byte_size(bytes: u64) -> String {
+    if bytes < 1024 {
+        return format!("{bytes} bytes");
+    }
+    let (unit, divisor) = if bytes >= 1024 * 1024 * 1024 {
+        ("GB", 1024.0 * 1024.0 * 1024.0)
+    } else if bytes >= 1024 * 1024 {
+        ("MB", 1024.0 * 1024.0)
+    } else {
+        ("KB", 1024.0)
+    };
+    format!("{:.1} {unit}", bytes as f64 / divisor)
+}
+fn record_wrap(
+    ui: &egui::Ui,
+    value: &Value,
+    width: f32,
+    selected: bool,
+    pending: bool,
+) -> Option<std::sync::Arc<egui::Galley>> {
+    let Value::Text(text) = value else {
+        return None;
+    };
+    if !selected || text.chars().take(33).count() <= 32 && !text.contains('\n') {
+        return None;
+    }
+    // Retained text can be megabytes long; the row only lays out a bounded preview.
+    let text: String = text.chars().take(4096).collect();
+    let mut job = egui::text::LayoutJob::simple(
+        text,
+        crate::appearance::proportional(ui.ctx(), 12.5),
+        if pending {
+            crate::appearance::Tokens::of(ui.ctx()).pending
+        } else {
+            ui.visuals().text_color()
+        },
+        width.max(16.0),
+    );
+    job.wrap.max_rows = 4;
+    job.wrap.break_anywhere = true;
+    Some(ui.painter().layout_job(job))
 }
 fn record_text(ui: &egui::Ui, rect: egui::Rect, text: &str, color: egui::Color32) {
     let mut job = egui::text::LayoutJob::simple_singleline(
@@ -289,6 +373,15 @@ impl App {
         }
     }
     pub(super) fn record_inspector(&mut self, ui: &mut egui::Ui, row: usize) {
+        let wide = ui.available_width() >= 600.0;
+        self.record_inspector_with_types(ui, row, wide);
+    }
+    pub(super) fn record_inspector_with_types(
+        &mut self,
+        ui: &mut egui::Ui,
+        row: usize,
+        wide: bool,
+    ) {
         self.record_keys(ui.ctx(), row);
         if !self.database.workspace.enabled {
             ui.horizontal(|ui| {
@@ -298,13 +391,37 @@ impl App {
                 }
             });
         }
-        if let Some(action) = self.record_fields(ui, row) {
+        if let Some(action) = self.record_fields(ui, row, wide) {
             match action {
+                RecordAction::Revert(col) => {
+                    if let (Some(drafts), Some(values)) = (
+                        &mut self.database.document.drafts,
+                        self.database.document.result.rows.get(row),
+                    ) {
+                        drafts.revert_cell(values, col);
+                        self.database.document.draft_revision =
+                            self.database.document.draft_revision.wrapping_add(1);
+                    }
+                }
                 RecordAction::Follow(key) => self.follow_key(row, key),
-                RecordAction::Inspect(col) => self.open_cell(row, col),
+                RecordAction::Inspect(col) => self.select_cell(row, col, false),
                 RecordAction::Edit(col) => {
                     self.open_cell(row, col);
                     self.start_inline(row, col);
+                    if self.database.document.tools.inline.is_none() {
+                        if let Some(Value::Deferred(cell)) = self
+                            .database
+                            .document
+                            .result
+                            .rows
+                            .get(row)
+                            .and_then(|values| values.get(col))
+                        {
+                            self.open_large_value((**cell).clone());
+                        } else {
+                            self.database.document.ui.inspector_detached = true;
+                        }
+                    }
                 }
                 RecordAction::Stage(col, value) => {
                     self.stage_cell(row, col, value);
@@ -327,6 +444,10 @@ impl App {
             return;
         }
         let column = self.database.document.inspect.map_or(0, |(_, col)| col);
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
+            self.start_inline(row, column);
+            return;
+        }
         for (key, delta) in [(egui::Key::ArrowUp, -1), (egui::Key::ArrowDown, 1)] {
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key)) {
                 let col = column.saturating_add_signed(delta).min(
@@ -363,10 +484,12 @@ impl App {
                         .is_some_and(|v| !matches!(v, Value::Null | Value::Deferred(_)))
             })
     }
-    fn record_fields(&mut self, ui: &mut egui::Ui, row: usize) -> Option<RecordAction> {
+    fn record_fields(&mut self, ui: &mut egui::Ui, row: usize, wide: bool) -> Option<RecordAction> {
         let values = self.database.document.result.rows.get(row)?;
         let scroll_to = self.database.document.tools.record_scroll_to.take();
-        let name_width = (ui.available_width() * 0.32).clamp(48.0, 124.0);
+        let name_width =
+            (ui.available_width() * 0.32).clamp(48.0, if wide { 180.0 } else { 124.0 });
+        let type_width = if wide { 64.0 } else { 0.0 };
         let mut action = None;
         let can_follow = self.database.ready
             && !self.database.closing
@@ -409,8 +532,35 @@ impl App {
                     )
                 })
                 .collect();
-            let (rect, response) = ui
-                .allocate_exact_size(egui::vec2(ui.available_width(), 24.0), egui::Sense::click());
+            let available_value = (ui.available_width() - name_width - type_width - 12.0).max(16.0);
+            let link_width = parents
+                .iter()
+                .map(|(key, _)| (key.target.chars().count() as f32 * 6.5 + 20.0).min(110.0))
+                .sum::<f32>()
+                .min(available_value * 0.6);
+            let staged = field.shown != field.stored;
+            let revert_width = if staged { 24.0 } else { 0.0 };
+            let editing = self
+                .database
+                .document
+                .tools
+                .inline
+                .as_ref()
+                .is_some_and(|e| e.row == row && e.column == col);
+            let wrapped = record_wrap(
+                ui,
+                field.shown,
+                available_value - link_width - revert_width - 4.0,
+                field.selected && !editing,
+                staged,
+            );
+            let height = wrapped
+                .as_ref()
+                .map_or(24.0, |g| (g.size().y + 8.0).max(24.0));
+            let (rect, response) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), height),
+                egui::Sense::click(),
+            );
             response.widget_info(|| {
                 egui::WidgetInfo::selected(
                     egui::Role::Button,
@@ -420,7 +570,11 @@ impl App {
                         "{} · {} · {}",
                         field.name,
                         kind_name(field.shown),
-                        detail_text(field.shown)
+                        if matches!(field.shown, Value::Blob(_) | Value::Deferred(_)) {
+                            field.shown.preview()
+                        } else {
+                            detail_text(field.shown)
+                        }
                     ),
                 )
             });
@@ -431,22 +585,67 @@ impl App {
                 response.scroll_to_me(Some(egui::Align::Center));
             }
             let mut value_rect = field.paint(ui, rect, name_width, header.key_icon());
-            let link_width = parents
-                .iter()
-                .map(|(key, _)| (key.target.chars().count() as f32 * 6.5 + 20.0).min(110.0))
-                .sum::<f32>()
-                .min(value_rect.width() * 0.6);
+            if wide {
+                let type_rect = egui::Rect::from_min_max(
+                    egui::pos2(rect.right() - 64.0, rect.top()),
+                    egui::pos2(rect.right() - 4.0, rect.top() + 24.0),
+                );
+                super::schema::presentation::text_right_at(
+                    ui,
+                    type_rect,
+                    header.declared_type().unwrap_or("VALUE"),
+                    crate::appearance::Tokens::of(ui.ctx()).faint,
+                    11.0,
+                );
+                value_rect.max.x -= 64.0;
+            }
+            if staged {
+                let button_rect = egui::Rect::from_min_max(
+                    egui::pos2(value_rect.right() - 24.0, rect.top()),
+                    egui::pos2(value_rect.right(), rect.top() + 24.0),
+                );
+                value_rect.max.x -= 24.0;
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .id_salt(("revert", col))
+                        .max_rect(button_rect),
+                    |ui| {
+                        if ui
+                            .add_enabled_ui(
+                                self.database.commit_ticket.is_none()
+                                    && !self.database.uncertain_edit,
+                                |ui| {
+                                    icons::button(
+                                        ui,
+                                        Icon::Undo,
+                                        &format!("Revert {} draft", field.name),
+                                        "",
+                                    )
+                                },
+                            )
+                            .inner
+                            .clicked()
+                        {
+                            action = Some(RecordAction::Revert(col));
+                        }
+                    },
+                );
+            }
             if !parents.is_empty() {
                 let links = egui::Rect::from_min_max(
                     egui::pos2(value_rect.right() - link_width, rect.top()),
-                    rect.max,
+                    egui::pos2(value_rect.right(), rect.top() + 24.0),
                 );
                 value_rect.max.x = links.left() - 4.0;
                 ui.scope_builder(egui::UiBuilder::new().id_salt(("parents", col)).max_rect(links).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
-                    ui.spacing_mut().interact_size.y = 20.0;
+                    ui.spacing_mut().item_spacing.x = 2.0;
                     for (key, enabled) in &parents {
-                        let response = ui.add_enabled(*enabled, egui::Button::new(egui::RichText::new(format!("→ {}", key.target)).size(11.5).color(crate::appearance::Tokens::of(ui.ctx()).relationship)).frame(false).truncate()).on_hover_text(format!("Follow {} ({}) · requires resolved non-NULL keys and no staged edits", key.target, key.columns.iter().map(|(source, target)| format!("{source} → {}", target.as_deref().unwrap_or("unresolved PK"))).collect::<Vec<_>>().join(", ")));
-                        if response.clicked() { action = Some(RecordAction::Follow(key.clone())); }
+                        let (area, response) = ui.add_enabled_ui(*enabled, |ui| ui.allocate_exact_size(egui::vec2((links.width() / parents.len() as f32 - 2.0).max(1.0), 22.0), egui::Sense::click())).inner;
+                        let color = crate::appearance::Tokens::of(ui.ctx()).relationship.gamma_multiply(if *enabled { 1.0 } else { 0.45 });
+                        icons::paint(ui.painter(), egui::Rect::from_center_size(area.left_center() + egui::vec2(6.0, 0.0), egui::vec2(12.0, 12.0)), Icon::Next, color);
+                        super::schema::presentation::text_at(ui, egui::Rect::from_min_max(area.min + egui::vec2(15.0, 0.0), area.max), &key.target, color, 11.5);
+                        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Link, *enabled && ui.is_enabled(), format!("Follow {}", key.target)));
+                        if response.on_hover_text(format!("Follow {} ({}) · requires resolved non-NULL keys and no staged edits", key.target, key.columns.iter().map(|(source, target)| format!("{source} references {}", target.as_deref().unwrap_or("unresolved PK"))).collect::<Vec<_>>().join(", "))).clicked() { action = Some(RecordAction::Follow(key.clone())); }
                     }
                 });
             }
@@ -483,7 +682,16 @@ impl App {
                     },
                 );
             } else {
-                field.value(ui, value_rect);
+                let style = self
+                    .database
+                    .document
+                    .tools
+                    .columns
+                    .visuals
+                    .get(&col)
+                    .copied()
+                    .unwrap_or_default();
+                field.value(ui, value_rect, style, wrapped);
                 if response.double_clicked() {
                     action = Some(RecordAction::Edit(field.column));
                 } else if response.clicked() {
@@ -564,5 +772,23 @@ fn kind_name(value: &Value) -> &'static str {
         Value::Text(_) => "TEXT",
         Value::Blob(_) => "BLOB",
         Value::Deferred(_) => "DEFERRED",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn long_selected_text_is_bounded_and_byte_captions_keep_sizes() {
+        assert_eq!(byte_size(3), "3 bytes");
+        assert_eq!(byte_size(4_404_019), "4.2 MB");
+        let ctx = egui::Context::default();
+        crate::app::test_ui::render(&ctx, egui::vec2(396.0, 244.0), vec![], |ui| {
+            let value = Value::Text("long λ text\n".repeat(100_000));
+            let galley = record_wrap(ui, &value, 200.0, true, false).unwrap();
+            assert!(galley.rows.len() <= 4);
+            assert!(galley.job.text.len() < 8192);
+            assert!(record_wrap(ui, &value, 200.0, false, false).is_none());
+        });
     }
 }

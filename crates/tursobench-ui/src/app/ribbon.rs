@@ -602,6 +602,8 @@ impl App {
         if changed {
             position -= 1;
         }
+        let finish_position =
+            ui.input(|i| i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Escape));
         let response = ui.add_enabled(
             count > 0,
             egui::DragValue::new(&mut position)
@@ -617,6 +619,13 @@ impl App {
                 "Record position",
             )
         });
+        if finish_position && (response.has_focus() || response.lost_focus()) {
+            response.surrender_focus();
+            ui.input_mut(|i| {
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+            });
+        }
         changed |= response.changed();
         response.on_hover_text("Click to enter a loaded record number");
         let next = ui.add_enabled(

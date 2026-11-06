@@ -1,3 +1,4 @@
+use super::icons::{self, Icon};
 use super::presentation::{self, Intent};
 use super::{App, View};
 use eframe::egui;
@@ -556,7 +557,7 @@ impl App {
         let tokens = crate::appearance::Tokens::of(ui.ctx());
         egui::Frame::new()
             .fill(tokens.pending.gamma_multiply(0.08))
-            .inner_margin(8.0)
+            .inner_margin(egui::Margin::symmetric(4, 2))
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.colored_label(tokens.pending, format!("{count} staged"));
@@ -574,14 +575,22 @@ impl App {
                     {
                         self.commit_drafts();
                     }
-                    if ui.button("Diff / SQL").clicked() {
+                    if icons::button(
+                        ui,
+                        Icon::ReviewEdits,
+                        "Review staged edits · Diff / SQL",
+                        "",
+                    )
+                    .clicked()
+                    {
                         self.database.document.show_preview = true;
                     }
                     if ui
-                        .add_enabled(
+                        .add_enabled_ui(
                             self.database.commit_ticket.is_none() && !self.database.uncertain_edit,
-                            egui::Button::new("Discard"),
+                            |ui| icons::button(ui, Icon::Undo, "Discard staged edits", ""),
                         )
+                        .inner
                         .clicked()
                     {
                         self.database.document.drafts = None;

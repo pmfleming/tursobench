@@ -239,6 +239,16 @@ impl App {
             .get(row)
             .and_then(|r| r.get(column))
         {
+            if self.database.document.inspect != Some((row, column)) {
+                self.database.document.tools.record_scroll_to = Some(column);
+            }
+            if self.database.document.view == super::View::Browse
+                && let Some(table) = &self.database.document.table
+                && let Some(header) = self.database.document.result.columns.get(column)
+            {
+                self.database.document.tools.highlight_column =
+                    Some((table.name.clone(), header.name.clone()));
+            }
             self.database.document.inspect = Some((row, column));
             self.database.document.ui.inspector = shell::DetailMode::Cell;
             self.database.document.ui.inspector_open = true;

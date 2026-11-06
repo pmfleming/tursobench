@@ -234,13 +234,49 @@ impl App {
                 .highlight_column
                 .as_ref()
                 .filter(|(table, _)| table == name)
-                .map(|(_, column)| column.as_str()),
+                .map(|(_, column)| column.as_str())
+                .or_else(|| {
+                    self.database
+                        .document
+                        .table
+                        .as_ref()
+                        .filter(|table| table.name == name)
+                        .and(self.database.document.inspect)
+                        .and_then(|(_, col)| self.database.document.result.columns.get(col))
+                        .map(|c| c.name.as_str())
+                }),
         }
         .show(ui, &mut section);
         self.database.document.ui.structure_section = section;
         match action {
             Some(presentation::Action::Column(column)) => {
-                self.database.document.tools.highlight_column = Some((name.into(), column));
+                let table = name.to_owned();
+                if self
+                    .database
+                    .document
+                    .table
+                    .as_ref()
+                    .is_some_and(|t| t.name == table)
+                    && let Some(col) = self
+                        .database
+                        .document
+                        .result
+                        .columns
+                        .iter()
+                        .position(|c| c.name.eq_ignore_ascii_case(&column))
+                    && let Some(row) = self
+                        .database
+                        .document
+                        .inspect
+                        .map(|(r, _)| r)
+                        .or(self.database.document.tools.detail)
+                        .or_else(|| (!self.database.document.result.rows.is_empty()).then_some(0))
+                {
+                    self.select_cell(row, col, false);
+                    self.database.document.tools.record_scroll_to = Some(col);
+                }
+                self.database.document.tools.highlight_column = Some((table, column));
+                self.database.document.tools.scroll_to_column = true;
             }
             Some(presentation::Action::Load) => self.request_inspection(name.into()),
             Some(presentation::Action::Browse(table)) => self.browse_table(table),

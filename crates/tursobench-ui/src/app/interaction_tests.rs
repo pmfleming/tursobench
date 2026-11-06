@@ -2701,6 +2701,13 @@ fn record_controls_move_rows_and_hidden_fields_without_fetching_or_losing_drafts
             "stepper must not fetch more rows"
         );
     }
+    let output = frame(&mut app, &ctx, vec![]);
+    click(&mut app, &ctx, control(&output, "Record position").center());
+    press_key(&mut app, &ctx, egui::Key::A, egui::Modifiers::CTRL);
+    frame(&mut app, &ctx, vec![egui::Event::Text("1".into())]);
+    press_key(&mut app, &ctx, egui::Key::Enter, egui::Modifiers::NONE);
+    assert_eq!(app.database.document.inspect, Some((0, 1)));
+    assert_eq!(app.database.sequence, sequence);
     app.open_record_window(1, 0);
     frame(&mut app, &ctx, vec![]);
     app.stage_cell(1, 2, Value::Integer(999));
@@ -2718,6 +2725,22 @@ fn record_controls_move_rows_and_hidden_fields_without_fetching_or_losing_drafts
         app.database.document.tools.record_scroll_to.is_none(),
         "record consumed the scroll request"
     );
+    press_key(&mut app, &ctx, egui::Key::Enter, egui::Modifiers::NONE);
+    assert!(app.database.document.tools.inline.is_some());
+    frame(&mut app, &ctx, vec![]);
+    app.database
+        .document
+        .tools
+        .inline
+        .as_mut()
+        .unwrap()
+        .editor
+        .kind = super::results::CellKind::Null;
+    press_key(&mut app, &ctx, egui::Key::Enter, egui::Modifiers::NONE);
+    assert!(app.database.document.tools.inline.is_none());
+    assert_staged(&app, 1, 6, Value::Null);
+    assert_retained(&app, 1, 6, Value::Integer(4));
+    assert_eq!(app.database.sequence, sequence);
     app.close();
 }
 
@@ -3013,9 +3036,21 @@ fn every_tile_exposes_its_actions_without_an_overflow_menu() {
     }
     frame_at(&mut app, &ctx, egui::vec2(3440.0, 1440.0), vec![]);
     let output = frame_at(&mut app, &ctx, egui::vec2(3440.0, 1440.0), vec![]);
-    for label in ["Relationships", "Structure", "SQL"] {
+    for label in ["Relationships", "SQL"] {
         control(&output, label);
     }
+    assert!(
+        output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .any(|(_, n)| n
+                .label()
+                .is_some_and(|s| s.starts_with("Restore Structure · ") && s.contains("columns")))
+    );
     app.close();
 }
 
@@ -3552,18 +3587,83 @@ fn compact_record_rows_align_and_disable_null_composite_parent_links() {
     assert!((status.pos.y - id.pos.y - 72.0).abs() < 1.0);
     assert_eq!(id.pos.x, status.pos.x);
     assert!(!texts.iter().any(|t| t.galley.job.text.contains("Parent:")));
-    assert!(
-        output
-            .platform_output
-            .accesskit_update
-            .as_ref()
-            .unwrap()
-            .nodes
-            .iter()
-            .filter(|(_, n)| n.label() == Some("→ parent"))
-            .all(|(_, n)| n.is_disabled())
-    );
+    let parents: Vec<_> = output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .unwrap()
+        .nodes
+        .iter()
+        .filter(|(_, n)| n.label() == Some("Follow parent"))
+        .collect();
+    assert_eq!(parents.len(), 2);
+    assert!(parents.iter().all(|(_, n)| n.is_disabled()));
     assert_eq!(app.database.sequence, sequence);
     assert!(!app.has_drafts());
+    app.close();
+}
+
+#[test]
+fn record_structure_selection_value_visuals_and_revert_preserve_stored_values() {
+    let (_dir, ctx, mut app) = fixture(
+        &[
+            "CREATE TABLE sample(id INTEGER PRIMARY KEY,body TEXT,priority INTEGER,progress INTEGER,data BLOB)",
+            "INSERT INTO sample VALUES(1,'original',4,75,X'00FF')",
+        ],
+        true,
+    );
+    ctx.enable_accesskit();
+    browse_and_wait(&mut app, &ctx, "sample");
+    app.open_record_window(0, 0);
+    app.stage_cell(0, 1, Value::Text("edited".into()));
+    let sequence = app.database.sequence;
+    let output = super::test_ui::render(&ctx, egui::vec2(396.0, 244.0), vec![], |ui| {
+        app.record_inspector(ui, 0)
+    });
+    let pos = control(&output, "Revert body draft").center();
+    for pressed in [true, false] {
+        super::test_ui::render(
+            &ctx,
+            egui::vec2(396.0, 244.0),
+            super::test_ui::pointer(pos, pressed),
+            |ui| app.record_inspector(ui, 0),
+        );
+    }
+    assert!(!app.has_drafts());
+    assert_retained(&app, 0, 1, Value::Text("original".into()));
+    app.open_cell(0, 3);
+    assert_eq!(
+        app.database.document.tools.highlight_column,
+        Some(("sample".into(), "progress".into()))
+    );
+    let output = super::test_ui::render(&ctx, egui::vec2(396.0, 244.0), vec![], |ui| {
+        app.structure_inspector(ui)
+    });
+    let pos = control(&output, "priority · INTEGER · ").center();
+    for pressed in [true, false] {
+        super::test_ui::render(
+            &ctx,
+            egui::vec2(396.0, 244.0),
+            super::test_ui::pointer(pos, pressed),
+            |ui| app.structure_inspector(ui),
+        );
+    }
+    assert_eq!(app.database.document.inspect, Some((0, 2)));
+    assert_eq!(
+        app.database.document.tools.highlight_column,
+        Some(("sample".into(), "priority".into()))
+    );
+    assert!(app.database.document.tools.scroll_to_column);
+    assert_eq!(app.database.sequence, sequence);
+    let output = super::test_ui::render(&ctx, egui::vec2(396.0, 244.0), vec![], |ui| {
+        app.record_inspector(ui, 0)
+    });
+    assert!(
+        output
+            .shapes
+            .iter()
+            .any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.job.text == "2 bytes"))
+    );
+    assert_retained(&app, 0, 4, Value::Blob(vec![0, 255]));
     app.close();
 }
