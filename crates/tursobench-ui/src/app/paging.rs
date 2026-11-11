@@ -27,14 +27,14 @@ pub(super) struct Pending {
     error: String,
 }
 impl App {
-    pub(super) fn request_page(&mut self, previous: bool) {
+    fn page_available(&self, previous: bool) -> bool {
         if self.database.document.stale
             || self.database.document.view != View::Browse
             || self.database.document.active.is_some()
             || self.database.document.tools.pages.pending.is_some()
             || !self.requests_enabled()
         {
-            return;
+            return false;
         }
         if !self
             .database
@@ -44,23 +44,33 @@ impl App {
             .as_ref()
             .is_some_and(|c| c.delivery == Delivery::Complete && c.error.is_none())
         {
+            return false;
+        }
+        let Some(spec) = &self.database.document.browse else {
+            return false;
+        };
+        if previous {
+            spec.offset > 0
+        } else {
+            self.database
+                .document
+                .tools
+                .pages
+                .end
+                .is_none_or(|last| spec.offset + self.database.document.result.rows.len() < last)
+        }
+    }
+    pub(super) fn request_page(&mut self, previous: bool) {
+        if !self.page_available(previous) {
             return;
         }
-        let Some(mut spec) = self.database.document.browse.clone() else {
-            return;
-        };
+        let mut spec = self.database.document.browse.clone().unwrap();
         let fetch_rows = fetch_rows(self.preferences.row_limit);
         let pages = &mut self.database.document.tools.pages;
         let end = spec.offset + self.database.document.result.rows.len();
         if previous {
-            if spec.offset == 0 {
-                return;
-            }
             spec.offset = spec.offset.saturating_sub(fetch_rows);
         } else {
-            if pages.end.is_some_and(|last| end >= last) {
-                return;
-            }
             spec.offset = end;
         }
         let seek = self.database.document.table.as_ref().is_some_and(|table| {
@@ -149,10 +159,17 @@ impl App {
         } else if start <= 20 && delta > 0.0 {
             self.request_page(true);
         } else if end + 20 >= self.database.document.result.rows.len() && delta <= 0.0 {
+            // Repaints at EOF, during a fetch, or with drafts need no cell scans.
+            if !self.page_available(false) {
+                return;
+            }
             let keep = self.preferences.row_limit.clamp(200, 10000) - 100;
             let rows_needed = (self.database.document.result.rows.len()
                 + fetch_rows(self.preferences.row_limit))
             .saturating_sub(keep);
+            if start < rows_needed {
+                return;
+            }
             let bytes_needed = retained_bytes(&self.database.document.result)
                 .saturating_add(PAGE_BYTES)
                 .saturating_sub(4 * 1024 * 1024);
@@ -166,7 +183,7 @@ impl App {
                 .flatten()
                 .map(tursobench_core::Value::bytes)
                 .sum::<usize>();
-            if start >= rows_needed && before >= bytes_needed {
+            if before >= bytes_needed {
                 self.request_page(false);
             }
         }
@@ -341,7 +358,11 @@ impl Document {
         self.tools.restore_scroll = Some(self.tools.grid_scroll);
     }
 }
+#[cfg(test)]
+thread_local! { static BYTE_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 fn retained_bytes(result: &ResultSet) -> usize {
+    #[cfg(test)]
+    BYTE_SCANS.with(|count| count.set(count.get() + 1));
     result.rows.iter().flatten().map(|v| v.bytes()).sum()
 }
 
@@ -350,6 +371,64 @@ mod tests {
     use super::{App, Delivery, Event, EventKind, Pending, ResultSet, Ticket};
     use eframe::egui;
     use tursobench_core::{Column, Completion, Failure, Table, TransactionState, Value};
+
+    #[test]
+    fn repaints_do_not_scan_cells_when_paging_is_blocked_or_at_eof() {
+        let mut app = App::new(&egui::Context::default());
+        app.database.ready = true;
+        app.database.document.view = super::View::Browse;
+        app.database.document.browse = Some(tursobench_core::Browse {
+            table: "t".into(),
+            filters: vec![],
+            sort: None,
+            descending: false,
+            offset: 0,
+            options: Default::default(),
+        });
+        app.database.document.result.rows = vec![vec![Value::Integer(1)]; 1000];
+        app.database.document.result.completion = Some(Completion {
+            elapsed_ms: 0,
+            delivery: Delivery::Complete,
+            rows_seen: 1000,
+            page_has_more: Some(true),
+            changed: 0,
+            transaction: TransactionState::Autocommit,
+            error: None,
+        });
+        for blocked in 0..5 {
+            app.database.document.tools.pages.end = (blocked == 0).then_some(1000);
+            app.database.document.stale = blocked == 1;
+            app.database.closing = blocked == 2;
+            app.database.document.active = (blocked == 3).then_some(Ticket {
+                database: 1,
+                session: 1,
+                request: 1,
+                generation: 0,
+            });
+            app.database.document.tools.pages.pending = (blocked == 4).then(|| Pending {
+                result: ResultSet::default(),
+                owner: None,
+                offset: 1000,
+                previous: false,
+                reverse: false,
+                tail: false,
+                error: String::new(),
+            });
+            super::BYTE_SCANS.with(|count| count.set(0));
+            app.maybe_page(980, 1000, 0.0);
+            assert_eq!(
+                super::BYTE_SCANS.with(|count| count.get()),
+                0,
+                "blocked case {blocked}"
+            );
+        }
+        app.database.document.tools.pages.pending = None;
+        // An eligible fetch sizes its buffer; a viewport that cannot evict rows does not.
+        app.maybe_page(0, 1000, 0.0);
+        assert_eq!(super::BYTE_SCANS.with(|count| count.get()), 0);
+        app.maybe_page(980, 1000, 0.0);
+        assert_eq!(super::BYTE_SCANS.with(|count| count.get()), 1);
+    }
 
     #[test]
     fn evicted_rows_use_the_rendered_stride_including_spacing() {
