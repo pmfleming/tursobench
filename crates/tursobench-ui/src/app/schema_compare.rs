@@ -184,7 +184,7 @@ impl App {
         }
         if let Some(id) = self.create_window(super::tiling::Kind::Sql, None, None, true) {
             self.switch_document(id);
-            self.database.document.sql = sql;
+            self.database.document.set_sql(sql);
             self.database.document.params = "[]".into();
             self.database.document.migration = Some(expected);
             self.database.status = "Migration draft opened. Review SQL, then Run all; execution is atomic and checks the target schema again.".into();

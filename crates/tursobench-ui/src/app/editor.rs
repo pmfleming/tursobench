@@ -196,7 +196,7 @@ impl App {
                     {
                         return;
                     }
-                    self.database.document.sql = sql;
+                    self.database.document.set_sql(sql);
                     self.database.document.params = params;
                 }
                 self.database.document.migration = migration.clone();
@@ -346,6 +346,9 @@ impl App {
                     .show(ui)
             })
             .inner;
+        if output.response.changed() {
+            self.database.document.sql_changed();
+        }
         if self.database.document.sql.is_empty() && !output.response.has_focus() {
             icons::empty_state_at(
                 ui,
@@ -456,6 +459,7 @@ impl App {
                         .document
                         .sql
                         .replace_range(span.clone(), &candidate);
+                    self.database.document.sql_changed();
                     let position = self.database.document.sql[..start].chars().count()
                         + candidate.chars().count();
                     self.database.document.tools.selection = position..position;

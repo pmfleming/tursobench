@@ -71,6 +71,7 @@ pub(super) struct Document {
     pub table: Option<Table>,
     pub browse: Option<Browse>,
     pub sql: String,
+    pub sql_revision: u64,
     pub params: String,
     pub filter: String,
     pub inspect: Option<(usize, usize)>,
@@ -111,6 +112,7 @@ impl Default for Document {
             table: None,
             browse: None,
             sql: "SELECT name, type FROM sqlite_schema ORDER BY name".into(),
+            sql_revision: 0,
             params: "[]".into(),
             filter: String::new(),
             inspect: None,
@@ -125,6 +127,15 @@ impl Default for Document {
     }
 }
 impl Document {
+    pub fn set_sql(&mut self, sql: String) {
+        if self.sql != sql {
+            self.sql = sql;
+            self.sql_changed();
+        }
+    }
+    pub fn sql_changed(&mut self) {
+        self.sql_revision = self.sql_revision.wrapping_add(1);
+    }
     pub fn push_script_result(&mut self, result: tursobench_core::ScriptResult) {
         self.script_results.push(result);
         self.select_script_result(self.script_results.len() - 1);

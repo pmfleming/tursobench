@@ -184,7 +184,7 @@ impl App {
         };
         next.ui.sql_open = kind == Kind::Sql;
         if kind == Kind::Sql {
-            next.sql.clear();
+            next.set_sql(String::new());
         }
         let previous = std::mem::replace(&mut self.database.document, next);
         self.database.documents.insert(previous.id, previous);
@@ -825,7 +825,7 @@ impl App {
             };
             document.ui.sql_open = view.kind == Kind::Sql;
             if view.kind == Kind::Sql {
-                document.sql.clear();
+                document.set_sql(String::new());
             }
             self.database.workspace.visible.insert(view.kind, view.id);
             self.database.documents.insert(view.id, document);

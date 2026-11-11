@@ -47,7 +47,7 @@ impl App {
         {
             return;
         }
-        self.database.document.sql = sql;
+        self.database.document.set_sql(sql);
         self.database.document.params = "[]".into();
         self.database.document.ui.sql_open = true;
     }

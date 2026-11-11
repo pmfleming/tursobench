@@ -4,7 +4,10 @@ use std::{
     collections::BTreeMap,
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver, SyncSender, TrySendError},
+    sync::{
+        Arc,
+        mpsc::{self, Receiver, SyncSender, TrySendError},
+    },
 };
 
 const MAX_BYTES: usize = 32 * 1024 * 1024;
@@ -86,15 +89,15 @@ fn write(path: &Path, s: &Snapshot) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 enum Command {
-    Save(String, Vec<Document>),
+    Save(BTreeMap<String, Vec<Document>>),
     Clear,
 }
 pub struct Store {
     tx: Option<SyncSender<Command>>,
-    results: Receiver<Result<Snapshot, String>>,
+    results: Receiver<Result<Arc<Snapshot>, String>>,
     pending: BTreeMap<String, Vec<Document>>,
     clear: bool,
-    snapshot: Snapshot,
+    snapshot: Arc<Snapshot>,
     pub error: Option<String>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -132,18 +135,29 @@ impl Store {
                     Ok(f)
                 })
                 .transpose();
-            let mut state = lock.as_ref().map_err(Clone::clone).and_then(|_| {
-                path.as_ref()
-                    .map_or_else(|| Ok(Snapshot::default()), |p| read(p))
-            });
+            let mut state = lock
+                .as_ref()
+                .map_err(Clone::clone)
+                .and_then(|_| {
+                    path.as_ref()
+                        .map_or_else(|| Ok(Snapshot::default()), |p| read(p))
+                })
+                .map(Arc::new);
             let _ = initial.send(state.clone());
             while let Ok(command) = rx.recv() {
                 let result = state.as_ref().map_err(Clone::clone).and_then(|s| {
-                    let mut next = s.clone();
+                    let unchanged = match &command {
+                        Command::Save(batch) => batch
+                            .iter()
+                            .all(|(key, docs)| s.databases.get(key) == Some(docs)),
+                        Command::Clear => s.databases.is_empty(),
+                    };
+                    if unchanged {
+                        return Ok(s.clone());
+                    }
+                    let mut next = (**s).clone();
                     match command {
-                        Command::Save(key, docs) => {
-                            next.databases.insert(key, docs);
-                        }
+                        Command::Save(batch) => next.databases.extend(batch),
                         Command::Clear => next.databases.clear(),
                     }
                     if let Some(path) = &path {
@@ -151,7 +165,7 @@ impl Store {
                     } else {
                         validate(&next)?;
                     }
-                    Ok(next)
+                    Ok(Arc::new(next))
                 });
                 if let Ok(next) = &result {
                     state = Ok(next.clone());
@@ -165,7 +179,7 @@ impl Store {
         let initial = loaded.recv().unwrap_or_else(|e| Err(e.to_string()));
         let (snapshot, error) = match initial {
             Ok(s) => (s, None),
-            Err(e) => (Snapshot::default(), Some(e)),
+            Err(e) => (Arc::default(), Some(e)),
         };
         Self {
             tx: Some(tx),
@@ -209,14 +223,12 @@ impl Store {
         let command = if self.clear {
             Some(Command::Clear)
         } else {
-            self.pending.pop_first().map(|(k, v)| Command::Save(k, v))
+            (!self.pending.is_empty()).then(|| Command::Save(std::mem::take(&mut self.pending)))
         };
         if let Some(command) = command {
             match tx.try_send(command) {
                 Ok(()) => self.clear = false,
-                Err(TrySendError::Full(Command::Save(k, v))) => {
-                    self.pending.insert(k, v);
-                }
+                Err(TrySendError::Full(Command::Save(batch))) => self.pending.extend(batch),
                 Err(TrySendError::Full(Command::Clear)) => {}
                 Err(TrySendError::Disconnected(_)) => {
                     self.error = Some("SQL recovery worker stopped".into())
@@ -231,8 +243,8 @@ impl Drop for Store {
             if self.clear {
                 let _ = tx.send(Command::Clear);
             }
-            for (key, docs) in std::mem::take(&mut self.pending) {
-                let _ = tx.send(Command::Save(key, docs));
+            if !self.pending.is_empty() {
+                let _ = tx.send(Command::Save(std::mem::take(&mut self.pending)));
             }
         }
         if let Some(thread) = self.thread.take() {
@@ -243,6 +255,35 @@ impl Drop for Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pending_databases_share_a_write_and_unchanged_saves_reuse_the_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recovery.json");
+        let (wake, received) = mpsc::channel();
+        let mut store = Store::start_path(Some(path.clone()), move || {
+            let _ = wake.send(());
+        });
+        let docs = vec![Document {
+            id: 1,
+            sql: "SELECT 1".into(),
+            selection: 0..0,
+        }];
+        store.pending.insert("a".into(), docs.clone());
+        store.pending.insert("b".into(), docs.clone());
+        store.poll();
+        received
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        store.poll();
+        assert_eq!(read(&path).unwrap().databases.len(), 2);
+        let saved = store.snapshot.clone();
+        store.save("a".into(), docs);
+        received
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        store.poll();
+        assert!(Arc::ptr_eq(&saved, &store.snapshot));
+    }
     #[test]
     fn restart_deletion_and_invalid_save_preserve_acknowledged_data() {
         let dir = tempfile::tempdir().unwrap();

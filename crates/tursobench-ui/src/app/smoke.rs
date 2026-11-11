@@ -172,7 +172,9 @@ impl App {
             }
             20..=31 => self.smoke_capture_layout(ctx, &mut smoke),
             8 => {
-                self.database.document.sql = "SELECT ?1 AS typed_blob".into();
+                self.database
+                    .document
+                    .set_sql("SELECT ?1 AS typed_blob".into());
                 self.database.document.params = "[{\"type\":\"Blob\",\"value\":[0,255]}]".into();
                 self.run_sql();
                 smoke.stage = 3;
@@ -183,9 +185,10 @@ impl App {
                     vec![vec![Value::Blob(vec![0, 255])]]
                 );
                 if smoke.table == "search_content" {
-                    self.database.document.sql =
+                    self.database.document.set_sql(
                         "SELECT entry_id FROM search_content WHERE fts_match(indexed_content,?1)"
-                            .into();
+                            .into(),
+                    );
                     self.database.document.params =
                         "[{\"type\":\"Text\",\"value\":\"needle\"}]".into();
                     self.run_sql();
@@ -660,7 +663,9 @@ impl App {
         }
     }
     fn smoke_readonly_write(&mut self, table: &str) {
-        self.database.document.sql = format!("DELETE FROM {}", quote_identifier(table));
+        self.database
+            .document
+            .set_sql(format!("DELETE FROM {}", quote_identifier(table)));
         self.database.document.params = "[]".into();
         self.run_sql();
     }

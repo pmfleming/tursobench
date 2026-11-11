@@ -595,6 +595,8 @@ impl App {
         self.profile_ui(ui.ctx());
         self.admin_ui(ui.ctx());
         self.comparison_ui(ui.ctx());
+        // Observe edits made during this frame so only pending saves schedule a wakeup.
+        self.poll_recovery(ui.ctx());
     }
 }
 impl eframe::App for App {

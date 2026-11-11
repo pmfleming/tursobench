@@ -15,7 +15,7 @@ const SCENES: &[&str] = &[
 impl App {
     pub(super) fn start_readme_capture(&mut self) {
         self.create_window(Kind::Sql, None, None, false).unwrap();
-        self.database.document.sql = "SELECT d.edit_seq, d.now_id, d.tip_id,\n       s.bytes, length(s.digest) AS digest_bytes\nFROM document_history AS d\nJOIN snapshots AS s ON s.id = d.temp_id\nORDER BY s.bytes DESC\nLIMIT 12;".into();
+        self.database.document.set_sql("SELECT d.edit_seq, d.now_id, d.tip_id,\n       s.bytes, length(s.digest) AS digest_bytes\nFROM document_history AS d\nJOIN snapshots AS s ON s.id = d.temp_id\nORDER BY s.bytes DESC\nLIMIT 12;".into());
         self.database.document.params = "[]".into();
         self.run_sql();
     }
