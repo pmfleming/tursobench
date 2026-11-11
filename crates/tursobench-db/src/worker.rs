@@ -203,6 +203,7 @@ pub(super) async fn worker(
         None
     };
     let mut observed = std::time::Instant::now();
+    let observation_interval = Duration::from_millis(500);
     if !output.send(ticket, EventKind::Opened(coordination)) {
         return;
     }
@@ -222,7 +223,7 @@ pub(super) async fn worker(
     };
     let mut backup = None;
     while !output.closing.load(Ordering::Acquire) {
-        if observed.elapsed() >= Duration::from_millis(500) {
+        if observed.elapsed() >= observation_interval {
             observed = std::time::Instant::now();
             if let Some(changes) = &mut changes {
                 match changes.poll(&browse).await {
@@ -238,7 +239,14 @@ pub(super) async fn worker(
                 }
             }
         }
-        let request = match rx.recv_timeout(Duration::from_millis(25)) {
+        // Protected read-only sessions need no timer. Shared sessions wake only
+        // for a command or the next external-change observation deadline.
+        let received = if changes.is_some() {
+            rx.recv_timeout(observation_interval.saturating_sub(observed.elapsed()))
+        } else {
+            rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected)
+        };
+        let request = match received {
             Ok(r) => r,
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(_) => break,

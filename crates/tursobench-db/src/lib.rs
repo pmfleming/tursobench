@@ -440,7 +440,14 @@ impl Session {
         self.discard.discard(request);
     }
     pub fn close(&self) {
-        self.closing.store(true, Ordering::Release);
+        if !self.closing.swap(true, Ordering::AcqRel) {
+            // Wake a worker blocked on commands. A full queue already wakes it;
+            // the closing flag makes it skip queued work in either case.
+            let _ = self.commands.try_send(Request {
+                ticket: self.ticket(0, 0),
+                operation: Operation::Close,
+            });
+        }
         if let Some(active) = &*self.discard.active_read.lock().unwrap() {
             (active.interrupt)();
         }
@@ -449,5 +456,48 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         self.close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn close_wakes_an_idle_receiver_once_and_never_blocks_on_a_full_queue() {
+        for full in [false, true] {
+            let (commands, received) = mpsc::sync_channel(1);
+            let (_events, events) = mpsc::channel();
+            let session = Session {
+                id: 1,
+                commands,
+                events,
+                discard: Arc::default(),
+                closing: Arc::new(AtomicBool::new(false)),
+            };
+            if full {
+                session
+                    .submit(Request {
+                        ticket: session.ticket(1, 0),
+                        operation: Operation::Schema,
+                    })
+                    .unwrap();
+            }
+            session.close();
+            session.close();
+            assert!(session.closing.load(Ordering::Acquire));
+            let request = received
+                .try_recv()
+                .expect("close must wake an empty command receiver");
+            assert!(if full {
+                matches!(request.operation, Operation::Schema)
+            } else {
+                matches!(request.operation, Operation::Close)
+            });
+            assert!(matches!(
+                received.try_recv(),
+                Err(mpsc::TryRecvError::Empty)
+            ));
+        }
     }
 }
