@@ -22,9 +22,14 @@ pub(super) struct DiagramState {
     pub all_columns: bool,
     pub camera: Camera,
     pack_width: f32,
+    layout: Option<CachedLayout>,
     #[cfg(test)]
     pub table_rects: Vec<(String, egui::Rect)>,
     positions: BTreeMap<String, egui::Pos2>,
+}
+struct CachedLayout {
+    key: (bool, bool, f32),
+    cards: Vec<(egui::Rect, Vec<usize>)>,
 }
 #[derive(Default)]
 pub(super) struct Camera {
@@ -55,6 +60,7 @@ impl<'a> Graph<'a> {
 
 impl DiagramState {
     pub fn arrange_nodes(&mut self) {
+        self.layout = None;
         self.positions.clear();
         self.pack_width = 0.0;
         self.camera.fit = true;
@@ -91,6 +97,7 @@ impl DiagramState {
         let Some(graph) = &self.data else {
             return;
         };
+        self.layout = None;
         self.positions = layout
             .positions
             .iter()
@@ -112,6 +119,7 @@ impl DiagramState {
         self.camera.auto_fit = false;
     }
     pub fn loaded(&mut self, data: SchemaDiagram) {
+        self.layout = None;
         self.data = Some(data);
         self.ticket = None;
         self.error.clear();
@@ -149,8 +157,12 @@ fn key_rows(info: &Inspection, all: bool) -> Vec<usize> {
 }
 // Stable breadth-first layers within each connected component. Parent hubs
 // start each component; cycles and self references cannot recurse indefinitely.
+#[cfg(test)]
+thread_local! { static LAYOUT_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 fn cards(graph: &Graph<'_>, all: bool, pack_width: f32) -> Vec<(egui::Rect, Vec<usize>)> {
     use std::collections::{BTreeSet, VecDeque};
+    #[cfg(test)]
+    LAYOUT_BUILDS.with(|count| count.set(count.get() + 1));
     let count = graph.tables.len();
     let names: BTreeMap<_, _> = graph
         .tables
@@ -191,11 +203,12 @@ fn cards(graph: &Graph<'_>, all: bool, pack_width: f32) -> Vec<(egui::Rect, Vec<
     let mut unseen: BTreeSet<_> = (0..count).collect();
     let mut shelf = egui::Pos2::ZERO;
     let mut shelf_height = 0.0f32;
-    while let Some(&root) = unseen
-        .iter()
-        .max_by_key(|&&i| (outgoing[i] == 0, incoming[i], std::cmp::Reverse(i)))
-    {
-        unseen.remove(&root);
+    let mut roots: Vec<_> = (0..count).collect();
+    roots.sort_unstable_by_key(|&i| (outgoing[i] != 0, std::cmp::Reverse(incoming[i]), i));
+    for root in roots {
+        if !unseen.remove(&root) {
+            continue;
+        }
         let mut queue = VecDeque::from([(root, 0usize)]);
         let mut levels: Vec<Vec<usize>> = Vec::new();
         while let Some((i, depth)) = queue.pop_front() {
@@ -760,8 +773,15 @@ impl DiagramState {
             let columns = ((area * aspect).sqrt() / (WIDTH + 40.0)).ceil().max(1.0);
             self.pack_width = (columns * (WIDTH + 40.0)).clamp(WIDTH, 3600.0);
         }
-        let mut layout = cards(&graph, self.all_columns, self.pack_width);
-        for (node, (rect, _)) in graph.tables.iter().zip(&mut layout) {
+        let key = (self.show_system, self.all_columns, self.pack_width);
+        if self.layout.as_ref().is_none_or(|layout| layout.key != key) {
+            self.layout = Some(CachedLayout {
+                key,
+                cards: cards(&graph, self.all_columns, self.pack_width),
+            });
+        }
+        let layout = &mut self.layout.as_mut().unwrap().cards;
+        for (node, (rect, _)) in graph.tables.iter().zip(layout.iter_mut()) {
             if let Some(pos) = self.positions.get(&node.name) {
                 *rect = egui::Rect::from_min_size(*pos, rect.size());
             }
@@ -784,7 +804,7 @@ impl DiagramState {
         let rect = |r: egui::Rect| egui::Rect::from_min_max(point(r.min), point(r.max));
         let drawing = DiagramDrawing {
             graph: &graph,
-            layout: &layout,
+            layout,
             canvas,
             zoom,
             pan,
@@ -835,6 +855,79 @@ mod tests {
     use super::{Camera, Graph, Inspection, SchemaDiagram, WIDTH, cards, route};
     use eframe::egui;
     use tursobench_core::DiagramTable;
+    #[test]
+    fn camera_and_selection_reuse_layout_but_schema_and_layout_changes_rebuild_it() {
+        let graph = || SchemaDiagram {
+            tables: (0..32)
+                .map(|i| DiagramTable {
+                    name: format!("table_{i}"),
+                    inspection: None,
+                    error: None,
+                })
+                .chain(std::iter::once(DiagramTable {
+                    name: "__turso_internal_hidden".into(),
+                    inspection: None,
+                    error: None,
+                }))
+                .collect(),
+            limited: false,
+        };
+        let ctx = egui::Context::default();
+        let mut state = super::DiagramState::default();
+        state.loaded(graph());
+        let draw = |state: &mut super::DiagramState, size| {
+            crate::app::test_ui::render(&ctx, size, vec![], |ui| {
+                state.show(ui, &Default::default());
+            });
+        };
+        let size = egui::vec2(800.0, 500.0);
+        draw(&mut state, size);
+        draw(&mut state, size);
+        let builds = || super::LAYOUT_BUILDS.with(|count| count.get());
+        let initial = builds();
+        state.camera.pan += egui::vec2(10.0, 20.0);
+        state.camera.step_zoom(1.25);
+        state.selected = Some("table_0".into());
+        state
+            .positions
+            .insert("table_0".into(), egui::pos2(123.0, 456.0));
+        draw(&mut state, size);
+        draw(&mut state, size);
+        assert_eq!(builds(), initial);
+        assert_eq!(
+            state.layout.as_ref().unwrap().cards[0].0.min,
+            egui::pos2(123.0, 456.0)
+        );
+
+        state.camera.auto_fit = true;
+        draw(&mut state, egui::vec2(1600.0, 400.0));
+        assert!(
+            builds() > initial,
+            "packing-width changes must rebuild layout"
+        );
+        let before = builds();
+        state.toggle_columns();
+        draw(&mut state, size);
+        assert!(builds() > before);
+        assert!(state.positions.is_empty());
+        let before = builds();
+        state.toggle_system();
+        draw(&mut state, size);
+        assert!(builds() > before);
+        assert_eq!(state.layout.as_ref().unwrap().cards.len(), 33);
+        let before = builds();
+        state.loaded(graph());
+        draw(&mut state, size);
+        assert!(builds() > before);
+        let before = builds();
+        let saved = state.snapshot("db").unwrap();
+        state.restore(&saved);
+        draw(&mut state, size);
+        assert!(builds() > before);
+        let before = builds();
+        draw(&mut state, size);
+        assert_eq!(builds(), before);
+    }
     #[test]
     fn button_zoom_preserves_the_canvas_center_and_respects_limits() {
         let mut camera = Camera {
