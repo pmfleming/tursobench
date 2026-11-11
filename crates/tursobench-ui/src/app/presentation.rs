@@ -109,3 +109,47 @@ pub(super) fn footer<R>(
             .inner
         })
 }
+
+pub(super) fn text_at(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    text: &str,
+    color: egui::Color32,
+    size: f32,
+) {
+    aligned_text(ui, rect, text, color, size, egui::Align::LEFT);
+}
+pub(super) fn text_right_at(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    text: &str,
+    color: egui::Color32,
+    size: f32,
+) {
+    aligned_text(ui, rect, text, color, size, egui::Align::RIGHT);
+}
+fn aligned_text(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    text: &str,
+    color: egui::Color32,
+    size: f32,
+    align: egui::Align,
+) {
+    let mut job = egui::text::LayoutJob::simple_singleline(
+        text.into(),
+        crate::appearance::proportional(ui.ctx(), size),
+        color,
+    );
+    job.wrap.max_width = rect.width().max(0.0);
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    let galley = ui.painter().layout_job(job);
+    let x = align
+        .align_size_within_range(galley.size().x, rect.x_range())
+        .min;
+    let pos = egui::pos2(x, rect.center().y - galley.size().y / 2.0);
+    ui.painter()
+        .with_clip_rect(rect.intersect(ui.clip_rect()))
+        .galley(pos, galley, color);
+}

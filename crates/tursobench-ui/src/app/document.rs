@@ -6,7 +6,7 @@ use std::{collections::BTreeMap, ops::Range};
 
 #[derive(Default)]
 pub(super) struct ViewTools {
-    pub large: super::large_values::Viewer,
+    pub large: results::Viewer,
     pub filtered_count: Option<i64>,
     pub draft_ui: super::editing::Presentation,
     pub sql_focus: Option<eframe::egui::Id>,
@@ -127,6 +127,40 @@ impl Default for Document {
     }
 }
 impl Document {
+    pub fn start_result(&mut self, ticket: Ticket, view: View) {
+        self.tools.restore_navigation = None;
+        self.tools.grid_scroll = eframe::egui::Vec2::ZERO;
+        self.tools.restore_scroll = None;
+        self.tools.context = Default::default();
+        self.tools.pages = Default::default();
+        self.tools.grid_selection = None;
+        self.tools.inline = None;
+        self.tools.filtered_count = None;
+        self.profile = None;
+        self.script_results.clear();
+        self.selected_script = None;
+        self.script_message.clear();
+        self.stale = false;
+        self.external_refresh = false;
+        self.result.start(ticket);
+        self.active = Some(ticket);
+        self.view = view;
+        self.ui.nav = if view == View::Browse {
+            shell::Nav::Table
+        } else {
+            shell::Nav::Result
+        };
+        self.ui.table_view = shell::TableView::Data;
+        self.ui.filter_open = false;
+        if matches!(view, View::Query | View::Explain) {
+            self.ui.sql_open = true;
+        }
+        if view != View::Browse {
+            self.tools.export_table = "exported_rows".into();
+        }
+        self.inspect = None;
+        self.tools.detail = None;
+    }
     pub fn set_sql(&mut self, sql: String) {
         if self.sql != sql {
             self.sql = sql;

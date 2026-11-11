@@ -1,3 +1,111 @@
+# Quality audit and refactor — 2026-11-11
+
+Baseline: `1d7da3c12f8b7151de3687235ae8612763cd91df` after the six performance optimizations.
+Measured with the locally available `/home/laufan/Projects/rust-quality-lens`
+at `824f7b7118a3f30348e1184dc1a4f80762ad58df`. The frozen executable's SHA-256 is
+`a9a7f6ac89b7f3a060d26a3b179b6fbed5f9338b8eb4815f93a5beecc0da53a3`.
+Both measurements use the existing source roots (`crates` and
+`tools/engine-spike/src`), including tests/examples; no new exclusions, lint
+suppressions or stack-limit overrides were introduced.
+
+| Measurement | Before | After |
+| --- | ---: | ---: |
+| Maximum cognitive complexity | 102 | 55 |
+| Sum of cognitive complexity | 6,057 | 5,908 |
+| Maximum cyclomatic complexity | 59 | 58 |
+| Sum of cyclomatic complexity | 6,617 | 6,609 |
+| Sum of function Halstead effort | 48,385,494 | 47,093,159 |
+| Duplicated source lines | 3,269 | 3,092 |
+| Sum of module locality risk ↓ | 433.5 | 430.5 |
+| Mean observed module leverage ↑ | 27.78 | 27.94 |
+| Authored Rust modules | 99 | 97 |
+| Physical Rust lines | 42,525 | 42,389 |
+| Literal `.clone()` calls | 459 | 455 |
+| Literal `.cloned()` calls | 24 | 25 |
+| Observed panic paths, including tests | 512 | 500 |
+| Test/helper function lines | 12,278 | 12,192 |
+| Wildcard imports | 36 | 31 |
+| Unsafe blocks | 1 | 1 |
+| Catalogued tests (including one ignored) | 244 | 238 |
+| Executed workspace tests | 243 | 237 |
+| Lines coverage (%) | 85.06 | 85.13 |
+| Regions coverage (%) | 84.62 | 84.69 |
+| Functions coverage (%) | 86.74 | 86.87 |
+
+The changes address these findings:
+
+- **Schema control flow:** share the wide/compact section dispatcher, isolate
+  loading and tab rendering, and borrow column metadata through a row model.
+  Find the first relevant foreign key instead of allocating every match. Preserve
+  pending actions when a section returns no action: previously the compact
+  Indexes and Triggers tabs lost the “Load structure” click. The existing action
+  test now exercises loading across all four applicable tabs.
+- **Frame-time copies and reuse:** render open-database rows from borrowed
+  workspaces instead of owned snapshots, and clone browse state only when a jump
+  is requested. Share sidebar target eligibility between rendering and activation.
+  Text painting belongs to common presentation, SQL highlighting to the editor;
+  result viewers and editors share their text-edit configuration.
+- **Ownership and dead paths:** session and result initialization now belong to
+  their state owners, removing redundant resets after default construction.
+  Profiling/administration share the Database checks module; large-value viewing
+  belongs alongside result editing. Remove obsolete untiled grid branches after
+  checking production callers, and keep capture stages together in the native
+  smoke state machine. The application hub remains; locality and leverage gains
+  are modest advisory improvements, not a claim that coupling is solved.
+- **Profile query depth:** the retained profile test now covers empty input,
+  sampling, typed statistics, frequencies, invalid requests, the 24-column limit
+  and single-column fallback for wider tables. Executing the supported 24-column
+  case reproduced a stack overflow in the previous 360-arm UNION. A 14-row metric
+  CTE and CASE expression reduce this to two UNION arms per column while retaining
+  one aggregate source pass per column and the narrow materialized projection.
+  The regression passes with the normal test stack.
+- **Coverage with less test code:** combine overlapping sidebar keyboard,
+  disconnected-workspace, staged-edit and quit-confirmation journeys, reuse click
+  helpers and consolidate profile fixtures. Preserve their distinct assertions;
+  the keyboard journey now uses the actual pane expansion API. Catalogued tests
+  fall by six and test/helper function spans by 86 lines. Combined `.clone()` and
+  `.cloned()` sites fall from 483 to 480; these literal counts are not allocation
+  measurements. The existing unsafe locking boundary remains unchanged.
+
+Line coverage changes from 25,092/29,500 to 25,007/29,376; removing dead/duplicate
+code reduces both covered lines and the denominator. Region coverage changes
+from 39,239/46,371 to 39,250/46,346, and function coverage from 2,349/2,708 to
+2,375/2,734. Coverage percentages increase slightly; no branch or mutation
+coverage was measured. No runtime benchmark speedup is claimed.
+
+Syntax inventory remains partial because three `thread_local!` invocations and
+one `compile_error!` are unexpanded, with zero unreadable files or syntax errors.
+Semantic identity resolves 1,647/1,680 references before and 1,668/1,701 after;
+33 references remain unresolved in each run. Leverage/locality therefore describe
+observed dependencies. Dynamic coverage input is complete. Test/helper volume
+counts the union of function spans in test modules, integration paths and
+catalogued tests; it is a separate measure from physical Rust lines.
+
+Validation passed: formatting, workspace Clippy across all targets with warnings
+denied, workspace tests across all targets (237 passed, one pre-existing ignored
+manual frame profile), workspace build, engine spike, native Wayland desktop,
+startup discovery, and schema/desktop smokes for all four synthetic local projects.
+The visual capture smoke also passed after the smoke-state refactor.
+
+Local evidence is under `target/quality-refactor-20261111/`: frozen `rqlens`,
+`before/` and `after/` JSON, `comparison.json`, `compare.py`, `lens.sh`, final
+measurement/validation logs, and the interactive `comparison.html` chart.
+The unchanged project configuration is copied to `before.toml` and `after.toml`
+with absolute project/output paths. Reproduce the after measurement with:
+
+```sh
+nix develop --command bash target/quality-refactor-20261111/lens.sh all after
+nix develop --command python3 target/quality-refactor-20261111/compare.py
+```
+
+A fresh before run requires the baseline checkout. The launcher uses the existing local metadata wrapper to
+omit non-library registry targets from metadata only and explicitly selects
+LLVM 22 for this Rust 1.95 toolchain. No workspace sources or dependency edges are
+excluded. Target evidence is local and ignored by Git; the table records the
+results durably here.
+
+---
+
 # Post-parity quality refactor — 2026-11-05
 
 Baseline: `b8fc358`, after the eight functional-parity stages. This review uses

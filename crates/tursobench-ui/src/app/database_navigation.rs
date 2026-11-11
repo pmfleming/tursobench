@@ -253,6 +253,78 @@ impl App {
         results
     }
 
+    fn sidebar_target_enabled(&self, target: &Target) -> bool {
+        self.picker.is_none()
+            && !self.database.confirm_close
+            && !self.quit
+            && (!matches!(target, Target::Available(_)) || self.can_request_database())
+    }
+    fn sidebar_result_ui(
+        &self,
+        ui: &mut egui::Ui,
+        result: &SearchResult,
+        selected: bool,
+    ) -> (egui::Response, Option<usize>) {
+        let enabled = self.sidebar_target_enabled(&result.target);
+        if let Target::Available(entry) = result.target {
+            let (response, forget) = ui
+                .push_id(("available-search", entry), |ui| {
+                    self.available_result_ui(ui, entry, selected, enabled)
+                })
+                .inner;
+            (response, forget.then_some(entry))
+        } else {
+            (
+                ui.add_enabled(
+                    enabled,
+                    egui::Button::new(&result.label)
+                        .truncate()
+                        .selected(selected)
+                        .min_size(egui::vec2(ui.available_width(), 24.0)),
+                ),
+                None,
+            )
+        }
+    }
+    fn sidebar_metadata_status(&self, ui: &mut egui::Ui) {
+        if self.sidebar_search.scope != Scope::Databases {
+            for database in std::iter::once(&self.database)
+                .chain(self.parked.values())
+                .filter(|d| {
+                    d.session.is_some()
+                        && (self.sidebar_search.scope == Scope::AllOpen || d.id == self.database.id)
+                })
+            {
+                if database.ui.diagram.ticket.is_some() {
+                    ui.weak(format!("{}: columns still loading…", database.path));
+                }
+                if !database.ui.diagram.error.is_empty() {
+                    ui.colored_label(ui.visuals().warn_fg_color, &database.ui.diagram.error);
+                }
+                if database.ui.diagram.data.as_ref().is_some_and(|g| g.limited) {
+                    ui.weak("Column metadata limited; use SQL for omitted objects.");
+                }
+            }
+        }
+    }
+    fn select_sidebar_target(&mut self, ctx: &egui::Context, target: Target) {
+        if !self.sidebar_target_enabled(&target) {
+            return;
+        }
+        match target {
+            Target::Database(id) => self.select_workspace(id),
+            Target::Object(id, command) => {
+                self.select_workspace(id);
+                if self.database.id == id {
+                    self.execute_command(ctx, command);
+                }
+            }
+            Target::Available(index) => self.choose_available_result(ctx, index),
+        }
+        self.sidebar_search.query.clear();
+        self.sidebar_search.index = 0;
+        self.sidebar_search.navigating = false;
+    }
     pub(super) fn sidebar_search_results_ui(&mut self, ui: &mut egui::Ui) {
         if self.sidebar_search.scope != Scope::Databases {
             let active = self.database.id;
@@ -299,35 +371,12 @@ impl App {
                         ui.small(&result.group);
                         group = Some(&result.group);
                     }
-                    let enabled = self.picker.is_none()
-                        && !self.database.confirm_close
-                        && !self.quit
-                        && (!matches!(result.target, Target::Available(_))
-                            || self.can_request_database());
-                    let response = if let Target::Available(entry) = result.target {
-                        let (response, forget) = ui
-                            .push_id(("available-search", entry), |ui| {
-                                self.available_result_ui(
-                                    ui,
-                                    entry,
-                                    focused && index == self.sidebar_search.index,
-                                    enabled,
-                                )
-                            })
-                            .inner;
-                        if forget {
-                            forgotten = Some(entry);
-                        }
-                        response
-                    } else {
-                        ui.add_enabled(
-                            enabled,
-                            egui::Button::new(&result.label)
-                                .truncate()
-                                .selected(focused && index == self.sidebar_search.index)
-                                .min_size(egui::vec2(ui.available_width(), 24.0)),
-                        )
-                    };
+                    let (response, forget) = self.sidebar_result_ui(
+                        ui,
+                        result,
+                        focused && index == self.sidebar_search.index,
+                    );
+                    forgotten = forget.or(forgotten);
                     if focused && index == self.sidebar_search.index {
                         response.scroll_to_me(None);
                     }
@@ -347,80 +396,14 @@ impl App {
                 if total > 100 {
                     ui.weak("First 100 matches; refine the search.");
                 }
-                if self.sidebar_search.scope != Scope::Databases {
-                    for database in std::iter::once(&self.database)
-                        .chain(self.parked.values())
-                        .filter(|d| {
-                            d.session.is_some()
-                                && (self.sidebar_search.scope == Scope::AllOpen
-                                    || d.id == self.database.id)
-                        })
-                    {
-                        if database.ui.diagram.ticket.is_some() {
-                            ui.weak(format!("{}: columns still loading…", database.path));
-                        }
-                        if !database.ui.diagram.error.is_empty() {
-                            ui.colored_label(
-                                ui.visuals().warn_fg_color,
-                                &database.ui.diagram.error,
-                            );
-                        }
-                        if database.ui.diagram.data.as_ref().is_some_and(|g| g.limited) {
-                            ui.weak("Column metadata limited; use SQL for omitted objects.");
-                        }
-                    }
-                }
+                self.sidebar_metadata_status(ui);
             });
         if let Some(entry) = forgotten {
             self.forget_available_result(entry);
             return;
         }
         if let Some(index) = chosen.filter(|&i| i < results.len()) {
-            if self.picker.is_some() || self.database.confirm_close || self.quit {
-                return;
-            }
-            if matches!(results[index].target, Target::Available(_)) && !self.can_request_database()
-            {
-                return;
-            }
-            match results.swap_remove(index).target {
-                Target::Database(id) => self.select_workspace(id),
-                Target::Object(id, command) => {
-                    self.select_workspace(id);
-                    if self.database.id == id {
-                        self.execute_command(ui.ctx(), command);
-                    }
-                }
-                Target::Available(index) => self.choose_available_result(ui.ctx(), index),
-            }
-            self.sidebar_search.query.clear();
-            self.sidebar_search.index = 0;
-            self.sidebar_search.navigating = false;
-        }
-    }
-}
-
-/// A small presentation snapshot; rendering never swaps or copies result buffers.
-struct DatabaseRow {
-    id: u64,
-    path: String,
-    writable: bool,
-    transaction: TransactionState,
-    drafts: usize,
-    closing: bool,
-    connected: bool,
-}
-
-impl From<&DatabaseWorkspace> for DatabaseRow {
-    fn from(database: &DatabaseWorkspace) -> Self {
-        Self {
-            id: database.id,
-            path: database.path.clone(),
-            writable: database.writable,
-            transaction: database.transaction,
-            drafts: database.draft_count(),
-            closing: database.closing,
-            connected: database.session.is_some(),
+            self.select_sidebar_target(ui.ctx(), results.swap_remove(index).target);
         }
     }
 }
@@ -462,13 +445,7 @@ impl App {
             });
     }
 
-    pub(super) fn open_databases_ui(&mut self, ui: &mut egui::Ui) {
-        let mut rows: Vec<_> = std::iter::once(&self.database)
-            .chain(self.parked.values())
-            .filter(|database| database.retained() || database.confirm_close)
-            .map(DatabaseRow::from)
-            .collect();
-        rows.sort_by_key(|row| row.id);
+    fn open_databases_header_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             ui.small("OPEN DATABASES");
             if self.database.session.is_some() && icons::button(ui, Icon::Refresh, "Refresh schema", "F5").clicked() {
@@ -486,188 +463,51 @@ impl App {
                 response.on_hover_text(hint);
             }
         });
-        if rows.is_empty() {
+    }
+    pub(super) fn open_databases_ui(&mut self, ui: &mut egui::Ui) {
+        let mut ids: Vec<_> = std::iter::once(&self.database)
+            .chain(self.parked.values())
+            .filter(|d| d.retained() || d.confirm_close)
+            .map(|d| d.id)
+            .collect();
+        ids.sort_unstable();
+        self.open_databases_header_ui(ui);
+        if ids.is_empty() {
             ui.weak("Nothing open. Choose a database below.");
         }
         let enabled = self.picker.is_none() && !self.database.confirm_close && !self.quit;
         let mut select = None;
         let mut close = None;
-        for row in rows {
-            ui.push_id(("database-row", row.id), |ui| {
-                let active = row.id == self.database.id;
-                egui::Frame::new()
-                    .fill(if active {
-                        ui.visuals().selection.bg_fill
+        for id in ids {
+            let active = id == self.database.id;
+            let (selected, closed) = ui
+                .push_id(("database-row", id), |ui| {
+                    let database = if active {
+                        &self.database
                     } else {
-                        ui.visuals().faint_bg_color
-                    })
-                    .corner_radius(6)
-                    .inner_margin(0.0)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            let width = (ui.available_width() - 28.0 - ui.spacing().item_spacing.x)
-                                .max(40.0);
-                            let name = Path::new(&row.path)
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy();
-                            let detail = if row.closing {
-                                "Closing…".into()
-                            } else if row.transaction != TransactionState::Autocommit
-                                || row.drafts > 0
-                            {
-                                format!(
-                                    "{}{}{}",
-                                    if row.transaction == TransactionState::Unknown {
-                                        "Unknown transaction"
-                                    } else if row.transaction == TransactionState::Active {
-                                        "Transaction"
-                                    } else {
-                                        ""
-                                    },
-                                    if row.transaction != TransactionState::Autocommit
-                                        && row.drafts > 0
-                                    {
-                                        " · "
-                                    } else {
-                                        ""
-                                    },
-                                    if row.drafts > 0 {
-                                        format!(
-                                            "{} staged edit{}",
-                                            row.drafts,
-                                            if row.drafts == 1 { "" } else { "s" }
-                                        )
-                                    } else {
-                                        String::new()
-                                    }
-                                )
-                            } else if !row.connected {
-                                "Disconnected · retained data".into()
+                        &self.parked[&id]
+                    };
+                    let result = open_database_row(ui, database, active, enabled);
+                    if active && self.database.confirm_close {
+                        self.inline_close_confirmation_ui(ui);
+                    } else if active {
+                        ui.indent(("active-database", id), |ui| {
+                            if self.database.session.is_none() {
+                                self.retained_database_ui(ui);
                             } else {
-                                super::databases::folder_label(Path::new(&row.path))
-                            };
-                            let response = ui
-                                .add_enabled_ui(enabled, |ui| {
-                                    let (rect, response) = ui.allocate_exact_size(
-                                        egui::vec2(width, 44.0),
-                                        egui::Sense::click(),
-                                    );
-                                    let painter =
-                                        ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
-                                    if response.has_focus() {
-                                        painter.rect_stroke(
-                                            rect,
-                                            6.0,
-                                            ui.visuals().selection.stroke,
-                                            egui::StrokeKind::Inside,
-                                        );
-                                    }
-                                    if active {
-                                        painter.vline(
-                                            rect.left() + 1.0,
-                                            rect.y_range().shrink(5.0),
-                                            egui::Stroke::new(
-                                                2.0,
-                                                ui.visuals().selection.stroke.color,
-                                            ),
-                                        );
-                                    }
-                                    super::databases::opened_database_icon(
-                                        ui,
-                                        egui::Rect::from_center_size(
-                                            rect.left_center() + egui::vec2(14.0, 0.0),
-                                            egui::vec2(22.0, 22.0),
-                                        ),
-                                        enabled,
-                                    );
-                                    let access_rect = egui::Rect::from_center_size(
-                                        rect.right_top() + egui::vec2(-12.0, 13.0),
-                                        egui::Vec2::splat(16.0),
-                                    );
-                                    icons::access_indicator(ui, access_rect, row.writable, enabled);
-                                    for (text, y, size, budget, color) in [
-                                        (
-                                            name.to_string(),
-                                            5.0,
-                                            12.0,
-                                            56.0,
-                                            ui.visuals().text_color(),
-                                        ),
-                                        (
-                                            detail.clone(),
-                                            24.0,
-                                            10.0,
-                                            34.0,
-                                            if row.drafts > 0
-                                                || row.transaction != TransactionState::Autocommit
-                                            {
-                                                ui.visuals().warn_fg_color
-                                            } else {
-                                                ui.visuals().weak_text_color()
-                                            },
-                                        ),
-                                    ] {
-                                        let galley = egui::WidgetText::from(
-                                            egui::RichText::new(text)
-                                                .size(crate::appearance::text_size(ui.ctx(), size)),
-                                        )
-                                        .into_galley(
-                                            ui,
-                                            Some(egui::TextWrapMode::Truncate),
-                                            (width - budget).max(1.0),
-                                            egui::TextStyle::Body,
-                                        );
-                                        painter.galley(
-                                            rect.min + egui::vec2(30.0, y),
-                                            galley,
-                                            color,
-                                        );
-                                    }
-                                    response
-                                })
-                                .inner;
-                            response.widget_info(|| {
-                                egui::WidgetInfo::selected(
-                                    egui::Role::Button,
-                                    response.enabled(),
-                                    row.id == self.database.id,
-                                    format!("Select database: {}", row.path),
-                                )
-                            });
-                            if response.on_hover_text(&row.path).clicked() {
-                                select = Some(row.id);
-                            }
-                            if row.closing {
-                                ui.add_sized([28.0, 28.0], egui::Spinner::new());
-                            } else {
-                                ui.add_enabled_ui(enabled, |ui| {
-                                    if icons::button(
-                                        ui,
-                                        Icon::Close,
-                                        &format!("Close database: {}", row.path),
-                                        "",
-                                    )
-                                    .clicked()
-                                    {
-                                        close = Some(row.id);
-                                    }
-                                });
+                                self.active_database_tree_ui(ui);
                             }
                         });
-                    });
-                if row.id == self.database.id && self.database.confirm_close {
-                    self.inline_close_confirmation_ui(ui);
-                } else if row.id == self.database.id {
-                    ui.indent(("active-database", row.id), |ui| {
-                        if self.database.session.is_none() {
-                            self.retained_database_ui(ui);
-                        } else {
-                            self.active_database_tree_ui(ui);
-                        }
-                    });
-                }
-            });
+                    }
+                    result
+                })
+                .inner;
+            if selected {
+                select = Some(id);
+            }
+            if closed {
+                close = Some(id);
+            }
         }
         if let Some(id) = select {
             self.select_workspace(id);
@@ -676,4 +516,155 @@ impl App {
             self.request_sidebar_close(id);
         }
     }
+}
+fn database_detail(database: &DatabaseWorkspace, drafts: usize) -> String {
+    if database.closing {
+        return "Closing…".into();
+    }
+    let mut detail = match database.transaction {
+        TransactionState::Unknown => "Unknown transaction",
+        TransactionState::Active => "Transaction",
+        TransactionState::Autocommit => "",
+    }
+    .to_owned();
+    if drafts > 0 {
+        if !detail.is_empty() {
+            detail.push_str(" · ");
+        }
+        detail.push_str(&format!(
+            "{drafts} staged edit{}",
+            if drafts == 1 { "" } else { "s" }
+        ));
+    }
+    if !detail.is_empty() {
+        return detail;
+    }
+    if database.session.is_none() {
+        "Disconnected · retained data".into()
+    } else {
+        super::databases::folder_label(Path::new(&database.path))
+    }
+}
+fn open_database_row(
+    ui: &mut egui::Ui,
+    database: &DatabaseWorkspace,
+    active: bool,
+    enabled: bool,
+) -> (bool, bool) {
+    egui::Frame::new()
+        .fill(if active {
+            ui.visuals().selection.bg_fill
+        } else {
+            ui.visuals().faint_bg_color
+        })
+        .corner_radius(6)
+        .inner_margin(0.0)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let response = open_database_button(ui, database, active, enabled);
+                let selected = response.on_hover_text(&database.path).clicked();
+                let closed = if database.closing {
+                    ui.add_sized([28.0, 28.0], egui::Spinner::new());
+                    false
+                } else {
+                    ui.add_enabled_ui(enabled, |ui| {
+                        icons::button(
+                            ui,
+                            Icon::Close,
+                            &format!("Close database: {}", database.path),
+                            "",
+                        )
+                        .clicked()
+                    })
+                    .inner
+                };
+                (selected, closed)
+            })
+            .inner
+        })
+        .inner
+}
+fn open_database_button(
+    ui: &mut egui::Ui,
+    database: &DatabaseWorkspace,
+    active: bool,
+    enabled: bool,
+) -> egui::Response {
+    let width = (ui.available_width() - 28.0 - ui.spacing().item_spacing.x).max(40.0);
+    let name = Path::new(&database.path)
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
+    let drafts = database.draft_count();
+    let detail = database_detail(database, drafts);
+    let response = ui
+        .add_enabled_ui(enabled, |ui| {
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(width, 44.0), egui::Sense::click());
+            let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+            if response.has_focus() {
+                painter.rect_stroke(
+                    rect,
+                    6.0,
+                    ui.visuals().selection.stroke,
+                    egui::StrokeKind::Inside,
+                );
+            }
+            if active {
+                painter.vline(
+                    rect.left() + 1.0,
+                    rect.y_range().shrink(5.0),
+                    egui::Stroke::new(2.0, ui.visuals().selection.stroke.color),
+                );
+            }
+            super::databases::opened_database_icon(
+                ui,
+                egui::Rect::from_center_size(
+                    rect.left_center() + egui::vec2(14.0, 0.0),
+                    egui::vec2(22.0, 22.0),
+                ),
+                enabled,
+            );
+            let access_rect = egui::Rect::from_center_size(
+                rect.right_top() + egui::vec2(-12.0, 13.0),
+                egui::Vec2::splat(16.0),
+            );
+            icons::access_indicator(ui, access_rect, database.writable, enabled);
+            for (text, y, size, budget, color) in [
+                (name.as_ref(), 5.0, 12.0, 56.0, ui.visuals().text_color()),
+                (
+                    detail.as_str(),
+                    24.0,
+                    10.0,
+                    34.0,
+                    if drafts > 0 || database.transaction != TransactionState::Autocommit {
+                        ui.visuals().warn_fg_color
+                    } else {
+                        ui.visuals().weak_text_color()
+                    },
+                ),
+            ] {
+                let galley = egui::WidgetText::from(
+                    egui::RichText::new(text).size(crate::appearance::text_size(ui.ctx(), size)),
+                )
+                .into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Truncate),
+                    (width - budget).max(1.0),
+                    egui::TextStyle::Body,
+                );
+                painter.galley(rect.min + egui::vec2(30.0, y), galley, color);
+            }
+            response
+        })
+        .inner;
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::Role::Button,
+            response.enabled(),
+            active,
+            format!("Select database: {}", database.path),
+        )
+    });
+    response
 }

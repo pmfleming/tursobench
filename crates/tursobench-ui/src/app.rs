@@ -1,5 +1,5 @@
 use tursobench_core::{Access, Browse, ConnectionSettings, Ticket, TransactionState};
-mod admin;
+mod checks;
 mod columns;
 mod commands;
 mod context;
@@ -18,11 +18,9 @@ mod icons;
 mod inspector;
 #[cfg(test)]
 mod interaction_tests;
-mod large_values;
 mod paging;
 mod panels;
 mod presentation;
-mod profile;
 mod recovery;
 mod results;
 mod ribbon;
@@ -219,46 +217,7 @@ impl App {
         ) {
             Ok(s) => {
                 self.databases.open_failure = None;
-                self.database.documents.clear();
-                self.database.workspace = Default::default();
-                self.database.document = document::Document::default();
-                self.database.commit_owner = None;
-                self.database.document.result = Default::default();
-                self.database.schema.clear();
-                self.database.catalog = Default::default();
-                self.database.catalog_ticket = None;
-                self.database.catalog_error.clear();
-                self.database.ui.diagram = Default::default();
-                self.database.document.ui.table_view = shell::TableView::Data;
-                self.database.ui.unfolded = None;
-                self.database.tools.counts.clear();
-                self.database.tools.count_request = None;
-                self.database.document.ui.sql_open = false;
-                self.database.document.tools.ddl = None;
-                self.database.document.inspect = None;
-                self.database.document.tools.detail = None;
-                self.database.document.drafts = None;
-                self.database.document.tools.inspection = None;
-                self.database.document.tools.inspection_ticket = None;
-                self.database.document.tools.related = None;
-                self.database.tools.back.clear();
-                self.database.tools.result_return = None;
-                self.database.document.tools.restore_navigation = None;
-                let path = std::path::PathBuf::from(&self.database.path);
-                self.database.tools.database_scope = if path.is_absolute() {
-                    self.database.path.clone()
-                } else {
-                    std::env::current_dir()
-                        .map(|cwd| cwd.join(path).to_string_lossy().into_owned())
-                        .unwrap_or_default()
-                };
-                self.database.document.table = None;
-                self.database.document.browse = None;
-                self.database.transaction = TransactionState::Autocommit;
-                self.database.uncertain_edit = false;
-                self.database.session = Some(s);
-                self.database.status = "Opening…".into();
-                self.database.closing = false;
+                self.database.start_session(s);
             }
             Err(e) => {
                 self.database.status = e.to_string();
@@ -309,38 +268,7 @@ impl App {
                 {
                     self.database.tools.result_return = Some(previous);
                 }
-                self.database.document.tools.restore_navigation = None;
-                self.database.document.tools.grid_scroll = egui::Vec2::ZERO;
-                self.database.document.tools.restore_scroll = None;
-                self.database.document.tools.context = Default::default();
-                self.database.document.tools.pages = Default::default();
-                self.database.document.tools.grid_selection = None;
-                self.database.document.tools.inline = None;
-                self.database.document.tools.filtered_count = None;
-                self.database.document.profile = None;
-                self.database.document.script_results.clear();
-                self.database.document.selected_script = None;
-                self.database.document.script_message.clear();
-                self.database.document.stale = false;
-                self.database.document.external_refresh = false;
-                self.database.document.result.start(ticket);
-                self.database.document.active = Some(ticket);
-                self.database.document.view = view;
-                self.database.document.ui.nav = if view == View::Browse {
-                    shell::Nav::Table
-                } else {
-                    shell::Nav::Result
-                };
-                self.database.document.ui.table_view = shell::TableView::Data;
-                self.database.document.ui.filter_open = false;
-                if matches!(view, View::Query | View::Explain) {
-                    self.database.document.ui.sql_open = true;
-                }
-                if view != View::Browse {
-                    self.database.document.tools.export_table = "exported_rows".into();
-                }
-                self.database.document.inspect = None;
-                self.database.document.tools.detail = None;
+                self.database.document.start_result(ticket, view);
                 self.database.status = "Queued for execution…".into();
                 Some(ticket)
             }
@@ -716,7 +644,7 @@ mod test_ui {
             egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
         )
     }
-    use super::{App, shell};
+    use super::App;
     use std::time::{Duration, Instant};
     pub(super) fn inspect_selected(app: &mut App, ctx: &egui::Context) {
         let start = Instant::now();
@@ -728,26 +656,5 @@ mod test_ui {
             assert!(start.elapsed() < Duration::from_secs(5));
             std::thread::sleep(Duration::from_millis(2));
         }
-    }
-
-    use tursobench_core::Column;
-    use tursobench_core::Value;
-    #[test]
-    fn renders_empty_and_large_cells_without_engine() {
-        let (ctx, mut app) = crate::app::test_ui::app();
-        app.database.document.ui.nav = shell::Nav::Table;
-        app.database.document.result.columns = vec![Column {
-            name: "data".into(),
-            declared_type: None,
-        }];
-        app.database.document.result.rows = vec![
-            vec![Value::Text("λ".repeat(30000))],
-            vec![Value::Blob(vec![0; 64000])],
-        ];
-        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.grid_contents(ui));
-        output.textures_delta.clear();
-        assert!(app.database.session.is_none());
-        assert!(app.database.document.active.is_none());
-        assert!(app.first_cell_rect.is_some());
     }
 }

@@ -205,9 +205,7 @@ impl App {
             return;
         }
         self.update_draft_presentation();
-        if self.database.workspace.enabled {
-            self.grid_status_bar(ui);
-        }
+        self.grid_status_bar(ui);
         self.script_results_ui(ui);
         if self.database.document.stale {
             ui.colored_label(
@@ -261,13 +259,8 @@ impl App {
                 .is_some_and(|v| matches!(v, Value::Deferred(_))),
         ) + usize::from(self.database.document.tools.pages.pending.is_some())
             + 2 * usize::from(!self.database.document.tools.pages.error.is_empty());
-        let remaining = (ui.available_height()
-            - if self.database.workspace.enabled {
-                HEADER_HEIGHT + auxiliary_rows as f32 * ROW_HEIGHT
-            } else {
-                52.0
-            })
-        .max(0.0);
+        let remaining =
+            (ui.available_height() - HEADER_HEIGHT - auxiliary_rows as f32 * ROW_HEIGHT).max(0.0);
         self.database.document.tools.grid_height = remaining;
         #[cfg(test)]
         {
@@ -350,11 +343,7 @@ impl App {
             ),
             Some(GridAction::Edit(r, c)) => self.start_inline(r, c),
             Some(GridAction::Inspect(r, c)) => {
-                if self.database.workspace.enabled {
-                    self.open_record_window(r, c);
-                } else {
-                    self.open_cell(r, c);
-                }
+                self.open_record_window(r, c);
             }
             Some(GridAction::Stage(r, c, v)) => {
                 self.stage_cell(r, c, v);
@@ -363,14 +352,7 @@ impl App {
                     ui.ctx().memory_mut(|m| m.request_focus(id));
                 }
             }
-            Some(GridAction::Record(r)) if self.database.workspace.enabled => {
-                self.open_record_window(r, 0)
-            }
-            Some(GridAction::Record(r)) => {
-                self.database.document.tools.detail = Some(r);
-                self.database.document.ui.inspector = shell::DetailMode::Record;
-                self.database.document.ui.inspector_open = true;
-            }
+            Some(GridAction::Record(r)) => self.open_record_window(r, 0),
             Some(GridAction::Copy(r)) => self.copy_row(ui.ctx(), r),
             Some(GridAction::Delete(r)) => self.stage_delete(r),
             Some(GridAction::BulkDelete) => self.stage_selected_deletions(),
@@ -379,9 +361,6 @@ impl App {
                 self.add_filter(filter);
             }
             None => {}
-        }
-        if !self.database.workspace.enabled {
-            self.grid_status_contents(ui);
         }
         if let Some(cell) = self
             .database
@@ -423,24 +402,6 @@ impl App {
                     self.request_page(self.database.document.tools.pages.retry_previous);
                 }
             }
-        }
-        if !self.database.workspace.enabled
-            && self.database.writable
-            && self.database.document.view == View::Browse
-            && self
-                .database
-                .document
-                .table
-                .as_ref()
-                .is_some_and(tursobench_core::Table::editable)
-            && ui
-                .add_enabled_ui(self.can_edit(), |ui| {
-                    icons::control(ui, Icon::Plus, "New row", "", false, true)
-                })
-                .inner
-                .clicked()
-        {
-            self.begin_insert();
         }
         if !self.database.document.tools.inspection_error.is_empty()
             && self.database.document.result.columns.is_empty()
@@ -500,8 +461,16 @@ impl App {
     }
 
     fn grid_status_contents(&mut self, ui: &mut egui::Ui) {
-        let spec = self.database.document.browse.clone();
+        let enabled = self.database.ready
+            && !self.database.closing
+            && !self.database.document.stale
+            && !self.has_drafts()
+            && self.database.commit_ticket.is_none()
+            && self.database.document.active.is_none()
+            && self.database.document.tools.pages.pending.is_none();
+        let spec = self.database.document.browse.as_ref();
         let mut jump = false;
+        let mut count_requested = false;
         let count_label = spec.as_ref().and_then(|b| {
             self.database
                 .document
@@ -532,11 +501,7 @@ impl App {
         } else {
             0.0
         };
-        let leading = if self.database.workspace.enabled {
-            CONTENT_INSET - super::presentation::BAR_INSET
-        } else {
-            0.0
-        };
+        let leading = CONTENT_INSET - super::presentation::BAR_INSET;
         let width = ui.available_width().max(leading + actions_width + 120.0);
         egui::ScrollArea::horizontal()
             .id_salt("grid-status-actions")
@@ -545,41 +510,32 @@ impl App {
             .show(ui, |ui| {
                 ui.set_width(width);
                 ui.horizontal(|ui| {
-                    if self.database.workspace.enabled {
-                        ui.add_space(leading);
-                        let start = spec.as_ref().map_or(0, |b| b.offset);
-                        let count = self.database.document.result.rows.len();
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(
-                                width - leading - actions_width - super::presentation::BAR_SPACING,
-                                ROW_HEIGHT,
-                            ),
-                            egui::Layout::left_to_right(egui::Align::Center),
-                            |ui| {
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(format!(
-                                            "{}–{} · {count} retained",
-                                            start + usize::from(count > 0),
-                                            start + count
-                                        ))
-                                        .monospace()
-                                        .size(crate::appearance::text_size(ui.ctx(), 11.0))
-                                        .color(ui.visuals().weak_text_color()),
-                                    )
-                                    .truncate(),
-                                );
-                            },
-                        );
-                    }
-                    if let Some(spec) = &spec {
-                        let enabled = self.database.ready
-                            && !self.database.closing
-                            && !self.database.document.stale
-                            && !self.has_drafts()
-                            && self.database.commit_ticket.is_none()
-                            && self.database.document.active.is_none()
-                            && self.database.document.tools.pages.pending.is_none();
+                    ui.add_space(leading);
+                    let start = spec.as_ref().map_or(0, |b| b.offset);
+                    let count = self.database.document.result.rows.len();
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(
+                            width - leading - actions_width - super::presentation::BAR_SPACING,
+                            ROW_HEIGHT,
+                        ),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(format!(
+                                        "{}–{} · {count} retained",
+                                        start + usize::from(count > 0),
+                                        start + count
+                                    ))
+                                    .monospace()
+                                    .size(crate::appearance::text_size(ui.ctx(), 11.0))
+                                    .color(ui.visuals().weak_text_color()),
+                                )
+                                .truncate(),
+                            );
+                        },
+                    );
+                    if spec.is_some() {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui
                                 .add_enabled_ui(
@@ -591,7 +547,7 @@ impl App {
                                 .inner
                                 .clicked()
                             {
-                                self.count_table(spec.table.clone());
+                                count_requested = true;
                             }
                             if let Some(label) = &count_label {
                                 ui.weak(label);
@@ -620,7 +576,11 @@ impl App {
                     }
                 });
             });
-        if jump && let Some(mut next) = spec {
+        let next = if jump { spec.cloned() } else { None };
+        if count_requested && let Some(name) = spec.map(|b| b.table.clone()) {
+            self.count_table(name);
+        }
+        if let Some(mut next) = next {
             next.offset = self.database.document.tools.jump_row.saturating_sub(1);
             next.options.cursor = None;
             next.options.reverse = false;
@@ -884,8 +844,7 @@ impl App {
         if let Some(edit) = self.database.document.tools.inline.as_mut().filter(|e| {
             e.row == row
                 && e.column == col
-                && (!self.database.workspace.enabled
-                    || self.database.workspace.active != super::tiling::Kind::Record)
+                && self.database.workspace.active != super::tiling::Kind::Record
         }) {
             let response = ui.put(rect, egui::TextEdit::singleline(&mut edit.editor.input));
             response.context_menu(|ui| edit.editor.type_picker(ui, "inline-type", false));
@@ -1108,5 +1067,29 @@ fn cell_fill(ui: &egui::Ui, deleted: bool, staged: bool, row: usize) -> egui::Co
         crate::appearance::mix(surface, ui.visuals().text_color(), 0.025)
     } else {
         surface
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{egui, shell};
+    use tursobench_core::{Column, Value};
+    #[test]
+    fn renders_empty_and_large_cells_without_engine() {
+        let (ctx, mut app) = crate::app::test_ui::app();
+        app.database.document.ui.nav = shell::Nav::Table;
+        app.database.document.result.columns = vec![Column {
+            name: "data".into(),
+            declared_type: None,
+        }];
+        app.database.document.result.rows = vec![
+            vec![Value::Text("λ".repeat(30000))],
+            vec![Value::Blob(vec![0; 64000])],
+        ];
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.grid_contents(ui));
+        output.textures_delta.clear();
+        assert!(app.database.session.is_none());
+        assert!(app.database.document.active.is_none());
+        assert!(app.first_cell_rect.is_some());
     }
 }

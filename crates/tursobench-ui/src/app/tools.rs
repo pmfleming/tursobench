@@ -42,8 +42,8 @@ pub(super) struct CountRequest {
 #[derive(Default)]
 pub(super) struct Tools {
     pub snapshot: super::schema_compare::Capture,
-    pub admin: super::admin::State,
-    pub profile: super::profile::State,
+    pub admin: super::checks::Admin,
+    pub profile: super::checks::Profile,
     pub transfers: super::transfers::State,
     pub tree_focus: Option<eframe::egui::Id>,
     pub back: Vec<NavigationEntry>,

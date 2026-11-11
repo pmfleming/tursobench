@@ -2,7 +2,7 @@
 use super::{node_frame, route_with_bend};
 use crate::app::{
     icons::{self, Icon},
-    schema::presentation::text_at,
+    presentation::text_at,
 };
 use eframe::egui;
 use tursobench_core::{ForeignKey, Inspection, SchemaDiagram};

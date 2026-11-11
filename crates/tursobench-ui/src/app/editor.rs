@@ -138,6 +138,13 @@ pub(super) fn highlighted(ui: &egui::Ui, text: &str, width: f32) -> std::sync::A
     }
     ui.fonts_mut(|fonts| fonts.layout_job(job))
 }
+pub(super) fn sql_view(ui: &mut egui::Ui, mut ddl: &str) {
+    let mut layouter = |ui: &egui::Ui, buffer: &dyn egui::TextBuffer, width| {
+        highlighted(ui, buffer.as_str(), width)
+    };
+    ui.add(super::results::code_editor(&mut ddl, ui.available_width(), 3).layouter(&mut layouter));
+}
+
 impl App {
     pub(super) fn run_transaction(&mut self, sql: &str) {
         self.submit(
@@ -336,12 +343,9 @@ impl App {
                     } else {
                         egui::Vec2::ZERO
                     };
-                egui::TextEdit::multiline(&mut self.database.document.sql)
+                super::results::code_editor(&mut self.database.document.sql, f32::INFINITY, 5)
                     .id_salt("sql-editor")
-                    .code_editor()
                     .min_size(empty_size)
-                    .desired_rows(5)
-                    .desired_width(f32::INFINITY)
                     .layouter(&mut layouter)
                     .show(ui)
             })

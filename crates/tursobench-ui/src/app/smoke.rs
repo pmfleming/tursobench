@@ -75,7 +75,8 @@ impl App {
         if matches!(smoke.stage, 50..=56) && self.smoke_readme(ctx, &mut smoke) {
             return;
         }
-        match smoke.stage {
+        let stage = smoke.stage;
+        match stage {
             0 => {
                 self.database.writable = false;
                 // The desktop smoke runner intentionally uses a closed SQLite
@@ -170,7 +171,7 @@ impl App {
                     smoke.stage = 8;
                 }
             }
-            20..=31 => self.smoke_capture_layout(ctx, &mut smoke),
+            20..=31 | 39..=44 if self.smoke_capture_layout(ctx, &mut smoke) => return,
             8 => {
                 self.database
                     .document
@@ -266,90 +267,6 @@ impl App {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     return;
                 }
-            }
-            39 => {
-                if self.databases.inspection.kind(&self.database.path)
-                    == crate::discovery::DatabaseKind::LikelySqlite
-                {
-                    self.databases.inspection.override_sqlite = true;
-                }
-                self.open(ctx);
-                if self.database.session.is_some() {
-                    smoke.stage = 40;
-                }
-            }
-            40 if self.database.ready
-                && self.database.catalog_ticket.is_none()
-                && self.database.ui.diagram.ticket.is_none() =>
-            {
-                self.browse_table(smoke.table.clone());
-                smoke.stage = 41;
-            }
-            41 if self.database.document.active.is_none()
-                && self.database.document.tools.inspection_ticket.is_none() =>
-            {
-                self.retile();
-                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1366.0, 768.0)));
-                if self.can_edit() && !self.database.document.result.rows.is_empty() {
-                    let col = usize::from(self.database.document.result.columns.len() > 1);
-                    self.stage_cell(
-                        0,
-                        col,
-                        Value::Text("Staged locally for visual review".into()),
-                    );
-                }
-                let sql = format!("SELECT * FROM {} LIMIT 100", quote_identifier(&smoke.table));
-                self.preferences.record_query(
-                    &self.database.tools.database_scope,
-                    &sql,
-                    Some(12),
-                    false,
-                );
-                self.preferences.bookmark(
-                    &self.database.tools.database_scope,
-                    "Sample table",
-                    &sql,
-                );
-                self.prepare_visual_scene(ctx, 0);
-                smoke.stage = 42;
-            }
-            42 => {
-                smoke.capture_frames += 1;
-                if smoke.capture_frames >= 8 {
-                    smoke.capture_pending = Some(VISUAL_SCENES[smoke.scene].into());
-                    let (tx, rx) = std::sync::mpsc::sync_channel(1);
-                    let wake = ctx.clone();
-                    ctx.request_screenshot(move |image| {
-                        let _ = tx.try_send(image);
-                        wake.request_repaint();
-                    });
-                    smoke.capture_result = Some(rx);
-                    smoke.capture_frames = 0;
-                    smoke.stage = 43;
-                }
-            }
-            43 if smoke.capture_pending.is_none() => {
-                smoke.scene += 1;
-                if smoke.scene == 14 {
-                    self.prepare_visual_scene(ctx, 14);
-                    self.close();
-                    smoke.stage = 44;
-                } else if smoke.scene == VISUAL_SCENES.len() {
-                    assert!(self.database.session.is_none());
-                    eprintln!(
-                        "DESKTOP VISUAL SMOKE PASSED: six workspace sizes/themes, navigator tools, staged edits, dialogs, sidebar access and all Settings pages; elapsed {:?}",
-                        smoke.start.elapsed()
-                    );
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    return;
-                } else {
-                    self.prepare_visual_scene(ctx, smoke.scene);
-                    smoke.stage = 42;
-                }
-            }
-            44 if self.database.session.is_none() => {
-                self.prepare_visual_scene(ctx, 14);
-                smoke.stage = 42;
             }
             _ => {}
         }
@@ -585,7 +502,7 @@ impl App {
             _ => {}
         }
     }
-    fn smoke_capture_layout(&mut self, ctx: &egui::Context, smoke: &mut Smoke) {
+    fn smoke_capture_layout(&mut self, ctx: &egui::Context, smoke: &mut Smoke) -> bool {
         match smoke.stage {
             26 if self.database.document.active.is_some()
                 || self.database.document.tools.inspection_ticket.is_some() => {}
@@ -659,8 +576,93 @@ impl App {
             31 if smoke.capture_pending.is_none() => {
                 smoke.stage = 8;
             }
+            39 => {
+                if self.databases.inspection.kind(&self.database.path)
+                    == crate::discovery::DatabaseKind::LikelySqlite
+                {
+                    self.databases.inspection.override_sqlite = true;
+                }
+                self.open(ctx);
+                if self.database.session.is_some() {
+                    smoke.stage = 40;
+                }
+            }
+            40 if self.database.ready
+                && self.database.catalog_ticket.is_none()
+                && self.database.ui.diagram.ticket.is_none() =>
+            {
+                self.browse_table(smoke.table.clone());
+                smoke.stage = 41;
+            }
+            41 if self.database.document.active.is_none()
+                && self.database.document.tools.inspection_ticket.is_none() =>
+            {
+                self.retile();
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1366.0, 768.0)));
+                if self.can_edit() && !self.database.document.result.rows.is_empty() {
+                    let col = usize::from(self.database.document.result.columns.len() > 1);
+                    self.stage_cell(
+                        0,
+                        col,
+                        Value::Text("Staged locally for visual review".into()),
+                    );
+                }
+                let sql = format!("SELECT * FROM {} LIMIT 100", quote_identifier(&smoke.table));
+                self.preferences.record_query(
+                    &self.database.tools.database_scope,
+                    &sql,
+                    Some(12),
+                    false,
+                );
+                self.preferences.bookmark(
+                    &self.database.tools.database_scope,
+                    "Sample table",
+                    &sql,
+                );
+                self.prepare_visual_scene(ctx, 0);
+                smoke.stage = 42;
+            }
+            42 => {
+                smoke.capture_frames += 1;
+                if smoke.capture_frames >= 8 {
+                    smoke.capture_pending = Some(VISUAL_SCENES[smoke.scene].into());
+                    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+                    let wake = ctx.clone();
+                    ctx.request_screenshot(move |image| {
+                        let _ = tx.try_send(image);
+                        wake.request_repaint();
+                    });
+                    smoke.capture_result = Some(rx);
+                    smoke.capture_frames = 0;
+                    smoke.stage = 43;
+                }
+            }
+            43 if smoke.capture_pending.is_none() => {
+                smoke.scene += 1;
+                if smoke.scene == 14 {
+                    self.prepare_visual_scene(ctx, 14);
+                    self.close();
+                    smoke.stage = 44;
+                } else if smoke.scene == VISUAL_SCENES.len() {
+                    assert!(self.database.session.is_none());
+                    eprintln!(
+                        "DESKTOP VISUAL SMOKE PASSED: six workspace sizes/themes, navigator tools, staged edits, dialogs, sidebar access and all Settings pages; elapsed {:?}",
+                        smoke.start.elapsed()
+                    );
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    return true;
+                } else {
+                    self.prepare_visual_scene(ctx, smoke.scene);
+                    smoke.stage = 42;
+                }
+            }
+            44 if self.database.session.is_none() => {
+                self.prepare_visual_scene(ctx, 14);
+                smoke.stage = 42;
+            }
             _ => {}
         }
+        false
     }
     fn smoke_readonly_write(&mut self, table: &str) {
         self.database

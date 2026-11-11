@@ -73,7 +73,7 @@ impl RecordField<'_> {
             rect.min + egui::vec2(20.0, 0.0),
             egui::pos2(rect.left() + name_width, label_rect.bottom()),
         );
-        record_text(ui, name, self.name, tokens.muted);
+        presentation::text_at(ui, name, self.name, tokens.muted, 12.5);
         egui::Rect::from_min_max(
             egui::pos2(name.right() + 8.0, rect.top()),
             rect.max - egui::vec2(4.0, 0.0),
@@ -116,18 +116,19 @@ impl RecordField<'_> {
                 icon,
                 tokens.faint,
             );
-            record_text(
+            presentation::text_at(
                 ui,
                 egui::Rect::from_min_max(rect.min + egui::vec2(20.0, 0.0), rect.max),
                 &caption,
                 tokens.faint,
+                12.5,
             );
             return;
         }
         if self.shown == self.stored && style.paint(ui, rect, self.name, self.shown) {
             return;
         }
-        record_text(
+        presentation::text_at(
             ui,
             rect,
             &self.shown.preview(),
@@ -140,6 +141,7 @@ impl RecordField<'_> {
             } else {
                 ui.visuals().text_color()
             },
+            12.5,
         );
     }
 }
@@ -201,24 +203,7 @@ fn record_wrap(
     job.wrap.break_anywhere = true;
     Some(ui.painter().layout_job(job))
 }
-fn record_text(ui: &egui::Ui, rect: egui::Rect, text: &str, color: egui::Color32) {
-    let mut job = egui::text::LayoutJob::simple_singleline(
-        text.into(),
-        crate::appearance::proportional(ui.ctx(), 12.5),
-        color,
-    );
-    job.wrap.max_width = rect.width().max(0.0);
-    job.wrap.max_rows = 1;
-    job.wrap.break_anywhere = true;
-    let galley = ui.painter().layout_job(job);
-    ui.painter()
-        .with_clip_rect(rect.intersect(ui.clip_rect()))
-        .galley(
-            rect.left_center() - egui::vec2(0.0, galley.size().y / 2.0),
-            galley,
-            color,
-        );
-}
+
 impl App {
     pub(super) fn cell_inspector(&mut self, ui: &mut egui::Ui, row: usize, col: usize) {
         let Some(value) = self
@@ -577,7 +562,7 @@ impl App {
                     egui::pos2(rect.right() - 64.0, rect.top()),
                     egui::pos2(rect.right() - 4.0, rect.top() + 24.0),
                 );
-                super::schema::presentation::text_right_at(
+                super::presentation::text_right_at(
                     ui,
                     type_rect,
                     header.declared_type().unwrap_or("VALUE"),

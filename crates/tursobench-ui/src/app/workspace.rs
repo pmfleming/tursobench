@@ -481,7 +481,7 @@ impl App {
                     icon,
                     ui.visuals().weak_text_color(),
                 );
-                super::schema::presentation::text_at(
+                super::presentation::text_at(
                     ui,
                     egui::Rect::from_min_max(area.min + egui::vec2(18.0, 0.0), area.max),
                     &text,
@@ -491,7 +491,7 @@ impl App {
                 right -= group_width + 4.0;
             }
         }
-        super::schema::presentation::text_at(
+        super::presentation::text_at(
             ui,
             egui::Rect::from_min_max(
                 rect.min + egui::vec2(5.0, 0.0),

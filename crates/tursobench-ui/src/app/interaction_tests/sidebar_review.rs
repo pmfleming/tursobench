@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    App, TransactionState, Value, browse_and_wait, click, close_and_wait, control, egui, fixture,
+    frame_at, inspect_selected, press_key, shell, wait, wait_closed, wait_until,
+};
 const SIZE: egui::Vec2 = egui::vec2(1280.0, 720.0);
 fn second_db(dir: &tempfile::TempDir) -> std::path::PathBuf {
     let path = dir.path().join("second.db");
@@ -14,8 +17,8 @@ fn label_exists(output: &egui::FullOutput, label: &str) -> bool {
         .any(|(_, node)| node.label() == Some(label))
 }
 #[test]
-fn review_disconnected_workspace_with_drafts_stays_reachable() {
-    let (d, ctx, mut app) = fixture(
+fn disconnected_drafts_stay_reachable_and_require_a_close_decision() {
+    let (dir, ctx, mut app) = fixture(
         &[
             "CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT)",
             "INSERT INTO t VALUES(1,'x')",
@@ -24,42 +27,28 @@ fn review_disconnected_workspace_with_drafts_stays_reachable() {
     );
     browse_and_wait(&mut app, &ctx, "t");
     app.stage_cell(0, 1, Value::Text("draft".into()));
-    assert!(app.has_drafts());
-    let a = app.database.path.clone();
-    // Simulates the post-disconnect state: no session, drafts retained.
+    let origin = app.database.id;
+    let path = app.database.path.clone();
     app.database.session = None;
     app.database.ready = false;
-    let b = second_db(&d);
-    app.request_database(&ctx, b);
-    let o = frame_at(&mut app, &ctx, SIZE, vec![]);
-    assert!(
-        label_exists(&o, &format!("Select database: {a}")),
-        "retained-draft workspace has no row"
-    );
-}
-#[test]
-fn review_close_confirm_renders_without_session() {
-    let (_d, ctx, mut app) = fixture(
-        &[
-            "CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT)",
-            "INSERT INTO t VALUES(1,'x')",
-        ],
-        true,
-    );
-    browse_and_wait(&mut app, &ctx, "t");
-    app.stage_cell(0, 1, Value::Text("draft".into()));
-    app.database.session = None;
-    app.database.ready = false;
-    app.request_close();
-    assert!(
-        app.database.confirm_close,
-        "precondition: confirm requested"
-    );
-    let o = frame_at(&mut app, &ctx, SIZE, vec![]);
-    assert!(
-        label_exists(&o, "Keep open"),
-        "confirmation has nowhere to render"
-    );
+    app.request_database(&ctx, second_db(&dir));
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    assert!(label_exists(&output, &format!("Select database: {path}")));
+    app.cancel_database_review();
+    assert_eq!(app.database.id, origin);
+    for quitting in [false, true] {
+        app.quit = quitting;
+        if quitting {
+            app.continue_quit(&ctx);
+        } else {
+            app.request_close();
+        }
+        assert!(app.database.confirm_close);
+        let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+        click(&mut app, &ctx, control(&output, "Keep open").center());
+        assert!(!app.quit && !app.database.confirm_close);
+        assert!(app.has_drafts());
+    }
 }
 
 #[test]
@@ -108,17 +97,7 @@ fn review_closing_background_row_keeps_active_database() {
     app.select_workspace(first);
     let o = frame_at(&mut app, &ctx, SIZE, vec![]);
     let x = control(&o, &format!("Close database: {path}"));
-    for pressed in [true, false] {
-        frame_at(
-            &mut app,
-            &ctx,
-            SIZE,
-            vec![
-                egui::Event::PointerMoved(x.center()),
-                pointer_button(x.center(), pressed),
-            ],
-        );
-    }
+    click(&mut app, &ctx, x.center());
     wait_until(&mut app, &ctx, |a| {
         std::iter::once(&a.database)
             .chain(a.parked.values())
@@ -145,17 +124,7 @@ fn review_cancel_access_review_returns_to_previous_database() {
     inspect_selected(&mut app, &ctx);
     let o = frame_at(&mut app, &ctx, SIZE, vec![]);
     let c = control(&o, "Cancel");
-    for pressed in [true, false] {
-        frame_at(
-            &mut app,
-            &ctx,
-            SIZE,
-            vec![
-                egui::Event::PointerMoved(c.center()),
-                pointer_button(c.center(), pressed),
-            ],
-        );
-    }
+    click(&mut app, &ctx, c.center());
     frame_at(&mut app, &ctx, SIZE, vec![]);
     assert_eq!(
         app.database.id, first,
@@ -201,62 +170,8 @@ fn active_close_chooses_an_open_database_and_last_close_clears_access() {
     assert!(app.parked.values().all(|d| !d.retained()));
 }
 #[test]
-fn review_esc_clears_focused_search() {
-    let (_d, ctx, mut app) = fixture(&["CREATE TABLE items(id INTEGER PRIMARY KEY)"], false);
-    app.sidebar_search.focus = true;
-    frame_at(&mut app, &ctx, SIZE, vec![]);
-    frame_at(
-        &mut app,
-        &ctx,
-        SIZE,
-        vec![egui::Event::Text("items".into())],
-    );
-    frame_at(&mut app, &ctx, SIZE, vec![]);
-    assert_eq!(
-        app.sidebar_search.query, "items",
-        "typing reached the field"
-    );
-    press_key(&mut app, &ctx, egui::Key::Escape, egui::Modifiers::NONE);
-    frame_at(&mut app, &ctx, SIZE, vec![]);
-    assert_eq!(app.sidebar_search.query, "", "Esc should clear the query");
-}
-#[test]
-fn review_enter_in_empty_search_does_nothing() {
-    let (d, ctx, mut app) = fixture(&["CREATE TABLE items(id INTEGER PRIMARY KEY)"], false);
-    let first = app.database.id;
-    let b = second_db(&d);
-    app.preferences.discovery.record_open(b, 1);
-    app.databases = crate::app::databases::Chooser::new(&app.preferences.discovery);
-    app.sidebar_search.focus = true;
-    frame_at(&mut app, &ctx, SIZE, vec![]);
-    frame_at(&mut app, &ctx, SIZE, vec![]);
-    press_key(&mut app, &ctx, egui::Key::Enter, egui::Modifiers::NONE);
-    frame_at(&mut app, &ctx, SIZE, vec![]);
-    assert_eq!(
-        app.database.id, first,
-        "Enter on empty query must not leave the active db"
-    );
-}
-#[test]
-fn review_first_arrow_down_moves_highlight() {
-    let (_d, ctx, mut app) = fixture(
-        &[
-            "CREATE TABLE aa_one(id INTEGER PRIMARY KEY)",
-            "CREATE TABLE aa_two(id INTEGER PRIMARY KEY)",
-        ],
-        false,
-    );
-    app.sidebar_search.query = "aa_".into();
-    app.sidebar_search.focus = true;
-    frame_at(&mut app, &ctx, SIZE, vec![]);
-    frame_at(&mut app, &ctx, SIZE, vec![]);
-    press_key(&mut app, &ctx, egui::Key::ArrowDown, egui::Modifiers::NONE);
-    frame_at(&mut app, &ctx, SIZE, vec![]);
-    assert_eq!(app.sidebar_search.index, 1, "first Down should reach row 2");
-}
-#[test]
 fn search_keyboard_pages_and_opens_the_highlighted_result() {
-    let (_dir, ctx, mut app) = fixture(
+    let (dir, ctx, mut app) = fixture(
         &[
             "CREATE TABLE aa_one(id INTEGER)",
             "CREATE TABLE aa_two(id INTEGER)",
@@ -267,11 +182,30 @@ fn search_keyboard_pages_and_opens_the_highlighted_result() {
         ],
         false,
     );
+    let active = app.database.id;
+    app.preferences.discovery.record_open(second_db(&dir), 1);
+    app.databases = crate::app::databases::Chooser::new(&app.preferences.discovery);
+    app.sidebar_search.focus = true;
+    frame_at(&mut app, &ctx, SIZE, vec![]);
+    press_key(&mut app, &ctx, egui::Key::Enter, egui::Modifiers::NONE);
+    assert_eq!(
+        app.database.id, active,
+        "empty Enter must not open a database"
+    );
+    app.sidebar_search.focus = true;
+    frame_at(&mut app, &ctx, SIZE, vec![]);
+    frame_at(&mut app, &ctx, SIZE, vec![egui::Event::Text("aa_".into())]);
+    assert_eq!(app.sidebar_search.query, "aa_");
+    press_key(&mut app, &ctx, egui::Key::ArrowDown, egui::Modifiers::NONE);
+    assert_eq!(
+        app.sidebar_search.index, 1,
+        "first Down selects the second result"
+    );
     app.sidebar_search.query = "aa_".into();
     app.sidebar_search.focus = true;
     frame_at(&mut app, &ctx, SIZE, vec![]);
     frame_at(&mut app, &ctx, SIZE, vec![]);
-    app.database.workspace.expanded = Some(tiling::Kind::Map);
+    app.expand_window(app.database.document.id);
     let expanded = app.database.workspace.expanded;
     press_key(&mut app, &ctx, egui::Key::PageDown, egui::Modifiers::NONE);
     assert_eq!(app.sidebar_search.index, 5);
@@ -336,27 +270,4 @@ fn empty_sidebar_disables_tools_and_keeps_settings_available() {
     click(&mut app, &ctx, settings.center());
     assert!(app.settings.open);
     assert_eq!(app.database.ui.sidebar, shell::ToolPanel::Schema);
-}
-
-#[test]
-fn disconnected_drafts_require_a_decision_before_exit() {
-    let (_dir, ctx, mut app) = fixture(
-        &[
-            "CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT)",
-            "INSERT INTO t VALUES(1,'x')",
-        ],
-        true,
-    );
-    browse_and_wait(&mut app, &ctx, "t");
-    app.stage_cell(0, 1, Value::Text("retained".into()));
-    app.database.session = None;
-    app.database.ready = false;
-    app.quit = true;
-    app.continue_quit(&ctx);
-    assert!(app.database.confirm_close && app.quit);
-    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
-    let keep = control(&output, "Keep open");
-    click(&mut app, &ctx, keep.center());
-    assert!(!app.quit && !app.database.confirm_close);
-    assert!(app.has_drafts());
 }

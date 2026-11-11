@@ -41,6 +41,35 @@ pub(super) struct DatabaseWorkspace {
     pub(super) uncertain_edit: bool,
 }
 impl DatabaseWorkspace {
+    pub(super) fn start_session(&mut self, session: Session) {
+        self.documents.clear();
+        self.workspace = Default::default();
+        self.document = Default::default();
+        self.commit_owner = None;
+        self.schema.clear();
+        self.catalog = Default::default();
+        self.catalog_ticket = None;
+        self.catalog_error.clear();
+        self.ui.diagram = Default::default();
+        self.ui.unfolded = None;
+        self.tools.counts.clear();
+        self.tools.count_request = None;
+        self.tools.back.clear();
+        self.tools.result_return = None;
+        let path = std::path::PathBuf::from(&self.path);
+        self.tools.database_scope = if path.is_absolute() {
+            self.path.clone()
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(path).to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        self.transaction = TransactionState::Autocommit;
+        self.uncertain_edit = false;
+        self.session = Some(session);
+        self.status = "Opening…".into();
+        self.closing = false;
+    }
     pub(super) fn retained(&self) -> bool {
         self.session.is_some()
             || self.export_job.is_some()

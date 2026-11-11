@@ -1,8 +1,11 @@
 //! Borrowed schema presentation; database actions are applied after rendering.
 use crate::app::{
+    editor::sql_view,
     icons::{self, Icon},
+    presentation::{text_at, text_right_at},
     shell::StructureSection,
 };
+use StructureSection::{Columns, Ddl, ForeignKeys, Indexes, Triggers};
 use eframe::egui;
 use tursobench_core::{IndexInfo, Inspection, SchemaObject};
 
@@ -34,37 +37,8 @@ impl Structure<'_> {
             .collect()
     }
     pub fn show(&self, ui: &mut egui::Ui, section: &mut StructureSection) -> Option<Action> {
-        use StructureSection::*;
         if self.loading && self.info.is_none() {
-            let response = ui
-                .scope(|ui| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    for i in 0..7 {
-                        let (rect, _) = ui.allocate_exact_size(
-                            egui::vec2(ui.available_width(), 22.0),
-                            egui::Sense::hover(),
-                        );
-                        let color = crate::appearance::Tokens::of(ui.ctx()).raised;
-                        for (x, width) in [
-                            (4.0, 13.0),
-                            (25.0, 60.0 + (i % 3) as f32 * 16.0),
-                            (rect.width() - 52.0, 44.0),
-                        ] {
-                            ui.painter().rect_filled(
-                                egui::Rect::from_min_size(
-                                    rect.min + egui::vec2(x, 6.0),
-                                    egui::vec2(width, 9.0),
-                                ),
-                                3.0,
-                                color,
-                            );
-                        }
-                    }
-                })
-                .response;
-            response.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::Role::ProgressIndicator, true, "Loading structure")
-            });
+            loading_structure(ui);
             return None;
         }
         let is_view = self.info.is_some_and(|i| !i.table.is_table)
@@ -77,168 +51,42 @@ impl Structure<'_> {
         }
         let wide = ui.available_width() >= 720.0;
         if !wide {
-            egui::ScrollArea::horizontal()
-                .id_salt("structure-sections")
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 2.0;
-                        let full = ui.available_width() >= 480.0;
-                        for (candidate, icon, label, count) in [
-                            (
-                                Columns,
-                                Icon::Columns,
-                                "Columns",
-                                self.info.map(|i| i.table.columns.len()),
-                            ),
-                            (
-                                Indexes,
-                                Icon::Complete,
-                                "Indexes",
-                                self.info.map(|i| i.indexes.len()),
-                            ),
-                            (
-                                ForeignKeys,
-                                Icon::Link,
-                                "Foreign keys",
-                                self.info.map(|info| {
-                                    crate::app::diagram::ForeignMap {
-                                        info,
-                                        graph: self.graph,
-                                        incomplete: self.incomplete,
-                                    }
-                                    .count()
-                                }),
-                            ),
-                            (
-                                Triggers,
-                                Icon::Trigger,
-                                "Triggers",
-                                Some(self.definitions("trigger").len()),
-                            ),
-                            (Ddl, Icon::Sql, "DDL", None),
-                        ] {
-                            if definition_only && candidate != Ddl
-                                || is_view && matches!(candidate, Indexes | ForeignKeys)
-                            {
-                                continue;
-                            }
-                            let selected = *section == candidate;
-                            let name = if full || selected { label } else { "" };
-                            let text = format!(
-                                "{name}{}{}",
-                                if !name.is_empty() && count.is_some() {
-                                    " · "
-                                } else {
-                                    ""
-                                },
-                                count.map_or(String::new(), |n| n.to_string())
-                            );
-                            let size = ui
-                                .painter()
-                                .layout_no_wrap(
-                                    text.clone(),
-                                    crate::appearance::proportional(ui.ctx(), 11.5),
-                                    ui.visuals().text_color(),
-                                )
-                                .size();
-                            let (rect, response) = ui.allocate_exact_size(
-                                egui::vec2(25.0 + size.x, 22.0),
-                                egui::Sense::click(),
-                            );
-                            if selected || response.hovered() {
-                                ui.painter().rect_filled(
-                                    rect,
-                                    4.0,
-                                    if selected {
-                                        ui.visuals().selection.bg_fill
-                                    } else {
-                                        ui.visuals().widgets.hovered.bg_fill
-                                    },
-                                );
-                            }
-                            let color = if selected {
-                                ui.visuals().text_color()
-                            } else {
-                                crate::appearance::Tokens::of(ui.ctx()).muted
-                            };
-                            icons::paint(
-                                ui.painter(),
-                                egui::Rect::from_center_size(
-                                    rect.left_center() + egui::vec2(10.0, 0.0),
-                                    egui::vec2(13.0, 13.0),
-                                ),
-                                icon,
-                                color,
-                            );
-                            text_at(
-                                ui,
-                                egui::Rect::from_min_max(
-                                    rect.min + egui::vec2(21.0, 0.0),
-                                    rect.max,
-                                ),
-                                &text,
-                                color,
-                                11.5,
-                            );
-                            response.widget_info(|| {
-                                egui::WidgetInfo::selected(
-                                    egui::Role::Tab,
-                                    ui.is_enabled(),
-                                    selected,
-                                    count.map_or(label.into(), |n| format!("{label}, {n}")),
-                                )
-                            });
-                            if response.on_hover_text(label).clicked() {
-                                *section = candidate;
-                            }
-                        }
-                    });
-                });
+            self.tabs(ui, section, is_view, definition_only);
         }
         let mut action = None;
-        if wide && self.info.is_none() && !definition_only && ui.button("Load structure").clicked()
-        {
-            action = Some(Action::Load);
-        }
         if wide && !definition_only {
+            if self.info.is_none() && ui.button("Load structure").clicked() {
+                action = Some(Action::Load);
+            }
             ui.columns(2, |panes| {
-                egui::ScrollArea::vertical()
-                    .id_salt("structure-left")
-                    .auto_shrink([false, false])
-                    .show(&mut panes[0], |ui| {
-                        if let Some(info) = self.info {
-                            action = self.columns(ui, info);
-                        }
-                        ui.strong("CREATE statement");
-                        if let Some(next) = self.definition(ui) {
-                            action = Some(next);
-                        }
-                    });
-                egui::ScrollArea::vertical()
-                    .id_salt("structure-right")
-                    .auto_shrink([false, false])
-                    .show(&mut panes[1], |ui| {
-                        ui.strong("Foreign keys");
-                        if let Some(info) = self.info
-                            && let Some(target) = (crate::app::diagram::ForeignMap {
-                                info,
-                                graph: self.graph,
-                                incomplete: self.incomplete,
-                            })
-                            .show(ui)
-                        {
-                            action = Some(Action::Browse(target));
-                        }
-                        ui.strong("Indexes");
-                        if let Some(next) = self.indexes(ui) {
-                            action = Some(next);
-                        }
-                        ui.strong("Triggers");
-                        if let Some(next) = self.triggers(ui) {
-                            action = Some(next);
-                        }
-                    });
+                for (pane, (id, sections)) in panes.iter_mut().zip([
+                    ("structure-left", &[Columns, Ddl][..]),
+                    ("structure-right", &[ForeignKeys, Indexes, Triggers][..]),
+                ]) {
+                    egui::ScrollArea::vertical()
+                        .id_salt(id)
+                        .auto_shrink([false, false])
+                        .show(pane, |ui| {
+                            for &section in sections {
+                                match section {
+                                    Ddl => {
+                                        ui.strong("CREATE statement");
+                                    }
+                                    ForeignKeys => {
+                                        ui.strong("Foreign keys");
+                                    }
+                                    Indexes => {
+                                        ui.strong("Indexes");
+                                    }
+                                    Triggers => {
+                                        ui.strong("Triggers");
+                                    }
+                                    Columns => {}
+                                }
+                                action = self.section(ui, section).or(action.take());
+                            }
+                        });
+                }
             });
         } else {
             egui::ScrollArea::vertical()
@@ -253,31 +101,81 @@ impl Structure<'_> {
                     {
                         action = Some(Action::Load);
                     }
-                    match *section {
-                        Columns => {
-                            if let Some(info) = self.info {
-                                action = self.columns(ui, info);
-                            }
-                        }
-                        Indexes => action = self.indexes(ui),
-                        ForeignKeys => {
-                            if let Some(info) = self.info
-                                && let Some(target) = (crate::app::diagram::ForeignMap {
-                                    info,
-                                    graph: self.graph,
-                                    incomplete: self.incomplete,
-                                })
-                                .show(ui)
-                            {
-                                action = Some(Action::Browse(target));
-                            }
-                        }
-                        Triggers => action = self.triggers(ui),
-                        Ddl => action = self.definition(ui),
-                    }
+                    action = self.section(ui, *section).or(action.take());
                 });
         }
         action
+    }
+    fn foreign_map(&self) -> Option<crate::app::diagram::ForeignMap<'_>> {
+        Some(crate::app::diagram::ForeignMap {
+            info: self.info?,
+            graph: self.graph,
+            incomplete: self.incomplete,
+        })
+    }
+    fn section(&self, ui: &mut egui::Ui, section: StructureSection) -> Option<Action> {
+        match section {
+            Columns => self.columns(ui, self.info?),
+            Indexes => self.indexes(ui),
+            ForeignKeys => self.foreign_map()?.show(ui).map(Action::Browse),
+            Triggers => self.triggers(ui),
+            Ddl => self.definition(ui),
+        }
+    }
+    fn tabs(
+        &self,
+        ui: &mut egui::Ui,
+        section: &mut StructureSection,
+        is_view: bool,
+        definition_only: bool,
+    ) {
+        egui::ScrollArea::horizontal()
+            .id_salt("structure-sections")
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    let full = ui.available_width() >= 480.0;
+                    for (candidate, icon, label, count) in [
+                        (
+                            Columns,
+                            Icon::Columns,
+                            "Columns",
+                            self.info.map(|i| i.table.columns.len()),
+                        ),
+                        (
+                            Indexes,
+                            Icon::Complete,
+                            "Indexes",
+                            self.info.map(|i| i.indexes.len()),
+                        ),
+                        (
+                            ForeignKeys,
+                            Icon::Link,
+                            "Foreign keys",
+                            self.foreign_map().map(|m| m.count()),
+                        ),
+                        (
+                            Triggers,
+                            Icon::Trigger,
+                            "Triggers",
+                            Some(self.definitions("trigger").len()),
+                        ),
+                        (Ddl, Icon::Sql, "DDL", None),
+                    ] {
+                        if definition_only && candidate != Ddl
+                            || is_view && matches!(candidate, Indexes | ForeignKeys)
+                        {
+                            continue;
+                        }
+                        if section_tab(ui, icon, label, count, *section == candidate, full)
+                            .clicked()
+                        {
+                            *section = candidate;
+                        }
+                    }
+                });
+            });
     }
     fn definition(&self, ui: &mut egui::Ui) -> Option<Action> {
         if let Some(ddl) = self.object.and_then(|o| o.ddl.as_deref()) {
@@ -294,7 +192,6 @@ impl Structure<'_> {
     }
     fn columns(&self, ui: &mut egui::Ui, info: &Inspection) -> Option<Action> {
         let mut action = None;
-        let tokens = crate::appearance::Tokens::of(ui.ctx());
         if info.table.engine_managed() {
             ui.colored_label(
                 ui.visuals().warn_fg_color,
@@ -319,221 +216,29 @@ impl Structure<'_> {
                 .count()
                 > 1;
             for c in &info.table.columns {
-                let keys: Vec<_> = info
-                    .foreign_keys
-                    .iter()
-                    .filter(|k| {
+                let row = ColumnRow {
+                    column: c,
+                    key: info.foreign_keys.iter().find(|k| {
                         k.columns
                             .iter()
                             .any(|(from, _)| from.eq_ignore_ascii_case(&c.name))
-                    })
-                    .collect();
-                let indexes: Vec<_> = info
-                    .indexes
-                    .iter()
-                    .filter(|i| {
-                        i.columns
-                            .iter()
-                            .flatten()
-                            .any(|name| name.eq_ignore_ascii_case(&c.name))
-                    })
-                    .collect();
-                let selected = self
-                    .selected
-                    .is_some_and(|name| name.eq_ignore_ascii_case(&c.name));
-                let (rect, response) = ui.allocate_exact_size(
-                    egui::vec2(ui.available_width(), 22.0),
-                    egui::Sense::click(),
-                );
-                if selected && scroll {
-                    response.scroll_to_me(Some(egui::Align::Center));
-                }
-                if selected || response.hovered() {
-                    ui.painter().rect_filled(
-                        rect,
-                        0.0,
-                        if selected {
-                            ui.visuals().selection.bg_fill
-                        } else {
-                            ui.visuals().widgets.hovered.bg_fill
-                        },
-                    );
-                }
-                let icon_rect = egui::Rect::from_center_size(
-                    rect.left_center() + egui::vec2(10.0, 0.0),
-                    egui::vec2(13.0, 13.0),
-                );
-                let related = c.primary_key > 0 || !keys.is_empty();
-                icons::paint(
-                    ui.painter(),
-                    icon_rect,
-                    if c.primary_key > 0 {
-                        Icon::Key
-                    } else if !keys.is_empty() {
-                        Icon::Link
-                    } else {
-                        Icon::Columns
-                    },
-                    if related {
-                        tokens.relationship
-                    } else {
-                        tokens.muted
-                    },
-                );
-                if c.not_null {
-                    ui.painter()
-                        .circle_filled(icon_rect.right_top(), 3.0, ui.visuals().panel_fill);
-                    ui.painter().circle_filled(
-                        icon_rect.right_top(),
-                        2.0,
-                        ui.visuals().text_color(),
-                    );
-                }
-                if composite && c.primary_key > 0 {
-                    ui.painter().text(
-                        icon_rect.right_bottom(),
-                        egui::Align2::CENTER_CENTER,
-                        c.primary_key,
-                        crate::appearance::proportional(ui.ctx(), 8.5),
-                        tokens.relationship,
-                    );
-                }
-                let mut right = rect.right() - 4.0;
-                let type_width = (rect.width() * 0.22).clamp(45.0, 110.0);
-                let type_rect = egui::Rect::from_min_max(
-                    egui::pos2(right - type_width, rect.top()),
-                    egui::pos2(right, rect.bottom()),
-                );
-                text_right_at(ui, type_rect, &c.declared_type, tokens.faint, 11.0);
-                right = type_rect.left() - 5.0;
-                if !indexes.is_empty() {
-                    icons::paint(
-                        ui.painter(),
-                        egui::Rect::from_center_size(
-                            egui::pos2(right - 6.0, rect.center().y),
-                            egui::vec2(12.0, 12.0),
-                        ),
-                        Icon::Complete,
-                        tokens.muted,
-                    );
-                    right -= 17.0;
-                    if indexes.iter().any(|i| i.unique) {
-                        text_at(
-                            ui,
-                            egui::Rect::from_min_max(
-                                egui::pos2(right - 19.0, rect.top()),
-                                egui::pos2(right, rect.bottom()),
-                            ),
-                            "UQ",
-                            tokens.muted,
-                            10.0,
-                        );
-                        right -= 23.0;
-                    }
-                }
-                let name_right = if let Some(key) = keys.first() {
-                    let width = (rect.width() * 0.28).clamp(45.0, 160.0);
-                    let link = egui::Rect::from_min_max(
-                        egui::pos2(right - width, rect.top()),
-                        egui::pos2(right, rect.bottom()),
-                    );
-                    let target = key
-                        .columns
+                    }),
+                    indexes: info
+                        .indexes
                         .iter()
-                        .find(|(from, _)| from.eq_ignore_ascii_case(&c.name))
-                        .and_then(|(_, to)| to.as_deref())
-                        .unwrap_or("?");
-                    text_at(
-                        ui,
-                        egui::Rect::from_min_max(link.min + egui::vec2(15.0, 0.0), link.max),
-                        &format!("{}.{target}", key.target),
-                        tokens.relationship,
-                        11.0,
-                    );
-                    icons::paint(
-                        ui.painter(),
-                        egui::Rect::from_center_size(
-                            link.left_center() + egui::vec2(6.0, 0.0),
-                            egui::vec2(11.0, 11.0),
-                        ),
-                        Icon::Next,
-                        tokens.relationship,
-                    );
-                    let go = ui.interact(
-                        link,
-                        ui.scope_id().with(("column-target", &c.name)),
-                        egui::Sense::click(),
-                    );
-                    go.widget_info(|| {
-                        egui::WidgetInfo::labeled(
-                            egui::Role::Link,
-                            ui.is_enabled(),
-                            format!("Open {} for {}", key.target, c.name),
-                        )
-                    });
-                    if go
-                        .on_hover_text(format!("Open {} · {target}", key.target))
-                        .clicked()
-                    {
-                        action = Some(Action::Browse(key.target.clone()));
-                    }
-                    link.left() - 5.0
-                } else {
-                    right
+                        .filter(|i| {
+                            i.columns
+                                .iter()
+                                .flatten()
+                                .any(|name| name.eq_ignore_ascii_case(&c.name))
+                        })
+                        .collect(),
+                    selected: self
+                        .selected
+                        .is_some_and(|name| name.eq_ignore_ascii_case(&c.name)),
+                    composite,
                 };
-                text_at(
-                    ui,
-                    egui::Rect::from_min_max(
-                        rect.min + egui::vec2(23.0, 0.0),
-                        egui::pos2(name_right.max(rect.left() + 24.0), rect.bottom()),
-                    ),
-                    &c.name,
-                    if related {
-                        tokens.relationship
-                    } else {
-                        ui.visuals().text_color()
-                    },
-                    12.5,
-                );
-                let description = format!(
-                    "{} · {}{}{}{}{} · {}",
-                    c.name,
-                    c.declared_type,
-                    if c.not_null { " · NOT NULL" } else { "" },
-                    if c.primary_key > 0 {
-                        if composite {
-                            format!(" · Primary key, part {}", c.primary_key)
-                        } else {
-                            " · Primary key".into()
-                        }
-                    } else {
-                        String::new()
-                    },
-                    if c.hidden > 0 {
-                        format!(" · hidden {}", c.hidden)
-                    } else {
-                        String::new()
-                    },
-                    c.default_sql
-                        .as_ref()
-                        .map_or(String::new(), |s| format!(" · DEFAULT {s}")),
-                    indexes
-                        .iter()
-                        .map(|i| i.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
-                response.widget_info(|| {
-                    egui::WidgetInfo::selected(
-                        egui::Role::Button,
-                        ui.is_enabled(),
-                        selected,
-                        &description,
-                    )
-                });
-                if response.on_hover_text(description).clicked() {
-                    action = Some(Action::Column(c.name.clone()));
-                }
+                action = row.show(ui, scroll).or(action.take());
             }
         });
         action
@@ -568,6 +273,322 @@ impl Structure<'_> {
         }
         action
     }
+}
+struct ColumnRow<'a> {
+    column: &'a tursobench_core::TableColumn,
+    key: Option<&'a tursobench_core::ForeignKey>,
+    indexes: Vec<&'a IndexInfo>,
+    selected: bool,
+    composite: bool,
+}
+impl ColumnRow<'_> {
+    fn related(&self) -> bool {
+        self.column.primary_key > 0 || self.key.is_some()
+    }
+    fn show(&self, ui: &mut egui::Ui, scroll: bool) -> Option<Action> {
+        let c = self.column;
+        let tokens = crate::appearance::Tokens::of(ui.ctx());
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 22.0), egui::Sense::click());
+        if self.selected && scroll {
+            response.scroll_to_me(Some(egui::Align::Center));
+        }
+        if self.selected || response.hovered() {
+            ui.painter().rect_filled(
+                rect,
+                0.0,
+                if self.selected {
+                    ui.visuals().selection.bg_fill
+                } else {
+                    ui.visuals().widgets.hovered.bg_fill
+                },
+            );
+        }
+        self.paint_icon(ui, rect);
+        let mut right = rect.right() - 4.0;
+        let type_width = (rect.width() * 0.22).clamp(45.0, 110.0);
+        let type_rect = egui::Rect::from_min_max(
+            egui::pos2(right - type_width, rect.top()),
+            egui::pos2(right, rect.bottom()),
+        );
+        text_right_at(ui, type_rect, &c.declared_type, tokens.faint, 11.0);
+        right = type_rect.left() - 5.0;
+        if !self.indexes.is_empty() {
+            icons::paint(
+                ui.painter(),
+                egui::Rect::from_center_size(
+                    egui::pos2(right - 6.0, rect.center().y),
+                    egui::vec2(12.0, 12.0),
+                ),
+                Icon::Complete,
+                tokens.muted,
+            );
+            right -= 17.0;
+            if self.indexes.iter().any(|i| i.unique) {
+                text_at(
+                    ui,
+                    egui::Rect::from_min_max(
+                        egui::pos2(right - 19.0, rect.top()),
+                        egui::pos2(right, rect.bottom()),
+                    ),
+                    "UQ",
+                    tokens.muted,
+                    10.0,
+                );
+                right -= 23.0;
+            }
+        }
+        let (name_right, mut action) = self.target(ui, rect, right);
+        text_at(
+            ui,
+            egui::Rect::from_min_max(
+                rect.min + egui::vec2(23.0, 0.0),
+                egui::pos2(name_right.max(rect.left() + 24.0), rect.bottom()),
+            ),
+            &c.name,
+            if self.related() {
+                tokens.relationship
+            } else {
+                ui.visuals().text_color()
+            },
+            12.5,
+        );
+        let description = self.description();
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(
+                egui::Role::Button,
+                ui.is_enabled(),
+                self.selected,
+                &description,
+            )
+        });
+        if response.on_hover_text(description).clicked() {
+            action = Some(Action::Column(c.name.clone()));
+        }
+        action
+    }
+    fn paint_icon(&self, ui: &egui::Ui, rect: egui::Rect) {
+        let c = self.column;
+        let tokens = crate::appearance::Tokens::of(ui.ctx());
+        let icon_rect = egui::Rect::from_center_size(
+            rect.left_center() + egui::vec2(10.0, 0.0),
+            egui::vec2(13.0, 13.0),
+        );
+        icons::paint(
+            ui.painter(),
+            icon_rect,
+            if c.primary_key > 0 {
+                Icon::Key
+            } else if self.key.is_some() {
+                Icon::Link
+            } else {
+                Icon::Columns
+            },
+            if self.related() {
+                tokens.relationship
+            } else {
+                tokens.muted
+            },
+        );
+        if c.not_null {
+            ui.painter()
+                .circle_filled(icon_rect.right_top(), 3.0, ui.visuals().panel_fill);
+            ui.painter()
+                .circle_filled(icon_rect.right_top(), 2.0, ui.visuals().text_color());
+        }
+        if self.composite && c.primary_key > 0 {
+            ui.painter().text(
+                icon_rect.right_bottom(),
+                egui::Align2::CENTER_CENTER,
+                c.primary_key,
+                crate::appearance::proportional(ui.ctx(), 8.5),
+                tokens.relationship,
+            );
+        }
+    }
+    fn target(&self, ui: &egui::Ui, rect: egui::Rect, right: f32) -> (f32, Option<Action>) {
+        let Some(key) = self.key else {
+            return (right, None);
+        };
+        let c = self.column;
+        let tokens = crate::appearance::Tokens::of(ui.ctx());
+        let width = (rect.width() * 0.28).clamp(45.0, 160.0);
+        let link = egui::Rect::from_min_max(
+            egui::pos2(right - width, rect.top()),
+            egui::pos2(right, rect.bottom()),
+        );
+        let target = key
+            .columns
+            .iter()
+            .find(|(from, _)| from.eq_ignore_ascii_case(&c.name))
+            .and_then(|(_, to)| to.as_deref())
+            .unwrap_or("?");
+        text_at(
+            ui,
+            egui::Rect::from_min_max(link.min + egui::vec2(15.0, 0.0), link.max),
+            &format!("{}.{target}", key.target),
+            tokens.relationship,
+            11.0,
+        );
+        icons::paint(
+            ui.painter(),
+            egui::Rect::from_center_size(
+                link.left_center() + egui::vec2(6.0, 0.0),
+                egui::vec2(11.0, 11.0),
+            ),
+            Icon::Next,
+            tokens.relationship,
+        );
+        let go = ui.interact(
+            link,
+            ui.scope_id().with(("column-target", &c.name)),
+            egui::Sense::click(),
+        );
+        go.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::Role::Link,
+                ui.is_enabled(),
+                format!("Open {} for {}", key.target, c.name),
+            )
+        });
+        let action = go
+            .on_hover_text(format!("Open {} · {target}", key.target))
+            .clicked()
+            .then(|| Action::Browse(key.target.clone()));
+        (link.left() - 5.0, action)
+    }
+    fn description(&self) -> String {
+        let c = self.column;
+        format!(
+            "{} · {}{}{}{}{} · {}",
+            c.name,
+            c.declared_type,
+            if c.not_null { " · NOT NULL" } else { "" },
+            if c.primary_key > 0 {
+                if self.composite {
+                    format!(" · Primary key, part {}", c.primary_key)
+                } else {
+                    " · Primary key".into()
+                }
+            } else {
+                String::new()
+            },
+            if c.hidden > 0 {
+                format!(" · hidden {}", c.hidden)
+            } else {
+                String::new()
+            },
+            c.default_sql
+                .as_ref()
+                .map_or(String::new(), |s| format!(" · DEFAULT {s}")),
+            self.indexes
+                .iter()
+                .map(|i| i.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+fn loading_structure(ui: &mut egui::Ui) {
+    let response = ui
+        .scope(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            for i in 0..7 {
+                let (rect, _) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), 22.0),
+                    egui::Sense::hover(),
+                );
+                let color = crate::appearance::Tokens::of(ui.ctx()).raised;
+                for (x, width) in [
+                    (4.0, 13.0),
+                    (25.0, 60.0 + (i % 3) as f32 * 16.0),
+                    (rect.width() - 52.0, 44.0),
+                ] {
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_size(
+                            rect.min + egui::vec2(x, 6.0),
+                            egui::vec2(width, 9.0),
+                        ),
+                        3.0,
+                        color,
+                    );
+                }
+            }
+        })
+        .response;
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::Role::ProgressIndicator, true, "Loading structure")
+    });
+}
+fn section_tab(
+    ui: &mut egui::Ui,
+    icon: Icon,
+    label: &str,
+    count: Option<usize>,
+    selected: bool,
+    full: bool,
+) -> egui::Response {
+    let name = if full || selected { label } else { "" };
+    let text = format!(
+        "{name}{}{}",
+        if !name.is_empty() && count.is_some() {
+            " · "
+        } else {
+            ""
+        },
+        count.map_or(String::new(), |n| n.to_string())
+    );
+    let size = ui
+        .painter()
+        .layout_no_wrap(
+            text.clone(),
+            crate::appearance::proportional(ui.ctx(), 11.5),
+            ui.visuals().text_color(),
+        )
+        .size();
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(25.0 + size.x, 22.0), egui::Sense::click());
+    if selected || response.hovered() {
+        ui.painter().rect_filled(
+            rect,
+            4.0,
+            if selected {
+                ui.visuals().selection.bg_fill
+            } else {
+                ui.visuals().widgets.hovered.bg_fill
+            },
+        );
+    }
+    let color = if selected {
+        ui.visuals().text_color()
+    } else {
+        crate::appearance::Tokens::of(ui.ctx()).muted
+    };
+    icons::paint(
+        ui.painter(),
+        egui::Rect::from_center_size(
+            rect.left_center() + egui::vec2(10.0, 0.0),
+            egui::vec2(13.0, 13.0),
+        ),
+        icon,
+        color,
+    );
+    text_at(
+        ui,
+        egui::Rect::from_min_max(rect.min + egui::vec2(21.0, 0.0), rect.max),
+        &text,
+        color,
+        11.5,
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::Role::Tab,
+            ui.is_enabled(),
+            selected,
+            count.map_or(label.into(), |n| format!("{label}, {n}")),
+        )
+    });
+    response.on_hover_text(label)
 }
 fn definition_row(
     ui: &mut egui::Ui,
@@ -711,67 +732,10 @@ fn definition_row(
     None
 }
 
-pub(in crate::app) fn text_at(
-    ui: &egui::Ui,
-    rect: egui::Rect,
-    text: &str,
-    color: egui::Color32,
-    size: f32,
-) {
-    let mut job = egui::text::LayoutJob::simple_singleline(
-        text.into(),
-        crate::appearance::proportional(ui.ctx(), size),
-        color,
-    );
-    job.wrap.max_width = rect.width().max(0.0);
-    job.wrap.max_rows = 1;
-    job.wrap.break_anywhere = true;
-    let galley = ui.painter().layout_job(job);
-    ui.painter()
-        .with_clip_rect(rect.intersect(ui.clip_rect()))
-        .galley(
-            rect.left_center() - egui::vec2(0.0, galley.size().y / 2.0),
-            galley,
-            color,
-        );
-}
-pub(in crate::app) fn text_right_at(
-    ui: &egui::Ui,
-    rect: egui::Rect,
-    text: &str,
-    color: egui::Color32,
-    size: f32,
-) {
-    let mut job = egui::text::LayoutJob::simple_singleline(
-        text.into(),
-        crate::appearance::proportional(ui.ctx(), size),
-        color,
-    );
-    job.wrap.max_width = rect.width().max(0.0);
-    job.wrap.max_rows = 1;
-    job.wrap.break_anywhere = true;
-    let galley = ui.painter().layout_job(job);
-    let pos = rect.right_center() - egui::vec2(galley.size().x, galley.size().y / 2.0);
-    ui.painter()
-        .with_clip_rect(rect.intersect(ui.clip_rect()))
-        .galley(pos, galley, color);
-}
-fn sql_view(ui: &mut egui::Ui, mut ddl: &str) {
-    let mut layouter = |ui: &egui::Ui, buffer: &dyn egui::TextBuffer, width| {
-        crate::app::editor::highlighted(ui, buffer.as_str(), width)
-    };
-    ui.add(
-        egui::TextEdit::multiline(&mut ddl)
-            .code_editor()
-            .desired_width(ui.available_width())
-            .desired_rows(3)
-            .layouter(&mut layouter),
-    );
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Action, IndexInfo, Inspection, SchemaObject, Structure, StructureSection};
+    use eframe::egui;
     use tursobench_core::{ForeignKey, Table, TableColumn};
 
     fn metadata() -> Inspection {
@@ -807,13 +771,13 @@ mod tests {
             }],
         }
     }
-    fn texts(output: &egui::FullOutput) -> Vec<String> {
+    fn texts(output: &egui::FullOutput) -> Vec<&str> {
         output
             .shapes
             .iter()
             .filter_map(|s| {
                 if let egui::Shape::Text(t) = &s.shape {
-                    Some(t.galley.job.text.clone())
+                    Some(t.galley.job.text.as_str())
                 } else {
                     None
                 }
@@ -874,14 +838,9 @@ mod tests {
             assert!(
                 !texts(&output)
                     .iter()
-                    .any(|t| t.contains("PK 1") || t == "Copy original DDL")
+                    .any(|t| t.contains("PK 1") || *t == "Copy original DDL")
             );
-            let nodes = &output
-                .platform_output
-                .accesskit_update
-                .as_ref()
-                .unwrap()
-                .nodes;
+            let nodes = crate::app::test_ui::nodes(&output);
             assert!(
                 nodes
                     .iter()
@@ -937,7 +896,7 @@ mod tests {
         let output = crate::app::test_ui::render(&ctx, egui::vec2(396.0, 232.0), vec![], |ui| {
             structure.show(ui, &mut section);
         });
-        assert!(texts(&output).iter().any(|s| s == "Load structure"));
+        assert!(texts(&output).contains(&"Load structure"));
         let structure = Structure {
             loading: true,
             ..structure
@@ -947,11 +906,7 @@ mod tests {
         });
         assert!(texts(&output).is_empty());
     }
-}
 
-#[cfg(test)]
-mod action_tests {
-    use super::*;
     #[test]
     fn sections_and_definition_expansion_do_not_need_database_reads() {
         let ctx = egui::Context::default();
@@ -979,18 +934,26 @@ mod action_tests {
             incomplete: false,
             selected: None,
         };
+        for initial in [
+            StructureSection::Columns,
+            StructureSection::Indexes,
+            StructureSection::ForeignKeys,
+            StructureSection::Triggers,
+        ] {
+            let mut section = initial;
+            let mut action = None;
+            let mut render = |events| {
+                crate::app::test_ui::render(&ctx, egui::vec2(396.0, 300.0), events, |ui| {
+                    action = structure.show(ui, &mut section);
+                })
+            };
+            let output = render(vec![]);
+            let pos = crate::app::test_ui::control(&output, "Load structure").center();
+            render(crate::app::test_ui::pointer(pos, true));
+            render(crate::app::test_ui::pointer(pos, false));
+            assert!(matches!(action, Some(Action::Load)));
+        }
         let mut section = StructureSection::Columns;
-        let mut action = None;
-        let mut render = |events| {
-            crate::app::test_ui::render(&ctx, egui::vec2(396.0, 300.0), events, |ui| {
-                action = structure.show(ui, &mut section);
-            })
-        };
-        let output = render(vec![]);
-        let pos = crate::app::test_ui::control(&output, "Load structure").center();
-        render(crate::app::test_ui::pointer(pos, true));
-        render(crate::app::test_ui::pointer(pos, false));
-        assert!(matches!(action, Some(Action::Load)));
         let mut render = |events| {
             crate::app::test_ui::render(&ctx, egui::vec2(396.0, 300.0), events, |ui| {
                 structure.show(ui, &mut section);

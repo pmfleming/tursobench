@@ -202,13 +202,7 @@ fn review_operations(
 }
 
 fn read_only_code(ui: &mut egui::Ui, mut text: &str) {
-    ui.add(
-        egui::TextEdit::multiline(&mut text)
-            .code_editor()
-            .interactive(false)
-            .desired_width(ui.available_width())
-            .desired_rows(2),
-    );
+    ui.add(super::results::code_editor(&mut text, ui.available_width(), 2).interactive(false));
 }
 
 fn row_hash(row: &[Value]) -> u64 {
