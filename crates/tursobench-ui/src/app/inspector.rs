@@ -156,6 +156,22 @@ fn byte_size(bytes: u64) -> String {
     };
     format!("{:.1} {unit}", bytes as f64 / divisor)
 }
+fn record_tooltip(value: &Value) -> String {
+    match value {
+        Value::Text(text) => {
+            let mut chars = text.chars();
+            let mut preview: String = chars.by_ref().take(4096).collect();
+            if chars.next().is_some() {
+                preview.push_str("\n… Open cell detail for the full value");
+                preview
+            } else {
+                detail_text(value)
+            }
+        }
+        Value::Blob(_) | Value::Deferred(_) => value.preview(),
+        _ => detail_text(value),
+    }
+}
 fn record_wrap(
     ui: &egui::Ui,
     value: &Value,
@@ -545,11 +561,7 @@ impl App {
                         "{} · {} · {}",
                         field.name,
                         kind_name(field.shown),
-                        if matches!(field.shown, Value::Blob(_) | Value::Deferred(_)) {
-                            field.shown.preview()
-                        } else {
-                            detail_text(field.shown)
-                        }
+                        field.shown.preview()
                     ),
                 )
             });
@@ -654,12 +666,10 @@ impl App {
                 } else if response.clicked() {
                     action = Some(RecordAction::Inspect(field.column));
                 }
-                response.on_hover_text(format!(
-                    "{} · {}\n{}",
-                    field.name,
-                    kind_name(field.shown),
-                    detail_text(field.shown)
-                ));
+                response.on_hover_ui(|ui| {
+                    ui.label(format!("{} · {}", field.name, kind_name(field.shown)));
+                    ui.label(record_tooltip(field.shown));
+                });
             }
         }
         ui.spacing_mut().item_spacing.y = row_spacing;
@@ -739,6 +749,17 @@ mod tests {
     fn long_selected_text_is_bounded_and_byte_captions_keep_sizes() {
         assert_eq!(byte_size(3), "3 bytes");
         assert_eq!(byte_size(4_404_019), "4.2 MB");
+        let large = Value::Text("λ".repeat(100_000));
+        let tooltip = record_tooltip(&large);
+        assert!(tooltip.starts_with(&"λ".repeat(4096)));
+        assert!(tooltip.ends_with("full value"));
+        assert!(tooltip.len() < 8300);
+        assert_eq!(
+            record_tooltip(&Value::Blob(vec![0; 100_000])),
+            "[blob: 100000 bytes]"
+        );
+        let json = Value::Text(r#"{"n":123456789012345678901,"n":1}"#.into());
+        assert_eq!(record_tooltip(&json), detail_text(&json));
         let ctx = egui::Context::default();
         crate::app::test_ui::render(&ctx, egui::vec2(396.0, 244.0), vec![], |ui| {
             let value = Value::Text("long λ text\n".repeat(100_000));
