@@ -173,6 +173,7 @@ impl App {
                 self.database.tools.counts.clear();
                 self.database.document.tools.context = Default::default();
                 self.database.document.drafts = None;
+                self.database.document.tools.spreadsheet = Default::default();
                 self.database.document.show_preview = false;
                 self.database.document.inspect = None;
                 self.reload();

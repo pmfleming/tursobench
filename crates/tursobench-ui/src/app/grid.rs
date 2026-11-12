@@ -17,6 +17,7 @@ enum GridAction {
     Copy(usize),
     Delete(usize),
     BulkDelete,
+    Spreadsheet(super::spreadsheet::Action),
     Follow(usize, ForeignKey),
     Filter(tursobench_core::Filter),
     Inspect(usize, usize),
@@ -356,6 +357,7 @@ impl App {
             Some(GridAction::Copy(r)) => self.copy_row(ui.ctx(), r),
             Some(GridAction::Delete(r)) => self.stage_delete(r),
             Some(GridAction::BulkDelete) => self.stage_selected_deletions(),
+            Some(GridAction::Spreadsheet(action)) => self.spreadsheet_action(action),
             Some(GridAction::Follow(r, key)) => self.follow_key(r, key),
             Some(GridAction::Filter(filter)) => {
                 self.add_filter(filter);
@@ -916,6 +918,9 @@ impl App {
         if response.double_clicked() {
             action = Some(GridAction::Edit(row, col));
         }
+        if response.secondary_clicked() && !self.cell_selected(row, col) {
+            action = Some(GridAction::Cell(row, col));
+        }
         if response.hovered() && references.len() == 1 {
             self.database.document.tools.context.hovered = Some((row, (*references[0]).clone()));
         }
@@ -949,6 +954,18 @@ impl App {
     ) -> Option<GridAction> {
         let mut action = None;
         let value = &self.database.document.result.rows[row][col];
+
+        if self.database.document.view == View::Browse {
+            if let Some(action) = super::spreadsheet::menu(
+                ui,
+                editable,
+                self.selected_cells().next().is_some(),
+                self.can_undo_grid_edit(),
+            ) {
+                return Some(GridAction::Spreadsheet(action));
+            }
+            ui.separator();
+        }
 
         if self.database.document.view == View::Browse && self.database.document.browse.is_some() {
             for (op, label) in [

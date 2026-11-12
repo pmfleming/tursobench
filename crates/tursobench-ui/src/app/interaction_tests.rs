@@ -2311,7 +2311,7 @@ fn token_entry_enter_retains_typed_filter_and_empty_clipboard_fields() {
     app.database.document.tools.columns.move_before(2, 0);
     app.select_cell(0, 2, false);
     app.select_cell(0, 0, true);
-    assert_eq!(app.selection_tsv().unwrap(), "\t1");
+    assert_eq!(app.selection_tsv().unwrap(), "\"\"\t1");
     app.close();
 }
 
@@ -3750,3 +3750,5 @@ fn record_structure_selection_value_visuals_and_revert_preserve_stored_values() 
 }
 
 mod resources;
+
+mod spreadsheet;

@@ -1,5 +1,28 @@
 # UI screenshots
 
+## Spreadsheet editing — native Wayland
+
+The `spreadsheet/` captures were taken on 2026-11-12 with synthetic data and
+isolated preferences under headless Weston/Mesa. Changes are staged locally;
+the capture pass never commits them.
+
+- [Fill selection](spreadsheet/fill-selection.png): explicit type and value for a
+  selected range, with the Stage action outside the scrolling content.
+- [Paste new rows](spreadsheet/paste-new-rows.png): clipboard text, column/type
+  mappings, converted preview and a fixed Stage action.
+
+Reproduce after building the desktop binary:
+
+```sh
+nix develop -c cargo build --locked -p tursobench-ui
+nix develop -c env TURSOBENCH_SPREADSHEET_CAPTURE=1 TURSOBENCH_BINARY=target/debug/tursobench bash scripts/capture-v8.sh target/spreadsheet-captures
+```
+
+The pass checks native Wayland, captures the workspace sizes/themes, then the two
+editing dialogs, and waits for session cleanup before closing. Headless interaction
+tests cover mapping, type errors, exact-value round trips, whole-operation undo,
+constraint rollback, editor focus and a 720×480 dialog with a visible Stage action.
+
 ## Application-wide Settings — native Wayland
 
 The `v11/` captures show the

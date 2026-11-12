@@ -171,7 +171,7 @@ impl App {
                     smoke.stage = 8;
                 }
             }
-            20..=31 | 39..=44 if self.smoke_capture_layout(ctx, &mut smoke) => return,
+            20..=31 | 39..=45 if self.smoke_capture_layout(ctx, &mut smoke) => return,
             8 => {
                 self.database
                     .document
@@ -423,10 +423,29 @@ impl App {
         self.database.tools.help = false;
         self.database.document.show_preview = false;
         self.database.document.show_insert = false;
+        self.database.document.tools.spreadsheet.dialog = None;
         self.database.document.ui.inspector_detached = false;
         self.database.document.ui.inspector_open = false;
         self.settings.open = false;
         match scene {
+            1 if std::env::var_os("TURSOBENCH_SPREADSHEET_CAPTURE").is_some() => {
+                self.select_cell(0, 1, false);
+                self.select_cell(2, 1, true);
+                self.open_fill();
+            }
+            2 if std::env::var_os("TURSOBENCH_SPREADSHEET_CAPTURE").is_some() => {
+                self.open_paste(
+                    true,
+                    "1001\tPasted task\tin progress\n1002\tAnother task\tdone".into(),
+                );
+                if let Some(super::spreadsheet::Dialog::Paste(mut paste)) =
+                    self.database.document.tools.spreadsheet.dialog.take()
+                {
+                    self.preview_clipboard(&mut paste);
+                    self.database.document.tools.spreadsheet.dialog =
+                        Some(super::spreadsheet::Dialog::Paste(paste));
+                }
+            }
             1 => self.database.document.show_preview = true,
             2 => self.begin_insert(),
             3 => self.database.ui.sidebar = shell::ToolPanel::History,
@@ -625,7 +644,20 @@ impl App {
             42 => {
                 smoke.capture_frames += 1;
                 if smoke.capture_frames >= 8 {
-                    smoke.capture_pending = Some(VISUAL_SCENES[smoke.scene].into());
+                    smoke.capture_pending = Some(
+                        if std::env::var_os("TURSOBENCH_SPREADSHEET_CAPTURE").is_some()
+                            && matches!(smoke.scene, 1 | 2)
+                        {
+                            if smoke.scene == 1 {
+                                "fill-selection.png"
+                            } else {
+                                "paste-new-rows.png"
+                            }
+                        } else {
+                            VISUAL_SCENES[smoke.scene]
+                        }
+                        .into(),
+                    );
                     let (tx, rx) = std::sync::mpsc::sync_channel(1);
                     let wake = ctx.clone();
                     ctx.request_screenshot(move |image| {
@@ -638,6 +670,14 @@ impl App {
                 }
             }
             43 if smoke.capture_pending.is_none() => {
+                if smoke.scene == 2 && std::env::var_os("TURSOBENCH_SPREADSHEET_CAPTURE").is_some()
+                {
+                    self.database.document.tools.spreadsheet.dialog = None;
+                    self.database.document.drafts = None;
+                    self.close();
+                    smoke.stage = 45;
+                    return false;
+                }
                 smoke.scene += 1;
                 if smoke.scene == 14 {
                     self.prepare_visual_scene(ctx, 14);
@@ -659,6 +699,11 @@ impl App {
             44 if self.database.session.is_none() => {
                 self.prepare_visual_scene(ctx, 14);
                 smoke.stage = 42;
+            }
+            45 if self.database.session.is_none() => {
+                eprintln!("SPREADSHEET VISUAL SMOKE PASSED");
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                return true;
             }
             _ => {}
         }

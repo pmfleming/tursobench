@@ -134,8 +134,15 @@ impl App {
                     "Selection contains deferred cells; save the full value instead".into(),
                 );
             }
-            let cell = crate::export::cell_text(&self.database.document.result.rows[r][c]);
-            if cell.contains(['\t', '\n', '\r', '"']) {
+            let value = &self.database.document.result.rows[r][c];
+            let cell = match value {
+                Value::Null => "\\N".into(),
+                Value::Blob(bytes) => crate::export::hex(bytes),
+                _ => crate::export::cell_text(value),
+            };
+            if cell.contains(['\t', '\n', '\r', '"'])
+                || matches!(value, Value::Text(text) if text.is_empty() || text == "\\N")
+            {
                 text.push('"');
                 text.push_str(&cell.replace('"', "\"\""));
                 text.push('"');
@@ -226,6 +233,7 @@ impl App {
 
     pub(super) fn grid_keys(&mut self, ctx: &egui::Context) {
         if self.database.document.tools.inline.is_some()
+            || self.database.document.tools.spreadsheet.dialog.is_some()
             || !matches!(
                 self.database.document.ui.nav,
                 shell::Nav::Table | shell::Nav::Result
@@ -239,6 +247,52 @@ impl App {
         if self.database.document.tools.grid_focus.is_none()
             || ctx.memory(|m| m.focused()) != self.database.document.tools.grid_focus
         {
+            return;
+        }
+        // Native integrations send clipboard events instead of Ctrl+C/V key events.
+        let clipboard = ctx.input_mut(|i| {
+            let mut paste = None;
+            let mut copy = false;
+            i.events.retain(|event| match event {
+                egui::Event::Paste(text) => {
+                    paste = Some(text.clone());
+                    false
+                }
+                egui::Event::Copy => {
+                    copy = true;
+                    false
+                }
+                _ => true,
+            });
+            (paste, copy)
+        });
+        if let Some(text) = clipboard.0 {
+            if ctx.input(|i| i.modifiers.shift) {
+                self.open_paste(true, text);
+            } else {
+                self.paste_cells(&text);
+            }
+            return;
+        }
+        if clipboard.1 {
+            match self.selection_tsv() {
+                Ok(text) => ctx.copy_text(text),
+                Err(error) => self.database.status = error,
+            }
+            return;
+        }
+        if ctx.input_mut(|i| {
+            i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::V)
+        }) {
+            self.open_paste(true, String::new());
+            return;
+        }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Z)) {
+            self.undo_grid_edit();
+            return;
+        }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)) {
+            self.fill_selection(Value::Null);
             return;
         }
         let Some(s) = self

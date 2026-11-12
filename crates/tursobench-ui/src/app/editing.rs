@@ -324,12 +324,12 @@ impl App {
                 .as_ref()
                 .is_some_and(|c| c.error.is_none() && c.delivery == Delivery::Complete)
     }
-    fn stage(&mut self, f: impl FnOnce(&mut DraftBatch)) {
+    pub(super) fn stage(&mut self, f: impl FnOnce(&mut DraftBatch)) -> bool {
         if !self.can_edit() {
-            return;
+            return false;
         }
         let Some(table) = &self.database.document.table else {
-            return;
+            return false;
         };
         // Reverting the final operation must not carry the old table identity
         // into a subsequent edit after navigating to another table.
@@ -345,20 +345,38 @@ impl App {
                 edits: vec![],
             });
         f(&mut draft);
-        match draft.preview() {
+        let validation = if draft.edits.is_empty() {
+            Ok(())
+        } else {
+            draft.preview().map(|_| ())
+        };
+        match validation {
             Ok(_) => {
+                super::spreadsheet::State::checkpoint(&mut self.database.document);
                 self.database.document.draft_revision =
                     self.database.document.draft_revision.wrapping_add(1);
                 self.database.document.drafts = Some(draft);
                 self.database.status =
                     "Staged locally. Preview and explicitly commit to write.".into();
+                true
             }
-            Err(e) => self.database.status = e.to_string(),
+            Err(e) => {
+                self.database.status = e.to_string();
+                false
+            }
         }
     }
     pub(super) fn stage_cell(&mut self, row: usize, column: usize, value: Value) {
         if let Some(original) = self.database.document.result.rows.get(row).cloned() {
             self.stage(|d| d.stage_cell(original, column, value));
+        }
+    }
+    pub(super) fn revert_grid_draft(&mut self, row: usize, column: Option<usize>) {
+        if let Some(original) = self.database.document.result.rows.get(row).cloned() {
+            self.stage(|draft| match column {
+                Some(c) => draft.revert_cell(&original, c),
+                None => draft.revert_row(&original),
+            });
         }
     }
     pub(super) fn stage_selected_deletions(&mut self) {
@@ -422,6 +440,7 @@ impl App {
         }
     }
     pub(super) fn edit_windows(&mut self, ctx: &egui::Context) {
+        self.spreadsheet_window(ctx);
         if self.database.document.show_insert {
             self.insert_window(ctx);
         }
@@ -507,7 +526,9 @@ impl App {
                             .collect::<Result<Vec<_>, _>>()
                     };
                     match values {
-                        Ok(values) => self.stage(|d| d.edits.push(Edit::Insert { values })),
+                        Ok(values) => {
+                            self.stage(|d| d.edits.push(Edit::Insert { values }));
+                        }
                         Err(e) => self.database.status = e.to_string(),
                     }
                 }
@@ -530,9 +551,8 @@ impl App {
                     ui.strong(format!("{} · {} staged operations", draft.table.name, draft.edits.len()));
                     self.database.document.tools.draft_ui.review_ui(ui, draft, self.database.commit_ticket.is_none())
                 });
-                if let Some(index) = remove && let Some(draft) = &mut self.database.document.drafts {
-                    draft.edits.remove(index);
-                    self.database.document.draft_revision=self.database.document.draft_revision.wrapping_add(1);
+                if let Some(index) = remove {
+                    self.stage(|draft| { draft.edits.remove(index); });
                 }
                 if self.database.uncertain_edit { ui.colored_label(ui.visuals().error_fg_color,"UNKNOWN outcome — close/reopen and inspect; never automatically retry."); }
                 if self.database.commit_ticket.is_some() { ui.label("Committing — awaiting the actual outcome…"); }
@@ -588,6 +608,7 @@ impl App {
                         .clicked()
                     {
                         self.database.document.drafts = None;
+                        self.database.document.tools.spreadsheet = Default::default();
                     }
                     if self.database.commit_ticket.is_some() {
                         ui.small("Committing…");

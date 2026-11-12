@@ -32,6 +32,7 @@ mod settings;
 mod shell;
 mod sidebar;
 mod smoke;
+mod spreadsheet;
 pub(crate) mod tiling;
 mod tools;
 mod transfers;

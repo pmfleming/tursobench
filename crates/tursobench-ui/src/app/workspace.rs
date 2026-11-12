@@ -294,12 +294,19 @@ impl App {
                 &self.database.workspace.splits,
             );
         }
+        let pointer_on_workspace = ui
+            .ctx()
+            .pointer_interact_pos()
+            .is_some_and(|p| ui.ctx().layer_id_at(p) == Some(ui.layer_id()));
         for (kind, rect) in panes {
             let owner = self.pane_document(kind);
             if let Some(id) = owner {
                 self.switch_document(id);
             }
-            if !self.database.workspace.minimized.contains(&kind)
+            // A click in a foreground dialog must keep its document owner;
+            // it must not focus whichever tile happens to sit underneath.
+            if pointer_on_workspace
+                && !self.database.workspace.minimized.contains(&kind)
                 && ui.input(|i| {
                     i.pointer.any_pressed()
                         && i.pointer.interact_pos().is_some_and(|p| rect.contains(p))

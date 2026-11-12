@@ -483,6 +483,9 @@ impl App {
                 }
                 _ => {}
             }
+            if kind == Kind::Data {
+                ui.menu_button("Edit cells", |ui| self.spreadsheet_menu(ui));
+            }
         });
         if available
             && matches!(kind, Kind::Data | Kind::Record)

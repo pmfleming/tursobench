@@ -112,6 +112,17 @@ impl App {
         if self.database.document.tools.inline.take().is_some() {
             return;
         }
+        if self
+            .database
+            .document
+            .tools
+            .spreadsheet
+            .dialog
+            .take()
+            .is_some()
+        {
+            return;
+        }
         if egui::Popup::is_any_open(ctx) {
             egui::Popup::close_all(ctx);
         } else {

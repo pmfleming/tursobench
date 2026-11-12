@@ -67,6 +67,14 @@ For the workbench additions, also check on a disposable database:
   and typed JSON, and inspect raw JSON text with large numbers/duplicate keys.
 - Clone a row (keys omitted), stage/revert cells and deletions, remove an individual
   preview operation, and verify overlays disappear without issuing SQL writes.
+- Reorder/hide columns and paste a spreadsheet rectangle with Ctrl+V. Verify exact
+  integers, quoted multiline text, empty text, NULL (`\N`) and literal `"\N"`.
+  Reject a mismatched rectangle or invalid number without changing earlier drafts.
+  Use Edit cells → Paste as new rows to map columns and preserve unmapped defaults.
+  Fill a range, stage NULL with Backspace, and undo each whole operation with Ctrl+Z.
+  Check that the Stage button stays visible at 720×480 and that inline/SQL editors
+  keep their normal clipboard and undo behavior. Commit a constraint-conflicting
+  paste and verify the entire transaction rolls back with drafts retained.
 - Name/search/rename/delete a bookmark; check scoped timed history and slow filters.
   Loading saved SQL must clear bindings. The heading trash clears only the selected
   database and preserves other files and older unscoped entries. Settings → Queries

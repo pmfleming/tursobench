@@ -310,25 +310,11 @@ impl App {
                 }
             }
             ui.horizontal_wrapped(|ui| {
-                if icons::button(ui, Icon::Undo, "Revert cell draft", "").clicked()
-                    && let (Some(d), Some(original)) = (
-                        &mut self.database.document.drafts,
-                        self.database.document.result.rows.get(row),
-                    )
-                {
-                    d.revert_cell(original, col);
-                    self.database.document.draft_revision =
-                        self.database.document.draft_revision.wrapping_add(1);
+                if icons::button(ui, Icon::Undo, "Revert cell draft", "").clicked() {
+                    self.revert_grid_draft(row, Some(col));
                 }
-                if ui.button("Revert row draft").clicked()
-                    && let (Some(d), Some(original)) = (
-                        &mut self.database.document.drafts,
-                        self.database.document.result.rows.get(row),
-                    )
-                {
-                    d.revert_row(original);
-                    self.database.document.draft_revision =
-                        self.database.document.draft_revision.wrapping_add(1);
+                if ui.button("Revert row draft").clicked() {
+                    self.revert_grid_draft(row, None);
                 }
                 if icons::control(ui, Icon::Trash, "Stage row deletion", "", false, true).clicked()
                 {
@@ -394,14 +380,7 @@ impl App {
         if let Some(action) = self.record_fields(ui, row, wide) {
             match action {
                 RecordAction::Revert(col) => {
-                    if let (Some(drafts), Some(values)) = (
-                        &mut self.database.document.drafts,
-                        self.database.document.result.rows.get(row),
-                    ) {
-                        drafts.revert_cell(values, col);
-                        self.database.document.draft_revision =
-                            self.database.document.draft_revision.wrapping_add(1);
-                    }
+                    self.revert_grid_draft(row, Some(col));
                 }
                 RecordAction::Inspect(col) => self.select_cell(row, col, false),
                 RecordAction::Edit(col) => {
@@ -708,7 +687,7 @@ impl App {
             let mut open = true;
             egui::Window::new("Keyboard and safety reference").frame(crate::app::presentation::window_frame(ctx)).default_pos(ctx.content_rect().center()-egui::vec2(280.0,180.0)).open(&mut open).default_width(560.0).show(ctx,|ui|{
                 egui::ScrollArea::vertical().max_height(500.0).show(ui,|ui|{
-                    for line in ["Navigator footer: Tables / History / Saved / Checks / Settings · F1: Help","Ctrl+K: actions · Ctrl+P or /: sidebar search · Ctrl+J: SQL view · Ctrl+1 / Ctrl+2: Data / Structure","Ctrl+O / Folder icon: open database file · F1: help · Ctrl+T: theme","Sidebar: All open / This database / Databases scopes · Up/Down chooses · Enter opens · Esc clears","In SQL editor: Ctrl+Enter / F5 runs one statement; Ctrl+Shift+Enter runs selection/current statement; Ctrl+Space completes","Ctrl+Shift+C: retained TSV · Ctrl+E: export · Alt+Left: Back / return to table","Grid: arrows move, Shift+arrows extend, Space opens record detail, Ctrl+C copies selection","Double-click / Enter: inline stage · Escape: cancel · right-click: typed detail / filter / copy","Headers: drag to move, edge drag to resize, double-click edge to fit; funnel shows sampled values","Tiles have fixed positions. Minimize to a header or expand to fill the workspace.","Ctrl+Alt+Enter: expand/restore view · Ctrl+Tab: next view · left navigation remains visible","Scroll / PgDn: load bounded pages; Ctrl+F: typed tokens. Map camera is saved on close.","Exports/copies never rerun SQL and exclude staged overlays","Discard suppresses delivery; execution and writes continue until the worker reports completion","Sidebar database rows switch and close · Ctrl+PgUp/PgDn cycles open databases · Close waits for rollback acknowledgement","Writable SQL autocommits unless you BEGIN; staged edits require explicit commit; Diff / SQL review is optional"]{ui.label(line);}
+                    for line in ["Navigator footer: Tables / History / Saved / Checks / Settings · F1: Help","Ctrl+K: actions · Ctrl+P or /: sidebar search · Ctrl+J: SQL view · Ctrl+1 / Ctrl+2: Data / Structure","Ctrl+O / Folder icon: open database file · F1: help · Ctrl+T: theme","Sidebar: All open / This database / Databases scopes · Up/Down chooses · Enter opens · Esc clears","In SQL editor: Ctrl+Enter / F5 runs one statement; Ctrl+Shift+Enter runs selection/current statement; Ctrl+Space completes","Ctrl+Shift+C: retained TSV · Ctrl+E: export · Alt+Left: Back / return to table","Grid: arrows move, Shift+arrows extend, Space opens record detail, Ctrl+C copies selection","Grid: Ctrl+V pastes a rectangle · Ctrl+Shift+V opens mapped row paste · Backspace stages NULL · Ctrl+Z undoes one local edit","Table data → Edit cells: paste, mapped new rows, typed fill, NULL and undo","Double-click / Enter: inline stage · Escape: cancel · right-click: typed detail / filter / copy","Headers: drag to move, edge drag to resize, double-click edge to fit; funnel shows sampled values","Tiles have fixed positions. Minimize to a header or expand to fill the workspace.","Ctrl+Alt+Enter: expand/restore view · Ctrl+Tab: next view · left navigation remains visible","Scroll / PgDn: load bounded pages; Ctrl+F: typed tokens. Map camera is saved on close.","Exports/copies never rerun SQL and exclude staged overlays","Discard suppresses delivery; execution and writes continue until the worker reports completion","Sidebar database rows switch and close · Ctrl+PgUp/PgDn cycles open databases · Close waits for rollback acknowledgement","Writable SQL autocommits unless you BEGIN; staged edits require explicit commit; Diff / SQL review is optional"]{ui.label(line);}
                 });
             });
             self.database.tools.help = open;

@@ -6,6 +6,7 @@ use std::{collections::BTreeMap, ops::Range};
 
 #[derive(Default)]
 pub(super) struct ViewTools {
+    pub spreadsheet: super::spreadsheet::State,
     pub large: results::Viewer,
     pub filtered_count: Option<i64>,
     pub draft_ui: super::editing::Presentation,
@@ -128,6 +129,7 @@ impl Default for Document {
 }
 impl Document {
     pub fn start_result(&mut self, ticket: Ticket, view: View) {
+        self.tools.spreadsheet = Default::default();
         self.tools.restore_navigation = None;
         self.tools.grid_scroll = eframe::egui::Vec2::ZERO;
         self.tools.restore_scroll = None;
@@ -203,6 +205,7 @@ impl Document {
     }
 
     pub fn disconnect(&mut self) {
+        self.tools.spreadsheet = Default::default();
         self.active = None;
         self.tools.large.ticket = None;
         self.tools.inspection_ticket = None;

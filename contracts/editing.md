@@ -16,6 +16,19 @@ SQL NULL. Text remains text; blobs remain byte arrays. New non-finite reals and 
 can be matched for updates/deletes; deferred originals require complete data.
 Bulk deletion stages unique selected rows through the same atomic path. At most 1,000 operations and 8 MiB per batch.
 
+Spreadsheet paste and fill prepare the entire operation before publishing drafts.
+Rectangle destinations use visible column order and retained row identities;
+hidden columns are never implicit destinations. A multi-cell selection must match
+the pasted dimensions. New-row paste uses explicit, unique column mappings with
+unmapped columns omitted for defaults. An unquoted clipboard `\N` is SQL NULL;
+empty fields are empty text, and quoted `\N` remains text. Invalid parsing, mapping,
+or combined-batch validation leaves all prior drafts and undo history unchanged.
+Deleted rows require explicit reversion before paste/fill. Database constraints
+and original-value conflict checks still run at commit, rolling back the whole
+batch on failure. Bounded view-local undo restores an entire paste/fill checkpoint,
+including pre-existing drafts; refreshed results and confirmed commits cannot be
+undone. Unknown outcomes disable undo along with other mutations.
+
 Preview shows the exact quoted SQL and separate typed bindings. Explicit COMMIT
 is the only staged-write action. Result-changing navigation is locked until commit/discard.
 Presentation-mode changes and independent read-only diagram metadata do not replace

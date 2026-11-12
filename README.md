@@ -97,6 +97,8 @@ target editor. Destructive and ambiguous changes retain manual guidance.
 ## Editing, transactions and export
 
 Stage inserts, updates and deletes locally.
+Paste spreadsheet ranges or mapped new rows, fill selected cells, and undo each
+paste or fill as one local operation. [Spreadsheet editing](docs/guide.md#spreadsheet-editing).
 Review diffs, SQL and exact bindings.
 Commit applies an atomic batch with original-value conflict checks.
 Failed commits retain drafts.

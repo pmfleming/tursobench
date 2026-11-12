@@ -218,6 +218,42 @@ insert JSON uses one entry per column: JSON `null` omits that column (DEFAULT);
 Query parameters are not persisted. History **does** store SQL literals: clear
 history if they contain sensitive information.
 
+### Spreadsheet editing
+
+Use **Table data → Edit cells** or right-click a cell for paste, mapped new-row
+paste, typed fill, NULL and undo actions. These require the same complete,
+writable primary-key table browse as ordinary cell edits. SQL results remain
+read-only. All changes stay local until explicit Commit.
+
+- **Ctrl+V** pastes a tab-separated rectangle at a single selected starting cell,
+  or replaces a selected rectangle of exactly the same dimensions. It follows the
+  visible column order, skips hidden columns and never spills beyond retained rows
+  or visible columns. Numeric and blob destinations use their current storage type;
+  NULL destinations use the declared column type. Invalid input rejects the whole
+  paste without changing existing drafts.
+- **Paste as new rows…** (also **Ctrl+Shift+V** while the grid has focus) opens a
+  clipboard input. Paste with Ctrl+V, then choose **Preview clipboard**, map each
+  source column to a destination or Skip, and choose its value type. Each destination
+  may be mapped once. There is no header row; unmapped table columns use defaults.
+  **Stage entire paste** validates every row and the combined edit batch before
+  staging any of it. Engine constraints remain checked atomically on commit.
+- **Fill selected cells…** applies one explicit typed value to the visible selected
+  cells. **Set selected cells to NULL**, or grid **Backspace**, stages SQL NULL.
+  Rows already staged for deletion must be reverted before pasting or filling.
+- **Ctrl+Z**, while the grid has focus, undoes one local edit operation. A whole
+  paste or fill is one operation, preserving earlier drafts. Undo retains up to
+  32 checkpoints within 16 MiB per view; it never undoes committed writes.
+  Discard, refreshed results and closing the session clear the history.
+
+Clipboard fields support quoted tabs/newlines and doubled quotes. An unquoted
+`\N` means SQL NULL; `"\N"` means literal text. Empty fields, including `""`,
+mean empty text, never NULL or zero. Integer parsing is exact; reals must be finite;
+blobs use hexadecimal pairs without a prefix. Selected-cell copying uses the same
+conventions, including quoting empty text and literal `\N`, for round trips.
+Clipboard input is limited to 2 MiB, 1,000 rows and 10,000 cells. The existing
+1,000-operation / 8 MiB batch and per-cell limits still apply. Inline editors,
+SQL editors and dialog text fields retain their normal text paste/undo behavior.
+
 ## Preferences storage
 
 Settings, history, saved queries and workspace layouts are stored in the local
