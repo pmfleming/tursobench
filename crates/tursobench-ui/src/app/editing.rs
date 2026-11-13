@@ -490,7 +490,8 @@ impl App {
             .default_width(580.0)
             .max_width((ctx.content_rect().width() - 40.0).max(280.0))
             .show(ctx, |ui| {
-                ui.checkbox(
+                crate::app::presentation::checkbox(
+                    ui,
                     &mut self.database.document.insert_use_json,
                     "Advanced JSON input",
                 );

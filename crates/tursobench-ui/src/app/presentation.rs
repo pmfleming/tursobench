@@ -27,6 +27,43 @@ pub(super) fn chip(ui: &mut egui::Ui, text: &str, color: egui::Color32) -> egui:
     )
 }
 
+/// A checkbox whose empty box stays visible on raised cards and menus.
+pub(super) fn checkbox(
+    ui: &mut egui::Ui,
+    checked: &mut bool,
+    text: impl Into<egui::WidgetText>,
+) -> egui::Response {
+    // Restore the stroke afterwards instead of scoping, so wrapped rows lay out as before.
+    let outline = crate::appearance::Tokens::of(ui.ctx()).muted;
+    let inactive = &mut ui.visuals_mut().widgets.inactive.bg_stroke;
+    let previous = std::mem::replace(inactive, egui::Stroke::new(1.0, outline));
+    let response = ui.checkbox(checked, text.into());
+    ui.visuals_mut().widgets.inactive.bg_stroke = previous;
+    response
+}
+
+/// A keyboard key or gesture, drawn as a quiet keycap.
+pub(super) fn keycap(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    let tokens = crate::appearance::Tokens::of(ui.ctx());
+    egui::Frame::new()
+        .fill(tokens.raised)
+        .stroke(egui::Stroke::new(1.0, tokens.line_strong))
+        .corner_radius(4)
+        .inner_margin(egui::Margin::symmetric(5, 1))
+        .show(ui, |ui| {
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(text)
+                        .monospace()
+                        .size(crate::appearance::text_size(ui.ctx(), 11.0))
+                        .color(tokens.muted),
+                )
+                .selectable(false),
+            )
+        })
+        .response
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum Intent {
     Neutral,

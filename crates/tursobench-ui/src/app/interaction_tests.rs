@@ -3752,3 +3752,5 @@ fn record_structure_selection_value_visuals_and_revert_preserve_stored_values() 
 mod resources;
 
 mod spreadsheet;
+
+mod discoverability;

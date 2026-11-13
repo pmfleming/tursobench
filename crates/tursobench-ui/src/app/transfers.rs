@@ -111,7 +111,7 @@ impl State {
                         .join(" | "),
                 );
             }
-            ui.checkbox(&mut state.atomic,"Import all rows atomically").on_hover_text("When disabled, batches commit every 1000 rows or 8 MiB. A later error keeps earlier commits.");
+            crate::app::presentation::checkbox(ui, &mut state.atomic,"Import all rows atomically").on_hover_text("When disabled, batches commit every 1000 rows or 8 MiB. A later error keeps earlier commits.");
             if ui
                 .add_enabled(
                     enabled && writable && state.preview_current && state.table.is_some(),

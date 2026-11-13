@@ -83,20 +83,15 @@ impl App {
         } else {
             ui.horizontal_top(|ui| {
                 let height = ui.available_height();
+                // Icons only, named on hover, as everywhere else in the app.
                 ui.allocate_ui_with_layout(
-                    egui::vec2(112.0 * scale, height),
+                    egui::vec2(36.0 * scale, height),
                     egui::Layout::top_down(egui::Align::Center),
                     |ui| {
                         for (page, icon, label, name) in pages() {
-                            if icons::rail_button(
-                                ui,
-                                icon,
-                                label,
-                                name,
-                                self.settings.page == page,
-                                ui.available_width(),
-                            )
-                            .clicked()
+                            if icons::control(ui, icon, name, "", self.settings.page == page, false)
+                                .on_hover_text(label)
+                                .clicked()
                             {
                                 self.settings.page = page;
                             }

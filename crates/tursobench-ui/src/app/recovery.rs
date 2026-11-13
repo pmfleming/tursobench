@@ -143,9 +143,12 @@ impl App {
         self.database.recovery.changed = None;
     }
     pub(super) fn recovery_settings(&mut self, ui: &mut egui::Ui) {
-        if ui
-            .checkbox(&mut self.preferences.sql_recovery, "Recover SQL documents")
-            .changed()
+        if crate::app::presentation::checkbox(
+            ui,
+            &mut self.preferences.sql_recovery,
+            "Recover SQL documents",
+        )
+        .changed()
         {
             self.store.save(&self.preferences);
             self.database.recovery.observed.clear();

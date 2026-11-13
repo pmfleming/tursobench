@@ -511,7 +511,7 @@ impl DiagramDrawing<'_> {
             node.name,
             node.error
                 .as_deref()
-                .unwrap_or("Click: open Data / Structure drawer")
+                .unwrap_or("Click to browse its rows · drag the title to move it")
         ));
         let drag = ui.interact(
             header.intersect(canvas),

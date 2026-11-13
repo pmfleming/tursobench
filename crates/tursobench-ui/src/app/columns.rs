@@ -26,11 +26,25 @@ pub(super) struct Header<'a> {
     indexed: bool,
     foreign: bool,
     descending: Option<bool>,
+    /// One-based sort position, present only while several columns are sorted.
+    sort_level: Option<usize>,
+    sortable: bool,
 }
 impl Document {
     pub fn column_header(&self, i: usize) -> Header<'_> {
         let column = &self.result.columns[i];
         let info = self.browse_inspection();
+        // Same precedence as the engine request: the primary sort, then added levels.
+        let mut order: Vec<(usize, bool)> = Vec::new();
+        if let Some(browse) = &self.browse {
+            order.extend(browse.sort.map(|column| (column, browse.descending)));
+            for &(column, descending) in &browse.options.sorts {
+                if !order.iter().any(|(sorted, _)| *sorted == column) {
+                    order.push((column, descending));
+                }
+            }
+        }
+        let position = order.iter().position(|(column, _)| *column == i);
         Header {
             column,
             original_type: self
@@ -53,11 +67,9 @@ impl Document {
                     .iter()
                     .any(|fk| fk.columns.iter().any(|(name, _)| name == &column.name))
             }),
-            descending: self
-                .browse
-                .as_ref()
-                .filter(|b| b.sort == Some(i))
-                .map(|b| b.descending),
+            descending: position.map(|p| order[p].1),
+            sort_level: position.filter(|_| order.len() > 1).map(|p| p + 1),
+            sortable: self.view == View::Browse && self.browse.is_some(),
         }
     }
 }
@@ -75,6 +87,9 @@ impl Header<'_> {
     pub fn is_foreign(&self) -> bool {
         self.foreign
     }
+    pub fn sortable(&self) -> bool {
+        self.sortable
+    }
 
     fn has_key(&self) -> bool {
         self.primary_key > 0 || self.foreign
@@ -90,10 +105,12 @@ impl Header<'_> {
             if self.indexed { " IX" } else { "" },
             if self.foreign { " FK" } else { "" }
         );
-        let sorted = match self.descending {
-            None => "",
-            Some(true) => " descending",
-            Some(false) => " ascending",
+        let sorted = match (self.descending, self.sort_level) {
+            (None, _) => String::new(),
+            (Some(true), None) => " descending".into(),
+            (Some(false), None) => " ascending".into(),
+            (Some(true), Some(level)) => format!(" descending, sort level {level}"),
+            (Some(false), Some(level)) => format!(" ascending, sort level {level}"),
         };
         response.widget_info(|| {
             egui::WidgetInfo::labeled(
@@ -103,11 +120,15 @@ impl Header<'_> {
             )
         });
     }
-    pub fn paint(&self, ui: &egui::Ui, rect: egui::Rect, highlighted: bool) {
+    pub fn paint(&self, ui: &egui::Ui, rect: egui::Rect, highlighted: bool, hovered: bool) {
         let tokens = crate::appearance::Tokens::of(ui.ctx());
         let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+        // A sortable header answers the pointer, so it reads as a control.
+        let hint = hovered && self.sortable;
         if highlighted {
             painter.rect_filled(rect, 2.0, ui.visuals().selection.bg_fill);
+        } else if hint {
+            painter.rect_filled(rect, 2.0, tokens.raised_hover);
         }
         let mut left = rect.left() + super::presentation::CELL_INSET;
         for (show, icon) in [
@@ -127,7 +148,7 @@ impl Header<'_> {
                 left += 15.0;
             }
         }
-        let reserve = if self.descending.is_some() {
+        let reserve = if self.descending.is_some() || hint {
             44.0
         } else {
             28.0
@@ -180,6 +201,26 @@ impl Header<'_> {
                     Icon::Up
                 },
                 ui.visuals().selection.stroke.color,
+            );
+            if let Some(level) = self.sort_level {
+                painter.text(
+                    rect.right_top() + egui::vec2(-31.0, 14.0),
+                    egui::Align2::CENTER_CENTER,
+                    level,
+                    crate::appearance::monospace(ui.ctx(), 9.0),
+                    ui.visuals().selection.stroke.color,
+                );
+            }
+        } else if hint {
+            // The next click sorts ascending; show where the arrow will appear.
+            icons::paint(
+                &painter,
+                egui::Rect::from_min_size(
+                    rect.right_top() + egui::vec2(-47.0, 8.0),
+                    egui::vec2(12.0, 12.0),
+                ),
+                Icon::Up,
+                tokens.faint,
             );
         }
     }

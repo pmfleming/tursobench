@@ -255,15 +255,14 @@ fn this_database_filters_the_schema_tree_and_opens_a_matching_column() {
     close_and_wait(&mut app, &ctx);
 }
 #[test]
-fn empty_sidebar_disables_tools_and_keeps_settings_available() {
+fn empty_sidebar_has_no_database_tools_and_keeps_settings_available() {
     let (ctx, mut app) = crate::app::test_ui::app();
+    frame_at(&mut app, &ctx, SIZE, vec![]);
+    ctx.enable_accesskit();
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
-    assert!(output.shapes.iter().any(|s| matches!(&s.shape,egui::Shape::Text(t) if t.galley.job.text == "Tools need an open database")));
-    for label in ["History", "Saved queries", "Database checks"] {
-        let output = frame_at(&mut app, &ctx, SIZE, vec![]);
-        let button = control(&output, label);
-        click(&mut app, &ctx, button.center());
-        assert_eq!(app.database.ui.sidebar, shell::ToolPanel::Schema);
+    // Database tools belong to an open database; without one there is nothing to disable.
+    for label in ["Tables", "History", "Saved queries", "Database checks"] {
+        assert!(!label_exists(&output, label), "{label}");
     }
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
     let settings = control(&output, "Settings");

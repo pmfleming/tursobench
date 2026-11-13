@@ -209,7 +209,8 @@ impl App {
                 .ddl
                 .as_ref()
                 .is_some_and(|o| o.name == name);
-            let response = tree_row(ui, name, "DDL", icon, selected, false, (22.0, 0.0));
+            let response = tree_row(ui, name, "DDL", icon, selected, false, (22.0, 0.0))
+                .on_hover_text("Click to show its definition in Structure");
             if response.has_focus() {
                 self.database.tools.tree_focus = Some(response.id);
             }
@@ -239,13 +240,13 @@ impl App {
                 && (keyboard.is_some_and(|(_, column)| column.is_some())
                     || !super::commands::fuzzy(name, &self.sidebar_search.query)
                         && self.loaded_inspection(name).is_some());
-        let count = self
-            .database
-            .tools
-            .counts
-            .get(name)
-            .map_or("—".into(), |n| n.to_string());
-        let response = tree_row(ui, name, &count, icon, selected, related, (26.0, 22.0));
+        let counted = self.database.tools.counts.get(name);
+        let count = counted.map_or("—".into(), |n| n.to_string());
+        let response = tree_row(ui, name, &count, icon, selected, related, (26.0, 22.0))
+            .on_hover_text(match counted {
+                Some(rows) => format!("Click to browse · the arrow lists columns\n{rows} rows counted"),
+                None => "Click to browse · the arrow lists columns\n— rows not counted yet: Σ in Table data counts them".into(),
+            });
         let disclosure = egui::Rect::from_min_size(response.rect.min, egui::vec2(20.0, 26.0));
         icons::paint(
             ui.painter(),
@@ -323,7 +324,7 @@ impl App {
                 let selected = filtering && self.sidebar_search.tree_highlight.as_ref().is_some_and(|(table,column)| table == name && column.as_deref() == Some(c.name.as_str()));
                 let fk=info.foreign_keys.iter().any(|k|k.columns.iter().any(|(n,_)|n==&c.name));
                 let icon=if c.primary_key>0{Icon::Key}else if fk{Icon::Link}else{Icon::Columns};
-                if tree_row(ui, &c.name, &c.declared_type, icon, selected, fk, (22.0, 0.0)).clicked() { column=Some(c.name.clone()); }
+                if tree_row(ui, &c.name, &c.declared_type, icon, selected, fk, (22.0, 0.0)).on_hover_text("Click to find this column in Table data").clicked() { column=Some(c.name.clone()); }
             }
             let mut links:Vec<(&str,String)>=info.foreign_keys.iter().map(|k|(k.target.as_str(),format!("Parent: {}",k.target))).collect();
             if let Some(graph)=&self.database.ui.diagram.data {
@@ -372,82 +373,67 @@ impl App {
         self.database.ui.sidebar = panel;
     }
 
-    pub(super) fn navigator_utilities(&mut self, ui: &mut egui::Ui) {
-        let width = ((ui.available_width() - 18.0) / 5.0).max(18.0);
-        let tools_width = width * 4.0 + 6.0;
-        let open = self.database.session.is_some();
-        let name = std::path::Path::new(&self.database.path)
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy();
-        let caption = if open {
-            name.as_ref()
-        } else {
-            "Tools need an open database"
-        };
-        let tooltip = if open {
-            format!("Tools apply to {name}")
-        } else {
-            caption.into()
-        };
-        ui.allocate_ui(egui::vec2(tools_width, 18.0), |ui| {
-            ui.set_max_width(tools_width);
-            ui.add(egui::Label::new(egui::RichText::new(caption).small()).truncate())
-                .on_hover_text(tooltip);
-        });
-        let start = ui.cursor().min;
-        let stroke = egui::Stroke::new(1.0, crate::appearance::Tokens::of(ui.ctx()).line_strong);
-        ui.painter()
-            .line_segment([start, start + egui::vec2(tools_width, 0.0)], stroke);
-        for x in [0.0, tools_width] {
-            ui.painter().line_segment(
-                [start + egui::vec2(x, 0.0), start + egui::vec2(x, 4.0)],
-                stroke,
-            );
-        }
+    /// Tables, History, Saved queries and Checks belong to the selected database,
+    /// so they sit directly under its row and exist only while it is open.
+    pub(super) fn database_tools_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            for (icon, label, name, panel) in [
-                (Icon::Data, "Tables", "Tables", ToolPanel::Schema),
-                (Icon::History, "History", "History", ToolPanel::History),
-                (Icon::Saved, "Saved", "Saved queries", ToolPanel::Saved),
-                (
-                    Icon::Checks,
-                    "Checks",
-                    "Database checks",
-                    ToolPanel::Diagnostics,
-                ),
+            ui.spacing_mut().item_spacing.x = 3.0;
+            for (icon, name, panel) in [
+                (Icon::Data, "Tables", ToolPanel::Schema),
+                (Icon::History, "History", ToolPanel::History),
+                (Icon::Saved, "Saved queries", ToolPanel::Saved),
+                (Icon::Checks, "Database checks", ToolPanel::Diagnostics),
             ] {
-                if ui
-                    .add_enabled_ui(open, |ui| {
-                        icons::rail_button(
-                            ui,
-                            icon,
-                            label,
-                            name,
-                            panel == self.database.ui.sidebar,
-                            width,
-                        )
-                    })
-                    .inner
+                if icons::control(ui, icon, name, "", panel == self.database.ui.sidebar, false)
                     .clicked()
                 {
                     self.select_tool(panel);
                 }
             }
-            ui.separator();
-            if icons::rail_button(
+        });
+    }
+
+    /// The foot of the sidebar holds application-wide controls only: icons, named on hover.
+    pub(super) fn application_controls(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            if icons::control(
                 ui,
                 Icon::Settings,
                 "Settings",
-                "Settings",
+                "Ctrl ,",
                 self.settings.open,
-                width,
+                false,
             )
-            .on_hover_text("Application settings · Ctrl+,")
             .clicked()
             {
                 self.settings.open = !self.settings.open;
+            }
+            if icons::control(
+                ui,
+                Icon::Command,
+                "Commands",
+                "Ctrl K",
+                self.database.ui.palette_open,
+                false,
+            )
+            .on_hover_text("Find any action by name")
+            .clicked()
+            {
+                self.open_palette();
+            }
+            if icons::control(
+                ui,
+                Icon::Help,
+                "Keyboard and safety reference",
+                "F1",
+                self.database.tools.help,
+                false,
+            )
+            .clicked()
+            {
+                self.database.tools.help = !self.database.tools.help;
             }
         });
     }

@@ -48,9 +48,10 @@ columns. Tile proportions are saved per database.
 - Relationships has zoom out and zoom in controls around the live zoom percentage.
   Each click changes the scale by a factor of 1.25 while keeping the map's center
   fixed. Click the percentage to reset to 100%; Fit relationships still fits all nodes.
-- The navigator footer opens Tables, History, Saved queries, Checks and Settings
-  in the left panel. Query cards use icon actions; checks and preferences use
-  compact groups. F1 opens Help. The database name opens recent databases and
+- Tables, History, Saved queries and Checks open from the four icons under the
+  selected database's row. Settings, the command palette and Help (F1) sit at the
+  foot of the sidebar. Query cards use icon actions; checks and preferences use
+  compact groups. The database name opens recent databases and
   managed open/close actions. See the [navigator controls](guide.md#navigator-tools).
 
 Table browsing selects the data shown in Record and Structure. Space opens the

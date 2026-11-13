@@ -534,7 +534,12 @@ impl App {
                                     .color(ui.visuals().weak_text_color()),
                                 )
                                 .truncate(),
-                            );
+                            )
+                            .on_hover_text(if spec.is_some() {
+                                "Rows held in memory for this table. Scroll or PgDn loads the next 100."
+                            } else {
+                                "Rows held in memory for this result. Exports and copies use these rows without rerunning SQL."
+                            });
                         },
                     );
                     if spec.is_some() {
@@ -574,6 +579,12 @@ impl App {
                                     "Row number",
                                 )
                             });
+                            // Typing a number and pressing Enter is the same as the arrow.
+                            jump |= input.lost_focus()
+                                && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            input.on_hover_text(
+                                "Go to row: click to type a row number, then press Enter · or drag to change it",
+                            );
                         });
                     }
                 });
@@ -663,8 +674,18 @@ impl App {
         if highlighted && self.database.document.tools.scroll_to_column {
             ui.scroll_to_rect(rect, Some(egui::Align::Center));
         }
-        header.paint(ui, rect, highlighted);
-        let response=response.on_hover_text(format!("{} · {}\nPK = key position; IX = declared leading index; FK = foreign key. Index method/partial predicate may not apply. Drag the right edge or right-click to resize.",header.column.name,header.declared_type().unwrap_or("runtime type")));
+        header.paint(ui, rect, highlighted, response.hovered());
+        // Lead with what the header does; the key legend follows.
+        let response = response.on_hover_text(format!(
+            "{} · {}\n{}Drag to move · drag the right edge to resize, double-click it to fit · right-click for appearance and hiding\nPK = key position; IX = declared leading index; FK = foreign key. Index method/partial predicate may not apply.",
+            header.column.name,
+            header.declared_type().unwrap_or("runtime type"),
+            if header.sortable() {
+                "Click to sort, again to reverse, once more to clear · Shift+click adds a sort level\n"
+            } else {
+                ""
+            }
+        ));
         let filter_label = format!("Filter {}", header.column.name);
         if highlighted {
             self.database.document.tools.scroll_to_column = false;
@@ -692,18 +713,29 @@ impl App {
             .browse
             .as_ref()
             .is_some_and(|b| b.filters.iter().any(|f| f.column == i));
+        if funnel.hovered() {
+            ui.painter()
+                .rect_filled(funnel_rect, 4.0, tokens.raised_hover);
+        }
         icons::paint(
             ui.painter(),
             funnel_rect.shrink(2.0),
             Icon::Filter,
             if filtered {
                 tokens.primary
+            } else if funnel.hovered() {
+                ui.visuals().text_color()
             } else {
                 tokens.faint
             },
         );
         funnel.widget_info(|| {
             egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), &filter_label)
+        });
+        let funnel = funnel.on_hover_text(if filtered {
+            format!("{filter_label} · a filter is active on this column")
+        } else {
+            format!("{filter_label} · choose from sampled values")
         });
         egui::Popup::menu(&funnel).show(|ui| self.column_facets(ui, i));
         let handle = egui::Rect::from_min_max(
@@ -968,11 +1000,18 @@ impl App {
         }
 
         if self.database.document.view == View::Browse && self.database.document.browse.is_some() {
-            for (op, label) in [
-                (tursobench_core::FilterOp::Equal, "Filter = value"),
-                (tursobench_core::FilterOp::NotEqual, "Exclude value"),
+            for (op, label, gesture) in [
+                (
+                    tursobench_core::FilterOp::Equal,
+                    "Filter = value",
+                    "Alt click",
+                ),
+                (tursobench_core::FilterOp::NotEqual, "Exclude value", ""),
             ] {
-                if ui.button(label).clicked() {
+                if ui
+                    .add(egui::Button::new(label).shortcut_text(gesture))
+                    .clicked()
+                {
                     action = Some(GridAction::Filter(tursobench_core::Filter {
                         column: col,
                         op,
@@ -987,7 +1026,10 @@ impl App {
         }
         for key in references {
             if ui
-                .button(format!("Parent: {} (FK {})", key.target, key.id))
+                .add(
+                    egui::Button::new(format!("Parent: {} (FK {})", key.target, key.id))
+                        .shortcut_text(if references.len() == 1 { "Click" } else { "" }),
+                )
                 .clicked()
             {
                 action = Some(GridAction::Follow(row, (*key).clone()));
@@ -1006,7 +1048,10 @@ impl App {
             action = Some(GridAction::Copy(row));
             ui.close();
         }
-        if ui.button("Record detail").clicked() {
+        if ui
+            .add(egui::Button::new("Record detail").shortcut_text("Space"))
+            .clicked()
+        {
             action = Some(GridAction::Record(row));
             ui.close();
         }

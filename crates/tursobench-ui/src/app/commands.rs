@@ -358,11 +358,17 @@ impl App {
                 egui::ScrollArea::vertical()
                     .max_height((ctx.content_rect().height() - 240.0).max(100.0))
                     .show(ui, |ui| {
-                        for (index, (label, _)) in items.iter().enumerate() {
+                        for (index, (label, shortcut, _)) in items.iter().enumerate() {
                             let selected = index == self.database.ui.palette_index;
+                            // Names read down the left edge; shortcuts line up on the right.
                             let response = ui.add_sized(
                                 [ui.available_width(), 32.0],
-                                egui::Button::new(label)
+                                egui::Button::new(*label)
+                                    .shortcut_text(
+                                        egui::RichText::new(*shortcut)
+                                            .monospace()
+                                            .size(crate::appearance::text_size(ui.ctx(), 11.0)),
+                                    )
                                     .selected(selected)
                                     .frame_when_inactive(false),
                             );
@@ -379,7 +385,7 @@ impl App {
                     });
                 chosen = chosen_index
                     .filter(|&i| i < items.len())
-                    .map(|i| items.swap_remove(i).1);
+                    .map(|i| items.swap_remove(i).2);
                 presentation::footer(ui, |ui| {
                     ui.small(
                         "Up/Down choose · Enter run · Esc close. Ctrl+P searches database objects.",
@@ -392,50 +398,49 @@ impl App {
             self.execute_command(ctx, action);
         }
     }
-    fn palette_items(&self) -> Vec<(String, Command)> {
-        let mut items: Vec<(String, Command)> = vec![
-            ("Schema home · Map".into(), Command::Map),
-            ("List tables and views".into(), Command::List),
-            ("Toggle SQL editor · Ctrl J".into(), Command::Sql),
-            ("Open database · Ctrl O".into(), Command::Open),
-            ("Close database".into(), Command::Close),
-            ("Refresh schema map and catalog".into(), Command::Refresh),
-            ("Refresh current table".into(), Command::RefreshTable),
-            ("BEGIN editor transaction".into(), Command::Begin),
-            ("Filter rows · Ctrl F".into(), Command::Filter),
-            ("Toggle inspector · Space".into(), Command::Inspector),
-            ("New row (staged)".into(), Command::Action(Action::Insert)),
+    fn palette_items(&self) -> Vec<(&'static str, &'static str, Command)> {
+        let mut items: Vec<(&'static str, &'static str, Command)> = vec![
+            ("Schema home · Map", "", Command::Map),
+            ("List tables and views", "", Command::List),
+            ("Toggle SQL editor", "Ctrl J", Command::Sql),
+            ("Open database", "Ctrl O", Command::Open),
+            ("Close database", "", Command::Close),
+            ("Refresh schema map and catalog", "", Command::Refresh),
+            ("Refresh current table", "F5", Command::RefreshTable),
+            ("BEGIN editor transaction", "", Command::Begin),
+            ("Filter rows", "Ctrl F", Command::Filter),
+            ("Toggle inspector", "Space", Command::Inspector),
+            ("New row (staged)", "", Command::Action(Action::Insert)),
+            ("Fit all columns", "", Command::Action(Action::FitColumns)),
             (
-                "Fit all columns".into(),
-                Command::Action(Action::FitColumns),
-            ),
-            (
-                "Show hidden columns".into(),
+                "Show hidden columns",
+                "",
                 Command::Action(Action::ShowColumns),
             ),
+            ("Copy selected cells", "Ctrl C", Command::CopySelection),
+            ("History", "", Command::Panel(ToolPanel::History)),
+            ("Saved queries", "", Command::Panel(ToolPanel::Saved)),
             (
-                "Copy selected cells · Ctrl C".into(),
-                Command::CopySelection,
-            ),
-            ("History".into(), Command::Panel(ToolPanel::History)),
-            ("Saved queries".into(), Command::Panel(ToolPanel::Saved)),
-            (
-                "Database info and checks".into(),
+                "Database info and checks",
+                "",
                 Command::Panel(ToolPanel::Diagnostics),
             ),
-            ("Settings".into(), Command::Settings),
+            ("Settings", "Ctrl ,", Command::Settings),
             (
-                "Export and copy retained result".into(),
+                "Export and copy retained result",
+                "Ctrl E",
                 Command::Action(Action::Export),
             ),
-            (
-                "Review staged edits".into(),
-                Command::Action(Action::Review),
-            ),
-            ("Toggle theme".into(), Command::Theme),
-            ("Keyboard shortcuts and help · F1".into(), Command::Help),
+            ("Review staged edits", "", Command::Action(Action::Review)),
+            ("Toggle theme", "Ctrl T", Command::Theme),
+            ("Keyboard shortcuts and help", "F1", Command::Help),
         ];
-        items.retain(|(label, _)| fuzzy(label, &self.database.ui.palette_query));
+        items.retain(|(label, shortcut, _)| {
+            fuzzy(
+                &format!("{label} · {shortcut}"),
+                &self.database.ui.palette_query,
+            )
+        });
         items.truncate(80);
         items
     }

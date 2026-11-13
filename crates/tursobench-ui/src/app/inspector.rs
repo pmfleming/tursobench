@@ -685,12 +685,176 @@ impl App {
         }
         if self.database.tools.help {
             let mut open = true;
-            egui::Window::new("Keyboard and safety reference").frame(crate::app::presentation::window_frame(ctx)).default_pos(ctx.content_rect().center()-egui::vec2(280.0,180.0)).open(&mut open).default_width(560.0).show(ctx,|ui|{
-                egui::ScrollArea::vertical().max_height(500.0).show(ui,|ui|{
-                    for line in ["Navigator footer: Tables / History / Saved / Checks / Settings · F1: Help","Ctrl+K: actions · Ctrl+P or /: sidebar search · Ctrl+J: SQL view · Ctrl+1 / Ctrl+2: Data / Structure","Ctrl+O / Folder icon: open database file · F1: help · Ctrl+T: theme","Sidebar: All open / This database / Databases scopes · Up/Down chooses · Enter opens · Esc clears","In SQL editor: Ctrl+Enter / F5 runs one statement; Ctrl+Shift+Enter runs selection/current statement; Ctrl+Space completes","Ctrl+Shift+C: retained TSV · Ctrl+E: export · Alt+Left: Back / return to table","Grid: arrows move, Shift+arrows extend, Space opens record detail, Ctrl+C copies selection","Grid: Ctrl+V pastes a rectangle · Ctrl+Shift+V opens mapped row paste · Backspace stages NULL · Ctrl+Z undoes one local edit","Table data → Edit cells: paste, mapped new rows, typed fill, NULL and undo","Double-click / Enter: inline stage · Escape: cancel · right-click: typed detail / filter / copy","Headers: drag to move, edge drag to resize, double-click edge to fit; funnel shows sampled values","Tiles have fixed positions. Minimize to a header or expand to fill the workspace.","Ctrl+Alt+Enter: expand/restore view · Ctrl+Tab: next view · left navigation remains visible","Scroll / PgDn: load bounded pages; Ctrl+F: typed tokens. Map camera is saved on close.","Exports/copies never rerun SQL and exclude staged overlays","Discard suppresses delivery; execution and writes continue until the worker reports completion","Sidebar database rows switch and close · Ctrl+PgUp/PgDn cycles open databases · Close waits for rollback acknowledgement","Writable SQL autocommits unless you BEGIN; staged edits require explicit commit; Diff / SQL review is optional"]{ui.label(line);}
+            egui::Window::new("Keyboard and safety reference")
+                .frame(crate::app::presentation::window_frame(ctx))
+                .default_pos(ctx.content_rect().center() - egui::vec2(300.0, 260.0))
+                .open(&mut open)
+                .default_width(600.0)
+                .default_height((ctx.content_rect().height() - 150.0).clamp(160.0, 560.0))
+                .max_width((ctx.content_rect().width() - 40.0).max(240.0))
+                .show(ctx, |ui| {
+                    egui::ScrollArea::vertical()
+                        .max_height((ctx.content_rect().height() - 150.0).clamp(160.0, 560.0))
+                        .auto_shrink([false, true])
+                        .show(ui, help_reference);
                 });
-            });
             self.database.tools.help = open;
+        }
+    }
+}
+
+/// Each row pairs keys or gestures with what they do; an empty key list is a note.
+type HelpRow = (&'static [&'static str], &'static str);
+const HELP: &[(&str, &[HelpRow])] = &[
+    (
+        "Anywhere",
+        &[
+            (&["F1"], "This reference"),
+            (&["Ctrl K"], "Commands: find any action by name"),
+            (
+                &["Ctrl P", "/"],
+                "Sidebar search across All open, This database or Databases · Up/Down chooses · Enter opens · Esc clears",
+            ),
+            (&["Ctrl O"], "Open a database file (also the folder icon)"),
+            (
+                &["Ctrl PgUp", "Ctrl PgDn"],
+                "Cycle open databases · sidebar database rows switch and close",
+            ),
+            (&["Ctrl ,"], "Settings"),
+            (&["Ctrl T"], "Toggle theme"),
+            (&["F7"], "Compare two open schemas"),
+            (&["Esc"], "Close the topmost dialog, menu or expanded tile"),
+            (
+                &[],
+                "Tables / History / Saved / Checks sit under the selected database. Settings, commands and this reference sit at the foot of the sidebar. Hover any icon for its name.",
+            ),
+        ],
+    ),
+    (
+        "Tiles",
+        &[
+            (&["Ctrl Tab"], "Focus the next tile"),
+            (
+                &["Ctrl Alt Enter"],
+                "Expand the focused tile, or restore the workspace",
+            ),
+            (&["Ctrl J"], "SQL view"),
+            (&["Ctrl 1", "Ctrl 2"], "Data / Structure"),
+            (&["Alt Left"], "Back / return to table"),
+            (&["F5"], "Refresh the focused view"),
+            (
+                &[],
+                "Tiles have fixed positions. Drag a divider to resize; minimize to a header or expand to fill the workspace. Left navigation remains visible.",
+            ),
+        ],
+    ),
+    (
+        "SQL editor",
+        &[
+            (&["Ctrl Enter", "F5"], "Run one statement"),
+            (
+                &["Ctrl Shift Enter"],
+                "Run the selection or current statement",
+            ),
+            (&["Ctrl Space"], "Completions"),
+            (&["Ctrl S"], "Save query"),
+        ],
+    ),
+    (
+        "Grid",
+        &[
+            (&["Arrows", "Shift Arrows"], "Move · extend the selection"),
+            (&["Space"], "Record detail"),
+            (
+                &["Enter", "Double-click"],
+                "Stage an inline edit, or follow a foreign key · Esc cancels",
+            ),
+            (&["Alt Click"], "Filter rows by the clicked value"),
+            (&["Right-click"], "Typed detail / filter / copy"),
+            (&["Ctrl F"], "Filter with typed tokens"),
+            (&["Ctrl C"], "Copy the selection"),
+            (&["Ctrl Shift C"], "Copy retained rows as TSV"),
+            (&["Ctrl E"], "Export"),
+            (&["PgDn", "PgUp", "Scroll"], "Load bounded pages"),
+            (&["Ctrl V"], "Paste a rectangle"),
+            (&["Ctrl Shift V"], "Mapped row paste"),
+            (&["Backspace"], "Stage NULL in the selected cells"),
+            (&["Ctrl Z"], "Undo one local edit"),
+            (
+                &[],
+                "Table data → Edit cells: paste, mapped new rows, typed fill, NULL and undo.",
+            ),
+        ],
+    ),
+    (
+        "Column headers",
+        &[
+            (&["Click"], "Sort · again to reverse · once more to clear"),
+            (&["Shift Click"], "Add a sort level"),
+            (&["Drag"], "Move the column"),
+            (&["Drag edge"], "Resize · double-click the edge to fit"),
+            (&["Funnel"], "Filter by sampled values"),
+            (&["Right-click"], "Cell appearance, fit, move and hide"),
+        ],
+    ),
+    (
+        "Safety",
+        &[
+            (
+                &[],
+                "Exports/copies never rerun SQL and exclude staged overlays.",
+            ),
+            (
+                &[],
+                "Discard suppresses delivery; execution and writes continue until the worker reports completion.",
+            ),
+            (
+                &[],
+                "Writable SQL autocommits unless you BEGIN; staged edits require explicit commit; Diff / SQL review is optional.",
+            ),
+            (
+                &[],
+                "Close waits for rollback acknowledgement. Map camera is saved on close.",
+            ),
+        ],
+    ),
+];
+
+fn help_reference(ui: &mut egui::Ui) {
+    const KEYS: f32 = 160.0;
+    let tokens = crate::appearance::Tokens::of(ui.ctx());
+    for (index, (title, rows)) in HELP.iter().enumerate() {
+        if index > 0 {
+            ui.add_space(6.0);
+        }
+        ui.label(
+            egui::RichText::new(title.to_uppercase())
+                .size(crate::appearance::text_size(ui.ctx(), 10.5))
+                .strong()
+                .color(tokens.muted),
+        );
+        for (keys, description) in *rows {
+            ui.horizontal_top(|ui| {
+                let narrow = ui.available_width() < KEYS + 160.0;
+                if !keys.is_empty() {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(KEYS, 0.0),
+                        egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
+                        |ui| {
+                            if !narrow {
+                                ui.set_min_width(KEYS);
+                            }
+                            ui.spacing_mut().item_spacing = egui::vec2(4.0, 3.0);
+                            for key in *keys {
+                                crate::app::presentation::keycap(ui, key);
+                            }
+                        },
+                    );
+                } else if !narrow {
+                    ui.add_space(KEYS + ui.spacing().item_spacing.x);
+                }
+                ui.add(egui::Label::new(*description).wrap());
+            });
         }
     }
 }

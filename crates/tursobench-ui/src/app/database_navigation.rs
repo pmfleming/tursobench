@@ -495,6 +495,7 @@ impl App {
                             if self.database.session.is_none() {
                                 self.retained_database_ui(ui);
                             } else {
+                                self.database_tools_ui(ui);
                                 self.active_database_tree_ui(ui);
                             }
                         });

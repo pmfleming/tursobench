@@ -519,7 +519,11 @@ impl App {
                 },
             )
         });
-        if response.on_hover_text(description).clicked() {
+        if response
+            .on_hover_text(format!("{description}\nClick to restore this tile"))
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .clicked()
+        {
             self.focus_pane(kind);
         }
     }

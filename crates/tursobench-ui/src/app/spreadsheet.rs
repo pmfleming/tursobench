@@ -34,12 +34,12 @@ pub(super) enum Action {
 }
 
 pub(super) fn menu(ui: &mut egui::Ui, enabled: bool, selected: bool, undo: bool) -> Option<Action> {
-    for (label, action) in [
-        ("Paste cells…", Action::PasteCells),
-        ("Paste as new rows…", Action::PasteRows),
-        ("Fill selected cells…", Action::Fill),
-        ("Set selected cells to NULL", Action::Null),
-        ("Undo last staged edit · Ctrl+Z", Action::Undo),
+    for (label, shortcut, action) in [
+        ("Paste cells…", "Ctrl V", Action::PasteCells),
+        ("Paste as new rows…", "Ctrl Shift V", Action::PasteRows),
+        ("Fill selected cells…", "", Action::Fill),
+        ("Set selected cells to NULL", "Backspace", Action::Null),
+        ("Undo last staged edit", "Ctrl Z", Action::Undo),
     ] {
         let available = match action {
             Action::Undo => undo,
@@ -47,7 +47,7 @@ pub(super) fn menu(ui: &mut egui::Ui, enabled: bool, selected: bool, undo: bool)
             _ => enabled && selected,
         };
         if ui
-            .add_enabled(available, egui::Button::new(label))
+            .add_enabled(available, egui::Button::new(label).shortcut_text(shortcut))
             .clicked()
         {
             ui.close();

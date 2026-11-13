@@ -157,7 +157,7 @@ impl App {
                     egui::Panel::bottom("navigator-utilities")
                         .resizable(false)
                         .show(ui, |ui| {
-                            self.navigator_utilities(ui);
+                            self.application_controls(ui);
                         });
                     self.navigation_sidebar(ui);
                 });
@@ -382,7 +382,7 @@ impl App {
         if icons::control(
             ui,
             Icon::History,
-            "Outcomes",
+            "Execution outcomes and recent activity",
             "",
             self.database.ui.outcomes,
             false,
@@ -400,7 +400,12 @@ impl App {
                     .small()
                     .color(tokens.faint),
             ))
-            .on_hover_text(self.export_scope());
+            .on_hover_text(format!(
+                "Last result in the focused tile: {} · {} ms\nExport scope: {}",
+                format!("{:?}", c.delivery).to_lowercase(),
+                c.elapsed_ms,
+                self.export_scope()
+            ));
         }
         let summary = self.selection_summary();
         if !summary.is_empty() && ui.available_width() > 100.0 {

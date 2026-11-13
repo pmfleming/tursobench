@@ -53,6 +53,9 @@ pub(super) enum Icon {
     ReviewEdits,
     CopyValue,
     FitColumns,
+    Help,
+    Command,
+    EditCells,
 }
 
 pub(super) fn button(ui: &mut egui::Ui, icon: Icon, name: &str, shortcut: &str) -> egui::Response {
@@ -257,67 +260,6 @@ fn widget(
     })
 }
 
-/// Compact, labelled navigation rail with full accessible names at narrow widths.
-pub(super) fn rail_button(
-    ui: &mut egui::Ui,
-    icon: Icon,
-    label: &str,
-    name: &str,
-    selected: bool,
-    width: f32,
-) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 48.0), egui::Sense::click());
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), selected, name)
-    });
-    let tokens = crate::appearance::Tokens::of(ui.ctx());
-    let color = if selected {
-        tokens.primary_text
-    } else {
-        tokens.muted
-    };
-    let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
-    if selected || response.hovered() || response.has_focus() {
-        painter.rect_filled(
-            rect,
-            8.0,
-            if selected {
-                ui.visuals().selection.bg_fill
-            } else {
-                tokens.raised
-            },
-        );
-    }
-    if response.has_focus() {
-        painter.rect_stroke(
-            rect,
-            8.0,
-            ui.visuals().selection.stroke,
-            egui::StrokeKind::Inside,
-        );
-    }
-    paint(
-        &painter,
-        egui::Rect::from_center_size(
-            egui::pos2(rect.center().x, rect.top() + 14.0),
-            egui::vec2(18.0, 18.0),
-        ),
-        icon,
-        color,
-    );
-    let text = painter.layout_no_wrap(
-        label.into(),
-        crate::appearance::proportional(ui.ctx(), 9.0),
-        color,
-    );
-    painter.galley(
-        egui::pos2(rect.center().x - text.size().x / 2.0, rect.top() + 29.0),
-        text,
-        color,
-    );
-    response.on_hover_text(name)
-}
-
 pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color: egui::Color32) {
     let p =
         |x: f32, y: f32| rect.min + egui::vec2(x * rect.width() / 24.0, y * rect.height() / 24.0);
@@ -444,6 +386,38 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
         History => {
             circle(12., 12., 9.);
             line(&[(12., 6.), (12., 12.), (17., 15.)]);
+        }
+        Command => {
+            // The looped-square command sign: four corner loops joined by two bars each way.
+            for (x, y) in [(6., 6.), (18., 6.), (6., 18.), (18., 18.)] {
+                circle(x, y, 3.);
+            }
+            line(&[(9., 6.), (9., 18.)]);
+            line(&[(15., 6.), (15., 18.)]);
+            line(&[(6., 9.), (18., 9.)]);
+            line(&[(6., 15.), (18., 15.)]);
+        }
+        EditCells => {
+            // A cell holding a text cursor.
+            box_(3., 6., 18., 12.);
+            line(&[(9., 9.5), (9., 14.5)]);
+            line(&[(7.5, 9.5), (10.5, 9.5)]);
+            line(&[(7.5, 14.5), (10.5, 14.5)]);
+        }
+        Help => {
+            circle(12., 12., 9.);
+            line(&[
+                (9., 9.5),
+                (9.6, 7.8),
+                (11., 7.),
+                (13., 7.),
+                (14.4, 7.8),
+                (15., 9.5),
+                (14.2, 11.2),
+                (12., 12.6),
+                (12., 14.),
+            ]);
+            line(&[(12., 16.6), (12., 17.2)]);
         }
         Saved => line(&[
             (6., 21.),

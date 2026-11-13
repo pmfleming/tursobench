@@ -80,7 +80,7 @@ impl App {
             });
             if old != self.database.tools.profile.table { self.database.tools.profile.column.clear(); }
             ui.horizontal(|ui| { ui.label("Column (blank = all, up to 24)"); ui.text_edit_singleline(&mut self.database.tools.profile.column); });
-            ui.checkbox(&mut self.database.tools.profile.exact,"Exact scan of the complete table");
+            crate::app::presentation::checkbox(ui, &mut self.database.tools.profile.exact,"Exact scan of the complete table");
             if !self.database.tools.profile.exact {
                 ui.add(egui::DragValue::new(&mut self.database.tools.profile.sample).range(1..=100_000).prefix("First ").suffix(" rows"));
                 ui.small("Prefix sample in engine scan order, not random. Statistics describe only those rows; distinctness does not establish table uniqueness.");

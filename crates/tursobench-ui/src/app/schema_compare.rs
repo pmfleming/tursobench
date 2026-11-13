@@ -319,7 +319,7 @@ impl State {
         ui.horizontal(|ui| {
             ui.label("Filter objects");
             ui.text_edit_singleline(&mut self.filter);
-            ui.checkbox(&mut self.identical, "Show identical");
+            crate::app::presentation::checkbox(ui, &mut self.identical, "Show identical");
         });
         let result = self
             .result

@@ -101,7 +101,7 @@ Settings opens in one application-wide, resizable window over the workspace.
 The separate Settings button, the Settings command and Ctrl+, open the same window.
 Its Appearance, Discovery, Resources and Queries pages keep the selected database tool
 intact. Escape closes Settings; reopening remembers the last page during this run.
-Below 480 px wide, the page rail becomes a row of icons. Long pages scroll while
+Pages are chosen from an icon rail, named on hover; below 480 px wide it becomes a row. Long pages scroll while
 navigation stays visible; Discovery scrolls only its folder list.
 Back restores typed filters, sorting, the retained browse window and matching row selection. Explicit
 table/related counts preserve the grid and drafts; automatic counts remain deferred. Painter icons include accessible names;
@@ -113,11 +113,14 @@ shortcuts, evidence and the remaining gaps—not a claim of complete parity.
 
 ### Navigator tools
 
-The four grouped footer icons switch between Tables, History, Saved queries and
-Checks for the selected database. Its filename appears above the group, with the
-full scope caption on hover. The Settings button sits beside the group, separated
-by a divider, and also works without an open database. Hover controls for their
-names; F1 opens keyboard help.
+Tables, History, Saved queries and Checks work on the selected database, so their
+four icons sit directly under its row in **Open databases** and appear only while
+it is open. The foot of the sidebar holds application-wide controls, which also work
+without an open database, as three icons: Settings (Ctrl+,), the command palette
+(Ctrl K) and the keyboard reference (F1). The reference is grouped by where each
+key or gesture applies, the palette lists each action with its shortcut, and
+context menus show the matching shortcut or gesture beside each action. Hover
+controls for their names.
 
 Access mode uses the same icons throughout the app: a lock for **Read only** and a
 pencil for **Read/write**, with matching tooltips and accessible names. The opening
@@ -220,7 +223,7 @@ history if they contain sensitive information.
 
 ### Spreadsheet editing
 
-Use **Table data → Edit cells** or right-click a cell for paste, mapped new-row
+Use the **Edit cells** icon at the end of the Table data ribbon, or right-click a cell, for paste, mapped new-row
 paste, typed fill, NULL and undo actions. These require the same complete,
 writable primary-key table browse as ordinary cell edits. SQL results remain
 read-only. All changes stay local until explicit Commit.
@@ -286,9 +289,11 @@ Run all offers sequential stop-on-error or atomic policy, up to 100
 statements / 1 MiB. Atomic scripts cannot contain transaction controls or join an
 existing editor transaction. See each step's outcome for prior committed effects.
 
-Shift-click a header adds another sort column. Filters support grouped AND/OR and
+Click a header to sort, again to reverse and once more to clear; a hovered header
+previews the sort arrow. Shift-click a header adds another sort column, and each
+sorted header then shows its position. Filters support grouped AND/OR and
 IN lists with typed values; quote a numeric string to compare as text. Counts and
-row jumps are explicit. Typed inserts and bulk selection deletion remain local
+row jumps are explicit: type a row number and press Enter, or use the arrow. Typed inserts and bulk selection deletion remain local
 until staged COMMIT. Arbitrary query results, keyless tables, WITHOUT ROWID and
 hidden/generated columns remain ineligible for generated edits.
 

@@ -398,14 +398,27 @@ struct HistoryRow<'a> {
 impl HistoryRow<'_> {
     fn show(&self, ui: &mut egui::Ui) -> Option<QueryAction> {
         card(ui, |ui| {
+            // SQL reads from the left edge, like the editor it loads into.
             let preview = ui
-                .add_sized(
-                    [ui.available_width(), 24.0],
-                    egui::Button::new(egui::RichText::new(sql_preview(self.sql)).monospace())
-                        .truncate()
-                        .frame(false),
+                .allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), 24.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.spacing_mut().button_padding.x = 0.0;
+                        ui.add(
+                            egui::Button::new(
+                                egui::RichText::new(sql_preview(self.sql)).monospace(),
+                            )
+                            .truncate()
+                            .frame(false),
+                        )
+                    },
                 )
-                .on_hover_text(self.sql);
+                .inner
+                .on_hover_text(format!(
+                    "{}\n\nClick to load into the SQL editor without running it",
+                    self.sql
+                ));
             let mut action = preview.clicked().then_some(QueryAction::Load);
             ui.horizontal(|ui| {
                 ui.small(self.elapsed_ms.map_or("—".into(), |ms| format!("{ms} ms")));

@@ -59,10 +59,13 @@ impl App {
             ui.ctx().request_discard("Discovery results changed size");
         }
         ui.horizontal(|ui| {
-            if ui
-                .checkbox(&mut self.preferences.discovery.enabled, "At startup")
-                .on_hover_text("Search for databases on startup")
-                .changed()
+            if crate::app::presentation::checkbox(
+                ui,
+                &mut self.preferences.discovery.enabled,
+                "At startup",
+            )
+            .on_hover_text("Search for databases on startup")
+            .changed()
             {
                 if !self.preferences.discovery.enabled {
                     self.databases.cancel();

@@ -281,7 +281,13 @@ impl App {
                     });
                     response.on_hover_text("Current zoom · click to reset to 100%")
                 } else {
-                    icons::ribbon_button(ui, icon, label, action.shortcut(), selected)
+                    let response =
+                        icons::ribbon_button(ui, icon, label, action.shortcut(), selected);
+                    if action == Action::Run {
+                        response.on_hover_text("Selection or current statement · Ctrl Shift Enter")
+                    } else {
+                        response
+                    }
                 }
             })
             .inner;
@@ -310,7 +316,9 @@ impl App {
                     for (i, column) in self.database.document.result.columns.iter().enumerate() {
                         ui.push_id(i, |ui| {
                             let mut shown = !hidden.contains(&i);
-                            if ui.checkbox(&mut shown, &column.name).changed() {
+                            if crate::app::presentation::checkbox(ui, &mut shown, &column.name)
+                                .changed()
+                            {
                                 if shown {
                                     hidden.remove(&i);
                                 } else {
@@ -484,7 +492,9 @@ impl App {
                 _ => {}
             }
             if kind == Kind::Data {
-                ui.menu_button("Edit cells", |ui| self.spreadsheet_menu(ui));
+                let edit = icons::ribbon_button(ui, Icon::EditCells, "Edit cells", "", None)
+                    .on_hover_text("Paste, mapped new rows, typed fill, NULL and undo");
+                egui::Popup::menu(&edit).show(|ui| self.spreadsheet_menu(ui));
             }
         });
         if available

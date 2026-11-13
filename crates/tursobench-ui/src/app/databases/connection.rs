@@ -104,7 +104,7 @@ impl App {
                 if inspection.ready(&self.database.path) && inspection.kind(&self.database.path) == crate::discovery::DatabaseKind::LikelySqlite {
                     ui.horizontal_wrapped(|ui| {
                             ui.weak("Likely SQLite");
-                            let response = ui.checkbox(&mut inspection.override_sqlite, "Open with Turso anyway");
+                            let response = crate::app::presentation::checkbox(ui, &mut inspection.override_sqlite, "Open with Turso anyway");
                             #[cfg(test)]
                             { self.databases.override_rect = Some(response.rect); }
                             response.on_hover_text("Override the engine guess for this selected file. Turso still validates compatibility; this does not convert the file.");
