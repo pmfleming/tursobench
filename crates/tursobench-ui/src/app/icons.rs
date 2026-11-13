@@ -56,6 +56,10 @@ pub(super) enum Icon {
     Help,
     Command,
     EditCells,
+    Compare,
+    Gauge,
+    Profile,
+    Transfer,
 }
 
 pub(super) fn button(ui: &mut egui::Ui, icon: Icon, name: &str, shortcut: &str) -> egui::Response {
@@ -396,6 +400,39 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
             line(&[(15., 6.), (15., 18.)]);
             line(&[(6., 9.), (18., 9.)]);
             line(&[(6., 15.), (18., 15.)]);
+        }
+        Compare => {
+            line(&[(4., 4.), (4., 20.)]);
+            line(&[(20., 4.), (20., 20.)]);
+            line(&[(8., 9.), (16., 9.)]);
+            line(&[(14., 7.), (16., 9.), (14., 11.)]);
+            line(&[(16., 15.), (8., 15.)]);
+            line(&[(10., 13.), (8., 15.), (10., 17.)]);
+        }
+        Gauge => {
+            line(&[
+                (3., 17.),
+                (4.2, 12.5),
+                (7.5, 9.2),
+                (12., 8.),
+                (16.5, 9.2),
+                (19.8, 12.5),
+                (21., 17.),
+            ]);
+            line(&[(12., 17.), (16., 12.)]);
+            line(&[(3., 20.), (21., 20.)]);
+        }
+        Profile => {
+            line(&[(3., 20.), (21., 20.)]);
+            line(&[(6., 20.), (6., 13.)]);
+            line(&[(12., 20.), (12., 4.)]);
+            line(&[(18., 20.), (18., 9.)]);
+        }
+        Transfer => {
+            line(&[(8., 20.), (8., 4.)]);
+            line(&[(4., 8.), (8., 4.), (12., 8.)]);
+            line(&[(16., 4.), (16., 20.)]);
+            line(&[(12., 16.), (16., 20.), (20., 16.)]);
         }
         EditCells => {
             // A cell holding a text cursor.

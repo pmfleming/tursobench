@@ -169,15 +169,17 @@ Disconnected workspaces with local drafts, pending exports or uncertain outcomes
 reachable in the sidebar. Their path cannot be edited or cleared by cancelling an open.
 
 - **Tables:** browse the active database’s schema; refresh reloads catalog and columns.
-- **History:** the filter icon shows only slow queries; the down-arrow orders by
-  duration. Each card shows SQL, timing and any failed/slow status. Click its SQL
-  preview or editor icon to load it. Loading clears bindings and does not execute
+- **History:** beside the search field, the filter icon shows only slow queries and
+  the down-arrow orders by duration. Each entry is two lines: its SQL, then timing
+  and any failed/slow status; a red or amber edge marks failed and slow entries.
+  Click its SQL preview or editor icon to load it. Row icons stay faint until the
+  pointer is over the row. Loading clears bindings and does not execute
   SQL. History is scoped to the current database. Stored SQL can
   contain sensitive values; bindings are never saved.
 - **Saved queries:** enter a name and use **+** to save the current editor SQL.
-  Names can be edited directly in each card. The editor icon loads SQL without
+  Names can be edited directly in each row. The editor icon loads SQL without
   running it and clears bindings. Search matches both names and SQL.
-- The trash icon on a query card removes that entry. The trash icon in the History
+- The trash icon on a query row removes that entry. The trash icon in the History
   or Saved queries header clears entries **for the current database**, regardless
   of search/slow filters; its tooltip names the file. It is disabled when that file
   has no entries. Older entries with no database scope remain visible under every
@@ -189,7 +191,9 @@ reachable in the sidebar. Their path cannot be edited or cleared by cancelling a
   pages; Validation contains integrity and foreign-key checks. All six actions
   are read-only. They run on the browse worker and may take time; discarding result
   delivery can interrupt supported SELECT reads; statement deadlines also apply.
-  Transfers and maintenance opens the separate import/export/checkpoint/backup panel.
+  Hover a check for the PRAGMA it runs; its result opens in the SQL tile. **Tools**
+  lists the four windows: Compare schemas (F7), PRAGMA dashboard, Data profiling and
+  Transfer & maintenance, the separate import/export/checkpoint/backup panel.
   Checkpoint and backup require writable access and editor autocommit. Backup closes
   the source and verifies the new copy before publication.
 - **Settings:** Appearance groups theme, font size and the NULL display marker.

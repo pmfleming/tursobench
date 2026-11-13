@@ -72,6 +72,7 @@ impl App {
         let mut remove = None;
         let mut renamed = false;
         let mut visible = 0;
+        let spacing = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 2.0);
         for (index, bookmark) in self.preferences.saved_queries.iter_mut().enumerate() {
             if !(bookmark.database.is_empty()
                 || bookmark.database == self.database.tools.database_scope)
@@ -83,11 +84,12 @@ impl App {
             }
             visible += 1;
             ui.push_id(("saved-query", index), |ui| {
-                card(ui, |ui| {
+                list_row(ui, None, |ui, active| {
                     let name = ui.add(
                         egui::TextEdit::singleline(&mut bookmark.name)
                             .char_limit(64)
                             .desired_width(ui.available_width())
+                            .margin(egui::Margin::ZERO)
                             .frame(egui::Frame::NONE),
                     );
                     name.widget_info(|| {
@@ -98,29 +100,32 @@ impl App {
                         )
                     });
                     renamed |= name.changed();
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(sql_preview(&bookmark.sql))
-                                .monospace()
-                                .weak(),
-                        )
-                        .truncate(),
-                    )
-                    .on_hover_text(&bookmark.sql);
-                    ui.horizontal(|ui| {
-                        if bookmark.database.is_empty() {
-                            ui.weak("Legacy")
-                                .on_hover_text("Saved before database-scoped queries");
-                        }
-                        match query_actions(ui, "Load saved query", "Delete saved query") {
-                            Some(QueryAction::Load) => load = Some(bookmark.sql.clone()),
-                            Some(QueryAction::Delete) => remove = Some(index),
-                            None => {}
-                        }
-                    });
+                    let action =
+                        query_actions(ui, active, "Load saved query", "Delete saved query", |ui| {
+                            if bookmark.database.is_empty() {
+                                ui.small("Legacy")
+                                    .on_hover_text("Saved before database-scoped queries");
+                            }
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(sql_preview(&bookmark.sql))
+                                        .monospace()
+                                        .small()
+                                        .weak(),
+                                )
+                                .truncate(),
+                            )
+                            .on_hover_text(&bookmark.sql);
+                        });
+                    match action {
+                        Some(QueryAction::Load) => load = Some(bookmark.sql.clone()),
+                        Some(QueryAction::Delete) => remove = Some(index),
+                        None => {}
+                    }
                 });
             });
         }
+        ui.spacing_mut().item_spacing.y = spacing;
         if visible == 0 {
             ui.weak("No saved queries");
         }
@@ -154,32 +159,38 @@ impl App {
                 .retain(|q| q.database != self.database.tools.database_scope);
             self.store.save(&self.preferences);
         }
-        search(
-            ui,
-            &mut self.database.tools.history_search,
-            "Search history…",
-        );
+        let threshold = self.preferences.slow_query_ms;
         ui.horizontal(|ui| {
-            for (selected, icon, name) in [
+            let toggles = 2.0 * (28.0 + ui.spacing().item_spacing.x);
+            ui.add_sized(
+                [(ui.available_width() - toggles).max(40.0), 28.0],
+                egui::TextEdit::singleline(&mut self.database.tools.history_search)
+                    .hint_text("Search history…"),
+            );
+            for (selected, icon, name, detail) in [
                 (
                     &mut self.database.tools.slow_only,
                     Icon::Filter,
                     "Slow queries only",
+                    format!("{threshold} ms or slower · threshold is in Settings"),
                 ),
                 (
                     &mut self.database.tools.sort_slow,
                     Icon::Down,
                     "Slowest first",
+                    "Otherwise most recent first".to_owned(),
                 ),
             ] {
-                if icons::control(ui, icon, name, "", *selected, false).clicked() {
+                if icons::control(ui, icon, name, "", *selected, false)
+                    .on_hover_text(detail)
+                    .clicked()
+                {
                     *selected = !*selected;
                 }
             }
         });
         ui.add_space(4.0);
         let query = self.database.tools.history_search.to_lowercase();
-        let threshold = self.preferences.slow_query_ms;
         let mut entries: Vec<_> = self
             .preferences
             .query_history
@@ -196,10 +207,15 @@ impl App {
             entries.sort_by_key(|(_, h)| std::cmp::Reverse(h.elapsed_ms));
         }
         if entries.is_empty() {
-            ui.weak("No history");
+            ui.weak(if query.is_empty() && !self.database.tools.slow_only {
+                "No history"
+            } else {
+                "No matching history"
+            });
         }
         let mut load = None;
         let mut remove = None;
+        let spacing = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 2.0);
         for (index, entry) in entries {
             match ui
                 .push_id(("history-query", index), |ui| {
@@ -219,6 +235,7 @@ impl App {
                 None => {}
             }
         }
+        ui.spacing_mut().item_spacing.y = spacing;
         if let Some(index) = remove {
             self.preferences.query_history.remove(index);
             self.store.save(&self.preferences);
@@ -229,30 +246,6 @@ impl App {
     }
 
     pub(super) fn diagnostics_ui(&mut self, ui: &mut egui::Ui) {
-        if ui.button("Compare schemas… (F7)").clicked() {
-            self.comparison.open = true;
-        }
-        if ui
-            .add_enabled(self.database.ready, egui::Button::new("PRAGMA dashboard…"))
-            .clicked()
-        {
-            self.database.tools.admin.open = true;
-        }
-        if ui
-            .add_enabled(self.database.ready, egui::Button::new("Data profiling…"))
-            .clicked()
-        {
-            self.database.tools.profile.open = true;
-        }
-        if ui
-            .add_enabled(
-                self.database.ready,
-                egui::Button::new("Data transfer / maintenance…"),
-            )
-            .clicked()
-        {
-            self.open_transfers();
-        }
         ui.horizontal(|ui| {
             ui.strong("Checks");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -264,9 +257,10 @@ impl App {
                     Icon::Lock,
                     ui.visuals().weak_text_color(),
                 );
-                response.on_hover_text("Read-only checks");
+                response.on_hover_text("Storage and validation checks only read the database");
             });
         });
+        let ready = self.database.ready && !self.database.closing;
         for (title, checks) in [
             (
                 "Storage",
@@ -285,20 +279,83 @@ impl App {
                 ][..],
             ),
         ] {
-            section(ui, title, |ui| {
+            group(ui, title, |ui| {
                 for &(diagnostic, icon, label) in checks {
                     let response = ui
-                        .add_enabled_ui(self.database.ready && !self.database.closing, |ui| {
-                            action_row(ui, icon, label, diagnostic.label())
+                        .add_enabled_ui(ready, |ui| {
+                            action_row(ui, icon, label, diagnostic.label(), "")
                         })
-                        .inner;
+                        .inner
+                        .on_hover_text(format!(
+                            "Runs {} · the result opens in the SQL tile",
+                            diagnostic.sql()
+                        ));
                     if response.clicked() {
                         self.submit(Operation::Diagnostic(diagnostic), View::Diagnostics);
                     }
                 }
             });
         }
+        // Each of these opens its own window; unlike the checks, some can write.
+        group(ui, "Tools", |ui| {
+            for (tool, icon, label, name, shortcut, detail) in [
+                (
+                    Tool::Compare,
+                    Icon::Compare,
+                    "Compare schemas",
+                    "Compare schemas",
+                    "F7",
+                    "Diff two open databases and draft a migration",
+                ),
+                (
+                    Tool::Dashboard,
+                    Icon::Gauge,
+                    "PRAGMA dashboard",
+                    "PRAGMA dashboard",
+                    "",
+                    "Effective settings and file sizes",
+                ),
+                (
+                    Tool::Profile,
+                    Icon::Profile,
+                    "Data profiling",
+                    "Data profiling",
+                    "",
+                    "NULLs, distinct values, ranges and top values per column",
+                ),
+                (
+                    Tool::Transfer,
+                    Icon::Transfer,
+                    "Transfer & maintenance",
+                    "Data transfer and maintenance",
+                    "",
+                    "Complete export, import, checkpoint and verified backup",
+                ),
+            ] {
+                let enabled = tool == Tool::Compare || self.database.ready;
+                let response = ui
+                    .add_enabled_ui(enabled, |ui| action_row(ui, icon, label, name, shortcut))
+                    .inner
+                    .on_hover_text(detail);
+                if response.clicked() {
+                    match tool {
+                        Tool::Compare => self.comparison.open = true,
+                        Tool::Dashboard => self.database.tools.admin.open = true,
+                        Tool::Profile => self.database.tools.profile.open = true,
+                        Tool::Transfer => self.open_transfers(),
+                    }
+                }
+            }
+        });
     }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Tool {
+    Compare,
+    Dashboard,
+    Profile,
+    Transfer,
 }
 
 fn heading_action(ui: &mut egui::Ui, title: &str, icon: Icon, name: &str, enabled: bool) -> bool {
@@ -312,6 +369,20 @@ fn heading_action(ui: &mut egui::Ui, title: &str, icon: Icon, name: &str, enable
         .inner
     })
     .inner
+}
+
+/// A titled run of flat rows, like the navigator's own tree.
+fn group(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut egui::Ui)) {
+    ui.add_space(4.0);
+    ui.label(
+        egui::RichText::new(title.to_uppercase())
+            .small()
+            .strong()
+            .color(crate::appearance::Tokens::of(ui.ctx()).muted),
+    );
+    let spacing = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 2.0);
+    contents(ui);
+    ui.spacing_mut().item_spacing.y = spacing;
 }
 
 pub(super) fn section(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut egui::Ui)) {
@@ -345,26 +416,119 @@ fn search(ui: &mut egui::Ui, value: &mut String, hint: &str) {
     );
 }
 
-fn action_row(ui: &mut egui::Ui, icon: Icon, label: &str, name: &str) -> egui::Response {
-    let response = ui.add_sized([ui.available_width(), 32.0], egui::Button::new(""));
+/// One line of text that ends in an ellipsis instead of leaving its column.
+fn elided(
+    ui: &egui::Ui,
+    text: &str,
+    font: egui::FontId,
+    color: egui::Color32,
+    width: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font, color);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(width.max(0.0));
+    ui.painter().layout_job(job)
+}
+
+fn action_row(
+    ui: &mut egui::Ui,
+    icon: Icon,
+    label: &str,
+    name: &str,
+    shortcut: &str,
+) -> egui::Response {
+    let response = ui.add_sized(
+        [ui.available_width(), 28.0],
+        egui::Button::new("").frame_when_inactive(false),
+    );
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), name));
-    ui.painter().text(
-        egui::pos2(response.rect.left() + 34.0, response.rect.center().y),
-        egui::Align2::LEFT_CENTER,
+    let rect = response.rect;
+    let color = ui.style().interact(&response).fg_stroke.color;
+    let mut right = rect.right() - 8.0;
+    if !shortcut.is_empty() {
+        let key = ui.painter().layout_no_wrap(
+            shortcut.to_owned(),
+            egui::TextStyle::Small.resolve(ui.style()),
+            crate::appearance::Tokens::of(ui.ctx()).muted,
+        );
+        right -= key.size().x;
+        ui.painter().galley(
+            egui::pos2(right, rect.center().y - key.size().y / 2.0),
+            key,
+            color,
+        );
+        right -= 8.0;
+    }
+    let left = rect.left() + 30.0;
+    let text = elided(
+        ui,
         label,
         egui::TextStyle::Button.resolve(ui.style()),
-        ui.style().interact(&response).fg_stroke.color,
+        color,
+        right - left,
+    );
+    ui.painter().galley(
+        egui::pos2(left, rect.center().y - text.size().y / 2.0),
+        text,
+        color,
     );
     icons::paint(
         ui.painter(),
         egui::Rect::from_center_size(
-            egui::pos2(response.rect.left() + 16.0, response.rect.center().y),
+            egui::pos2(rect.left() + 14.0, rect.center().y),
             egui::vec2(16.0, 16.0),
         ),
         icon,
-        ui.style().interact(&response).fg_stroke.color,
+        color,
     );
-    response.on_hover_text(name)
+    response.on_hover_text(if shortcut.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{name} · {shortcut}")
+    })
+}
+
+/// A flat two-line entry. The closure learns whether the pointer is over the
+/// row so per-row actions can recede until they are within reach.
+fn list_row<R>(
+    ui: &mut egui::Ui,
+    edge: Option<egui::Color32>,
+    contents: impl FnOnce(&mut egui::Ui, bool) -> R,
+) -> R {
+    const HEIGHT: f32 = 54.0;
+    let expected =
+        egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), HEIGHT));
+    let active = ui.rect_contains_pointer(expected);
+    let fill = ui.painter().add(egui::Shape::Noop);
+    let frame = egui::Frame::new()
+        .inner_margin(egui::Margin {
+            left: 8,
+            right: 2,
+            top: 3,
+            bottom: 3,
+        })
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 0.0;
+            contents(ui, active)
+        });
+    let rect = frame.response.rect;
+    if active {
+        ui.painter().set(
+            fill,
+            egui::Shape::rect_filled(rect, 6.0, ui.visuals().faint_bg_color),
+        );
+    }
+    if let Some(color) = edge {
+        ui.painter().rect_filled(
+            egui::Rect::from_min_max(
+                rect.left_top() + egui::vec2(0.0, 5.0),
+                egui::pos2(rect.left() + 2.0, rect.bottom() - 5.0),
+            ),
+            1.0,
+            color,
+        );
+    }
+    frame.inner
 }
 
 #[derive(Clone, Copy)]
@@ -373,17 +537,44 @@ enum QueryAction {
     Delete,
 }
 
-fn query_actions(ui: &mut egui::Ui, load: &str, delete: &str) -> Option<QueryAction> {
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        let delete = icons::button(ui, Icon::Trash, delete, "").clicked();
-        let load = icons::button(ui, Icon::Sql, load, "").clicked();
-        if load {
-            Some(QueryAction::Load)
-        } else if delete {
-            Some(QueryAction::Delete)
-        } else {
-            None
-        }
+/// The second line of a query row: `leading` on the left, load and delete on
+/// the right. The actions stay visible but faint until the row is active.
+fn query_actions(
+    ui: &mut egui::Ui,
+    active: bool,
+    load: &str,
+    delete: &str,
+    leading: impl FnOnce(&mut egui::Ui),
+) -> Option<QueryAction> {
+    ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            let action = ui
+                .scope(|ui| {
+                    if !active {
+                        ui.visuals_mut().widgets.inactive.fg_stroke.color =
+                            crate::appearance::Tokens::of(ui.ctx()).faint;
+                    }
+                    let delete = icons::button(ui, Icon::Trash, delete, "").clicked();
+                    let load = icons::button(ui, Icon::Sql, load, "")
+                        .on_hover_text("Into the SQL editor, without running it")
+                        .clicked();
+                    if load {
+                        Some(QueryAction::Load)
+                    } else if delete {
+                        Some(QueryAction::Delete)
+                    } else {
+                        None
+                    }
+                })
+                .inner;
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                leading(ui);
+            });
+            action
+        })
+        .inner
     })
     .inner
 }
@@ -397,14 +588,22 @@ struct HistoryRow<'a> {
 }
 impl HistoryRow<'_> {
     fn show(&self, ui: &mut egui::Ui) -> Option<QueryAction> {
-        card(ui, |ui| {
+        let edge = if self.failed {
+            Some(ui.visuals().error_fg_color)
+        } else if self.slow {
+            Some(ui.visuals().warn_fg_color)
+        } else {
+            None
+        };
+        list_row(ui, edge, |ui, active| {
             // SQL reads from the left edge, like the editor it loads into.
             let preview = ui
                 .allocate_ui_with_layout(
-                    egui::vec2(ui.available_width(), 24.0),
+                    egui::vec2(ui.available_width(), 20.0),
                     egui::Layout::left_to_right(egui::Align::Center),
                     |ui| {
-                        ui.spacing_mut().button_padding.x = 0.0;
+                        ui.spacing_mut().button_padding = egui::Vec2::ZERO;
+                        ui.spacing_mut().interact_size.y = 20.0;
                         ui.add(
                             egui::Button::new(
                                 egui::RichText::new(sql_preview(self.sql)).monospace(),
@@ -419,26 +618,42 @@ impl HistoryRow<'_> {
                     "{}\n\nClick to load into the SQL editor without running it",
                     self.sql
                 ));
-            let mut action = preview.clicked().then_some(QueryAction::Load);
-            ui.horizontal(|ui| {
-                ui.small(self.elapsed_ms.map_or("—".into(), |ms| format!("{ms} ms")));
-                action = query_actions(ui, "Load history query", "Delete history entry").or(action);
-            });
-            let badges = [
-                (self.failed, "Failed", ui.visuals().error_fg_color),
-                (self.slow, "Slow", ui.visuals().warn_fg_color),
-                (self.legacy, "Legacy", ui.visuals().weak_text_color()),
-            ];
-            if badges.iter().any(|(visible, _, _)| *visible) {
-                ui.horizontal_wrapped(|ui| {
-                    for (visible, label, color) in badges {
+            let action = preview.clicked().then_some(QueryAction::Load);
+            query_actions(
+                ui,
+                active,
+                "Load history query",
+                "Delete history entry",
+                |ui| {
+                    ui.small(self.elapsed_ms.map_or("—".into(), |ms| format!("{ms} ms")));
+                    for (visible, label, color, detail) in [
+                        (
+                            self.failed,
+                            "Failed",
+                            ui.visuals().error_fg_color,
+                            "The statement returned an error",
+                        ),
+                        (
+                            self.slow,
+                            "Slow",
+                            ui.visuals().warn_fg_color,
+                            "At or above the slow-query threshold",
+                        ),
+                        (
+                            self.legacy,
+                            "Legacy",
+                            ui.visuals().weak_text_color(),
+                            "Recorded before history was kept per database",
+                        ),
+                    ] {
                         if visible {
-                            ui.colored_label(color, label);
+                            ui.label(egui::RichText::new(label).small().color(color))
+                                .on_hover_text(detail);
                         }
                     }
-                });
-            }
-            action
+                },
+            )
+            .or(action)
         })
     }
 }
@@ -623,6 +838,15 @@ mod tests {
                     if panel == TestPanel::Diagnostics {
                         for diagnostic in Diagnostic::ALL {
                             crate::app::test_ui::control(&output, diagnostic.label());
+                        }
+                        // The four tool windows are rows too, not a separate button stack.
+                        for tool in [
+                            "Compare schemas",
+                            "PRAGMA dashboard",
+                            "Data profiling",
+                            "Data transfer and maintenance",
+                        ] {
+                            crate::app::test_ui::control(&output, tool);
                         }
                     }
                 }

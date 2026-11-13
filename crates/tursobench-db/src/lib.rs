@@ -318,7 +318,7 @@ impl Diagnostic {
             Self::ForeignKeys => "Foreign-key check (may be slow)",
         }
     }
-    fn sql(self) -> &'static str {
+    pub fn sql(self) -> &'static str {
         match self {
             Self::DatabaseList => "PRAGMA database_list",
             Self::JournalMode => "PRAGMA journal_mode",
