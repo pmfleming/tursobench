@@ -99,6 +99,31 @@ fn writes_are_refused_by_the_gate_and_by_the_engine() {
 }
 
 #[test]
+fn the_database_location_is_not_readable() {
+    let (_dir, path) = fixture();
+    let mut client = Client::open(&path, Access::ReadOnly);
+    let tools = client.session.assistant();
+    for sql in [
+        "SELECT * FROM pragma_database_list",
+        "SELECT file FROM \"PRAGMA_DATABASE_LIST\"()",
+        "SELECT file FROM [pragma_database_list]",
+        "EXPLAIN SELECT * FROM pragma_database_list",
+    ] {
+        let error = tools.call(Tool::Query(sql.into()), WAIT).unwrap_err();
+        assert!(error.message.contains("location"), "{sql}: {error:?}");
+    }
+    // Other table-valued pragmas stay available.
+    let info = tools
+        .call(
+            Tool::Query("SELECT name FROM pragma_table_info('pets')".into()),
+            WAIT,
+        )
+        .unwrap();
+    assert_eq!(info["row_count"], 4);
+    client.close();
+}
+
+#[test]
 fn turso_query_only_rejects_writes_on_its_connection() {
     // The engine guard behind the parser gate, checked directly.
     let (_dir, path) = fixture();

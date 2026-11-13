@@ -100,6 +100,20 @@ pub(crate) fn validate(text: &str) -> Result<(), Failure> {
     use turso_parser::ast::{Cmd, Stmt};
     sql::validate_single(text)?;
     sql::validate_coordinated(text)?;
+    // `pragma_database_list` returns the database's full path, which names the
+    // user's folders; the assistant only ever learns the file name. Quoting
+    // cannot hide the name, so a plain search over the text is enough.
+    let plain: String = text
+        .chars()
+        .filter(|c| !matches!(c, '"' | '`' | '[' | ']'))
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if plain.contains("pragma_database_list") {
+        return Err(Failure {
+            kind: tursobench_core::ErrorKind::ReadOnly,
+            message: "The assistant cannot read the database's location".into(),
+        });
+    }
     let command = turso_parser::parser::Parser::new(text.as_bytes())
         .next_cmd()
         .map_err(|e| Failure::input(e.to_string()))?;
