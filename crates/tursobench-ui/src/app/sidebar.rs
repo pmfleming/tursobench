@@ -418,7 +418,7 @@ impl App {
                 self.database.ui.palette_open,
                 false,
             )
-            .on_hover_text("Find any action by name")
+            .on_hover_text("Common actions by name")
             .clicked()
             {
                 self.open_palette();

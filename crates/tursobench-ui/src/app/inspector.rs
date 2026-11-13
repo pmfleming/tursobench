@@ -710,7 +710,7 @@ const HELP: &[(&str, &[HelpRow])] = &[
         "Anywhere",
         &[
             (&["F1"], "This reference"),
-            (&["Ctrl K"], "Commands: find any action by name"),
+            (&["Ctrl K"], "Commands: common actions by name"),
             (
                 &["Ctrl P", "/"],
                 "Sidebar search across All open, This database or Databases · Up/Down chooses · Enter opens · Esc clears",

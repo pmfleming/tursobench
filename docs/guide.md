@@ -118,7 +118,7 @@ four icons sit directly under its row in **Open databases** and appear only whil
 it is open. The foot of the sidebar holds application-wide controls, which also work
 without an open database, as three icons: Settings (Ctrl+,), the command palette
 (Ctrl K) and the keyboard reference (F1). The reference is grouped by where each
-key or gesture applies, the palette lists each action with its shortcut, and
+key or gesture applies, the palette lists common actions with their shortcuts, and
 context menus show the matching shortcut or gesture beside each action. Hover
 controls for their names.
 
