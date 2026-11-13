@@ -236,7 +236,7 @@ impl App {
         }
         if consumed(Modifiers::CTRL, Key::K) {
             egui::Popup::close_all(ctx);
-            self.open_palette();
+            self.toggle_palette();
             return;
         }
         if self.database.ui.palette_open {
@@ -357,6 +357,14 @@ impl App {
                 }
             });
         self.database.ui.access_dialog &= open;
+    }
+    /// Ctrl K and the Commands button close the palette they opened.
+    pub(super) fn toggle_palette(&mut self) {
+        if self.database.ui.palette_open {
+            self.database.ui.palette_open = false;
+        } else {
+            self.open_palette();
+        }
     }
     pub(super) fn open_palette(&mut self) {
         self.database.ui.palette_open = true;

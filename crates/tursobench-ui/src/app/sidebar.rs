@@ -421,7 +421,7 @@ impl App {
             .on_hover_text("Common actions by name")
             .clicked()
             {
-                self.open_palette();
+                self.toggle_palette();
             }
             if icons::control(
                 ui,

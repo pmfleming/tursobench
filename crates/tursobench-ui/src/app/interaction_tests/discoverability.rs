@@ -16,6 +16,13 @@ fn sidebar_foot_opens_help_and_commands_without_a_database() {
     click(&mut app, &ctx, commands.center());
     assert!(app.database.ui.palette_open);
     assert!(app.database.session.is_none());
+    // The same button and Ctrl K both close what they opened.
+    click(&mut app, &ctx, commands.center());
+    assert!(!app.database.ui.palette_open);
+    press_key(&mut app, &ctx, egui::Key::K, egui::Modifiers::CTRL);
+    assert!(app.database.ui.palette_open);
+    press_key(&mut app, &ctx, egui::Key::K, egui::Modifiers::CTRL);
+    assert!(!app.database.ui.palette_open);
 }
 
 #[test]
