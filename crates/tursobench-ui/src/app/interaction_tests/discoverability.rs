@@ -73,3 +73,25 @@ fn database_tools_sit_under_the_open_database_and_application_controls_at_the_fo
     assert_eq!(app.database.ui.sidebar, shell::ToolPanel::Schema);
     close_and_wait(&mut app, &ctx);
 }
+
+#[test]
+fn palette_runs_the_best_match_not_the_first_listed() {
+    let (ctx, mut app) = crate::app::test_ui::app();
+    frame(&mut app, &ctx, vec![]);
+    for (query, opened) in [
+        ("set", (|a: &App| a.settings.open) as fn(&App) -> bool),
+        ("help", |a: &App| a.database.tools.help),
+    ] {
+        app.open_palette();
+        app.database.ui.palette_query = query.into();
+        frame(&mut app, &ctx, vec![]);
+        press_key(&mut app, &ctx, egui::Key::Enter, egui::Modifiers::NONE);
+        assert!(opened(&app), "{query}");
+        assert!(
+            !app.database.document.ui.sql_open,
+            "{query} ran the SQL editor"
+        );
+        app.settings.open = false;
+        app.database.tools.help = false;
+    }
+}

@@ -42,6 +42,52 @@ pub(super) fn fuzzy(label: &str, query: &str) -> bool {
         .all(|wanted| chars.by_ref().any(|c| c == wanted))
 }
 
+/// How well a palette entry answers a query; lower is better and `None`
+/// leaves it out. Labels match from the start of a word, so "set" finds
+/// Settings rather than the letters s…e…t scattered through another label.
+/// A shortcut matches only from its start ("f5", "ctrl j").
+pub(super) fn rank(label: &str, shortcut: &str, query: &str) -> Option<u8> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return Some(0);
+    }
+    let label = label.to_lowercase();
+    let words: Vec<&str> = label
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let compact = |text: &str| text.split_whitespace().collect::<String>();
+    // Every typed word starts a label word, in order: "ref tab".
+    let word_starts = || {
+        let mut rest = words.iter();
+        query
+            .split_whitespace()
+            .all(|part| rest.by_ref().any(|w| w.starts_with(part)))
+    };
+    // Initials: "tse" for Toggle SQL editor.
+    let initials = || {
+        let mut initials = words.iter().filter_map(|w| w.chars().next());
+        !query.contains(' ') && query.chars().all(|q| initials.by_ref().any(|c| c == q))
+    };
+    if label.starts_with(&query) {
+        Some(0)
+    } else if words.iter().any(|w| w.starts_with(&query)) {
+        Some(1)
+    } else if label.contains(&query) {
+        Some(2)
+    } else if word_starts() {
+        Some(3)
+    } else if initials() {
+        Some(4)
+    } else if !shortcut.is_empty()
+        && compact(&shortcut.to_lowercase()).starts_with(&compact(&query))
+    {
+        Some(5)
+    } else {
+        None
+    }
+}
+
 pub(super) struct ObjectRef<'a> {
     kind: &'a str,
     name: &'a str,
@@ -399,7 +445,7 @@ impl App {
         }
     }
     fn palette_items(&self) -> Vec<(&'static str, &'static str, Command)> {
-        let mut items: Vec<(&'static str, &'static str, Command)> = vec![
+        let items: Vec<(&'static str, &'static str, Command)> = vec![
             ("Schema home · Map", "", Command::Map),
             ("List tables and views", "", Command::List),
             ("Toggle SQL editor", "Ctrl J", Command::Sql),
@@ -435,14 +481,14 @@ impl App {
             ("Toggle theme", "Ctrl T", Command::Theme),
             ("Keyboard shortcuts and help", "F1", Command::Help),
         ];
-        items.retain(|(label, shortcut, _)| {
-            fuzzy(
-                &format!("{label} · {shortcut}"),
-                &self.database.ui.palette_query,
-            )
-        });
-        items.truncate(80);
-        items
+        let query = &self.database.ui.palette_query;
+        let mut ranked: Vec<_> = items
+            .into_iter()
+            .filter_map(|item| rank(item.0, item.1, query).map(|tier| (tier, item)))
+            .collect();
+        // Stable, so equally good matches keep the list's own order.
+        ranked.sort_by_key(|(tier, _)| *tier);
+        ranked.into_iter().map(|(_, item)| item).take(80).collect()
     }
     pub(super) fn execute_command(&mut self, ctx: &egui::Context, action: Command) {
         match action {
@@ -563,7 +609,21 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::fuzzy;
+    use super::{fuzzy, rank};
+    #[test]
+    fn palette_ranks_word_starts_before_scattered_letters() {
+        // Shortcut text no longer lends letters: "set" is not Ctrl J's
+        // "Toggle SQL editor · Ctrl J".
+        assert_eq!(rank("Toggle SQL editor", "Ctrl J", "set"), None);
+        assert_eq!(rank("Settings", "Ctrl ,", "set"), Some(0));
+        assert_eq!(rank("Saved queries", "", "que"), Some(1));
+        assert_eq!(rank("Refresh current table", "F5", "ref tab"), Some(3));
+        assert_eq!(rank("Toggle SQL editor", "Ctrl J", "tse"), Some(4));
+        assert_eq!(rank("Refresh current table", "F5", "f5"), Some(5));
+        assert_eq!(rank("Toggle SQL editor", "Ctrl J", "ctrl j"), Some(5));
+        assert_eq!(rank("Close database", "", "run"), None);
+        assert_eq!(rank("Anything", "", "  "), Some(0));
+    }
     #[test]
     fn search_matches_subsequences_case_insensitively_and_unicode() {
         assert!(fuzzy("entries.echo_source_id", "E ec src"));
