@@ -1,3 +1,5 @@
+#[path = "cases/assistant.rs"]
+mod assistant;
 mod common;
 #[path = "cases/editing.rs"]
 mod editing;

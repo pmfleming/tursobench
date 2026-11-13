@@ -9,6 +9,7 @@ mod observe;
 pub use access::{ProcessUsage, check_access, processes_using};
 pub mod admin;
 pub mod advice;
+pub mod assistant;
 pub mod completion;
 mod connection;
 mod diagram;
@@ -36,7 +37,7 @@ use worker::{Output, worker};
 
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
 const COMMAND_CAPACITY: usize = 32;
-const COMMAND_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const COMMAND_BYTES: usize = 16 * 1024 * 1024;
 const EVENT_CAPACITY: usize = 8;
 
 /// Only submitted, unfinished requests occupy this map. Cancellation targets one
@@ -75,6 +76,11 @@ impl DeliveryControl {
 }
 
 pub enum Operation {
+    /// Answered on `reply`, never on the session event stream.
+    Assistant {
+        tool: assistant::Tool,
+        reply: SyncSender<assistant::Reply>,
+    },
     CaptureSchema,
     Migration {
         sql: String,
@@ -286,6 +292,7 @@ impl Operation {
                 } => path.as_os_str().len() + kinds.len() + null_marker.len(),
                 Self::SaveValue { path, .. } | Self::BackupAndClose(path) => path.as_os_str().len(),
                 Self::Inspect(s) | Self::Count(s) | Self::Definition(s) => s.len(),
+                Self::Assistant { tool, .. } => tool.bytes(),
                 _ => 0,
             }
     }
@@ -435,6 +442,15 @@ impl Session {
             return Err(Failure::input(format!("Worker queue unavailable: {error}")));
         }
         Ok(())
+    }
+    /// A handle the assistant tool server can use from its own threads.
+    pub fn assistant(&self) -> assistant::Handle {
+        assistant::Handle {
+            id: self.id,
+            commands: self.commands.clone(),
+            discard: self.discard.clone(),
+            closing: self.closing.clone(),
+        }
     }
     pub fn discard_results(&self, request: u64) {
         self.discard.discard(request);

@@ -220,6 +220,7 @@ pub(super) async fn worker(
         depot: crate::values::Depot::default(),
         dirty_data: false,
         dirty_schema: false,
+        assistant: None,
     };
     let mut backup = None;
     while !output.closing.load(Ordering::Acquire) {
@@ -283,6 +284,13 @@ pub(super) async fn worker(
                     continue;
                 }
             }
+        }
+        if let Operation::Assistant { tool, reply } = request.operation {
+            let answer = worker.assistant(request.ticket, tool).await;
+            output.discard.finished(request.ticket.request);
+            // The caller may have timed out and gone; that is not an error here.
+            let _ = reply.try_send(answer);
+            continue;
         }
         let event = match worker.dispatch(request.ticket, request.operation).await {
             Ok(Some(event)) => event,
@@ -382,8 +390,20 @@ struct Worker<'a> {
     depot: crate::values::Depot,
     dirty_data: bool,
     dirty_schema: bool,
+    assistant: Option<Connection>,
 }
 impl<'a> Worker<'a> {
+    async fn assistant(
+        &mut self,
+        ticket: Ticket,
+        tool: crate::assistant::Tool,
+    ) -> crate::assistant::Reply {
+        if self.assistant.is_none() {
+            self.assistant = Some(crate::assistant::connect(self.db, self.settings).await?);
+        }
+        let connection = self.assistant.as_ref().expect("connected above");
+        crate::assistant::run(connection, tool, ticket.request, &self.output.discard).await
+    }
     fn note_completion(&mut self, ticket: Ticket, effect: sql::Effect, completion: &Completion) {
         self.uncertain |= completion.transaction == tursobench_core::TransactionState::Unknown;
         if completion.error.is_none() {
@@ -915,6 +935,7 @@ impl<'a> Worker<'a> {
             Operation::BackupAndClose(_) => return Err(Failure::input("Backup must be coordinated by the session owner")),
             Operation::Script { sql, parameters, atomic, budget } => return self.script(ticket, sql, parameters, atomic, budget, None).await.map(Some),
             Operation::Close => return Ok(None),
+            Operation::Assistant { .. } => return Err(Failure::input("Assistant tools are answered by the session loop")),
             Operation::Admin(change) => {
                 if change.is_some() && self.uncertain { return Err(Failure::input("Prior outcome UNKNOWN; reopen before changing settings")); }
                 let started = std::time::Instant::now();
