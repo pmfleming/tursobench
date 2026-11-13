@@ -166,10 +166,22 @@ pub struct Preferences {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct AssistantPreferences {
+    pub provider: Provider,
+    /// A full command line for any other Agent Client Protocol agent.
+    pub custom_command: String,
     /// Passed to the agent as its model; empty keeps the agent's own default.
     pub model: String,
     /// Keyed by absolute database path; a missing entry means not yet chosen.
     pub sharing: std::collections::BTreeMap<String, crate::assistant_tools::Sharing>,
+}
+/// Which signed-in agent CLI the assistant starts.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum Provider {
+    #[default]
+    Claude,
+    Copilot,
+    Codex,
+    Custom,
 }
 /// The navigation sidebar and the assistant panel are shown or hidden independently.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -271,6 +283,9 @@ impl Preferences {
         }
         if self.assistant.model.len() > 200 {
             self.assistant.model.clear();
+        }
+        if self.assistant.custom_command.len() > 4096 {
+            self.assistant.custom_command.clear();
         }
         self.workspace_layouts.truncate(20);
         let mut workspace_names = HashSet::new();

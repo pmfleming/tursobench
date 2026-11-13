@@ -14,6 +14,7 @@ pub(super) enum Page {
     Discovery,
     Resources,
     Queries,
+    Assistant,
 }
 
 #[derive(Default)]
@@ -123,6 +124,7 @@ impl App {
                 Page::Appearance => self.appearance_settings(ui),
                 Page::Resources => self.resource_settings(ui),
                 Page::Queries => self.query_settings(ui),
+                Page::Assistant => self.assistant_settings(ui),
                 Page::Discovery => unreachable!(),
             });
     }
@@ -134,7 +136,7 @@ impl App {
         }
     }
 
-    fn setting_response(&mut self, response: egui::Response) {
+    pub(super) fn setting_response(&mut self, response: egui::Response) {
         self.settings.dirty |= response.changed();
         if response.lost_focus()
             || response.drag_stopped()
@@ -475,7 +477,7 @@ fn clear_queries_row(ui: &mut egui::Ui, icon: Icon, title: &str, count: usize, n
     .inner
 }
 
-fn pages() -> [(Page, Icon, &'static str, &'static str); 4] {
+fn pages() -> [(Page, Icon, &'static str, &'static str); 5] {
     [
         (Page::Appearance, Icon::Sun, "Appearance", "Appearance"),
         (Page::Discovery, Icon::Search, "Discovery", "Discovery"),
@@ -490,6 +492,12 @@ fn pages() -> [(Page, Icon, &'static str, &'static str); 4] {
             Icon::Sql,
             "Queries",
             "Queries and SQL recovery",
+        ),
+        (
+            Page::Assistant,
+            Icon::Assistant,
+            "Assistant",
+            "Assistant agent and sharing",
         ),
     ]
 }

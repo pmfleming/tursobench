@@ -1,6 +1,7 @@
 //! The assistant panel sits beside the sidebar; each can be hidden on its own.
-//! It drives the user's own signed-in Claude Code and offers it read-only tools
-//! for the database in this workspace. TursoBench never handles credentials.
+//! It drives the user's own signed-in agent CLI (Claude Code by default, or an
+//! Agent Client Protocol agent) and offers it read-only tools for the database
+//! in this workspace. TursoBench never handles credentials.
 use super::{
     App,
     icons::{self, Icon},
@@ -14,12 +15,11 @@ use std::{
     sync::{Arc, Mutex, mpsc},
 };
 use tursobench_assistant::{
-    agent::{Agent, Update},
+    agent::{Agent, Protocol, Spec, Update},
     claude,
     relay::{self, Endpoint},
 };
 
-const PROVIDER: &str = "Claude Code";
 const MAX_ENTRIES: usize = 400;
 const MAX_TOOL_TEXT: usize = 4096;
 
@@ -53,6 +53,10 @@ pub(super) struct Conversation {
     pub(super) draft: String,
     running: Option<Running>,
     pub(super) busy: bool,
+    /// The running agent's name, kept for the header while it runs.
+    label: Option<String>,
+    /// The command that signs this agent in, for error hints.
+    sign_in: Option<String>,
     model: Option<String>,
     focus: bool,
     /// Told to the agent with the next prompt after the user changes sharing.
@@ -72,6 +76,7 @@ impl Conversation {
     }
     fn reset(&mut self) {
         self.running = None;
+        self.label = None;
         self.entries.clear();
         self.busy = false;
         self.model = None;
@@ -189,16 +194,22 @@ impl App {
             Update::TurnEnded { error } => {
                 conversation.busy = false;
                 if let Some(error) = error {
-                    conversation.push(Entry::Notice(Intent::Danger, explain(&error)));
+                    let hint = explain(&error, conversation.sign_in.as_deref());
+                    conversation.push(Entry::Notice(Intent::Danger, hint));
                 }
             }
             Update::Notice(text) => conversation.push(Entry::Notice(Intent::Pending, text)),
             Update::Exited { message } => {
                 conversation.running = None;
                 conversation.busy = false;
+                let name = conversation
+                    .label
+                    .clone()
+                    .unwrap_or_else(|| "The agent".into());
+                let hint = explain(&message, conversation.sign_in.as_deref());
                 conversation.push(Entry::Notice(
                     Intent::Danger,
-                    format!("{PROVIDER} stopped. {}", explain(&message)),
+                    format!("{name} stopped. {hint}"),
                 ));
             }
         }
@@ -224,34 +235,48 @@ impl App {
         let endpoint = Endpoint::start(host.clone(), relay_program)
             .map_err(|e| format!("Could not start the assistant's tools: {e}"))?;
         let cwd = relay::private_dir().map_err(|e| e.to_string())?;
+        let profile = profile(&self.preferences.assistant)?;
         #[cfg(test)]
         let program = self
             .database
             .assistant
             .program
             .clone()
-            .unwrap_or_else(|| "claude".into());
+            .unwrap_or_else(|| profile.program.clone());
         #[cfg(not(test))]
-        let program = PathBuf::from("claude");
+        let program = profile.program.clone();
         let model = self.preferences.assistant.model.trim().to_owned();
-        let spec = claude::spec(
-            program,
-            cwd,
-            endpoint.config_path(),
-            &tools::NAMES,
-            &tools::system_prompt(&name, sharing),
-            (!model.is_empty()).then_some(model.as_str()),
-        );
+        let model = (!model.is_empty()).then_some(model.as_str());
+        let prompt = tools::system_prompt(&name, sharing);
+        let spec = match profile.protocol {
+            Protocol::ClaudeStream => claude::spec(
+                program,
+                cwd,
+                endpoint.config_path(),
+                &tools::NAMES,
+                &prompt,
+                model,
+            ),
+            Protocol::Acp => Spec {
+                program,
+                args: profile.args.clone(),
+                env: profile.env.clone(),
+                cwd,
+                protocol: Protocol::Acp,
+                system_prompt: prompt,
+                mcp: Some(endpoint.launch().clone()),
+                model: model.map(str::to_owned),
+            },
+        };
         let agent = Agent::spawn(spec, wake).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
-                format!(
-                    "{PROVIDER} (`claude`) was not found on PATH. Install it, run `claude` \
-                     once in a terminal to sign in, then try again."
-                )
+                profile.missing.clone()
             } else {
-                format!("Could not start {PROVIDER}: {e}")
+                format!("Could not start {}: {e}", profile.name)
             }
         })?;
+        self.database.assistant.label = Some(profile.name.clone());
+        self.database.assistant.sign_in = Some(profile.sign_in.clone());
         self.database.assistant.running = Some(Running {
             agent,
             host,
@@ -305,7 +330,7 @@ impl App {
             icons::empty_state(
                 ui,
                 Icon::Assistant,
-                "Open a database, then ask your signed-in Claude Code about it here",
+                "Open a database, then ask your signed-in agent about it here",
             );
             return;
         };
@@ -359,11 +384,18 @@ impl App {
                 ui.visuals().text_color(),
             );
             let model = self.database.assistant.model.clone();
-            ui.strong(PROVIDER).on_hover_text(match &model {
-                Some(model) => format!("Your own signed-in Claude Code · {model}"),
-                None => {
-                    "Your own signed-in Claude Code. TursoBench never sees your sign-in.".into()
-                }
+            let name = self
+                .database
+                .assistant
+                .label
+                .clone()
+                .or_else(|| profile(&self.preferences.assistant).ok().map(|p| p.name))
+                .unwrap_or_else(|| "Assistant".into());
+            ui.strong(&name).on_hover_text(match &model {
+                Some(model) => format!("Your own signed-in {name} · {model}"),
+                None => format!(
+                    "Your own signed-in {name}. TursoBench never sees your sign-in. Choose the agent in Settings → Assistant."
+                ),
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if icons::control(ui, Icon::Close, "Hide assistant", "Ctrl I", false, false)
@@ -407,14 +439,26 @@ impl App {
 
     fn assistant_consent(&mut self, ui: &mut egui::Ui) {
         ui.add_space(8.0);
-        presentation::notice(
-            ui,
-            Icon::Lock,
-            Intent::Neutral,
-            "The assistant runs your own signed-in Claude Code and uses your plan. \
-             What it reads from this database is sent to Anthropic. It cannot change \
-             the database; it proposes SQL for you to review.",
-        );
+        let text = match profile(&self.preferences.assistant) {
+            Ok(profile) => {
+                let mut text = format!(
+                    "The assistant runs your own signed-in {} and uses your plan. What it \
+                     reads from this database is sent to {}. It cannot change the \
+                     database; it proposes SQL for you to review.",
+                    profile.name, profile.vendor
+                );
+                if profile.protocol == Protocol::Acp {
+                    text.push_str(
+                        " This agent also has tools of its own: TursoBench declines its \
+                         requests to run commands or edit files, but some agents can read \
+                         local files without asking.",
+                    );
+                }
+                text
+            }
+            Err(error) => error,
+        };
+        presentation::notice(ui, Icon::Lock, Intent::Neutral, &text);
         ui.add_space(8.0);
         ui.label("Choose what this database shares:");
         ui.add_space(4.0);
@@ -500,10 +544,12 @@ impl App {
 }
 
 /// Add a pointer to the fix for the errors people hit most.
-fn explain(error: &str) -> String {
+fn explain(error: &str, sign_in: Option<&str>) -> String {
     let lower = error.to_lowercase();
-    if lower.contains("login") || lower.contains("log in") || lower.contains("sign in") {
-        format!("{error}\nSign in by running `claude` in a terminal, then send again.")
+    let asks = ["login", "log in", "sign in", "authenticat", "unauthori"];
+    if asks.iter().any(|w| lower.contains(w)) && !lower.contains("then try again") {
+        let command = sign_in.unwrap_or("the agent's CLI");
+        format!("{error}\nSign in by running `{command}` in a terminal, then send again.")
     } else if error.trim().is_empty() {
         "The agent gave no reason.".into()
     } else {
@@ -747,4 +793,188 @@ fn code_block(ui: &mut egui::Ui, code: &str, sql: bool, actions: &mut Vec<Action
                 });
             });
         });
+}
+
+/// How to start one kind of agent and what to tell the user about it.
+pub(super) struct Profile {
+    pub name: String,
+    /// Who receives what the agent reads.
+    pub vendor: &'static str,
+    program: PathBuf,
+    args: Vec<String>,
+    env: Vec<(String, String)>,
+    protocol: Protocol,
+    /// Shown when the program is not installed.
+    missing: String,
+    /// The command that signs in, for error hints.
+    sign_in: String,
+}
+
+pub(super) fn profile(
+    preferences: &crate::storage::AssistantPreferences,
+) -> Result<Profile, String> {
+    use crate::storage::Provider;
+    Ok(match preferences.provider {
+        Provider::Claude => Profile {
+            name: "Claude Code".into(),
+            vendor: "Anthropic",
+            program: "claude".into(),
+            args: vec![],
+            env: vec![],
+            protocol: Protocol::ClaudeStream,
+            missing: "Claude Code (`claude`) was not found on PATH. Install it, run `claude` \
+                      once in a terminal to sign in, then try again."
+                .into(),
+            sign_in: "claude".into(),
+        },
+        Provider::Copilot => Profile {
+            name: "Copilot CLI".into(),
+            vendor: "GitHub",
+            program: "copilot".into(),
+            args: vec!["--acp".into()],
+            env: vec![],
+            protocol: Protocol::Acp,
+            missing: "GitHub Copilot CLI (`copilot`) was not found on PATH. Install it, run \
+                      `copilot` once in a terminal to sign in, then try again."
+                .into(),
+            sign_in: "copilot".into(),
+        },
+        Provider::Codex => Profile {
+            name: "Codex".into(),
+            vendor: "OpenAI",
+            program: "codex-acp".into(),
+            args: vec![],
+            // The adapter's read-only mode: Codex's own commands cannot write.
+            env: vec![("INITIAL_AGENT_MODE".into(), "read-only".into())],
+            protocol: Protocol::Acp,
+            missing: "The Codex ACP adapter (`codex-acp`) was not found on PATH. Install it \
+                      with `npm install -g @agentclientprotocol/codex-acp`, sign in with \
+                      `codex login`, then try again."
+                .into(),
+            sign_in: "codex login".into(),
+        },
+        Provider::Custom => {
+            let mut words = preferences.custom_command.split_whitespace();
+            let Some(program) = words.next() else {
+                return Err(
+                    "Enter the agent's command in Settings → Assistant, for example \
+                     `opencode acp`."
+                        .into(),
+                );
+            };
+            Profile {
+                name: std::path::Path::new(program)
+                    .file_name()
+                    .map_or_else(|| program.into(), |n| n.to_string_lossy().into_owned()),
+                vendor: "the agent's provider",
+                program: program.into(),
+                args: words.map(str::to_owned).collect(),
+                env: vec![],
+                protocol: Protocol::Acp,
+                missing: format!("`{program}` was not found. Check the command in Settings."),
+                sign_in: program.into(),
+            }
+        }
+    })
+}
+
+impl App {
+    pub(super) fn assistant_settings(&mut self, ui: &mut egui::Ui) {
+        use crate::storage::Provider;
+        ui.spacing_mut().item_spacing.y = 4.0;
+        super::panels::section(ui, "Agent", |ui| {
+            for (provider, label, detail) in [
+                (
+                    Provider::Claude,
+                    "Claude Code",
+                    "claude · Anthropic · its built-in tools are removed",
+                ),
+                (Provider::Copilot, "Copilot CLI", "copilot --acp · GitHub"),
+                (
+                    Provider::Codex,
+                    "Codex",
+                    "codex-acp · OpenAI · read-only mode",
+                ),
+                (
+                    Provider::Custom,
+                    "Other ACP agent",
+                    "Any Agent Client Protocol command",
+                ),
+            ] {
+                ui.horizontal(|ui| {
+                    let response =
+                        ui.radio_value(&mut self.preferences.assistant.provider, provider, label);
+                    self.setting_response(response);
+                    ui.weak(detail);
+                });
+            }
+            if self.preferences.assistant.provider == Provider::Custom {
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut self.preferences.assistant.custom_command)
+                        .hint_text("opencode acp")
+                        .desired_width(f32::INFINITY),
+                );
+                response.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::Role::TextInput, true, "Agent command")
+                });
+                self.setting_response(response);
+            }
+            ui.horizontal(|ui| {
+                ui.label("Model")
+                    .on_hover_text("Passed to the agent; leave empty for its own default");
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut self.preferences.assistant.model)
+                        .hint_text("Agent default")
+                        .desired_width(f32::INFINITY),
+                );
+                response.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::Role::TextInput, true, "Assistant model")
+                });
+                self.setting_response(response);
+            });
+            ui.weak(
+                "Applies to the next conversation. Each CLI signs in by itself; TursoBench \
+                 never reads or stores sign-ins.",
+            );
+        });
+        super::panels::section(ui, "Sharing", |ui| {
+            if self.preferences.assistant.sharing.is_empty() {
+                ui.weak("No database shares anything yet. Each one asks first.");
+                return;
+            }
+            let mut forget = None;
+            for (path, sharing) in &self.preferences.assistant.sharing {
+                ui.horizontal(|ui| {
+                    let (icon, name) = match sharing {
+                        Sharing::Schema => (Icon::Structure, "Schema only"),
+                        Sharing::Rows => (Icon::Data, "Schema and query results"),
+                    };
+                    let (rect, response) =
+                        ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                    icons::paint(ui.painter(), rect, icon, ui.visuals().text_color());
+                    response.on_hover_text(name);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if icons::control(ui, Icon::Trash, "Forget; ask again", "", false, false)
+                            .clicked()
+                        {
+                            forget = Some(path.clone());
+                        }
+                        let file = std::path::Path::new(path)
+                            .file_name()
+                            .map_or_else(|| path.clone(), |n| n.to_string_lossy().into_owned());
+                        ui.add(egui::Label::new(file).truncate())
+                            .on_hover_text(path);
+                    });
+                });
+            }
+            if let Some(path) = forget {
+                self.preferences.assistant.sharing.remove(&path);
+                if path == self.database.tools.database_scope {
+                    self.database.assistant.reset();
+                }
+                self.preferences.normalize();
+                self.store.save(&self.preferences);
+            }
+        });
+    }
 }

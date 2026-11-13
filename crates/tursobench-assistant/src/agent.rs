@@ -50,6 +50,8 @@ pub enum Update {
 pub enum Protocol {
     /// Claude Code headless: `claude -p` with stream-json input and output.
     ClaudeStream,
+    /// The Agent Client Protocol over stdio.
+    Acp,
 }
 
 /// Everything needed to start and talk to one agent.
@@ -152,6 +154,7 @@ impl Agent {
                 let mut link = link;
                 match spec.protocol {
                     Protocol::ClaudeStream => crate::claude::drive(&input, &mut link),
+                    Protocol::Acp => crate::acp::drive(&spec, &input, &mut link),
                 }
                 link.stdin = None;
                 let status = reap(&exit);
