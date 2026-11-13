@@ -197,3 +197,61 @@ fn an_acp_agent_can_be_chosen_in_settings_and_its_own_edits_are_declined() {
     assert!(app.database.assistant.entries.is_empty());
     app.close();
 }
+
+/// A stand-in for `codex app-server`.
+const CODEX_SCRIPT: &str = r#"#!/usr/bin/env bash
+case " $* " in *" app-server "*"--disable shell_tool"*) ;; *) echo "shell not disabled: $*" >&2; exit 5;; esac
+while read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*) echo '{"id":'"$id"',"result":{}}';;
+    *'"method":"thread/start"'*)
+      case "$line" in *'"sandbox":"read-only"'*) ;; *) exit 6;; esac
+      case "$line" in *'--mcp-relay'*) ;; *) exit 7;; esac
+      echo '{"id":'"$id"',"result":{"thread":{"id":"th"},"model":"gpt-fake"}}';;
+    *'"method":"turn/start"'*)
+      echo '{"id":'"$id"',"result":{"turn":{"id":"tu"}}}'
+      echo '{"id":77,"method":"item/fileChange/requestApproval","params":{"threadId":"th","turnId":"tu","itemId":"f"}}'
+      read -r answer
+      case "$answer" in *'"decline"'*) ;; *) exit 8;; esac
+      echo '{"method":"item/agentMessage/delta","params":{"itemId":"m","delta":"Codex reply"}}'
+      echo '{"method":"turn/completed","params":{"turn":{"id":"tu","status":"completed","error":null}}}';;
+  esac
+done
+"#;
+
+#[test]
+fn codex_can_be_chosen_in_settings_and_its_own_edits_are_declined() {
+    let (dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
+    runtime_dir(&dir);
+    app.settings.open = true;
+    app.settings.page = crate::app::settings::Page::Assistant;
+    frame_at(&mut app, &ctx, SIZE, vec![]);
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    click(&mut app, &ctx, control(&output, "Codex").center());
+    assert_eq!(
+        app.preferences.assistant.provider,
+        crate::storage::Provider::Codex
+    );
+    app.settings.open = false;
+    let script = dir.path().join("codex");
+    std::fs::write(&script, CODEX_SCRIPT).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    app.database.assistant.program = Some(script);
+    app.set_assistant_sharing(Sharing::Schema);
+    app.database.assistant.draft = "Hi".into();
+    app.send_assistant(&ctx);
+    wait_until(&mut app, &ctx, |a| !a.database.assistant.busy);
+    let conversation = &app.database.assistant;
+    assert_eq!(conversation.model.as_deref(), Some("gpt-fake"));
+    assert!(conversation.entries.iter().any(
+        |e| matches!(e, Entry::Notice(_, text) if text.contains("Declined") && text.contains("change files"))
+    ));
+    assert!(
+        conversation
+            .entries
+            .iter()
+            .any(|e| matches!(e, Entry::Reply(text) if text == "Codex reply"))
+    );
+    app.close();
+}

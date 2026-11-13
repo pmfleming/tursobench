@@ -1,5 +1,5 @@
 //! A client for the Agent Client Protocol (v1, JSON-RPC over stdio), used for
-//! Copilot CLI, Codex through `codex-acp`, and any other ACP agent.
+//! Copilot CLI and any other ACP agent.
 //!
 //! TursoBench advertises no file-system or terminal capabilities, answers
 //! agent requests for them with "method not found", grants permission only for

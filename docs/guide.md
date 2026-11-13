@@ -267,8 +267,9 @@ SQL editors and dialog text fields retain their normal text paste/undo behavior.
 
 The assistant chats about the open database using the agent CLI you already
 installed and signed in to, so it runs on your existing plan. Claude Code is the
-default; Settings → Assistant can switch to Copilot CLI, Codex through `codex-acp`,
-or any other Agent Client Protocol command, and can set a model. TursoBench never
+default; Settings → Assistant can switch to Codex (through `codex app-server`,
+with its shell and web search off and its read-only sandbox on), Copilot CLI or
+any other Agent Client Protocol command, and can set a model. TursoBench never
 handles your sign-in: if the agent reports it is signed out, run its CLI (for
 example `claude`) in a terminal.
 

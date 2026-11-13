@@ -112,6 +112,9 @@ pub fn handle(line: &str, host: &dyn ToolHost) -> Option<Json> {
                     "name": t.name,
                     "description": t.description,
                     "inputSchema": t.input_schema,
+                    // Every TursoBench tool only reads; agents that honour the
+                    // hint (Codex) then call them without asking.
+                    "annotations": {"readOnlyHint": true},
                 })).collect::<Vec<_>>(),
             }),
         ),
@@ -191,6 +194,10 @@ pub(crate) mod tests {
         assert_eq!(replies[0]["result"]["protocolVersion"], "2025-03-26");
         assert_eq!(replies[0]["result"]["instructions"], "Use echo.");
         assert_eq!(replies[1]["result"]["tools"][0]["name"], "echo");
+        assert_eq!(
+            replies[1]["result"]["tools"][0]["annotations"]["readOnlyHint"],
+            true
+        );
         assert_eq!(replies[2]["result"]["content"][0]["text"], "hi");
         assert_eq!(replies[3]["result"]["isError"], true);
         assert_eq!(replies[4]["error"]["code"], -32602);

@@ -52,6 +52,8 @@ pub enum Protocol {
     ClaudeStream,
     /// The Agent Client Protocol over stdio.
     Acp,
+    /// Codex's own app server: `codex app-server` over stdio.
+    CodexAppServer,
 }
 
 /// Everything needed to start and talk to one agent.
@@ -62,9 +64,9 @@ pub struct Spec {
     pub env: Vec<(String, String)>,
     pub cwd: PathBuf,
     pub protocol: Protocol,
-    /// Sent in the protocol where the command line cannot carry it (ACP).
+    /// Sent in the protocol where the command line cannot carry it (ACP, Codex).
     pub system_prompt: String,
-    /// The tool relay, for protocols that configure MCP per session (ACP).
+    /// The tool relay, for protocols that configure MCP per session (ACP, Codex).
     pub mcp: Option<crate::relay::Launch>,
     pub model: Option<String>,
 }
@@ -155,6 +157,7 @@ impl Agent {
                 match spec.protocol {
                     Protocol::ClaudeStream => crate::claude::drive(&input, &mut link),
                     Protocol::Acp => crate::acp::drive(&spec, &input, &mut link),
+                    Protocol::CodexAppServer => crate::codex::drive(&spec, &input, &mut link),
                 }
                 link.stdin = None;
                 let status = reap(&exit);

@@ -16,7 +16,7 @@ use std::{
 };
 use tursobench_assistant::{
     agent::{Agent, Protocol, Spec, Update},
-    claude,
+    claude, codex,
     relay::{self, Endpoint},
 };
 
@@ -57,7 +57,7 @@ pub(super) struct Conversation {
     label: Option<String>,
     /// The command that signs this agent in, for error hints.
     sign_in: Option<String>,
-    model: Option<String>,
+    pub(super) model: Option<String>,
     focus: bool,
     /// Told to the agent with the next prompt after the user changes sharing.
     note: Option<String>,
@@ -257,6 +257,9 @@ impl App {
                 &prompt,
                 model,
             ),
+            Protocol::CodexAppServer => {
+                codex::spec(program, cwd, endpoint.launch().clone(), &prompt, model)
+            }
             Protocol::Acp => Spec {
                 program,
                 args: profile.args.clone(),
@@ -447,12 +450,18 @@ impl App {
                      database; it proposes SQL for you to review.",
                     profile.name, profile.vendor
                 );
-                if profile.protocol == Protocol::Acp {
-                    text.push_str(
+                match profile.protocol {
+                    Protocol::Acp => text.push_str(
                         " This agent also has tools of its own: TursoBench declines its \
                          requests to run commands or edit files, but some agents can read \
                          local files without asking.",
-                    );
+                    ),
+                    Protocol::CodexAppServer => text.push_str(
+                        " Codex's shell and web search are switched off and it runs in its \
+                         read-only sandbox; TursoBench declines its requests to run \
+                         commands or edit files.",
+                    ),
+                    Protocol::ClaudeStream => {}
                 }
                 text
             }
@@ -840,14 +849,12 @@ pub(super) fn profile(
         Provider::Codex => Profile {
             name: "Codex".into(),
             vendor: "OpenAI",
-            program: "codex-acp".into(),
+            program: "codex".into(),
             args: vec![],
-            // The adapter's read-only mode: Codex's own commands cannot write.
-            env: vec![("INITIAL_AGENT_MODE".into(), "read-only".into())],
-            protocol: Protocol::Acp,
-            missing: "The Codex ACP adapter (`codex-acp`) was not found on PATH. Install it \
-                      with `npm install -g @agentclientprotocol/codex-acp`, sign in with \
-                      `codex login`, then try again."
+            env: vec![],
+            protocol: Protocol::CodexAppServer,
+            missing: "Codex (`codex`) was not found on PATH. Install the Codex CLI, sign in \
+                      with `codex login`, then try again."
                 .into(),
             sign_in: "codex login".into(),
         },
@@ -891,7 +898,7 @@ impl App {
                 (
                     Provider::Codex,
                     "Codex",
-                    "codex-acp · OpenAI · read-only mode",
+                    "codex app-server · OpenAI · read-only sandbox, no shell",
                 ),
                 (
                     Provider::Custom,
