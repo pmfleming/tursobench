@@ -54,20 +54,26 @@ pub(super) fn fuzzy(label: &str, query: &str) -> bool {
 /// How well a palette entry answers a query; lower is better and `None`
 /// leaves it out. Labels match from the start of a word, so "set" finds
 /// Settings rather than the letters s…e…t scattered through another label.
-/// A shortcut matches only from its start ("f5", "ctrl j").
-pub(super) fn rank(label: &str, shortcut: &str, query: &str) -> Option<u8> {
+/// Keywords are other words for the same thing ("inspector" for Record);
+/// they rank below the label. A shortcut matches only from its start
+/// ("f5", "ctrl j").
+pub(super) fn rank(label: &str, shortcut: &str, keywords: &str, query: &str) -> Option<u8> {
     let query = query.trim().to_lowercase();
     if query.is_empty() {
         return Some(0);
     }
     let label = label.to_lowercase();
-    let words: Vec<&str> = label
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| !w.is_empty())
-        .collect();
+    let split = |text: &str| -> Vec<String> {
+        text.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .map(str::to_owned)
+            .collect()
+    };
+    let words = split(&label);
     let compact = |text: &str| text.split_whitespace().collect::<String>();
-    // Every typed word starts a label word, in order: "ref tab".
-    let word_starts = || {
+    // Every typed word starts one of `words`, in order: "ref tab".
+    let word_starts = |words: &[String]| {
         let mut rest = words.iter();
         query
             .split_whitespace()
@@ -84,14 +90,16 @@ pub(super) fn rank(label: &str, shortcut: &str, query: &str) -> Option<u8> {
         Some(1)
     } else if label.contains(&query) {
         Some(2)
-    } else if word_starts() {
+    } else if word_starts(&words) {
         Some(3)
     } else if initials() {
         Some(4)
+    } else if !keywords.is_empty() && word_starts(&split(keywords)) {
+        Some(5)
     } else if !shortcut.is_empty()
         && compact(&shortcut.to_lowercase()).starts_with(&compact(&query))
     {
-        Some(5)
+        Some(6)
     } else {
         None
     }
@@ -467,57 +475,129 @@ impl App {
         }
     }
     fn palette_items(&self) -> Vec<PaletteItem> {
-        let items: Vec<(&'static str, &'static str, Command)> = vec![
-            ("Schema home · Map", "", Command::Map),
-            ("List tables and views", "", Command::List),
-            ("Toggle SQL editor", "Ctrl J", Command::Sql),
-            ("Open database", "Ctrl O", Command::Open),
-            ("Close database", "", Command::Close),
-            ("Refresh schema map and catalog", "", Command::Refresh),
-            ("Refresh current table", "F5", Command::RefreshTable),
-            ("BEGIN editor transaction", "", Command::Begin),
+        // Labels use the names shown elsewhere in the app; keywords keep the
+        // older or generic words searchable.
+        let items: Vec<(&'static str, &'static str, &'static str, Command)> = vec![
+            (
+                "Relationships",
+                "",
+                "map diagram schema home foreign keys",
+                Command::Map,
+            ),
+            ("Tables", "", "list views sidebar schema", Command::List),
+            ("SQL editor", "Ctrl J", "query toggle", Command::Sql),
+            ("Open database", "Ctrl O", "file browse", Command::Open),
+            ("Close database", "", "", Command::Close),
+            (
+                "Refresh schema",
+                "",
+                "catalog map relationships reload",
+                Command::Refresh,
+            ),
+            (
+                "Refresh current table",
+                "F5",
+                "reload rows",
+                Command::RefreshTable,
+            ),
+            ("BEGIN editor transaction", "", "start", Command::Begin),
             (
                 "COMMIT editor transaction",
                 "",
+                "save end",
                 Command::Action(Action::Commit),
             ),
             (
                 "ROLLBACK editor transaction",
                 "",
+                "roll back undo abort cancel",
                 Command::Action(Action::Rollback),
             ),
-            ("Filter rows", "Ctrl F", Command::Filter),
-            ("Toggle inspector", "Space", Command::Inspector),
-            ("New row (staged)", "", Command::Action(Action::Insert)),
-            ("Fit all columns", "", Command::Action(Action::FitColumns)),
+            ("Filter rows", "Ctrl F", "where search", Command::Filter),
+            (
+                "Open record",
+                "Space",
+                "inspector detail row",
+                Command::Inspector,
+            ),
+            (
+                "New row (staged)",
+                "",
+                "insert add",
+                Command::Action(Action::Insert),
+            ),
+            (
+                "Fit all columns",
+                "",
+                "width resize autosize",
+                Command::Action(Action::FitColumns),
+            ),
             (
                 "Show hidden columns",
                 "",
+                "unhide visible",
                 Command::Action(Action::ShowColumns),
             ),
-            ("Copy selected cells", "Ctrl C", Command::CopySelection),
-            ("History", "", Command::Panel(ToolPanel::History)),
-            ("Saved queries", "", Command::Panel(ToolPanel::Saved)),
             (
-                "Database info and checks",
+                "Copy selected cells",
+                "Ctrl C",
+                "clipboard",
+                Command::CopySelection,
+            ),
+            (
+                "History",
                 "",
+                "recent queries",
+                Command::Panel(ToolPanel::History),
+            ),
+            (
+                "Saved queries",
+                "",
+                "bookmarks",
+                Command::Panel(ToolPanel::Saved),
+            ),
+            (
+                "Database checks",
+                "",
+                "integrity diagnostics info pragma dashboard profiling compare schemas transfer maintenance backup",
                 Command::Panel(ToolPanel::Diagnostics),
             ),
-            ("Settings", "Ctrl ,", Command::Settings),
             (
-                "Export and copy retained result",
+                "Settings",
+                "Ctrl ,",
+                "preferences options",
+                Command::Settings,
+            ),
+            (
+                "Export retained result",
                 "Ctrl E",
+                "copy save csv json download",
                 Command::Action(Action::Export),
             ),
-            ("Review staged edits", "", Command::Action(Action::Review)),
-            ("Toggle theme", "Ctrl T", Command::Theme),
-            ("Keyboard shortcuts and help", "F1", Command::Help),
+            (
+                "Review staged edits",
+                "",
+                "pending changes",
+                Command::Action(Action::Review),
+            ),
+            (
+                "Toggle theme",
+                "Ctrl T",
+                "dark light appearance",
+                Command::Theme,
+            ),
+            (
+                "Keyboard and safety reference",
+                "F1",
+                "help shortcuts keys",
+                Command::Help,
+            ),
         ];
         let query = &self.database.ui.palette_query;
         let mut ranked: Vec<_> = items
             .into_iter()
-            .filter_map(|(label, shortcut, command)| {
-                rank(label, shortcut, query).map(|tier| PaletteItem {
+            .filter_map(|(label, shortcut, keywords, command)| {
+                rank(label, shortcut, keywords, query).map(|tier| PaletteItem {
                     tier,
                     label,
                     shortcut,
@@ -730,15 +810,16 @@ mod tests {
     fn palette_ranks_word_starts_before_scattered_letters() {
         // Shortcut text no longer lends letters: "set" is not Ctrl J's
         // "Toggle SQL editor · Ctrl J".
-        assert_eq!(rank("Toggle SQL editor", "Ctrl J", "set"), None);
-        assert_eq!(rank("Settings", "Ctrl ,", "set"), Some(0));
-        assert_eq!(rank("Saved queries", "", "que"), Some(1));
-        assert_eq!(rank("Refresh current table", "F5", "ref tab"), Some(3));
-        assert_eq!(rank("Toggle SQL editor", "Ctrl J", "tse"), Some(4));
-        assert_eq!(rank("Refresh current table", "F5", "f5"), Some(5));
-        assert_eq!(rank("Toggle SQL editor", "Ctrl J", "ctrl j"), Some(5));
-        assert_eq!(rank("Close database", "", "run"), None);
-        assert_eq!(rank("Anything", "", "  "), Some(0));
+        assert_eq!(rank("Toggle SQL editor", "Ctrl J", "", "set"), None);
+        assert_eq!(rank("Settings", "Ctrl ,", "", "set"), Some(0));
+        assert_eq!(rank("Saved queries", "", "", "que"), Some(1));
+        assert_eq!(rank("Refresh current table", "F5", "", "ref tab"), Some(3));
+        assert_eq!(rank("Toggle SQL editor", "Ctrl J", "", "tse"), Some(4));
+        assert_eq!(rank("Open record", "Space", "inspector", "insp"), Some(5));
+        assert_eq!(rank("Refresh current table", "F5", "", "f5"), Some(6));
+        assert_eq!(rank("Toggle SQL editor", "Ctrl J", "", "ctrl j"), Some(6));
+        assert_eq!(rank("Close database", "", "", "run"), None);
+        assert_eq!(rank("Anything", "", "", "  "), Some(0));
     }
     #[test]
     fn search_matches_subsequences_case_insensitively_and_unicode() {

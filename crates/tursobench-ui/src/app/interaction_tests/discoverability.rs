@@ -235,3 +235,33 @@ fn palette_filter_and_review_need_a_table_and_staged_edits() {
     assert!(app.database.document.ui.filter_open);
     close_and_wait(&mut app, &ctx);
 }
+
+#[test]
+fn palette_names_match_the_app_and_old_words_still_find_them() {
+    let (ctx, mut app) = crate::app::test_ui::app();
+    frame(&mut app, &ctx, vec![]);
+    app.open_palette();
+    for (query, name) in [
+        ("record", "Open record"),
+        ("inspector", "Open record"),
+        ("relationships", "Relationships"),
+        ("map", "Relationships"),
+        ("pragma", "Database checks"),
+        ("help", "Keyboard and safety reference"),
+    ] {
+        app.database.ui.palette_query = query.into();
+        frame(&mut app, &ctx, vec![]);
+        let output = frame(&mut app, &ctx, vec![]);
+        let rows: Vec<_> = crate::app::test_ui::nodes(&output)
+            .iter()
+            .filter_map(|(_, n)| n.bounds().zip(n.label()))
+            .filter(|(b, _)| b.x0 > 300.0 && b.x1 < 1100.0 && b.y0 > 150.0)
+            .map(|(b, label)| (b.y0 as i64, label.to_owned()))
+            .collect();
+        let first = rows.iter().min().map(|(_, l)| l.as_str());
+        assert!(
+            first.is_some_and(|l| l.starts_with(name)),
+            "{query}: {rows:?}"
+        );
+    }
+}
