@@ -1,4 +1,5 @@
 use tursobench_core::{Access, Browse, ConnectionSettings, Ticket, TransactionState};
+mod assistant;
 mod checks;
 mod columns;
 mod commands;

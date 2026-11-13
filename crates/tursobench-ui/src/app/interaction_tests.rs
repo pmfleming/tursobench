@@ -3754,3 +3754,5 @@ mod resources;
 mod spreadsheet;
 
 mod discoverability;
+
+mod panels;

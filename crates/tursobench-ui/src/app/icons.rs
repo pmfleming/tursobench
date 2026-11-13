@@ -60,6 +60,8 @@ pub(super) enum Icon {
     Gauge,
     Profile,
     Transfer,
+    Sidebar,
+    Assistant,
 }
 
 pub(super) fn button(ui: &mut egui::Ui, icon: Icon, name: &str, shortcut: &str) -> egui::Response {
@@ -645,6 +647,27 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
         ReviewEdits => svg_lines(include_str!("../../assets/icons/review-edits.svg"), line),
         CopyValue => svg_lines(include_str!("../../assets/icons/copy-value.svg"), line),
         FitColumns => svg_lines(include_str!("../../assets/icons/fit-columns.svg"), line),
+        Sidebar => {
+            box_(3., 4., 18., 16.);
+            line(&[(9., 4.), (9., 20.)]);
+            line(&[(5., 8.), (7., 8.)]);
+            line(&[(5., 11.), (7., 11.)]);
+        }
+        Assistant => {
+            // A speech bubble holding a spark: a conversation with an agent.
+            line(&[
+                (4., 5.),
+                (20., 5.),
+                (20., 16.),
+                (11., 16.),
+                (6., 20.),
+                (7., 16.),
+                (4., 16.),
+                (4., 5.),
+            ]);
+            line(&[(12., 7.5), (12., 13.5)]);
+            line(&[(9., 10.5), (15., 10.5)]);
+        }
         Link => {
             line(&[
                 (10., 15.),

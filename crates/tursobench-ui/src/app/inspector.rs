@@ -721,12 +721,17 @@ const HELP: &[(&str, &[HelpRow])] = &[
                 "Cycle open databases · sidebar database rows switch and close",
             ),
             (&["Ctrl ,"], "Settings"),
+            (&["Ctrl B"], "Show or hide the sidebar"),
+            (
+                &["Ctrl I"],
+                "Show or hide the assistant: chat with your own signed-in agent CLI",
+            ),
             (&["Ctrl T"], "Toggle theme"),
             (&["F7"], "Compare two open schemas"),
             (&["Esc"], "Close the topmost dialog, menu or expanded tile"),
             (
                 &[],
-                "Tables / History / Saved / Checks sit under the selected database. Settings, commands and this reference sit at the foot of the sidebar. Hover any icon for its name.",
+                "Tables / History / Saved / Checks sit under the selected database. Settings, commands and this reference sit at the foot of the sidebar. The sidebar and assistant toggles sit at the left of the status bar. Hover any icon for its name.",
             ),
         ],
     ),

@@ -159,6 +159,22 @@ pub struct Preferences {
     pub map_layouts: Vec<MapLayout>,
     pub(crate) workspace_layouts: Vec<crate::app::workspace::Snapshot>,
     pub inspector_visibility: std::collections::BTreeMap<String, bool>,
+    pub panels: Panels,
+}
+/// The navigation sidebar and the assistant panel are shown or hidden independently.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct Panels {
+    pub sidebar: bool,
+    pub assistant: bool,
+}
+impl Default for Panels {
+    fn default() -> Self {
+        Self {
+            sidebar: true,
+            assistant: false,
+        }
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MapLayout {
@@ -190,6 +206,7 @@ impl Default for Preferences {
             map_layouts: vec![],
             workspace_layouts: vec![],
             inspector_visibility: Default::default(),
+            panels: Panels::default(),
         }
     }
 }

@@ -147,8 +147,10 @@ impl App {
         } else {
             272.0
         };
+        // A close confirmation lives in the sidebar, so it must stay reachable.
+        let sidebar = self.preferences.panels.sidebar || self.database.confirm_close;
         // Reserve full-height navigation before the workspace ribbon and status bar.
-        {
+        if sidebar {
             let panel = egui::Panel::left("workspace-sidebar")
                 .resizable(true)
                 .default_size(sidebar_width)
@@ -167,6 +169,15 @@ impl App {
             }
             #[cfg(not(test))]
             let _ = panel;
+        }
+        // The assistant sits beside the sidebar; either, both or neither are shown.
+        if self.preferences.panels.assistant {
+            let max = (ui.available_width() - 360.0).clamp(260.0, 720.0);
+            egui::Panel::left("assistant-panel")
+                .resizable(true)
+                .default_size(340.0_f32.min(max))
+                .size_range(260.0..=max)
+                .show(ui, |ui| self.assistant_ui(ui));
         }
         self.status_bar(ui);
         egui::CentralPanel::default().show(ui, |ui| self.workspace_ui(ui));
@@ -292,6 +303,7 @@ impl App {
                 ui.spacing_mut().button_padding = egui::vec2(8.0, 4.0);
                 ui.horizontal_centered(|ui| {
                     ui.spacing_mut().item_spacing.x = 7.0;
+                    self.panel_toggles(ui);
                     self.connection_controls(ui);
                     self.transaction_controls(ui);
                     if self.has_drafts() {
@@ -314,6 +326,59 @@ impl App {
                     });
                 });
             });
+    }
+    /// Always visible, so a hidden sidebar or assistant can be brought back.
+    fn panel_toggles(&mut self, ui: &mut egui::Ui) {
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            let panels = self.preferences.panels;
+            if icons::control(
+                ui,
+                Icon::Sidebar,
+                "Sidebar",
+                "Ctrl B",
+                panels.sidebar,
+                false,
+            )
+            .clicked()
+            {
+                self.toggle_sidebar();
+            }
+            if icons::control(
+                ui,
+                Icon::Assistant,
+                "Assistant",
+                "Ctrl I",
+                panels.assistant,
+                false,
+            )
+            .clicked()
+            {
+                self.toggle_assistant();
+            }
+        });
+        ui.separator();
+    }
+    pub(super) fn toggle_sidebar(&mut self) {
+        self.preferences.panels.sidebar = !self.preferences.panels.sidebar;
+        self.save_panels();
+    }
+    pub(super) fn toggle_assistant(&mut self) {
+        self.preferences.panels.assistant = !self.preferences.panels.assistant;
+        if self.preferences.panels.assistant {
+            self.assistant_focus();
+        }
+        self.save_panels();
+    }
+    fn save_panels(&mut self) {
+        self.preferences.normalize();
+        self.store.save(&self.preferences);
+    }
+    /// Searching needs the sidebar, so the search shortcuts reveal it.
+    pub(super) fn show_sidebar(&mut self) {
+        if !self.preferences.panels.sidebar {
+            self.toggle_sidebar();
+        }
     }
     fn connection_controls(&mut self, ui: &mut egui::Ui) {
         if self.database.session.is_some()

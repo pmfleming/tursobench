@@ -30,6 +30,8 @@ pub(super) enum Command {
     Structure,
     Back,
     CopyResults,
+    ToggleSidebar,
+    ToggleAssistant,
 }
 
 pub(super) struct PaletteItem {
@@ -303,6 +305,8 @@ impl App {
             (Modifiers::CTRL, Key::O, Command::Open),
             (Modifiers::CTRL, Key::T, Command::Theme),
             (Modifiers::CTRL, Key::Comma, Command::Settings),
+            (Modifiers::CTRL, Key::B, Command::ToggleSidebar),
+            (Modifiers::CTRL, Key::I, Command::ToggleAssistant),
             (Modifiers::ALT, Key::ArrowLeft, Command::Back),
         ] {
             if !consumed(modifiers, key) {
@@ -587,6 +591,18 @@ impl App {
                 Command::Panel(ToolPanel::Diagnostics),
             ),
             (
+                "Sidebar",
+                "Ctrl B",
+                "show hide toggle navigation panel",
+                Command::ToggleSidebar,
+            ),
+            (
+                "Assistant",
+                "Ctrl I",
+                "chat ai agent claude codex copilot ask show hide toggle panel",
+                Command::ToggleAssistant,
+            ),
+            (
                 "Settings",
                 "Ctrl ,",
                 "preferences options",
@@ -651,7 +667,12 @@ impl App {
             }
         };
         match command {
-            Command::Open | Command::Settings | Command::Help | Command::Theme => None,
+            Command::Open
+            | Command::Settings
+            | Command::Help
+            | Command::Theme
+            | Command::ToggleSidebar
+            | Command::ToggleAssistant => None,
             Command::Close if self.database.session.is_none() => Some("No database is open"),
             Command::Close => None,
             _ if !open => Some("Open a database first"),
@@ -813,8 +834,11 @@ impl App {
                 self.refresh_catalog();
                 self.load_diagram();
             }
+            Command::ToggleSidebar => self.toggle_sidebar(),
+            Command::ToggleAssistant => self.toggle_assistant(),
             Command::Settings => self.settings.open = true,
             Command::Panel(panel) => {
+                self.show_sidebar();
                 self.select_tool(panel);
             }
             Command::Action(action) => self.dispatch_action(action, ctx),

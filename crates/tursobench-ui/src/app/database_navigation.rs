@@ -51,6 +51,7 @@ impl App {
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::P)) {
                 self.database.ui.palette_open = false;
                 self.sidebar_search.focus = true;
+                self.show_sidebar();
                 self.database.ui.sidebar = super::shell::ToolPanel::Schema;
             }
             return;
@@ -64,6 +65,7 @@ impl App {
             || !ctx.egui_wants_keyboard_input()
                 && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Slash))
         {
+            self.show_sidebar();
             self.sidebar_search.focus = true;
             self.database.ui.sidebar = super::shell::ToolPanel::Schema;
         }

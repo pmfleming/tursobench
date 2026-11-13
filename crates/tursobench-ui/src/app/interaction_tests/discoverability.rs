@@ -180,13 +180,14 @@ fn palette_greys_out_commands_that_cannot_run_and_explains_why() {
     app.database.ui.palette_query.clear();
     frame(&mut app, &ctx, vec![]);
     let output = frame(&mut app, &ctx, vec![]);
-    // Palette rows are the buttons right of the sidebar, below the search field.
+    // Palette rows are the buttons right of the sidebar, below the search field
+    // and above the 34 px status bar of the 900 px frame.
     let rows: Vec<_> = crate::app::test_ui::nodes(&output)
         .iter()
         .filter(|(_, n)| n.role() == egui::accesskit::Role::Button)
         .filter(|(_, n)| n.label().is_some_and(|l| l != "Close window"))
         .filter_map(|(_, n)| n.bounds().map(|b| (b, n.is_disabled())))
-        .filter(|(b, _)| b.x0 > 300.0 && b.x1 < 1100.0)
+        .filter(|(b, _)| b.x0 > 300.0 && b.x1 < 1100.0 && b.y1 < 866.0)
         .collect();
     let lowest_enabled = rows
         .iter()
