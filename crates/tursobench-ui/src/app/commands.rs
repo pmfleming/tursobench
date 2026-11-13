@@ -448,7 +448,7 @@ impl App {
                             }
                         }
                         if items.is_empty() {
-                            ui.label("No matches in loaded metadata.");
+                            ui.weak("No matching commands. Ctrl P searches tables and columns.");
                         }
                     });
                 // An unavailable command stays put and explains itself instead.

@@ -265,3 +265,17 @@ fn palette_names_match_the_app_and_old_words_still_find_them() {
         );
     }
 }
+
+#[test]
+fn palette_empty_result_points_to_object_search() {
+    let (ctx, mut app) = crate::app::test_ui::app();
+    frame(&mut app, &ctx, vec![]);
+    app.open_palette();
+    app.database.ui.palette_query = "zzzz".into();
+    frame(&mut app, &ctx, vec![]);
+    let output = frame(&mut app, &ctx, vec![]);
+    assert!(output.shapes.iter().any(|s| matches!(
+        &s.shape,
+        egui::Shape::Text(t) if t.galley.job.text.starts_with("No matching commands")
+    )));
+}
