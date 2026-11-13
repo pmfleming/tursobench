@@ -111,3 +111,31 @@ fn palette_copy_with_nothing_selected_leaves_the_clipboard_alone() {
     );
     assert_eq!(app.database.status, "Select cells to copy");
 }
+
+#[test]
+fn palette_ends_the_transaction_it_began() {
+    use tursobench_core::TransactionState;
+    let (_dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
+    let choose = |app: &mut App, query: &str| {
+        app.open_palette();
+        app.database.ui.palette_query = query.into();
+        frame(app, &ctx, vec![]);
+        press_key(app, &ctx, egui::Key::Enter, egui::Modifiers::NONE);
+        wait(app, &ctx);
+    };
+    for (end, sql) in [("commit", "COMMIT"), ("rollback", "ROLLBACK")] {
+        choose(&mut app, "begin");
+        assert_eq!(app.database.transaction, TransactionState::Active);
+        choose(&mut app, end);
+        assert_eq!(
+            app.database.transaction,
+            TransactionState::Autocommit,
+            "{sql}"
+        );
+    }
+    let history = app.preferences.query_history.len();
+    choose(&mut app, "rollback");
+    assert_eq!(app.database.status, "No editor transaction is open");
+    assert_eq!(app.preferences.query_history.len(), history);
+    close_and_wait(&mut app, &ctx);
+}

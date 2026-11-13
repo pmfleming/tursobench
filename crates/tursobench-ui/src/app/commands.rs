@@ -454,6 +454,16 @@ impl App {
             ("Refresh schema map and catalog", "", Command::Refresh),
             ("Refresh current table", "F5", Command::RefreshTable),
             ("BEGIN editor transaction", "", Command::Begin),
+            (
+                "COMMIT editor transaction",
+                "",
+                Command::Action(Action::Commit),
+            ),
+            (
+                "ROLLBACK editor transaction",
+                "",
+                Command::Action(Action::Rollback),
+            ),
             ("Filter rows", "Ctrl F", Command::Filter),
             ("Toggle inspector", "Space", Command::Inspector),
             ("New row (staged)", "", Command::Action(Action::Insert)),
@@ -600,6 +610,12 @@ impl App {
             Command::Settings => self.settings.open = true,
             Command::Panel(panel) => {
                 self.select_tool(panel);
+            }
+            // ROLLBACK outside a transaction would only report an engine error.
+            Command::Action(Action::Commit | Action::Rollback)
+                if self.database.transaction != tursobench_core::TransactionState::Active =>
+            {
+                self.database.status = "No editor transaction is open".into();
             }
             Command::Action(action) => self.dispatch_action(action, ctx),
             Command::Help => self.database.tools.help = true,
