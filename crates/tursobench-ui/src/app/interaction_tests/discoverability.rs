@@ -133,9 +133,74 @@ fn palette_ends_the_transaction_it_began() {
             "{sql}"
         );
     }
+    // Outside a transaction ROLLBACK is listed but cannot run.
     let history = app.preferences.query_history.len();
-    choose(&mut app, "rollback");
-    assert_eq!(app.database.status, "No editor transaction is open");
+    app.open_palette();
+    app.database.ui.palette_query = "rollback".into();
+    frame(&mut app, &ctx, vec![]);
+    press_key(&mut app, &ctx, egui::Key::Enter, egui::Modifiers::NONE);
+    wait(&mut app, &ctx);
+    assert!(app.database.ui.palette_open);
     assert_eq!(app.preferences.query_history.len(), history);
+    app.database.ui.palette_open = false;
     close_and_wait(&mut app, &ctx);
+}
+
+#[test]
+fn palette_greys_out_commands_that_cannot_run_and_explains_why() {
+    let (ctx, mut app) = crate::app::test_ui::app();
+    frame(&mut app, &ctx, vec![]);
+    app.open_palette();
+    let mut disabled = |name: &str| {
+        app.database.ui.palette_query = name.into();
+        frame(&mut app, &ctx, vec![]);
+        let output = frame(&mut app, &ctx, vec![]);
+        crate::app::test_ui::nodes(&output)
+            .iter()
+            // Rows with a shortcut are named "<label> <shortcut>".
+            .find(|(_, n)| n.label().is_some_and(|l| l.starts_with(name)))
+            .unwrap_or_else(|| panic!("{name} is not listed"))
+            .1
+            .is_disabled()
+    };
+    for name in ["Close database", "New row (staged)", "Copy selected cells"] {
+        assert!(disabled(name), "{name}");
+    }
+    for name in ["Open database", "Settings", "Toggle theme"] {
+        assert!(!disabled(name), "{name}");
+    }
+    // Runnable commands come first, so Enter on an empty query runs one.
+    app.database.ui.palette_query.clear();
+    frame(&mut app, &ctx, vec![]);
+    let output = frame(&mut app, &ctx, vec![]);
+    // Palette rows are the buttons right of the sidebar, below the search field.
+    let rows: Vec<_> = crate::app::test_ui::nodes(&output)
+        .iter()
+        .filter(|(_, n)| n.role() == egui::accesskit::Role::Button)
+        .filter(|(_, n)| n.label().is_some_and(|l| l != "Close window"))
+        .filter_map(|(_, n)| n.bounds().map(|b| (b, n.is_disabled())))
+        .filter(|(b, _)| b.x0 > 300.0 && b.x1 < 1100.0)
+        .collect();
+    let lowest_enabled = rows
+        .iter()
+        .filter(|r| !r.1)
+        .map(|r| r.0.y0)
+        .fold(0.0, f64::max);
+    let highest_disabled = rows
+        .iter()
+        .filter(|r| r.1)
+        .map(|r| r.0.y0)
+        .fold(f64::MAX, f64::min);
+    assert!(rows.iter().any(|r| !r.1) && rows.iter().any(|r| r.1));
+    assert!(lowest_enabled < highest_disabled);
+    // Selecting an unavailable command explains it and Enter leaves it alone.
+    app.database.ui.palette_query = "close".into();
+    frame(&mut app, &ctx, vec![]);
+    let output = frame(&mut app, &ctx, vec![]);
+    assert!(output.shapes.iter().any(|s| matches!(
+        &s.shape,
+        egui::Shape::Text(t) if t.galley.job.text == "No database is open"
+    )));
+    press_key(&mut app, &ctx, egui::Key::Enter, egui::Modifiers::NONE);
+    assert!(app.database.ui.palette_open);
 }

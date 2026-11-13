@@ -32,6 +32,15 @@ pub(super) enum Command {
     CopyResults,
 }
 
+pub(super) struct PaletteItem {
+    tier: u8,
+    label: &'static str,
+    shortcut: &'static str,
+    /// Set when the command cannot run now; the row is shown greyed out.
+    reason: Option<&'static str>,
+    command: Command,
+}
+
 pub(super) fn fuzzy(label: &str, query: &str) -> bool {
     let lower = label.to_lowercase();
     let mut chars = lower.chars();
@@ -404,20 +413,24 @@ impl App {
                 egui::ScrollArea::vertical()
                     .max_height((ctx.content_rect().height() - 240.0).max(100.0))
                     .show(ui, |ui| {
-                        for (index, (label, shortcut, _)) in items.iter().enumerate() {
+                        for (index, item) in items.iter().enumerate() {
                             let selected = index == self.database.ui.palette_index;
                             // Names read down the left edge; shortcuts line up on the right.
-                            let response = ui.add_sized(
-                                [ui.available_width(), 32.0],
-                                egui::Button::new(*label)
-                                    .shortcut_text(
-                                        egui::RichText::new(*shortcut)
-                                            .monospace()
-                                            .size(crate::appearance::text_size(ui.ctx(), 11.0)),
-                                    )
-                                    .selected(selected)
-                                    .frame_when_inactive(false),
-                            );
+                            let mut button = egui::Button::new(item.label)
+                                .selected(selected)
+                                .frame_when_inactive(false)
+                                .min_size(egui::vec2(ui.available_width(), 32.0));
+                            // An empty shortcut would still add a space to the accessible name.
+                            if !item.shortcut.is_empty() {
+                                button = button.shortcut_text(
+                                    egui::RichText::new(item.shortcut)
+                                        .monospace()
+                                        .size(crate::appearance::text_size(ui.ctx(), 11.0)),
+                                );
+                            }
+                            let response = ui
+                                .add_enabled(item.reason.is_none(), button)
+                                .on_disabled_hover_text(item.reason.unwrap_or_default());
                             if selected {
                                 response.scroll_to_me(Some(egui::Align::Center));
                             }
@@ -429,13 +442,22 @@ impl App {
                             ui.label("No matches in loaded metadata.");
                         }
                     });
+                // An unavailable command stays put and explains itself instead.
+                let reason = items
+                    .get(self.database.ui.palette_index)
+                    .and_then(|item| item.reason);
                 chosen = chosen_index
-                    .filter(|&i| i < items.len())
-                    .map(|i| items.swap_remove(i).2);
-                presentation::footer(ui, |ui| {
-                    ui.small(
-                        "Up/Down choose · Enter run · Esc close. Ctrl+P searches database objects.",
-                    );
+                    .filter(|&i| items.get(i).is_some_and(|item| item.reason.is_none()))
+                    .map(|i| items.swap_remove(i).command);
+                presentation::footer(ui, |ui| match reason {
+                    Some(reason) => {
+                        ui.colored_label(ui.visuals().warn_fg_color, reason);
+                    }
+                    None => {
+                        ui.small(
+                            "Up/Down choose · Enter run · Esc close. Ctrl+P searches database objects.",
+                        );
+                    }
                 });
             });
         self.database.ui.palette_open = open;
@@ -444,7 +466,7 @@ impl App {
             self.execute_command(ctx, action);
         }
     }
-    fn palette_items(&self) -> Vec<(&'static str, &'static str, Command)> {
+    fn palette_items(&self) -> Vec<PaletteItem> {
         let items: Vec<(&'static str, &'static str, Command)> = vec![
             ("Schema home · Map", "", Command::Map),
             ("List tables and views", "", Command::List),
@@ -494,11 +516,87 @@ impl App {
         let query = &self.database.ui.palette_query;
         let mut ranked: Vec<_> = items
             .into_iter()
-            .filter_map(|item| rank(item.0, item.1, query).map(|tier| (tier, item)))
+            .filter_map(|(label, shortcut, command)| {
+                rank(label, shortcut, query).map(|tier| PaletteItem {
+                    tier,
+                    label,
+                    shortcut,
+                    reason: self.unavailable(&command),
+                    command,
+                })
+            })
             .collect();
-        // Stable, so equally good matches keep the list's own order.
-        ranked.sort_by_key(|(tier, _)| *tier);
-        ranked.into_iter().map(|(_, item)| item).take(80).collect()
+        // Stable, so equally good matches keep the list's own order; what can
+        // run now comes before what cannot, so Enter picks a working command.
+        ranked.sort_by_key(|item| (item.tier, item.reason.is_some()));
+        ranked.truncate(80);
+        ranked
+    }
+
+    /// Why a palette command cannot run now, or `None` when it can.
+    fn unavailable(&self, command: &Command) -> Option<&'static str> {
+        use tursobench_core::TransactionState;
+        let open = self.database.session.is_some() && self.database.ready;
+        let table = self.database.document.view == View::Browse
+            && self.database.document.ui.nav == Nav::Table;
+        let busy = || {
+            if self.has_drafts() {
+                Some("Commit or discard staged edits first")
+            } else {
+                Some("Wait for the running statement to finish")
+            }
+        };
+        match command {
+            Command::Open | Command::Settings | Command::Help | Command::Theme => None,
+            Command::Close if self.database.session.is_none() => Some("No database is open"),
+            Command::Close => None,
+            _ if !open => Some("Open a database first"),
+            Command::RefreshTable if !table => Some("Open a table first"),
+            Command::Inspector if self.database.document.inspect.is_none() => {
+                Some("Select a cell first")
+            }
+            Command::CopySelection if self.selected_cells().next().is_none() => {
+                Some("Select cells first")
+            }
+            Command::Begin if self.database.transaction != TransactionState::Autocommit => {
+                Some("An editor transaction is already open")
+            }
+            Command::Action(Action::Commit | Action::Rollback)
+                if self.database.transaction != TransactionState::Active =>
+            {
+                Some("No editor transaction is open")
+            }
+            Command::Begin | Command::Action(Action::Commit | Action::Rollback)
+                if !self.action_enabled(Action::Begin) =>
+            {
+                busy()
+            }
+            Command::Action(Action::Insert) if !self.can_edit() => {
+                if !self.database.writable {
+                    Some("The database is open read-only")
+                } else if !table {
+                    Some("Open a table first")
+                } else if self.database.transaction != TransactionState::Autocommit {
+                    Some("Finish the editor transaction first")
+                } else {
+                    busy()
+                }
+            }
+            Command::Action(Action::FitColumns)
+                if self.database.document.result.columns.is_empty() =>
+            {
+                Some("Open a table first")
+            }
+            Command::Action(Action::ShowColumns)
+                if self.database.document.tools.columns.hidden.is_empty() =>
+            {
+                Some("No columns are hidden")
+            }
+            Command::Action(Action::Export) if !self.action_enabled(Action::Export) => {
+                Some("Nothing to export yet")
+            }
+            _ => None,
+        }
     }
     pub(super) fn execute_command(&mut self, ctx: &egui::Context, action: Command) {
         match action {
@@ -610,12 +708,6 @@ impl App {
             Command::Settings => self.settings.open = true,
             Command::Panel(panel) => {
                 self.select_tool(panel);
-            }
-            // ROLLBACK outside a transaction would only report an engine error.
-            Command::Action(Action::Commit | Action::Rollback)
-                if self.database.transaction != tursobench_core::TransactionState::Active =>
-            {
-                self.database.status = "No editor transaction is open".into();
             }
             Command::Action(action) => self.dispatch_action(action, ctx),
             Command::Help => self.database.tools.help = true,
