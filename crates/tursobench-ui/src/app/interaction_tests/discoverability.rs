@@ -95,3 +95,19 @@ fn palette_runs_the_best_match_not_the_first_listed() {
         app.database.tools.help = false;
     }
 }
+
+#[test]
+fn palette_copy_with_nothing_selected_leaves_the_clipboard_alone() {
+    let (ctx, mut app) = crate::app::test_ui::app();
+    frame(&mut app, &ctx, vec![]);
+    app.execute_command(&ctx, super::super::commands::Command::CopySelection);
+    let output = frame(&mut app, &ctx, vec![]);
+    assert!(
+        !output
+            .platform_output
+            .commands
+            .iter()
+            .any(|c| matches!(c, egui::OutputCommand::CopyText(_)))
+    );
+    assert_eq!(app.database.status, "Select cells to copy");
+}

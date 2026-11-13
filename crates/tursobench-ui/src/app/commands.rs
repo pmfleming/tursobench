@@ -583,6 +583,10 @@ impl App {
                 self.database.document.tools.filter_focus = true;
             }
             Command::Inspector => self.toggle_inspector(),
+            // An empty selection must not overwrite what is on the clipboard.
+            Command::CopySelection if self.selected_cells().next().is_none() => {
+                self.database.status = "Select cells to copy".into();
+            }
             Command::CopySelection => match self.selection_tsv() {
                 Ok(text) => ctx.copy_text(text),
                 Err(e) => self.database.status = e,
