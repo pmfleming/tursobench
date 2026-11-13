@@ -220,11 +220,27 @@ pub fn run_relay(socket: &Path) -> io::Result<()> {
     stream.write_all(format!("{token}\n").as_bytes())?;
     let mut upstream = stream.try_clone()?;
     std::thread::spawn(move || {
-        let _ = io::copy(&mut io::stdin().lock(), &mut upstream);
+        let _ = forward(&mut io::stdin().lock(), &mut upstream);
         let _ = upstream.shutdown(std::net::Shutdown::Write);
     });
-    io::copy(&mut stream, &mut io::stdout().lock())?;
-    Ok(())
+    forward(&mut stream, &mut io::stdout().lock())
+}
+
+/// Pass each chunk on as soon as it arrives. (`io::copy` may hand pipes and
+/// sockets to the kernel, which can hold a request until more input or end of
+/// input arrives, stalling an agent that waits for each reply.)
+fn forward(from: &mut impl Read, to: &mut impl Write) -> io::Result<()> {
+    let mut buffer = [0u8; 16 * 1024];
+    loop {
+        let read = match from.read(&mut buffer) {
+            Ok(0) => return Ok(()),
+            Ok(read) => read,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        to.write_all(&buffer[..read])?;
+        to.flush()?;
+    }
 }
 
 #[cfg(test)]
