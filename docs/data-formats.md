@@ -142,7 +142,9 @@ only). `assistant` stores the chosen agent (`provider`: `Claude`, `Copilot`,
 `Codex` or `Custom`), a `custom_command` of up to 4096 bytes, a `model` of up to
 200 bytes, and `sharing`: `Schema` or `Rows` per absolute database path, bounded
 to 50 paths / 4096 bytes per path. A missing database means the user has not
-chosen yet. Conversations are never stored. Grid column presentation and inspected/filter values
+chosen yet. `privacy` holds `claude`, `copilot`, `codex` and `custom`, each with
+`telemetry_off` (default true), `keep_history` (default false) and
+`share_file_name` (default true). Conversations are never stored. Grid column presentation and inspected/filter values
 are not persisted. Table retention uses a 200-row minimum and reserves 100 rows
 in flight; SQL's exact row setting is unchanged.
 

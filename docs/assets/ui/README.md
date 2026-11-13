@@ -14,7 +14,8 @@ the machine.
 | [Without sidebar](assistant/assistant-without-sidebar.png) | Sidebar hidden, assistant shown. |
 | [Light](assistant/assistant-light.png) | The same in the light theme. |
 | [Both hidden](assistant/panels-hidden.png) | The workspace takes the full width; the status-bar toggles remain. |
-| [Settings](assistant/assistant-settings.png) | Agent choice, model and each database's sharing choice. |
+| [Settings](assistant/assistant-settings.png) | Agent choice, model, Claude Code's privacy choices and each database's sharing choice. |
+| [Privacy](assistant/assistant-privacy.png) | Codex's privacy choices and fixed promises, opened from the consent card's link. |
 
 Reproduce with:
 

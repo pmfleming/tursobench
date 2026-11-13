@@ -362,3 +362,27 @@ fn privacy_is_chosen_per_provider_and_reaches_the_agent() {
     assert!(log.contains("a database open"), "{log}");
     app.close();
 }
+
+#[test]
+fn the_consent_card_links_to_the_agents_privacy_settings() {
+    let (dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
+    runtime_dir(&dir);
+    app.preferences.panels.assistant = true;
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    click(
+        &mut app,
+        &ctx,
+        control(&output, "Privacy settings").center(),
+    );
+    assert!(app.settings.open);
+    assert_eq!(app.settings.page, crate::app::settings::Page::Assistant);
+    for _ in 0..3 {
+        frame_at(&mut app, &ctx, SIZE, vec![]);
+    }
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    // Scrolled so the switches and the promises below them are in view.
+    let switch = control(&output, "Block telemetry and error reports");
+    assert!(switch.top() > 0.0 && switch.bottom() < SIZE.y);
+    assert!(labelled(&output, "The database's folder is never sent"));
+    app.close();
+}

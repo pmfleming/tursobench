@@ -21,6 +21,8 @@ pub(super) enum Page {
 pub(super) struct State {
     pub open: bool,
     pub page: Page,
+    /// Scroll the assistant page to its privacy section on the next frame.
+    pub reveal_privacy: bool,
     dirty: bool,
     displayed_font: Option<u16>,
 }

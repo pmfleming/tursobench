@@ -509,6 +509,21 @@ impl App {
         }
         ui.add_space(8.0);
         ui.weak("Change it later with the sharing icon above.");
+        ui.add_space(4.0);
+        if ui
+            .link("Privacy settings")
+            .on_hover_text("Telemetry, history and what this agent may learn")
+            .clicked()
+        {
+            self.open_assistant_privacy();
+        }
+    }
+
+    /// Settings → Assistant, scrolled to the selected agent's privacy choices.
+    pub(super) fn open_assistant_privacy(&mut self) {
+        self.settings.open = true;
+        self.settings.page = super::settings::Page::Assistant;
+        self.settings.reveal_privacy = true;
     }
 
     fn assistant_input(&mut self, ui: &mut egui::Ui) {
@@ -950,10 +965,7 @@ impl App {
                 });
                 self.setting_response(response);
             });
-            ui.weak(
-                "Applies to the next conversation. Each CLI signs in by itself; TursoBench \
-                 never reads or stores sign-ins.",
-            );
+            ui.weak("Applies to the next conversation.");
         });
         self.assistant_privacy(ui);
         super::panels::section(ui, "Sharing", |ui| {
@@ -1078,6 +1090,9 @@ impl App {
         };
         let copy = privacy_copy(provider);
         let title = format!("Privacy · {name}");
+        if std::mem::take(&mut self.settings.reveal_privacy) {
+            ui.scroll_to_cursor(Some(egui::Align::TOP));
+        }
         super::panels::section(ui, &title, |ui| {
             let mut changed = false;
             let mut privacy = self.preferences.assistant.privacy.of(provider);

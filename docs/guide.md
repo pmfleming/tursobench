@@ -286,6 +286,13 @@ The agent can list tables, describe one, run one read-only SELECT of at most
 in a reply, opens in a new SQL editor tile without running; you review and run it.
 Enter sends, Shift Enter adds a line and Stop interrupts the turn.
 
+Settings → Assistant → Privacy holds each agent's own privacy choices, all
+private by default: telemetry and error reports blocked, nothing saved to the
+CLI's history, and whether the agent may learn the database's file name (never
+its folder). It also lists what always holds, such as your sign-in and account
+details never reaching TursoBench. Copilot CLI and other ACP agents keep their
+own telemetry and history settings. The consent card links there.
+
 ![Assistant beside the sidebar with a proposed UPDATE in the SQL tile.](assets/ui/assistant/assistant-conversation.png)
 
 See the [assistant contract](../contracts/assistant.md) for what is sent, the

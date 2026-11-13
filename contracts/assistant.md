@@ -20,15 +20,15 @@ names the CLI's own sign-in command for the user to run in a terminal.
 
 Claude Code starts with `--restricted --tools ""` (no built-in tools),
 `--strict-mcp-config` with only TursoBench's server, `--allowedTools` naming only
-TursoBench's tools, `--disable-slash-commands`, `--no-session-persistence` and
-`--system-prompt`. It does not use `--bare`, which skips the subscription
-sign-in. The working directory of every agent is TursoBench's private runtime
+TursoBench's tools, `--disable-slash-commands` and `--system-prompt`; history and
+telemetry follow the Privacy choices below. It does not use `--bare`, which skips
+the subscription sign-in. The working directory of every agent is TursoBench's private runtime
 directory, not the database's folder.
 
 Codex starts as `codex app-server` with its shell, unified exec, apps, plugins,
-browser, computer use, image tools, helper agents, goals, hooks and web search
-switched off. The thread is ephemeral (nothing is saved to Codex's history) and
-runs in Codex's `read-only` sandbox with the `untrusted` approval policy.
+browser, computer use, image tools, helper agents, goals, hooks, shell snapshots
+and web search switched off. The thread runs in Codex's `read-only` sandbox with
+the `untrusted` approval policy; whether it is saved follows the Privacy choices.
 TursoBench's instructions replace Codex's base instructions, and TursoBench's
 server replaces every MCP server in the user's Codex configuration. The relay
 and its token travel in `thread/start`, not on the command line. Every command,
@@ -55,8 +55,37 @@ Nothing is sent until the user chooses, per database (by absolute path), either:
 The choice persists in application preferences, at most 50 databases. The
 header toggles it and the change applies to a running agent at once; the next
 prompt tells the agent. Settings → Assistant lists every choice and can forget
-one, which also ends that database's conversation. Only the database's file name,
-not its path, appears in the agent's instructions.
+one, which also ends that database's conversation.
+
+## Privacy
+
+Settings → Assistant has a Privacy section for the selected agent. Each provider
+keeps its own choices, and every default is the private one. They apply to the
+next conversation.
+
+| Choice | Claude Code | Codex | Copilot CLI, other ACP |
+| --- | --- | --- | --- |
+| Block telemetry and error reports (on) | `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `DISABLE_TELEMETRY`, `DISABLE_ERROR_REPORTING` | `analytics.enabled=false`, `otel.exporter`, `otel.metrics_exporter` and `otel.trace_exporter` = `none`, `feedback.enabled=false` | Follows the agent's own settings |
+| Save conversations in the CLI's history (off) | Off: `--no-session-persistence` | Off: ephemeral thread, `history.persistence="none"` | Follows the agent's own settings |
+| Tell the agent the database's file name (on) | Off: the instructions say only that a database is open | Same | Same |
+
+The Codex overrides are `-c` flags for that process only; `config.toml` is not
+changed. With the defaults, a Codex conversation writes only Codex's model cache
+to `~/.codex` (its shell snapshot feature is also off), and Claude Code writes no
+session transcript.
+
+These hold for every provider and are listed in the section as fixed rows:
+
+- Sign-in and account details (email, plan, tokens) stay with the CLI. TursoBench
+  opens no credential files and calls no login, account, token or `authenticate`
+  method.
+- The database's folder is never sent. Queries that name
+  `pragma_database_list`, which returns the full path, are refused.
+- Nothing is sent until the database's sharing is chosen.
+- The agent's own tools: none for Claude Code; for Codex no shell or web search
+  in a read-only sandbox; ACP agents keep theirs (see below).
+
+The consent card links to the section.
 
 ## Tools
 
@@ -67,7 +96,7 @@ The tool server speaks MCP (newline-delimited JSON-RPC: `initialize`, `ping`,
 | --- | --- |
 | `list_tables` | Tables and views, excluding `sqlite_*` and `__turso_internal_*`; at most 2,000 |
 | `describe_table` | Columns, primary-key order, defaults, indexes, foreign keys and DDL up to 16 KiB |
-| `run_query` | Refused unless results are shared; otherwise one read, at most 200 rows / 256 KiB |
+| `run_query` | Refused unless results are shared; otherwise one read, at most 200 rows / 256 KiB; never `pragma_database_list` |
 | `propose_sql` | Opens the SQL, up to 256 KiB, in a new SQL editor tile without running it |
 
 Every tool is annotated `readOnlyHint`, so agents that honour it (Codex) call

@@ -40,8 +40,11 @@ security reporting process; mention the TursoBench impact in a private report he
   roll back writes; engine memory use is not bounded by the result display limits.
 - The assistant sends what the agent reads to that agent's vendor, under your
   own plan and the vendor's terms. Share only the schema for sensitive data.
-  TursoBench never handles agent sign-ins. Its own tools are read-only, but ACP
-  agents keep their vendor's tools; see the [assistant contract](contracts/assistant.md).
+  TursoBench never handles agent sign-ins or account details, and never sends
+  the database's folder. Settings → Assistant → Privacy blocks Claude Code's and
+  Codex's telemetry and history by default. TursoBench's tools are read-only; ACP
+  agents keep their vendor's tools and settings; see the
+  [assistant contract](contracts/assistant.md).
 - SQL history stores literals. Remove sensitive history and sanitize exports,
   screenshots and bug reports. Query parameters are not persisted.
 
