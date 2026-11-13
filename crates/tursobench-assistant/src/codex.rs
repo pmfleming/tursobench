@@ -1,12 +1,13 @@
 //! Codex through its own app server (`codex app-server`, JSON-RPC over stdio),
 //! the protocol the Codex IDE extensions use with the user's own sign-in.
 //!
-//! The thread is ephemeral, runs in Codex's read-only sandbox, asks before any
-//! action it does not trust, and every such request is declined. Codex's
+//! The thread runs in Codex's read-only sandbox and asks before any action it
+//! does not trust; every such request is declined. Unless the user allows it,
+//! the thread is ephemeral and Codex reports no analytics or telemetry. Codex's
 //! shell, web search, apps, plugins, browser and computer use are switched off;
 //! its MCP servers are replaced by TursoBench's alone. TursoBench never calls
 //! the login, logout, account or token methods.
-use crate::agent::{Input, Link, Protocol, Spec, Update, content_text, tool_name};
+use crate::agent::{Input, Link, Privacy, Protocol, Spec, Update, content_text, tool_name};
 use serde_json::{Value as Json, json};
 use std::{collections::VecDeque, path::PathBuf, sync::mpsc::Receiver};
 
@@ -17,6 +18,8 @@ const START_THREAD: u64 = 2;
 pub const DISABLED_FEATURES: &[&str] = &[
     "shell_tool",
     "unified_exec",
+    // Copies the user's shell environment to ~/.codex; no shell runs here.
+    "shell_snapshot",
     "apps",
     "plugins",
     "remote_plugin",
@@ -35,20 +38,40 @@ pub const DISABLED_FEATURES: &[&str] = &[
     "skill_mcp_dependency_install",
 ];
 
+/// Overrides that stop Codex's analytics, OpenTelemetry export and feedback
+/// uploads; only the conversation itself reaches OpenAI.
+pub const QUIET_CONFIG: &[&str] = &[
+    "analytics.enabled=false",
+    "otel.exporter=\"none\"",
+    "otel.metrics_exporter=\"none\"",
+    "otel.trace_exporter=\"none\"",
+    "feedback.enabled=false",
+];
+
 /// `codex app-server` with Codex's own tools switched off. The tool relay and
-/// its token travel in `thread/start`, not on the command line.
+/// its token travel in `thread/start`, not on the command line. `privacy`
+/// decides whether Codex saves the thread and reports usage.
 pub fn spec(
     program: PathBuf,
     cwd: PathBuf,
     mcp: crate::relay::Launch,
     system_prompt: &str,
     model: Option<&str>,
+    privacy: Privacy,
 ) -> Spec {
     let mut args = vec!["app-server".to_owned()];
     for feature in DISABLED_FEATURES {
         args.extend(["--disable".into(), (*feature).into()]);
     }
     args.extend(["-c".into(), "web_search=\"disabled\"".into()]);
+    if privacy.telemetry_off {
+        for setting in QUIET_CONFIG {
+            args.extend(["-c".into(), (*setting).into()]);
+        }
+    }
+    if !privacy.keep_history {
+        args.extend(["-c".into(), "history.persistence=\"none\"".into()]);
+    }
     Spec {
         program,
         args,
@@ -61,6 +84,7 @@ pub fn spec(
             .map(str::trim)
             .filter(|m| !m.is_empty())
             .map(str::to_owned),
+        privacy,
     }
 }
 
@@ -264,7 +288,7 @@ fn thread_params(spec: &Spec) -> Json {
     }
     let mut params = json!({
         "cwd": spec.cwd,
-        "ephemeral": true,
+        "ephemeral": !spec.privacy.keep_history,
         "sandbox": "read-only",
         "approvalPolicy": "untrusted",
         "baseInstructions": spec.system_prompt,
@@ -609,11 +633,15 @@ mod tests {
             },
             "Be brief",
             Some(" gpt-x "),
+            Privacy::default(),
         );
         let joined = spec.args.join(" ");
         assert!(joined.starts_with("app-server "));
         assert!(joined.contains("--disable shell_tool"));
         assert!(joined.contains("web_search=\"disabled\""));
+        assert!(joined.contains("-c analytics.enabled=false"));
+        assert!(joined.contains("-c otel.metrics_exporter=\"none\""));
+        assert!(joined.contains("-c history.persistence=\"none\""));
         assert!(
             !joined.contains("secret"),
             "the token stays off the command line"

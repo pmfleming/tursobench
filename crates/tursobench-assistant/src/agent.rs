@@ -56,6 +56,23 @@ pub enum Protocol {
     CodexAppServer,
 }
 
+/// What the user lets the agent CLI keep or report, beyond the conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Privacy {
+    /// Ask the CLI to send no telemetry, metrics or error reports.
+    pub telemetry_off: bool,
+    /// Let the CLI save the conversation in its own history.
+    pub keep_history: bool,
+}
+impl Default for Privacy {
+    fn default() -> Self {
+        Self {
+            telemetry_off: true,
+            keep_history: false,
+        }
+    }
+}
+
 /// Everything needed to start and talk to one agent.
 #[derive(Debug, Clone)]
 pub struct Spec {
@@ -69,6 +86,8 @@ pub struct Spec {
     /// The tool relay, for protocols that configure MCP per session (ACP, Codex).
     pub mcp: Option<crate::relay::Launch>,
     pub model: Option<String>,
+    /// History and telemetry choices, for protocols that set them per conversation.
+    pub privacy: Privacy,
 }
 
 pub(crate) enum Input {

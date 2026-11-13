@@ -63,6 +63,7 @@ fn a_scripted_acp_agent_gets_tools_but_no_shell_files_or_other_permissions() {
                 env: vec![("TURSOBENCH_MCP_TOKEN".into(), "t".into())],
             }),
             model: Some("fake-large".into()),
+            privacy: Default::default(),
         },
         Arc::new(|| {}),
     )

@@ -1,12 +1,20 @@
 //! Claude Code in headless mode, the route Anthropic documents for using the
 //! unmodified `claude` binary with the user's own subscription sign-in.
-use crate::agent::{Input, Link, Protocol, Spec, Update, content_text, tool_name};
+use crate::agent::{Input, Link, Privacy, Protocol, Spec, Update, content_text, tool_name};
 use serde_json::{Value as Json, json};
 use std::{path::PathBuf, sync::mpsc::Receiver};
 
-/// Arguments that start a conversation with every built-in tool removed, no
-/// user or project settings, hooks, slash commands or other MCP servers, and
-/// nothing saved to Claude Code's session history.
+/// Environment that stops Claude Code's telemetry, error reports and other
+/// non-essential traffic; only the conversation itself reaches Anthropic.
+pub const QUIET_ENV: &[(&str, &str)] = &[
+    ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"),
+    ("DISABLE_TELEMETRY", "1"),
+    ("DISABLE_ERROR_REPORTING", "1"),
+];
+
+/// Arguments that start a conversation with every built-in tool removed and no
+/// user or project settings, hooks, slash commands or other MCP servers.
+/// `privacy` decides whether Claude Code saves the session and reports usage.
 pub fn spec(
     program: PathBuf,
     cwd: PathBuf,
@@ -14,6 +22,7 @@ pub fn spec(
     tools: &[&str],
     system_prompt: &str,
     model: Option<&str>,
+    privacy: Privacy,
 ) -> Spec {
     let allowed = tools
         .iter()
@@ -33,10 +42,12 @@ pub fn spec(
         "",
         "--strict-mcp-config",
         "--disable-slash-commands",
-        "--no-session-persistence",
     ]
     .map(String::from)
     .into();
+    if !privacy.keep_history {
+        args.push("--no-session-persistence".into());
+    }
     args.extend([
         "--mcp-config".into(),
         config.to_string_lossy().into_owned(),
@@ -51,12 +62,20 @@ pub fn spec(
     Spec {
         program,
         args,
-        env: vec![],
+        env: if privacy.telemetry_off {
+            QUIET_ENV
+                .iter()
+                .map(|(k, v)| ((*k).into(), (*v).into()))
+                .collect()
+        } else {
+            vec![]
+        },
         cwd,
         protocol: Protocol::ClaudeStream,
         system_prompt: system_prompt.into(),
         mcp: None,
         model: model.map(str::to_owned),
+        privacy,
     }
 }
 
@@ -254,8 +273,13 @@ mod tests {
             &["run_query", "describe_table"],
             "Be brief",
             Some("sonnet"),
+            Privacy::default(),
         );
         let joined = spec.args.join(" ");
+        assert!(spec.env.contains(&(
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC".into(),
+            "1".into()
+        )));
         assert!(joined.contains("--tools  --strict-mcp-config"));
         assert!(joined.contains("--restricted"));
         assert!(joined.contains("--no-session-persistence"));
@@ -266,5 +290,19 @@ mod tests {
         );
         assert!(joined.ends_with("--model sonnet"));
         assert!(!joined.contains("--bare"));
+        let open = super::spec(
+            "claude".into(),
+            "/tmp".into(),
+            std::path::Path::new("/run/x.json"),
+            &["run_query"],
+            "Be brief",
+            None,
+            Privacy {
+                telemetry_off: false,
+                keep_history: true,
+            },
+        );
+        assert!(open.env.is_empty());
+        assert!(!open.args.contains(&"--no-session-persistence".to_owned()));
     }
 }

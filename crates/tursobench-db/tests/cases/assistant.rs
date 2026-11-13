@@ -101,7 +101,7 @@ fn writes_are_refused_by_the_gate_and_by_the_engine() {
 #[test]
 fn the_database_location_is_not_readable() {
     let (_dir, path) = fixture();
-    let mut client = Client::open(&path, Access::ReadOnly);
+    let client = Client::open(&path, Access::ReadOnly);
     let tools = client.session.assistant();
     for sql in [
         "SELECT * FROM pragma_database_list",

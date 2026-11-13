@@ -45,6 +45,7 @@ fn signed_in_claude_calls_relay_tools_with_built_in_tools_removed() {
         &["upper"],
         "You test tools. Do exactly what you are asked.",
         Some("haiku"),
+        Default::default(),
     );
     let agent = Agent::spawn(spec, Arc::new(|| {})).unwrap();
     agent.prompt(

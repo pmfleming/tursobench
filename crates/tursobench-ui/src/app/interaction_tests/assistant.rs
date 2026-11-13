@@ -28,12 +28,17 @@ fn scripted(app: &mut App, dir: &tempfile::TempDir) {
     app.database.assistant.program = Some(script);
 }
 
-fn runtime_dir(dir: &tempfile::TempDir) {
-    let runtime = dir.path().join("runtime");
-    std::fs::create_dir_all(&runtime).unwrap();
-    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
-    // SAFETY: set before the tool endpoint (the only reader) starts.
-    unsafe { std::env::set_var("XDG_RUNTIME_DIR", &runtime) };
+/// One private runtime directory for every test in this process: tests run in
+/// parallel, and a per-test directory could vanish under another test.
+fn runtime_dir(_: &tempfile::TempDir) {
+    static RUNTIME: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    RUNTIME.get_or_init(|| {
+        let runtime = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(runtime.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        // SAFETY: set once, before any tool endpoint (the only reader) starts.
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
+        runtime
+    });
 }
 
 #[test]
@@ -184,8 +189,26 @@ fn an_acp_agent_can_be_chosen_in_settings_and_its_own_edits_are_declined() {
             .iter()
             .any(|e| matches!(e, Entry::Reply(text) if text == "ACP reply"))
     );
-    // The settings list the database's choice and can forget it.
+    // The settings list the database's choice, below the privacy section, and
+    // can forget it.
     app.settings.open = true;
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    let over = control(&output, "Copilot CLI").center();
+    frame_at(
+        &mut app,
+        &ctx,
+        SIZE,
+        vec![
+            egui::Event::PointerMoved(over),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -2000.0),
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Unknown,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+    );
     frame_at(&mut app, &ctx, SIZE, vec![]);
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
     click(
@@ -253,5 +276,89 @@ fn codex_can_be_chosen_in_settings_and_its_own_edits_are_declined() {
             .iter()
             .any(|e| matches!(e, Entry::Reply(text) if text == "Codex reply"))
     );
+    app.close();
+}
+
+fn labelled(output: &egui::FullOutput, name: &str) -> bool {
+    crate::app::test_ui::nodes(output).iter().any(|(_, node)| {
+        node.label()
+            .or(node.value())
+            .is_some_and(|text| text == name)
+    })
+}
+
+/// A stand-in for `claude -p` that records how it was started.
+const RECORDING_SCRIPT: &str = r#"#!/usr/bin/env bash
+{ printf 'ARGS %s\n' "$*"; printf 'QUIET %s\n' "${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-unset}"; } > "$0.log"
+echo '{"type":"system","subtype":"init","model":"fake-model"}'
+while read -r line; do
+  echo '{"type":"result","subtype":"success","is_error":false,"result":"done"}'
+done
+"#;
+
+#[test]
+fn privacy_is_chosen_per_provider_and_reaches_the_agent() {
+    let (dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
+    runtime_dir(&dir);
+    app.settings.open = true;
+    app.settings.page = crate::app::settings::Page::Assistant;
+    frame_at(&mut app, &ctx, SIZE, vec![]);
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    assert!(labelled(&output, "PRIVACY · CLAUDE CODE"));
+    assert!(labelled(
+        &output,
+        "Sign-in and account details stay with the CLI"
+    ));
+    click(
+        &mut app,
+        &ctx,
+        control(&output, "Save conversations in Claude Code's history").center(),
+    );
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    click(
+        &mut app,
+        &ctx,
+        control(&output, "Tell the agent the database's file name").center(),
+    );
+    let privacy = app.preferences.assistant.privacy;
+    assert!(privacy.claude.keep_history && !privacy.claude.share_file_name);
+    assert!(privacy.claude.telemetry_off);
+    // Other providers keep their private defaults.
+    assert_eq!(privacy.codex, crate::storage::ProviderPrivacy::default());
+
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    click(&mut app, &ctx, control(&output, "Codex").center());
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    assert!(labelled(&output, "Block analytics and telemetry"));
+    assert!(!labelled(
+        &output,
+        "Save conversations in Claude Code's history"
+    ));
+    click(&mut app, &ctx, control(&output, "Copilot CLI").center());
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    assert!(labelled(
+        &output,
+        "Telemetry and history follow Copilot CLI's own settings"
+    ));
+    assert!(!labelled(&output, "Block analytics and telemetry"));
+    click(&mut app, &ctx, control(&output, "Claude Code").center());
+    app.settings.open = false;
+
+    let script = dir.path().join("claude");
+    std::fs::write(&script, RECORDING_SCRIPT).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    app.database.assistant.program = Some(script.clone());
+    app.set_assistant_sharing(Sharing::Schema);
+    app.database.assistant.draft = "Hi".into();
+    app.send_assistant(&ctx);
+    wait_until(&mut app, &ctx, |a| !a.database.assistant.busy);
+    let log = std::fs::read_to_string(script.with_extension("log")).unwrap();
+    assert!(!log.contains("--no-session-persistence"), "{log}");
+    assert!(log.contains("QUIET 1"), "{log}");
+    assert!(
+        !log.contains("fixture.db"),
+        "the file name stays private: {log}"
+    );
+    assert!(log.contains("a database open"), "{log}");
     app.close();
 }

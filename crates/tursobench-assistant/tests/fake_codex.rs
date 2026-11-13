@@ -65,6 +65,7 @@ fn a_scripted_codex_gets_only_our_tools_and_no_approvals_or_tokens() {
         },
         "Be helpful",
         Some("gpt-fake"),
+        Default::default(),
     );
     spec.args = vec![script.to_string_lossy().into_owned()];
     let agent = Agent::spawn(spec, Arc::new(|| {})).unwrap();

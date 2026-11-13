@@ -44,6 +44,7 @@ fn signed_in_codex_calls_relay_tools_in_a_read_only_thread() {
         endpoint.launch().clone(),
         "You test tools. Do exactly what you are asked.",
         None,
+        Default::default(),
     );
     let agent = Agent::spawn(spec, Arc::new(|| {})).unwrap();
     agent.prompt(

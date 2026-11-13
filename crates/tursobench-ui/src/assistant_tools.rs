@@ -174,7 +174,12 @@ impl ToolHost for Host {
 }
 
 /// The agent's standing instructions for one database conversation.
-pub fn system_prompt(database: &str, sharing: Sharing) -> String {
+/// `database` is the file name, or `None` when the user keeps even that private.
+pub fn system_prompt(database: Option<&str>, sharing: Sharing) -> String {
+    let open = match database {
+        Some(name) => format!("The user has the database `{name}` open and is asking about it."),
+        None => "The user has a database open and is asking about it.".to_owned(),
+    };
     let shared = match sharing {
         Sharing::Schema => {
             "The user shares only the schema. run_query is refused; reason from the \
@@ -189,7 +194,7 @@ pub fn system_prompt(database: &str, sharing: Sharing) -> String {
         "You are the assistant inside TursoBench, a desktop workbench for local Turso \
          databases. Turso is an SQLite-compatible engine; native full-text search uses \
          `CREATE INDEX … USING fts(...)` and `fts_match(...)`.\n\
-         The user has the database `{database}` open and is asking about it.\n\
+         {open}\n\
          Use the tursobench tools to look before answering: list_tables, describe_table, \
          run_query and propose_sql. You cannot write to the database. For any change, \
          or a query the user should keep, call propose_sql; it opens the SQL in their \
@@ -227,6 +232,8 @@ mod tests {
             host.tools().iter().map(|t| t.name).collect::<Vec<_>>(),
             NAMES
         );
-        assert!(system_prompt("shop.db", Sharing::Schema).contains("`shop.db`"));
+        assert!(system_prompt(Some("shop.db"), Sharing::Schema).contains("`shop.db`"));
+        let unnamed = system_prompt(None, Sharing::Rows);
+        assert!(!unnamed.contains(".db") && unnamed.contains("a database open"));
     }
 }

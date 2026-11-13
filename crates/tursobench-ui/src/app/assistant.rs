@@ -247,7 +247,13 @@ impl App {
         let program = profile.program.clone();
         let model = self.preferences.assistant.model.trim().to_owned();
         let model = (!model.is_empty()).then_some(model.as_str());
-        let prompt = tools::system_prompt(&name, sharing);
+        let privacy = self
+            .preferences
+            .assistant
+            .privacy
+            .of(self.preferences.assistant.provider);
+        let prompt =
+            tools::system_prompt(privacy.share_file_name.then_some(name.as_str()), sharing);
         let spec = match profile.protocol {
             Protocol::ClaudeStream => claude::spec(
                 program,
@@ -256,10 +262,16 @@ impl App {
                 &tools::NAMES,
                 &prompt,
                 model,
+                privacy.agent(),
             ),
-            Protocol::CodexAppServer => {
-                codex::spec(program, cwd, endpoint.launch().clone(), &prompt, model)
-            }
+            Protocol::CodexAppServer => codex::spec(
+                program,
+                cwd,
+                endpoint.launch().clone(),
+                &prompt,
+                model,
+                privacy.agent(),
+            ),
             Protocol::Acp => Spec {
                 program,
                 args: profile.args.clone(),
@@ -269,6 +281,7 @@ impl App {
                 system_prompt: prompt,
                 mcp: Some(endpoint.launch().clone()),
                 model: model.map(str::to_owned),
+                privacy: privacy.agent(),
             },
         };
         let agent = Agent::spawn(spec, wake).map_err(|e| {
@@ -942,6 +955,7 @@ impl App {
                  never reads or stores sign-ins.",
             );
         });
+        self.assistant_privacy(ui);
         super::panels::section(ui, "Sharing", |ui| {
             if self.preferences.assistant.sharing.is_empty() {
                 ui.weak("No database shares anything yet. Each one asks first.");
@@ -982,4 +996,174 @@ impl App {
             }
         });
     }
+}
+
+/// How one provider's privacy choices are enforced, in the user's words.
+struct PrivacyCopy {
+    /// Telemetry and history switches, when the CLI lets TursoBench set them.
+    switches: Option<[(&'static str, &'static str); 2]>,
+    sign_in: &'static str,
+    tools: (&'static str, &'static str, bool),
+}
+
+fn privacy_copy(provider: crate::storage::Provider) -> PrivacyCopy {
+    use crate::storage::Provider;
+    match provider {
+        Provider::Claude => PrivacyCopy {
+            switches: Some([
+                (
+                    "Block telemetry and error reports",
+                    "Starts Claude Code with CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, \
+                     DISABLE_TELEMETRY and DISABLE_ERROR_REPORTING, so only the \
+                     conversation reaches Anthropic.",
+                ),
+                (
+                    "Save conversations in Claude Code's history",
+                    "When off, Claude Code runs with --no-session-persistence and \
+                     writes nothing to its session history.",
+                ),
+            ]),
+            sign_in: "TursoBench never opens Claude Code's credential files and never \
+                      reads, stores or sends your email, plan or tokens.",
+            tools: (
+                "No shell, file or web access",
+                "Claude Code's built-in tools are removed; only TursoBench's read-only \
+                 database tools remain.",
+                false,
+            ),
+        },
+        Provider::Codex => PrivacyCopy {
+            switches: Some([
+                (
+                    "Block analytics and telemetry",
+                    "Starts Codex with analytics.enabled=false, every OpenTelemetry \
+                     exporter set to none and feedback.enabled=false, so only the \
+                     conversation reaches OpenAI. Your config.toml is not changed.",
+                ),
+                (
+                    "Save conversations in Codex's history",
+                    "When off, the thread is ephemeral and history.persistence is none, \
+                     so Codex writes nothing to its history.",
+                ),
+            ]),
+            sign_in: "TursoBench never calls Codex's account, login or token methods, so \
+                      your email, plan and tokens never reach it.",
+            tools: (
+                "No shell or web search · read-only sandbox",
+                "Codex's shell, web search, apps, plugins and browser are switched off. \
+                 apply_patch remains but cannot write, and its requests are declined.",
+                false,
+            ),
+        },
+        Provider::Copilot | Provider::Custom => PrivacyCopy {
+            switches: None,
+            sign_in: "TursoBench never calls the agent's authenticate method and never \
+                      reads, stores or sends its credentials or account details.",
+            tools: (
+                "Keeps its own tools",
+                "TursoBench declines the agent's requests to run commands or edit files, \
+                 but some agents can read local files without asking.",
+                true,
+            ),
+        },
+    }
+}
+
+impl App {
+    fn assistant_privacy(&mut self, ui: &mut egui::Ui) {
+        let provider = self.preferences.assistant.provider;
+        let name = match profile(&self.preferences.assistant) {
+            Ok(profile) => profile.name,
+            Err(_) => "The agent".into(),
+        };
+        let copy = privacy_copy(provider);
+        let title = format!("Privacy · {name}");
+        super::panels::section(ui, &title, |ui| {
+            let mut changed = false;
+            let mut privacy = self.preferences.assistant.privacy.of(provider);
+            match copy.switches {
+                Some([(telemetry, telemetry_tip), (history, history_tip)]) => {
+                    changed |= presentation::checkbox(ui, &mut privacy.telemetry_off, telemetry)
+                        .on_hover_text(telemetry_tip)
+                        .changed();
+                    changed |= presentation::checkbox(ui, &mut privacy.keep_history, history)
+                        .on_hover_text(history_tip)
+                        .changed();
+                }
+                None => guarantee(
+                    ui,
+                    Icon::Settings,
+                    &format!("Telemetry and history follow {name}'s own settings"),
+                    "TursoBench cannot change them for Agent Client Protocol agents; see \
+                     the agent's documentation.",
+                    false,
+                ),
+            }
+            changed |= presentation::checkbox(
+                ui,
+                &mut privacy.share_file_name,
+                "Tell the agent the database's file name",
+            )
+            .on_hover_text(
+                "When off, the agent is only told that a database is open. Its folder is \
+                 never sent.",
+            )
+            .changed();
+            if changed {
+                *self.preferences.assistant.privacy.of_mut(provider) = privacy;
+                self.preferences.normalize();
+                self.store.save(&self.preferences);
+            }
+            ui.add_space(4.0);
+            guarantee(
+                ui,
+                Icon::Lock,
+                "Sign-in and account details stay with the CLI",
+                copy.sign_in,
+                false,
+            );
+            guarantee(
+                ui,
+                Icon::Lock,
+                "The database's folder is never sent",
+                "Paths stay on this machine. Queries that would reveal the database's \
+                 location are refused.",
+                false,
+            );
+            guarantee(
+                ui,
+                Icon::Lock,
+                "Nothing is sent until a database's sharing is chosen",
+                "Each database asks once: schema only, or schema and query results.",
+                false,
+            );
+            let (label, tip, warn) = copy.tools;
+            guarantee(
+                ui,
+                if warn { Icon::Help } else { Icon::Lock },
+                label,
+                tip,
+                warn,
+            );
+            ui.weak("Applies to the next conversation.");
+        });
+    }
+}
+
+/// A fixed promise: an icon and a short line, with the details on hover.
+fn guarantee(ui: &mut egui::Ui, icon: Icon, label: &str, details: &str, warn: bool) {
+    ui.horizontal(|ui| {
+        let color = if warn {
+            presentation::intent_color(ui, Intent::Pending)
+        } else {
+            crate::appearance::Tokens::of(ui.ctx()).muted
+        };
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+        icons::paint(ui.painter(), rect, icon, color);
+        let text = egui::RichText::new(label).color(color);
+        let response = ui
+            .add(egui::Label::new(text).sense(egui::Sense::hover()))
+            .on_hover_text(details);
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, label));
+    });
 }

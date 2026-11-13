@@ -173,6 +173,62 @@ pub struct AssistantPreferences {
     pub model: String,
     /// Keyed by absolute database path; a missing entry means not yet chosen.
     pub sharing: std::collections::BTreeMap<String, crate::assistant_tools::Sharing>,
+    /// What each agent CLI may keep or report, chosen separately per provider.
+    pub privacy: Privacy,
+}
+/// Privacy choices for each provider. Every default is the private one.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct Privacy {
+    pub claude: ProviderPrivacy,
+    pub copilot: ProviderPrivacy,
+    pub codex: ProviderPrivacy,
+    pub custom: ProviderPrivacy,
+}
+impl Privacy {
+    pub fn of(&self, provider: Provider) -> ProviderPrivacy {
+        match provider {
+            Provider::Claude => self.claude,
+            Provider::Copilot => self.copilot,
+            Provider::Codex => self.codex,
+            Provider::Custom => self.custom,
+        }
+    }
+    pub fn of_mut(&mut self, provider: Provider) -> &mut ProviderPrivacy {
+        match provider {
+            Provider::Claude => &mut self.claude,
+            Provider::Copilot => &mut self.copilot,
+            Provider::Codex => &mut self.codex,
+            Provider::Custom => &mut self.custom,
+        }
+    }
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ProviderPrivacy {
+    /// Ask the CLI to send no telemetry, metrics or error reports.
+    pub telemetry_off: bool,
+    /// Let the CLI save conversations in its own history.
+    pub keep_history: bool,
+    /// Tell the agent the database's file name; its folder is never sent.
+    pub share_file_name: bool,
+}
+impl Default for ProviderPrivacy {
+    fn default() -> Self {
+        Self {
+            telemetry_off: true,
+            keep_history: false,
+            share_file_name: true,
+        }
+    }
+}
+impl ProviderPrivacy {
+    pub fn agent(self) -> tursobench_assistant::agent::Privacy {
+        tursobench_assistant::agent::Privacy {
+            telemetry_off: self.telemetry_off,
+            keep_history: self.keep_history,
+        }
+    }
 }
 /// Which signed-in agent CLI the assistant starts.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]

@@ -41,6 +41,7 @@ fn a_scripted_agent_streams_a_turn_accepts_an_interrupt_and_exits() {
             system_prompt: String::new(),
             mcp: None,
             model: None,
+            privacy: Default::default(),
         },
         Arc::new(|| {}),
     )
@@ -80,6 +81,7 @@ fn a_missing_program_is_reported_at_spawn() {
             system_prompt: String::new(),
             mcp: None,
             model: None,
+            privacy: Default::default(),
         },
         Arc::new(|| {}),
     )
