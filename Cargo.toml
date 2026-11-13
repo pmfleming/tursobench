@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["tools/engine-spike", "crates/tursobench-core", "crates/tursobench-db", "crates/tursobench-ui"]
+members = ["tools/engine-spike", "crates/tursobench-core", "crates/tursobench-db", "crates/tursobench-assistant", "crates/tursobench-ui"]
 exclude = ["vendor/tantivy-sstable", "vendor/turso"]
 
 [workspace.package]
@@ -12,6 +12,7 @@ rust-version = "1.95"
 [workspace.dependencies]
 tursobench-core = { path = "crates/tursobench-core" }
 tursobench-db = { path = "crates/tursobench-db" }
+tursobench-assistant = { path = "crates/tursobench-assistant" }
 turso_parser = "=0.8.3"
 turso_core = { version = "=0.8.3", default-features = false }
 eframe = { version = "=0.37.0", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "glow"] }

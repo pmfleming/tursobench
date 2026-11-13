@@ -13,6 +13,22 @@ mod storage;
 #[path = "../../tursobench-db/tests/common/fixture.rs"]
 mod test_support;
 fn main() -> eframe::Result {
+    // An agent CLI starts this mode as its MCP server; it never opens a window.
+    let args: Vec<_> = std::env::args_os().collect();
+    if args
+        .get(1)
+        .is_some_and(|a| a == tursobench_assistant::relay::RELAY_FLAG)
+    {
+        let Some(socket) = args.get(2) else {
+            eprintln!("usage: tursobench --mcp-relay <socket>");
+            std::process::exit(2);
+        };
+        if let Err(error) = tursobench_assistant::relay::run_relay(std::path::Path::new(socket)) {
+            eprintln!("tursobench relay: {error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     let icon =
         eframe::icon_data::from_png_bytes(include_bytes!("../../../packaging/tursobench.png"))
             .expect("the bundled TursoBench icon must be a valid PNG");

@@ -16,6 +16,7 @@ x11 = ["eframe/x11", "winit/x11"]
 [dependencies]
 tursobench-core.workspace = true
 tursobench-db.workspace = true
+tursobench-assistant.workspace = true
 eframe.workspace = true
 raw-window-handle = "=0.6.2"
 winit = { version = "=0.30.13", default-features = false }

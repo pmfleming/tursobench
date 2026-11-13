@@ -4769,6 +4769,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tursobench-assistant"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "tursobench-core"
 version = "0.1.0"
 dependencies = [
@@ -4804,6 +4813,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "turso",
+ "tursobench-assistant",
  "tursobench-core",
  "tursobench-db",
  "winit",

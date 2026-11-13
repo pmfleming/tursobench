@@ -1,0 +1,14 @@
+[package]
+name = "tursobench-assistant"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Drives the user's own signed-in agent CLI and serves it TursoBench tools.
+# No network, TLS or credential handling: the agent owns its own sign-in.
+[dependencies]
+serde_json.workspace = true
+libc = "0.2"
+
+[dev-dependencies]
+tempfile.workspace = true
