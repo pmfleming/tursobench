@@ -385,7 +385,8 @@ impl App {
         }
         let mut open = true;
         let mut chosen = None;
-        egui::Window::new("Commands")
+        let just_opened = self.database.ui.palette_focus;
+        let shown = egui::Window::new("Commands")
             .frame(crate::app::presentation::window_frame(ctx))
             .default_pos(ctx.content_rect().center() - egui::vec2(280.0, 180.0))
             .id(egui::Id::unique("command-palette"))
@@ -477,6 +478,16 @@ impl App {
                     }
                 });
             });
+        // A click elsewhere dismisses the palette, as it would a menu. The
+        // frame that opened it is skipped, since that click was outside it.
+        if !just_opened
+            && let Some(rect) = shown.map(|shown| shown.response.rect)
+            && ctx.input(|i| {
+                i.pointer.any_click() && i.pointer.interact_pos().is_some_and(|p| !rect.contains(p))
+            })
+        {
+            open = false;
+        }
         self.database.ui.palette_open = open;
         if let Some(action) = chosen {
             self.database.ui.palette_open = false;

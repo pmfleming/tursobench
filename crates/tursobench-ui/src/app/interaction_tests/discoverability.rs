@@ -286,3 +286,23 @@ fn palette_empty_result_points_to_object_search() {
         egui::Shape::Text(t) if t.galley.job.text.starts_with("No matching commands")
     )));
 }
+
+#[test]
+fn palette_closes_on_a_click_outside_but_not_inside() {
+    let (ctx, mut app) = crate::app::test_ui::app();
+    frame(&mut app, &ctx, vec![]);
+    press_key(&mut app, &ctx, egui::Key::K, egui::Modifiers::CTRL);
+    frame(&mut app, &ctx, vec![]);
+    // Clicking inside, on the search field, keeps it open.
+    let window = ctx
+        .memory(|m| m.area_rect(egui::Id::unique("command-palette")))
+        .unwrap();
+    click(&mut app, &ctx, window.center_top() + egui::vec2(0.0, 70.0));
+    assert!(app.database.ui.palette_open);
+    click(
+        &mut app,
+        &ctx,
+        egui::pos2(window.right() + 100.0, window.center().y),
+    );
+    assert!(!app.database.ui.palette_open);
+}
