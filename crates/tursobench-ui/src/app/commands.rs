@@ -162,10 +162,14 @@ pub(super) fn objects<'a>(
 
 impl App {
     fn dismiss_surface(&mut self, ctx: &egui::Context) {
+        // The palette sits above everything, so Escape closes it before it
+        // can cancel a cell edit or dialog the user cannot see beneath it.
+        if self.database.ui.palette_open {
+            self.database.ui.palette_open = false;
+            return;
+        }
         if self.settings.open {
-            if self.database.ui.palette_open {
-                self.database.ui.palette_open = false;
-            } else if egui::Popup::is_any_open(ctx) {
+            if egui::Popup::is_any_open(ctx) {
                 egui::Popup::close_all(ctx);
             } else {
                 self.settings.open = false;

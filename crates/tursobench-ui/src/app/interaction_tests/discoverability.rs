@@ -306,3 +306,25 @@ fn palette_closes_on_a_click_outside_but_not_inside() {
     );
     assert!(!app.database.ui.palette_open);
 }
+
+#[test]
+fn escape_closes_the_palette_before_a_cell_edit_beneath_it() {
+    let (_dir, ctx, mut app) = fixture(
+        &[
+            "CREATE TABLE t(id INTEGER PRIMARY KEY, value TEXT)",
+            "INSERT INTO t VALUES(1,'a')",
+        ],
+        true,
+    );
+    browse_and_wait(&mut app, &ctx, "t");
+    app.start_inline(0, 1);
+    assert!(app.database.document.tools.inline.is_some());
+    press_key(&mut app, &ctx, egui::Key::K, egui::Modifiers::CTRL);
+    assert!(app.database.ui.palette_open);
+    press_key(&mut app, &ctx, egui::Key::Escape, egui::Modifiers::NONE);
+    assert!(!app.database.ui.palette_open);
+    assert!(app.database.document.tools.inline.is_some());
+    press_key(&mut app, &ctx, egui::Key::Escape, egui::Modifiers::NONE);
+    assert!(app.database.document.tools.inline.is_none());
+    close_and_wait(&mut app, &ctx);
+}
