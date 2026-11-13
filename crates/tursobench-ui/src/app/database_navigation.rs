@@ -44,6 +44,17 @@ struct SearchResult {
 
 impl App {
     pub(super) fn database_navigation_keys(&mut self, ctx: &egui::Context) {
+        if self.database.ui.palette_open {
+            // The palette's footer offers Ctrl P, which hands over to the
+            // sidebar search. Switching database would leave the palette
+            // open over a database other than the one it was opened for.
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::P)) {
+                self.database.ui.palette_open = false;
+                self.sidebar_search.focus = true;
+                self.database.ui.sidebar = super::shell::ToolPanel::Schema;
+            }
+            return;
+        }
         for (key, direction) in [(egui::Key::PageDown, 1), (egui::Key::PageUp, -1)] {
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, key)) {
                 self.cycle_database(direction);

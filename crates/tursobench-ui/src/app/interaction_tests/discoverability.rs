@@ -328,3 +328,28 @@ fn escape_closes_the_palette_before_a_cell_edit_beneath_it() {
     assert!(app.database.document.tools.inline.is_none());
     close_and_wait(&mut app, &ctx);
 }
+
+#[test]
+fn palette_holds_the_database_and_hands_ctrl_p_to_the_sidebar_search() {
+    let (dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
+    let second = dir.path().join("second.db");
+    crate::test_support::create(&second, &["CREATE TABLE u(id INTEGER PRIMARY KEY)"]);
+    app.request_database(&ctx, second);
+    inspect_selected(&mut app, &ctx);
+    app.open(&ctx);
+    wait(&mut app, &ctx);
+    let id = app.database.id;
+    press_key(&mut app, &ctx, egui::Key::K, egui::Modifiers::CTRL);
+    for key in [egui::Key::PageDown, egui::Key::PageUp] {
+        press_key(&mut app, &ctx, key, egui::Modifiers::CTRL);
+        assert_eq!(app.database.id, id, "{key:?}");
+        assert!(app.database.ui.palette_open);
+    }
+    press_key(&mut app, &ctx, egui::Key::P, egui::Modifiers::CTRL);
+    assert!(!app.database.ui.palette_open);
+    frame(&mut app, &ctx, vec![]);
+    assert!(ctx.memory(|m| m.has_focus(egui::Id::unique("sidebar-search"))));
+    // Without the palette, the same keys switch database again.
+    press_key(&mut app, &ctx, egui::Key::PageDown, egui::Modifiers::CTRL);
+    assert_ne!(app.database.id, id);
+}
