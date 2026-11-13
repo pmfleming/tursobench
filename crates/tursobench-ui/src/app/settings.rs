@@ -295,19 +295,14 @@ impl App {
                 });
             });
             let minimum = usize::from(count > 0);
-            let response = ui
-                .scope(|ui| {
-                    ui.spacing_mut().slider_width = ui.available_width();
-                    let tokens = crate::appearance::Tokens::of(ui.ctx());
-                    ui.visuals_mut().widgets.inactive.bg_fill = tokens.line_strong;
-                    ui.visuals_mut().selection.bg_fill = tokens.primary;
-                    ui.add(
-                        egui::Slider::new(&mut count, minimum..=maximum)
-                            .show_value(false)
-                            .trailing_fill(true),
-                    )
-                })
-                .inner;
+            let width = ui.available_width();
+            let response = themed_slider(
+                ui,
+                width,
+                egui::Slider::new(&mut count, minimum..=maximum)
+                    .show_value(false)
+                    .trailing_fill(true),
+            );
             response.widget_info(|| {
                 egui::WidgetInfo::slider(response.enabled(), count as f64, "Maximum open databases")
             });
@@ -379,44 +374,63 @@ impl App {
     fn query_settings(&mut self, ui: &mut egui::Ui) {
         ui.spacing_mut().item_spacing.y = 3.0;
         section(ui, "Limits", |ui| {
-            let response = preference_row(ui, "Rows", "Maximum retained query rows", false, |ui| {
-                ui.add(egui::DragValue::new(&mut self.preferences.row_limit).range(1..=10_000))
-            });
-            self.setting_response(response);
-            let response = preference_row(ui, "Slow ≥", "Slow query threshold", false, |ui| {
-                ui.add(
-                    egui::DragValue::new(&mut self.preferences.slow_query_ms)
-                        .range(1..=60_000)
-                        .suffix(" ms"),
-                )
-            });
-            self.setting_response(response);
-            let response = preference_row(
+            let columns = LimitColumns::measure(ui, &["Rows", "Slow ≥", "Busy wait", "Deadline"]);
+            let mut rows = self.preferences.row_limit as u64;
+            let response = limit_row(
                 ui,
-                "Busy wait",
-                "Busy timeout; applies after reopening the database",
-                true,
-                |ui| {
-                    ui.add(
-                        egui::DragValue::new(&mut self.preferences.busy_timeout_ms)
-                            .range(0..=5000)
-                            .suffix(" ms"),
-                    )
+                &columns,
+                LimitSlider {
+                    label: "Rows",
+                    tooltip: "Maximum retained query rows",
+                    reopen: false,
+                    range: 1..=10_000,
+                    smallest: 1.0,
+                    format: |rows| rows.to_string(),
                 },
+                &mut rows,
+            );
+            self.preferences.row_limit = rows as usize;
+            self.setting_response(response);
+            let response = limit_row(
+                ui,
+                &columns,
+                LimitSlider {
+                    label: "Slow ≥",
+                    tooltip: "Slow query threshold",
+                    reopen: false,
+                    range: 1..=60_000,
+                    smallest: 1.0,
+                    format: format_ms,
+                },
+                &mut self.preferences.slow_query_ms,
             );
             self.setting_response(response);
-            let response = preference_row(
+            let response = limit_row(
                 ui,
-                "Deadline",
-                "Statement deadline after reopen; 0 disables. Prior committed work is not rolled back.",
-                true,
-                |ui| {
-                    ui.add(
-                        egui::DragValue::new(&mut self.preferences.query_timeout_ms)
-                            .range(0..=3_600_000)
-                            .suffix(" ms"),
-                    )
+                &columns,
+                LimitSlider {
+                    label: "Busy wait",
+                    tooltip: "Busy timeout; applies after reopening the database. Far left disables.",
+                    reopen: true,
+                    range: 0..=5000,
+                    smallest: 10.0,
+                    format: format_ms,
                 },
+                &mut self.preferences.busy_timeout_ms,
+            );
+            self.setting_response(response);
+            let response = limit_row(
+                ui,
+                &columns,
+                LimitSlider {
+                    label: "Deadline",
+                    tooltip: "Statement deadline after reopen; far left disables. Prior committed work is not rolled back.",
+                    reopen: true,
+                    range: 0..=3_600_000,
+                    smallest: 100.0,
+                    format: format_ms,
+                },
+                &mut self.preferences.query_timeout_ms,
             );
             self.setting_response(response);
             ui.small("Applies after reopening the database.");
@@ -501,6 +515,120 @@ fn preference_row(
     .inner
 }
 
+fn themed_slider(ui: &mut egui::Ui, width: f32, slider: egui::Slider<'_>) -> egui::Response {
+    ui.scope(|ui| {
+        ui.spacing_mut().slider_width = width;
+        let tokens = crate::appearance::Tokens::of(ui.ctx());
+        ui.visuals_mut().widgets.inactive.bg_fill = tokens.line_strong;
+        ui.visuals_mut().selection.bg_fill = tokens.primary;
+        ui.add(slider)
+    })
+    .inner
+}
+
+/// Shared label and value widths so the limit sliders line up in one column.
+struct LimitColumns {
+    label: f32,
+    value: f32,
+}
+
+impl LimitColumns {
+    fn measure(ui: &egui::Ui, labels: &[&str]) -> Self {
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let width = |text: &str| {
+            ui.painter()
+                .layout_no_wrap(text.to_owned(), font.clone(), egui::Color32::WHITE)
+                .size()
+                .x
+        };
+        let label = labels.iter().map(|label| width(label)).fold(0.0, f32::max);
+        Self {
+            // Room for the reopen mark that follows some labels.
+            label: label + 13.0 + ui.spacing().item_spacing.x * 2.0,
+            value: width("9999 ms"),
+        }
+    }
+}
+
+struct LimitSlider {
+    label: &'static str,
+    tooltip: &'static str,
+    reopen: bool,
+    range: std::ops::RangeInclusive<u64>,
+    /// Lowest positive stop on the logarithmic track; zero sits at the far left.
+    smallest: f64,
+    format: fn(u64) -> String,
+}
+
+/// Label, logarithmic slider and current value on one line.
+fn limit_row(
+    ui: &mut egui::Ui,
+    columns: &LimitColumns,
+    limit: LimitSlider,
+    value: &mut u64,
+) -> egui::Response {
+    ui.horizontal(|ui| {
+        let height = ui.spacing().interact_size.y;
+        let label = ui
+            .allocate_ui_with_layout(
+                egui::vec2(columns.label, height),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.set_min_width(columns.label);
+                    let label = ui.label(limit.label).on_hover_text(limit.tooltip);
+                    if limit.reopen {
+                        reopen_mark(ui, limit.tooltip);
+                    }
+                    label
+                },
+            )
+            .inner;
+        let width = (ui.available_width() - columns.value - ui.spacing().item_spacing.x).max(40.0);
+        let (low, high) = (*limit.range.start(), *limit.range.end());
+        let response = themed_slider(
+            ui,
+            width,
+            egui::Slider::new(value, limit.range)
+                .logarithmic(true)
+                .smallest_positive(limit.smallest)
+                .show_value(false)
+                .trailing_fill(true),
+        );
+        if response.changed() {
+            *value = round_limit(*value).clamp(low, high);
+        }
+        ui.allocate_ui_with_layout(
+            egui::vec2(columns.value, height),
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| ui.label((limit.format)(*value)),
+        );
+        response.labelled_by(label.id).on_hover_text(limit.tooltip)
+    })
+    .inner
+}
+
+/// Two significant figures, so a logarithmic drag lands on readable values.
+fn round_limit(value: u64) -> u64 {
+    let mut scale = 1;
+    while value / scale >= 100 {
+        scale *= 10;
+    }
+    (value + scale / 2) / scale * scale
+}
+
+fn format_ms(ms: u64) -> String {
+    let trim = |value: f64| {
+        let text = format!("{value:.1}");
+        text.strip_suffix(".0").map(str::to_owned).unwrap_or(text)
+    };
+    match ms {
+        0 => "Off".to_owned(),
+        1..1000 => format!("{ms} ms"),
+        1000..60_000 => format!("{} s", trim(ms as f64 / 1000.0)),
+        _ => format!("{} min", trim(ms as f64 / 60_000.0)),
+    }
+}
+
 fn reopen_mark(ui: &mut egui::Ui, tooltip: &str) {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(13.0, 13.0), egui::Sense::hover());
     icons::paint(
@@ -560,6 +688,28 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn query_limits_are_sliders_with_readable_values() {
+        let (ctx, mut app) = crate::app::test_ui::app();
+        app.settings.page = Page::Queries;
+        let output = render(&ctx, egui::vec2(440.0, 600.0), vec![], |ui| {
+            app.settings_ui(ui)
+        });
+        let sliders = crate::app::test_ui::nodes(&output)
+            .iter()
+            .filter(|(_, node)| node.role() == egui::Role::Slider)
+            .count();
+        assert_eq!(sliders, 4);
+        assert_eq!(round_limit(1037), 1000);
+        assert_eq!(round_limit(9_999), 10_000);
+        assert_eq!(round_limit(47), 47);
+        assert_eq!(format_ms(0), "Off");
+        assert_eq!(format_ms(250), "250 ms");
+        assert_eq!(format_ms(1500), "1.5 s");
+        assert_eq!(format_ms(30_000), "30 s");
+        assert_eq!(format_ms(3_600_000), "60 min");
     }
 
     #[test]
