@@ -551,7 +551,11 @@ impl App {
             Command::Close if self.database.session.is_none() => Some("No database is open"),
             Command::Close => None,
             _ if !open => Some("Open a database first"),
-            Command::RefreshTable if !table => Some("Open a table first"),
+            // Same rule as Ctrl F; otherwise the filter flag is set with nothing to show.
+            Command::RefreshTable | Command::Filter if !table => Some("Open a table first"),
+            Command::Action(Action::Review) if !self.has_drafts() => {
+                Some("No staged edits to review")
+            }
             Command::Inspector if self.database.document.inspect.is_none() => {
                 Some("Select a cell first")
             }

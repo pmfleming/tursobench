@@ -204,3 +204,34 @@ fn palette_greys_out_commands_that_cannot_run_and_explains_why() {
     press_key(&mut app, &ctx, egui::Key::Enter, egui::Modifiers::NONE);
     assert!(app.database.ui.palette_open);
 }
+
+#[test]
+fn palette_filter_and_review_need_a_table_and_staged_edits() {
+    let (_dir, ctx, mut app) = fixture(
+        &[
+            "CREATE TABLE t(id INTEGER PRIMARY KEY, value TEXT)",
+            "INSERT INTO t VALUES(1,'a')",
+        ],
+        true,
+    );
+    let choose = |app: &mut App, query: &str| {
+        app.open_palette();
+        app.database.ui.palette_query = query.into();
+        frame(app, &ctx, vec![]);
+        press_key(app, &ctx, egui::Key::Enter, egui::Modifiers::NONE);
+    };
+    // Open but not on a table: neither command may set hidden state.
+    choose(&mut app, "filter rows");
+    assert!(app.database.ui.palette_open);
+    assert!(!app.database.document.ui.filter_open);
+    app.database.ui.palette_open = false;
+    choose(&mut app, "review staged");
+    assert!(app.database.ui.palette_open);
+    assert!(!app.database.document.show_preview);
+    app.database.ui.palette_open = false;
+    browse_and_wait(&mut app, &ctx, "t");
+    choose(&mut app, "filter rows");
+    assert!(!app.database.ui.palette_open);
+    assert!(app.database.document.ui.filter_open);
+    close_and_wait(&mut app, &ctx);
+}
