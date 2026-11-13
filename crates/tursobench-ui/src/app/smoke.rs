@@ -3,6 +3,7 @@ use eframe::egui;
 use tursobench_core::{ErrorKind, Value, quote_identifier};
 
 use std::time::{Duration, Instant};
+mod assistant;
 mod readme;
 
 pub(super) struct Smoke {
@@ -73,6 +74,9 @@ impl App {
             std::process::exit(1);
         }
         if matches!(smoke.stage, 50..=56) && self.smoke_readme(ctx, &mut smoke) {
+            return;
+        }
+        if matches!(smoke.stage, 90..=93) && self.smoke_assistant(ctx, &mut smoke) {
             return;
         }
         let stage = smoke.stage;
@@ -161,7 +165,9 @@ impl App {
                     self.browse_table(smoke.table.clone());
                     self.retile();
                     self.preferences.appearance = Some(crate::appearance::Mode::Dark);
-                    if smoke.readme {
+                    if std::env::var_os("TURSOBENCH_ASSISTANT_CAPTURE").is_some() {
+                        smoke.stage = 90;
+                    } else if smoke.readme {
                         self.start_readme_capture();
                         smoke.stage = 50;
                     } else {

@@ -135,7 +135,14 @@ Cell copying preserves original TEXT; NULL is `NULL`, blobs are `X'hex'`.
 
 Inspector visibility is saved per database in `inspector_visibility`, bounded to
 20 absolute UTF-8 paths / 4096 bytes per path. Missing fields default to an empty
-map in older preferences. Grid column presentation and inspected/filter values
+map in older preferences.
+
+`panels` stores whether the sidebar and the assistant are shown (default: sidebar
+only). `assistant` stores the chosen agent (`provider`: `Claude`, `Copilot`,
+`Codex` or `Custom`), a `custom_command` of up to 4096 bytes, a `model` of up to
+200 bytes, and `sharing`: `Schema` or `Rows` per absolute database path, bounded
+to 50 paths / 4096 bytes per path. A missing database means the user has not
+chosen yet. Conversations are never stored. Grid column presentation and inspected/filter values
 are not persisted. Table retention uses a 200-row minimum and reserves 100 rows
 in flight; SQL's exact row setting is unchanged.
 

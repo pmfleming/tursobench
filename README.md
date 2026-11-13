@@ -8,6 +8,7 @@
   <a href="#workspace">Workspace</a> ·
   <a href="#browse-and-inspect">Browse</a> ·
   <a href="#sql-and-results">SQL</a> ·
+  <a href="#assistant">Assistant</a> ·
   <a href="#run">Run</a> ·
   <a href="#current-limits">Limits</a> ·
   <a href="docs/guide.md">User guide</a>
@@ -120,6 +121,20 @@ Large values have a bounded text/hex viewer and exact-byte save.
 Preferences, history and layouts use an application-owned local Turso database
 at `~/.config/tursobench/preferences.db` (or under `XDG_CONFIG_HOME`).
 [Storage details](docs/data-formats.md).
+
+## Assistant
+
+Ask about the open database in a chat panel beside the sidebar. It runs the
+agent CLI you already use and are signed in to: Claude Code by default, or Copilot
+CLI, Codex or another Agent Client Protocol agent. TursoBench never handles your
+sign-in or an API key. Each database asks once whether to share the schema only
+or also query results. The agent reads through a separate `query_only`
+connection and cannot write; it proposes SQL that opens in an editor tile for you
+to run. Ctrl B and Ctrl I hide or show the sidebar and the assistant independently.
+
+![Assistant beside the sidebar with a proposed UPDATE in the SQL tile.](docs/assets/ui/assistant/assistant-conversation.png)
+
+[Assistant guide](docs/guide.md#assistant) · [Assistant contract](contracts/assistant.md)
 
 ## Run
 

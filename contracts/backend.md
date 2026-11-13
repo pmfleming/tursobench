@@ -172,6 +172,15 @@ It never copies a live main file. These operations are explicit, never automatic
 repair. Transfer state is bound to its original session.
 
 
+## Assistant lane
+
+`Session::assistant()` returns a cloneable handle for the assistant's tool server.
+Its calls run on the session worker over a lazily opened, configured connection
+with `PRAGMA query_only = 1`, after a parser gate that accepts one SELECT or
+EXPLAIN of a SELECT. Replies (at most 200 rows / 256 KiB) go to a per-call channel,
+not the event stream, use request IDs from 2^62 and share the 16 MiB queue budget.
+See [the assistant contract](assistant.md).
+
 ## Application preferences
 
 `preferences::Store` is a separate application-owned Turso store, used only by the

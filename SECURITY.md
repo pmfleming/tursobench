@@ -38,6 +38,10 @@ security reporting process; mention the TursoBench impact in a private report he
   only the main file of a live database is not a safe backup.
 - Queries are not sandboxed. Discarding results does not cancel execution or
   roll back writes; engine memory use is not bounded by the result display limits.
+- The assistant sends what the agent reads to that agent's vendor, under your
+  own plan and the vendor's terms. Share only the schema for sensitive data.
+  TursoBench never handles agent sign-ins. Its own tools are read-only, but ACP
+  agents keep their vendor's tools; see the [assistant contract](contracts/assistant.md).
 - SQL history stores literals. Remove sensitive history and sanitize exports,
   screenshots and bug reports. Query parameters are not persisted.
 

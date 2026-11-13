@@ -608,9 +608,7 @@ fn tool_ui(
         Some((false, _)) => ui.visuals().error_fg_color,
     };
     egui::Frame::new()
-        .stroke(egui::Stroke::new(1.0, tokens.line_soft))
-        .corner_radius(6)
-        .inner_margin(egui::Margin::symmetric(6, 4))
+        .inner_margin(egui::Margin::symmetric(2, 0))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -953,17 +951,17 @@ impl App {
                         ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
                     icons::paint(ui.painter(), rect, icon, ui.visuals().text_color());
                     response.on_hover_text(name);
+                    let file = std::path::Path::new(path)
+                        .file_name()
+                        .map_or_else(|| path.clone(), |n| n.to_string_lossy().into_owned());
+                    ui.label(file).on_hover_text(path);
+                    ui.weak(name);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if icons::control(ui, Icon::Trash, "Forget; ask again", "", false, false)
                             .clicked()
                         {
                             forget = Some(path.clone());
                         }
-                        let file = std::path::Path::new(path)
-                            .file_name()
-                            .map_or_else(|| path.clone(), |n| n.to_string_lossy().into_owned());
-                        ui.add(egui::Label::new(file).truncate())
-                            .on_hover_text(path);
                     });
                 });
             }
