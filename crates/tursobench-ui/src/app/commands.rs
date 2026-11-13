@@ -426,7 +426,8 @@ impl App {
                             // Names read down the left edge; shortcuts line up on the right.
                             let mut button = egui::Button::new(item.label)
                                 .selected(selected)
-                                .frame_when_inactive(false)
+                                // The keyboard choice needs its fill even without hover.
+                                .frame_when_inactive(selected)
                                 .min_size(egui::vec2(ui.available_width(), 32.0));
                             // An empty shortcut would still add a space to the accessible name.
                             if !item.shortcut.is_empty() {
