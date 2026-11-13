@@ -45,7 +45,6 @@ impl App {
             .default_size(size)
             .min_size(egui::vec2(280.0, 240.0))
             .max_size(ctx.content_rect().size() - egui::vec2(24.0, 48.0))
-            .collapsible(false)
             .open(&mut open);
         if let Some(previous) =
             previous_font.filter(|previous| *previous != self.preferences.font_size)

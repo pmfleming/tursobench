@@ -339,8 +339,11 @@ fn apply(ctx: &egui::Context, dark: bool, palette: &Palette) {
             .insert(egui::TextStyle::Button, egui::FontId::proportional(13.0));
         s.text_styles
             .insert(egui::TextStyle::Small, egui::FontId::proportional(11.5));
+        // egui draws window titles in the heading style. Nothing else uses it,
+        // so it matches the tile ribbons and panel headings instead of
+        // towering over them.
         s.text_styles
-            .insert(egui::TextStyle::Heading, egui::FontId::proportional(20.0));
+            .insert(egui::TextStyle::Heading, egui::FontId::proportional(14.0));
     });
 }
 
