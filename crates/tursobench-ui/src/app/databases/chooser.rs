@@ -68,13 +68,26 @@ impl App {
             self.databases.row_rects.clear();
             self.databases.rendered_candidates = 0;
         }
-        // The variable-height access card is kept above the fixed-height list so
-        // it cannot invalidate virtual row positions or disappear off-screen.
+        // The access review opens directly under the row that was clicked, so
+        // the list does not reorder. Its height is variable, so the virtual
+        // list below reserves last frame's measurement after that row. A path
+        // that is typed, browsed to or hidden by a collapsed list has no row
+        // to sit under and is reviewed above the list instead.
+        let reviewing = !self.database.retained() && !self.database.path.is_empty();
+        let pending = reviewing
+            .then(|| {
+                indices
+                    .iter()
+                    .position(|&i| self.databases.entries[i].path == Path::new(&self.database.path))
+            })
+            .flatten();
+        let in_place = pending
+            .filter(|_| !self.sidebar_search.available_collapsed && !self.databases.editing_path);
+        if !reviewing {
+            self.databases.review_revealed = None;
+        }
         if !self.database.retained() {
-            if !self.database.path.is_empty() {
-                let pending = indices.iter().position(|&i| {
-                    self.databases.entries[i].path == Path::new(&self.database.path)
-                });
+            if reviewing && in_place.is_none() {
                 let synthetic;
                 let entry = if let Some(pending) = pending {
                     &self.databases.entries[indices.remove(pending)]
@@ -100,7 +113,10 @@ impl App {
                     forget = Some(entry.path.clone());
                 }
             }
-            self.pending_database_ui(ui);
+            self.pending_database_ui(ui, in_place.is_some());
+            if reviewing && in_place.is_none() {
+                self.database_access_ui(ui);
+            }
         }
         if self.sidebar_search.available_collapsed {
             return;
@@ -137,6 +153,25 @@ impl App {
         let row_height = 34.0;
         let stride = row_height + ui.spacing().item_spacing.y;
         let top = ui.cursor().min;
+        // Rows after the review sit lower by its height.
+        let review = in_place.map(|position| (position, self.databases.review_height));
+        let offset = |position: usize| {
+            position as f32 * stride
+                + review
+                    .filter(|&(after, _)| position > after)
+                    .map_or(0.0, |(_, height)| height)
+        };
+        // Index of the row at or below a height in the list; a height inside
+        // the review maps to the row that owns it.
+        let row_at = |y: f32| {
+            let y = y.max(0.0);
+            match review {
+                Some((after, height)) if y >= (after + 1) as f32 * stride => {
+                    (((y - height) / stride).floor() as usize).max(after)
+                }
+                _ => (y / stride).floor() as usize,
+            }
+        };
         if let Some(position) = (std::mem::take(&mut self.sidebar_search.reveal))
             .then_some(highlighted)
             .flatten()
@@ -144,30 +179,30 @@ impl App {
         {
             ui.scroll_to_rect(
                 egui::Rect::from_min_size(
-                    top + egui::vec2(0.0, position as f32 * stride),
+                    top + egui::vec2(0.0, offset(position)),
                     egui::vec2(ui.available_width(), row_height),
                 ),
                 None,
             );
         }
-        let start = (((ui.clip_rect().top() - top.y) / stride).floor().max(0.0) as usize)
-            .min(indices.len());
-        let end = ((((ui.clip_rect().bottom() - top.y) / stride).ceil().max(0.0) as usize) + 1)
+        let start = row_at(ui.clip_rect().top() - top.y).min(indices.len());
+        let end = (row_at(ui.clip_rect().bottom() - top.y) + 2)
             .min(indices.len())
             .max(start);
-        ui.add_space(start as f32 * stride);
+        ui.add_space(offset(start));
         ui.skip_ahead_auto_ids(start);
-        for &index in &indices[start..end] {
+        for (position, &index) in indices.iter().enumerate().take(end).skip(start) {
             #[cfg(test)]
             {
                 self.databases.rendered_candidates += 1;
             }
+            let reviewed = in_place == Some(position);
             let entry = &self.databases.entries[index];
             let (row, remove) = ui
                 .push_id(&entry.path, |ui| {
                     entry.row_ui(
                         ui,
-                        false,
+                        reviewed,
                         highlighted == Some(index),
                         can_select && entry.selectable(),
                     )
@@ -179,14 +214,34 @@ impl App {
                     .row_rects
                     .push((entry.path.clone(), row.rect));
             }
-            if row.clicked() && can_select && entry.selectable() {
+            if row.clicked() && can_select && entry.selectable() && !reviewed {
                 selected = Some(entry.path.clone());
             }
             if remove {
                 forget = Some(entry.path.clone());
             }
+            if reviewed {
+                let path = entry.path.clone();
+                let before = ui.cursor().min.y;
+                ui.push_id("database-review", |ui| self.database_access_ui(ui));
+                let height = ui.cursor().min.y - before;
+                if (height - self.databases.review_height).abs() > 0.5 {
+                    self.databases.review_height = height;
+                    ui.ctx().request_repaint();
+                }
+                if self.databases.review_revealed.as_ref() != Some(&path) {
+                    self.databases.review_revealed = Some(path);
+                    ui.scroll_to_rect(
+                        egui::Rect::from_min_max(
+                            row.rect.min,
+                            egui::pos2(row.rect.right(), before + height),
+                        ),
+                        None,
+                    );
+                }
+            }
         }
-        ui.add_space((indices.len() - end) as f32 * stride);
+        ui.add_space(offset(indices.len()) - offset(end));
         ui.skip_ahead_auto_ids(indices.len() - end);
         if let Some(path) = forget {
             self.forget_database(&path);

@@ -84,6 +84,10 @@ pub(super) struct Chooser {
     pub folder_list: FolderList,
     pub picking_folder: Option<FolderList>,
     pub editing_path: bool,
+    /// Height the open review took under its row last frame, with spacing.
+    review_height: f32,
+    /// The review already scrolled into view; a new selection reveals again.
+    review_revealed: Option<PathBuf>,
     pub message: Option<String>,
     pub summary: Option<Summary>,
     cancelling: bool,
@@ -780,6 +784,66 @@ mod tests {
         crate::app::sessions::IDENTITY_PROBES
             .with(|count| assert!(count.get() > 0, "explicit selection checks identity"));
         app.close();
+    }
+
+    #[test]
+    fn access_review_opens_under_the_clicked_row_without_reordering_the_list() {
+        use crate::app::test_ui::{pointer, render};
+        let (ctx, mut app) = crate::app::test_ui::app();
+        let paths: Vec<_> = (0..40).map(|i| format!("/work/{i:03}.db")).collect();
+        for path in &paths {
+            app.discovery_event(found(path));
+        }
+        let frame = |app: &mut crate::app::App, height, events| {
+            render(&ctx, eframe::egui::vec2(272.0, height), events, |ui| {
+                app.navigation_sidebar(ui)
+            })
+        };
+        frame(&mut app, 1000.0, vec![]);
+        frame(&mut app, 1000.0, vec![]);
+        let before = app.databases.row_rects.clone();
+        assert_eq!(before[3].0, Path::new(&paths[3]));
+        for pressed in [true, false] {
+            frame(&mut app, 1000.0, pointer(before[3].1.center(), pressed));
+        }
+        for _ in 0..3 {
+            frame(&mut app, 1000.0, vec![]);
+        }
+        assert_eq!(app.database.path, paths[3]);
+        let after = app.databases.row_rects.clone();
+        // Rows up to and including the clicked one have not moved.
+        assert_eq!(before[..4], after[..4]);
+        // The review sits between the clicked row and the next one.
+        let open = app.databases.open_rect.unwrap();
+        assert!(open.top() >= after[3].1.bottom());
+        assert_eq!(after[4].0, Path::new(&paths[4]));
+        assert!(after[4].1.top() >= open.bottom());
+        // Everything below is displaced by one and the same amount.
+        let shift = after[4].1.top() - before[4].1.top();
+        assert!(shift > 34.0);
+        assert_eq!(after[5].1.top() - before[5].1.top(), shift);
+        // Cancelling closes the gap again.
+        app.cancel_database_review();
+        for _ in 0..2 {
+            frame(&mut app, 1000.0, vec![]);
+        }
+        assert_eq!(app.databases.row_rects[..10], before[..10]);
+
+        // A review that would open below the fold scrolls into view, and the
+        // rows that scroll past it stay virtual.
+        frame(&mut app, 420.0, vec![]);
+        frame(&mut app, 420.0, vec![]);
+        let (path, row) = app.databases.row_rects.last().unwrap().clone();
+        for pressed in [true, false] {
+            frame(&mut app, 420.0, pointer(row.center(), pressed));
+        }
+        for _ in 0..40 {
+            frame(&mut app, 420.0, vec![]);
+        }
+        assert_eq!(Path::new(&app.database.path), path);
+        let open = app.databases.open_rect.unwrap();
+        assert!(open.bottom() <= 420.0, "{open:?}");
+        assert!(app.databases.rendered_candidates <= 14);
     }
 
     #[test]

@@ -9,7 +9,10 @@ impl App {
         });
     }
 
-    pub(in crate::app) fn pending_database_ui(&mut self, ui: &mut egui::Ui) {
+    /// The path link and field; the access review is placed by the list itself.
+    /// `keep_link` leaves the link in place while a listed row is reviewed, so
+    /// selecting a row does not shift the rows above it.
+    pub(in crate::app) fn pending_database_ui(&mut self, ui: &mut egui::Ui, keep_link: bool) {
         if self.database.retained() {
             return;
         }
@@ -18,14 +21,16 @@ impl App {
             self.databases.edit_path_rect = None;
         }
         let mut focus_path = false;
-        if self.database.path.is_empty() {
+        if self.database.path.is_empty() || keep_link {
             let edit = ui.link("Enter a path…");
             focus_path = edit.clicked();
             #[cfg(test)]
             {
                 self.databases.edit_path_rect = Some(edit.rect);
-                self.databases.open_rect = None;
-                self.databases.open_enabled = false;
+                if self.database.path.is_empty() {
+                    self.databases.open_rect = None;
+                    self.databases.open_enabled = false;
+                }
             }
             if edit.clicked() {
                 self.databases.editing_path = !self.databases.editing_path;
@@ -33,9 +38,6 @@ impl App {
         }
         if self.databases.editing_path {
             self.database_path_ui(ui, focus_path);
-        }
-        if !self.database.path.is_empty() {
-            self.database_access_ui(ui);
         }
     }
 
@@ -70,7 +72,7 @@ impl App {
         }
     }
 
-    fn database_access_ui(&mut self, ui: &mut egui::Ui) {
+    pub(in crate::app) fn database_access_ui(&mut self, ui: &mut egui::Ui) {
         self.poll_database_inspection(ui.ctx());
         egui::Frame::new()
             .fill(ui.visuals().faint_bg_color)

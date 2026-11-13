@@ -149,7 +149,9 @@ Ctrl K remains an actions-only palette.
 
 The separate **Open database** section contains **Browse database files** and the
 **Available** list of recent and discovered files that are not open. Select a row to
-choose the lock or pencil access icon beneath it, then click **Open**. **Browse database
+choose the lock or pencil access icon beneath it, then click **Open**. The row keeps its
+place in the list; only a typed or browsed path that is not listed is reviewed above
+the list. **Browse database
 files** or Ctrl O opens the native file chooser; **Enter a path…** works without a portal.
 Read-only is the default for a new path; likely SQLite files still require a per-file
 override. Errors, recheck and retry stay in the card. Right-click a file to forget it;
