@@ -1,5 +1,6 @@
 mod app;
 mod appearance;
+mod assistant_tools;
 mod desktop;
 mod discovery;
 mod export;

@@ -62,6 +62,8 @@ pub(super) enum Icon {
     Transfer,
     Sidebar,
     Assistant,
+    Send,
+    Stop,
 }
 
 pub(super) fn button(ui: &mut egui::Ui, icon: Icon, name: &str, shortcut: &str) -> egui::Response {
@@ -668,6 +670,11 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
             line(&[(12., 7.5), (12., 13.5)]);
             line(&[(9., 10.5), (15., 10.5)]);
         }
+        Send => {
+            line(&[(3., 12.), (21., 4.), (14., 21.), (11., 13.), (3., 12.)]);
+            line(&[(11., 13.), (21., 4.)]);
+        }
+        Stop => box_(6., 6., 12., 12.),
         Link => {
             line(&[
                 (10., 15.),

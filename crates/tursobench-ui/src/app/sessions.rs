@@ -39,6 +39,7 @@ pub(super) struct DatabaseWorkspace {
     pub(super) transaction: TransactionState,
     pub(super) commit_ticket: Option<Ticket>,
     pub(super) uncertain_edit: bool,
+    pub(super) assistant: super::assistant::Conversation,
 }
 impl DatabaseWorkspace {
     pub(super) fn start_session(&mut self, session: Session) {
@@ -64,6 +65,8 @@ impl DatabaseWorkspace {
                 .map(|cwd| cwd.join(path).to_string_lossy().into_owned())
                 .unwrap_or_default()
         };
+        self.assistant
+            .attach(&self.tools.database_scope, session.assistant());
         self.transaction = TransactionState::Autocommit;
         self.uncertain_edit = false;
         self.session = Some(session);
@@ -126,6 +129,7 @@ impl DatabaseWorkspace {
             transaction: TransactionState::Autocommit,
             commit_ticket: Default::default(),
             uncertain_edit: Default::default(),
+            assistant: Default::default(),
         }
     }
 }

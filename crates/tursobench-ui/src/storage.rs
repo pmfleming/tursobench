@@ -160,6 +160,16 @@ pub struct Preferences {
     pub(crate) workspace_layouts: Vec<crate::app::workspace::Snapshot>,
     pub inspector_visibility: std::collections::BTreeMap<String, bool>,
     pub panels: Panels,
+    pub assistant: AssistantPreferences,
+}
+/// The agent CLI the assistant drives and what each database shares with it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct AssistantPreferences {
+    /// Passed to the agent as its model; empty keeps the agent's own default.
+    pub model: String,
+    /// Keyed by absolute database path; a missing entry means not yet chosen.
+    pub sharing: std::collections::BTreeMap<String, crate::assistant_tools::Sharing>,
 }
 /// The navigation sidebar and the assistant panel are shown or hidden independently.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -207,6 +217,7 @@ impl Default for Preferences {
             workspace_layouts: vec![],
             inspector_visibility: Default::default(),
             panels: Panels::default(),
+            assistant: AssistantPreferences::default(),
         }
     }
 }
@@ -251,6 +262,15 @@ impl Preferences {
             .retain(|path, _| path.len() <= 4096 && Path::new(path).is_absolute());
         while self.inspector_visibility.len() > 20 {
             self.inspector_visibility.pop_first();
+        }
+        self.assistant
+            .sharing
+            .retain(|path, _| path.len() <= 4096 && Path::new(path).is_absolute());
+        while self.assistant.sharing.len() > 50 {
+            self.assistant.sharing.pop_first();
+        }
+        if self.assistant.model.len() > 200 {
+            self.assistant.model.clear();
         }
         self.workspace_layouts.truncate(20);
         let mut workspace_names = HashSet::new();

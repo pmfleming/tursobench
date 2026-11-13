@@ -191,7 +191,7 @@ fn random_token() -> io::Result<String> {
 }
 
 /// `$XDG_RUNTIME_DIR/tursobench`, or a per-user temporary directory, mode 0700.
-fn private_dir() -> io::Result<PathBuf> {
+pub fn private_dir() -> io::Result<PathBuf> {
     let uid = unsafe { libc::getuid() };
     let dir = match std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty()) {
         Some(runtime) => PathBuf::from(runtime).join("tursobench"),

@@ -3756,3 +3756,5 @@ mod spreadsheet;
 mod discoverability;
 
 mod panels;
+
+mod assistant;

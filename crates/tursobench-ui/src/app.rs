@@ -388,6 +388,7 @@ impl App {
     }
     fn poll_active(&mut self, ctx: &egui::Context) {
         self.poll_storage(ctx);
+        self.poll_assistant();
         self.poll_recovery(ctx);
         self.apply_theme(ctx);
         if let Some(rx) = &self.database.ui.font_rx {
