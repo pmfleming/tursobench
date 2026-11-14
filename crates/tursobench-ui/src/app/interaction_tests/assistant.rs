@@ -386,3 +386,70 @@ fn the_consent_card_links_to_the_agents_privacy_settings() {
     assert!(labelled(&output, "The database's folder is never sent"));
     app.close();
 }
+
+#[test]
+fn forgetting_sharing_stops_a_background_conversation() {
+    let (dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
+    runtime_dir(&dir);
+    app.settings.open = true;
+    app.settings.page = crate::app::settings::Page::Assistant;
+    frame_at(&mut app, &ctx, SIZE, vec![]);
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    click(&mut app, &ctx, control(&output, "Copilot CLI").center());
+    assert_eq!(
+        app.preferences.assistant.provider,
+        crate::storage::Provider::Copilot
+    );
+    app.settings.open = false;
+    let script = dir.path().join("copilot");
+    std::fs::write(&script, ACP_SCRIPT).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    app.database.assistant.program = Some(script);
+    app.set_assistant_sharing(Sharing::Schema);
+    app.database.assistant.draft = "Hi".into();
+    app.send_assistant(&ctx);
+    wait_until(&mut app, &ctx, |a| !a.database.assistant.busy);
+    let entries = &app.database.assistant.entries;
+    assert!(entries.iter().any(
+        |e| matches!(e, Entry::Notice(_, text) if text.contains("Declined") && text.contains("/etc/hosts"))
+    ));
+    assert!(
+        entries
+            .iter()
+            .any(|e| matches!(e, Entry::Reply(text) if text == "ACP reply"))
+    );
+    let id = app.database.id;
+    assert!(app.new_workspace(&ctx));
+    // The settings list the database's choice, below the privacy section, and
+    // can forget it.
+    app.settings.open = true;
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    let over = control(&output, "Copilot CLI").center();
+    frame_at(
+        &mut app,
+        &ctx,
+        SIZE,
+        vec![
+            egui::Event::PointerMoved(over),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -2000.0),
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Unknown,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+    );
+    frame_at(&mut app, &ctx, SIZE, vec![]);
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    click(
+        &mut app,
+        &ctx,
+        control(&output, "Forget; ask again").center(),
+    );
+    assert!(app.preferences.assistant.sharing.is_empty());
+    let background = &app.parked[&id].assistant;
+    assert!(background.entries.is_empty());
+    assert!(background.host().is_none());
+    app.close();
+}

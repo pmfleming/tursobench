@@ -1000,8 +1000,11 @@ impl App {
             }
             if let Some(path) = forget {
                 self.preferences.assistant.sharing.remove(&path);
-                if path == self.database.tools.database_scope {
-                    self.database.assistant.reset();
+                for database in std::iter::once(&mut self.database).chain(self.parked.values_mut())
+                {
+                    if path == database.tools.database_scope {
+                        database.assistant.reset();
+                    }
                 }
                 self.preferences.normalize();
                 self.store.save(&self.preferences);
