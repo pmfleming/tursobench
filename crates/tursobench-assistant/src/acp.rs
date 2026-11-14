@@ -13,6 +13,7 @@ const PROTOCOL_VERSION: u64 = 1;
 const INITIALIZE: u64 = 1;
 const NEW_SESSION: u64 = 2;
 const SET_MODEL: u64 = 3;
+const SET_MODE: u64 = 4;
 
 #[derive(Default)]
 struct State {
@@ -191,6 +192,13 @@ fn response(spec: &Spec, state: &mut State, link: &mut Link, id: Option<u64>, me
                 return fail(state, link, "The agent returned no session".into());
             };
             state.session = Some(session.to_owned());
+            // Never inherit Auto when the agent offers the normal approval mode.
+            if result["modes"]["availableModes"]
+                .as_array()
+                .is_some_and(|modes| modes.iter().any(|m| m["id"] == "default"))
+            {
+                let _ = link.write(&json!({"jsonrpc": "2.0", "id": SET_MODE, "method": "session/set_mode", "params": {"sessionId": session, "modeId": "default"}}));
+            }
             let model = choose_model(spec, state, link, result);
             link.emit(Update::Ready { model });
         }
@@ -199,6 +207,15 @@ fn response(spec: &Spec, state: &mut State, link: &mut Link, id: Option<u64>, me
                 link.emit(Update::Notice(format!(
                     "The agent kept its default model: {error}"
                 )));
+            }
+        }
+        Some(SET_MODE) => {
+            if let Some(error) = error {
+                return fail(
+                    state,
+                    link,
+                    format!("Could not select the agent's default permission mode: {error}"),
+                );
             }
         }
         Some(other) if Some(other) == state.prompt => {

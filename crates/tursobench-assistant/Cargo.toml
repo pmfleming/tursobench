@@ -7,6 +7,7 @@ license.workspace = true
 # Drives the user's own signed-in agent CLI and serves it TursoBench tools.
 # No network, TLS or credential handling: the agent owns its own sign-in.
 [dependencies]
+serde.workspace = true
 serde_json.workspace = true
 libc = "0.2"
 

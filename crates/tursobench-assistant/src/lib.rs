@@ -7,3 +7,4 @@ pub mod claude;
 pub mod codex;
 pub mod mcp;
 pub mod relay;
+pub mod vendor;

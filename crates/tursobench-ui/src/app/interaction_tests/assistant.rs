@@ -61,7 +61,11 @@ fn a_conversation_asks_for_consent_streams_tools_and_proposes_sql_without_runnin
         control(&output, "Schema and query results").center(),
     );
     assert_eq!(
-        app.preferences.assistant.sharing.get(&database),
+        app.preferences
+            .assistant
+            .grants
+            .get(&database)
+            .and_then(|g| g.get(&app.preferences.assistant.provider)),
         Some(&Sharing::Rows)
     );
 
@@ -134,7 +138,7 @@ fn a_missing_agent_is_explained_and_no_conversation_starts_without_consent() {
     app.send_assistant(&ctx);
     assert!(matches!(
         app.database.assistant.entries.last(),
-        Some(Entry::Notice(_, text)) if text.contains("not found on PATH")
+        Some(Entry::Notice(_, text)) if text.contains("was not found")
     ));
     assert!(!app.database.assistant.busy);
     app.close();
@@ -216,7 +220,7 @@ fn an_acp_agent_can_be_chosen_in_settings_and_its_own_edits_are_declined() {
         &ctx,
         control(&output, "Forget; ask again").center(),
     );
-    assert!(app.preferences.assistant.sharing.is_empty());
+    assert!(app.preferences.assistant.grants.is_empty());
     assert!(app.database.assistant.entries.is_empty());
     app.close();
 }
@@ -320,11 +324,17 @@ fn privacy_is_chosen_per_provider_and_reaches_the_agent() {
         &ctx,
         control(&output, "Tell the agent the database's file name").center(),
     );
-    let privacy = app.preferences.assistant.privacy;
-    assert!(privacy.claude.keep_history && !privacy.claude.share_file_name);
-    assert!(privacy.claude.telemetry_off);
+    let privacy = app.preferences.assistant.privacy.clone();
+    assert!(
+        privacy.of(crate::storage::Provider::Claude).keep_history
+            && !privacy.of(crate::storage::Provider::Claude).share_file_name
+    );
+    assert!(privacy.of(crate::storage::Provider::Claude).telemetry_off);
     // Other providers keep their private defaults.
-    assert_eq!(privacy.codex, crate::storage::ProviderPrivacy::default());
+    assert_eq!(
+        privacy.of(crate::storage::Provider::Codex),
+        crate::storage::ProviderPrivacy::default()
+    );
 
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
     click(&mut app, &ctx, control(&output, "Codex").center());
@@ -447,9 +457,48 @@ fn forgetting_sharing_stops_a_background_conversation() {
         &ctx,
         control(&output, "Forget; ask again").center(),
     );
-    assert!(app.preferences.assistant.sharing.is_empty());
+    assert!(app.preferences.assistant.grants.is_empty());
     let background = &app.parked[&id].assistant;
     assert!(background.entries.is_empty());
     assert!(background.host().is_none());
+    app.close();
+}
+
+#[test]
+fn switching_vendor_requires_its_own_consent_and_keeps_its_model() {
+    use crate::storage::Provider;
+    let (dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
+    runtime_dir(&dir);
+    scripted(&mut app, &dir);
+    app.set_assistant_sharing(Sharing::Rows);
+    app.preferences
+        .assistant
+        .models
+        .insert(Provider::Claude, "sonnet".into());
+    app.database.assistant.draft = "Hello".into();
+    app.send_assistant(&ctx);
+    wait_until(&mut app, &ctx, |a| !a.database.assistant.busy);
+    assert!(app.database.assistant.host().is_some());
+    app.select_assistant_provider(Provider::Codex);
+    assert!(app.database.assistant.host().is_none());
+    assert!(app.database.assistant.entries.is_empty());
+    assert_eq!(
+        app.preferences
+            .assistant
+            .sharing_for(&app.database.tools.database_scope),
+        None
+    );
+    assert_eq!(app.preferences.assistant.selected_model(), "");
+    app.database.assistant.draft = "Do not send".into();
+    app.send_assistant(&ctx);
+    assert!(app.database.assistant.entries.is_empty());
+    app.select_assistant_provider(Provider::Claude);
+    assert_eq!(app.preferences.assistant.selected_model(), "sonnet");
+    assert_eq!(
+        app.preferences
+            .assistant
+            .sharing_for(&app.database.tools.database_scope),
+        Some(Sharing::Rows)
+    );
     app.close();
 }

@@ -118,13 +118,19 @@ impl App {
     }
     fn assistant_sharing(&self) -> Option<Sharing> {
         let database = self.assistant_database()?;
-        self.preferences.assistant.sharing.get(&database).copied()
+        self.preferences.assistant.sharing_for(&database)
     }
     pub(super) fn set_assistant_sharing(&mut self, sharing: Sharing) {
         let Some(database) = self.assistant_database() else {
             return;
         };
-        let previous = self.preferences.assistant.sharing.insert(database, sharing);
+        let previous = self
+            .preferences
+            .assistant
+            .grants
+            .entry(database)
+            .or_default()
+            .insert(self.preferences.assistant.provider, sharing);
         self.preferences.normalize();
         self.store.save(&self.preferences);
         let conversation = &mut self.database.assistant;
@@ -144,6 +150,20 @@ impl App {
             };
             conversation.note = Some(note.into());
             conversation.push(Entry::Notice(Intent::Neutral, text.into()));
+        }
+    }
+
+    pub(super) fn select_assistant_provider(&mut self, provider: crate::storage::Provider) {
+        if self.preferences.assistant.provider == provider {
+            return;
+        }
+        self.preferences.assistant.provider = provider;
+        self.reset_assistant_conversations();
+        self.store.save(&self.preferences);
+    }
+    fn reset_assistant_conversations(&mut self) {
+        for database in std::iter::once(&mut self.database).chain(self.parked.values_mut()) {
+            database.assistant.reset();
         }
     }
 
@@ -245,7 +265,12 @@ impl App {
             .unwrap_or_else(|| profile.program.clone());
         #[cfg(not(test))]
         let program = profile.program.clone();
-        let model = self.preferences.assistant.model.trim().to_owned();
+        let model = self
+            .preferences
+            .assistant
+            .selected_model()
+            .trim()
+            .to_owned();
         let model = (!model.is_empty()).then_some(model.as_str());
         let privacy = self
             .preferences
@@ -848,66 +873,42 @@ pub(super) struct Profile {
 pub(super) fn profile(
     preferences: &crate::storage::AssistantPreferences,
 ) -> Result<Profile, String> {
-    use crate::storage::Provider;
-    Ok(match preferences.provider {
-        Provider::Claude => Profile {
-            name: "Claude Code".into(),
-            vendor: "Anthropic",
-            program: "claude".into(),
-            args: vec![],
-            env: vec![],
-            protocol: Protocol::ClaudeStream,
-            missing: "Claude Code (`claude`) was not found on PATH. Install it, run `claude` \
-                      once in a terminal to sign in, then try again."
-                .into(),
-            sign_in: "claude".into(),
-        },
-        Provider::Copilot => Profile {
-            name: "Copilot CLI".into(),
-            vendor: "GitHub",
-            program: "copilot".into(),
-            args: vec!["--acp".into()],
-            env: vec![],
-            protocol: Protocol::Acp,
-            missing: "GitHub Copilot CLI (`copilot`) was not found on PATH. Install it, run \
-                      `copilot` once in a terminal to sign in, then try again."
-                .into(),
-            sign_in: "copilot".into(),
-        },
-        Provider::Codex => Profile {
-            name: "Codex".into(),
-            vendor: "OpenAI",
-            program: "codex".into(),
-            args: vec![],
-            env: vec![],
-            protocol: Protocol::CodexAppServer,
-            missing: "Codex (`codex`) was not found on PATH. Install the Codex CLI, sign in \
-                      with `codex login`, then try again."
-                .into(),
-            sign_in: "codex login".into(),
-        },
-        Provider::Custom => {
-            let mut words = preferences.custom_command.split_whitespace();
-            let Some(program) = words.next() else {
-                return Err(
-                    "Enter the agent's command in Settings → Assistant, for example \
-                     `opencode acp`."
-                        .into(),
-                );
-            };
-            Profile {
-                name: std::path::Path::new(program)
-                    .file_name()
-                    .map_or_else(|| program.into(), |n| n.to_string_lossy().into_owned()),
-                vendor: "the agent's provider",
-                program: program.into(),
-                args: words.map(str::to_owned).collect(),
-                env: vec![],
-                protocol: Protocol::Acp,
-                missing: format!("`{program}` was not found. Check the command in Settings."),
-                sign_in: program.into(),
-            }
-        }
+    use tursobench_assistant::vendor::{Provider, command_words, resolve, search_dirs};
+    let vendor = preferences.provider.vendor();
+    let mut words: Vec<String> = if preferences.provider == Provider::Custom {
+        command_words(&preferences.custom_command)?
+    } else {
+        std::iter::once(vendor.command.to_owned())
+            .chain(vendor.args.iter().map(|s| (*s).to_owned()))
+            .collect()
+    };
+    let command = words.remove(0);
+    let requested = preferences
+        .executables
+        .get(&preferences.provider)
+        .cloned()
+        .unwrap_or_else(|| command.clone().into());
+    let program = resolve(&requested, &search_dirs()).unwrap_or(requested);
+    if preferences.provider == Provider::Antigravity
+        && preferences.privacy.of(vendor.id).telemetry_off
+    {
+        words.push("--disable-telemetry".into());
+    }
+    Ok(Profile {
+        name: vendor.name.into(),
+        vendor: vendor.company,
+        program,
+        args: words,
+        env: vec![],
+        protocol: vendor.protocol,
+        missing: format!(
+            "{} was not found. Scan for agents or set its executable in Settings → Assistant.",
+            vendor.name
+        ),
+        sign_in: std::iter::once(command.as_str())
+            .chain(vendor.login.iter().copied())
+            .collect::<Vec<_>>()
+            .join(" "),
     })
 }
 
@@ -916,32 +917,18 @@ impl App {
         use crate::storage::Provider;
         ui.spacing_mut().item_spacing.y = 4.0;
         super::panels::section(ui, "Agent", |ui| {
-            for (provider, label, detail) in [
-                (
-                    Provider::Claude,
-                    "Claude Code",
-                    "claude · Anthropic · its built-in tools are removed",
-                ),
-                (Provider::Copilot, "Copilot CLI", "copilot --acp · GitHub"),
-                (
-                    Provider::Codex,
-                    "Codex",
-                    "codex app-server · OpenAI · read-only sandbox, no shell",
-                ),
-                (
-                    Provider::Custom,
-                    "Other ACP agent",
-                    "Any Agent Client Protocol command",
-                ),
-            ] {
+            let mut selected = self.preferences.assistant.provider;
+            for vendor in tursobench_assistant::vendor::VENDORS {
                 ui.horizontal(|ui| {
-                    let response =
-                        ui.radio_value(&mut self.preferences.assistant.provider, provider, label);
-                    self.setting_response(response);
-                    ui.weak(detail);
+                    ui.radio_value(&mut selected, vendor.id, vendor.name);
+                    ui.weak(vendor.company);
                 });
             }
+            if selected != self.preferences.assistant.provider {
+                self.select_assistant_provider(selected);
+            }
             if self.preferences.assistant.provider == Provider::Custom {
+                let before = self.preferences.assistant.custom_command.clone();
                 let response = ui.add(
                     egui::TextEdit::singleline(&mut self.preferences.assistant.custom_command)
                         .hint_text("opencode acp")
@@ -950,15 +937,25 @@ impl App {
                 response.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::Role::TextInput, true, "Agent command")
                 });
+                if before != self.preferences.assistant.custom_command {
+                    self.preferences.assistant.clear_custom_grants();
+                    self.reset_assistant_conversations();
+                }
                 self.setting_response(response);
             }
             ui.horizontal(|ui| {
                 ui.label("Model")
                     .on_hover_text("Passed to the agent; leave empty for its own default");
                 let response = ui.add(
-                    egui::TextEdit::singleline(&mut self.preferences.assistant.model)
-                        .hint_text("Agent default")
-                        .desired_width(f32::INFINITY),
+                    egui::TextEdit::singleline(
+                        self.preferences
+                            .assistant
+                            .models
+                            .entry(self.preferences.assistant.provider)
+                            .or_default(),
+                    )
+                    .hint_text("Agent default")
+                    .desired_width(f32::INFINITY),
                 );
                 response.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::Role::TextInput, true, "Assistant model")
@@ -969,40 +966,53 @@ impl App {
         });
         self.assistant_privacy(ui);
         super::panels::section(ui, "Sharing", |ui| {
-            if self.preferences.assistant.sharing.is_empty() {
+            if self.preferences.assistant.grants.is_empty() {
                 ui.weak("No database shares anything yet. Each one asks first.");
                 return;
             }
             let mut forget = None;
-            for (path, sharing) in &self.preferences.assistant.sharing {
-                ui.horizontal(|ui| {
-                    let (icon, name) = match sharing {
-                        Sharing::Schema => (Icon::Structure, "Schema only"),
-                        Sharing::Rows => (Icon::Data, "Schema and query results"),
-                    };
-                    let (rect, response) =
-                        ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
-                    icons::paint(ui.painter(), rect, icon, ui.visuals().text_color());
-                    response.on_hover_text(name);
-                    let file = std::path::Path::new(path)
-                        .file_name()
-                        .map_or_else(|| path.clone(), |n| n.to_string_lossy().into_owned());
-                    ui.label(file).on_hover_text(path);
-                    ui.weak(name);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if icons::control(ui, Icon::Trash, "Forget; ask again", "", false, false)
+            for (path, grants) in &self.preferences.assistant.grants {
+                for (provider, sharing) in grants {
+                    ui.horizontal(|ui| {
+                        let (icon, name) = match sharing {
+                            Sharing::Schema => (Icon::Structure, "Schema only"),
+                            Sharing::Rows => (Icon::Data, "Schema and query results"),
+                        };
+                        let (rect, response) =
+                            ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                        icons::paint(ui.painter(), rect, icon, ui.visuals().text_color());
+                        response.on_hover_text(name);
+                        let file = std::path::Path::new(path)
+                            .file_name()
+                            .map_or_else(|| path.clone(), |n| n.to_string_lossy().into_owned());
+                        ui.label(file).on_hover_text(path);
+                        ui.weak(format!("{} · {name}", provider.vendor().name));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if icons::control(
+                                ui,
+                                Icon::Trash,
+                                "Forget; ask again",
+                                "",
+                                false,
+                                false,
+                            )
                             .clicked()
-                        {
-                            forget = Some(path.clone());
-                        }
+                            {
+                                forget = Some((path.clone(), *provider));
+                            }
+                        });
                     });
-                });
+                }
             }
-            if let Some(path) = forget {
-                self.preferences.assistant.sharing.remove(&path);
+            if let Some((path, provider)) = forget {
+                if let Some(grants) = self.preferences.assistant.grants.get_mut(&path) {
+                    grants.remove(&provider);
+                }
                 for database in std::iter::once(&mut self.database).chain(self.parked.values_mut())
                 {
-                    if path == database.tools.database_scope {
+                    if path == database.tools.database_scope
+                        && provider == self.preferences.assistant.provider
+                    {
                         database.assistant.reset();
                     }
                 }
@@ -1070,7 +1080,7 @@ fn privacy_copy(provider: crate::storage::Provider) -> PrivacyCopy {
                 false,
             ),
         },
-        Provider::Copilot | Provider::Custom => PrivacyCopy {
+        Provider::Antigravity | Provider::Copilot | Provider::Custom => PrivacyCopy {
             switches: None,
             sign_in: "TursoBench never calls the agent's authenticate method and never \
                       reads, stores or sends its credentials or account details.",

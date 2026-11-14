@@ -170,37 +170,44 @@ pub struct AssistantPreferences {
     /// A full command line for any other Agent Client Protocol agent.
     pub custom_command: String,
     /// Passed to the agent as its model; empty keeps the agent's own default.
+    #[serde(skip_serializing)]
     pub model: String,
+    pub models: std::collections::BTreeMap<Provider, String>,
+    pub executables: std::collections::BTreeMap<Provider, PathBuf>,
     /// Keyed by absolute database path; a missing entry means not yet chosen.
+    #[serde(skip_serializing)]
     pub sharing: std::collections::BTreeMap<String, crate::assistant_tools::Sharing>,
+    pub grants: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<Provider, crate::assistant_tools::Sharing>,
+    >,
     /// What each agent CLI may keep or report, chosen separately per provider.
     pub privacy: Privacy,
 }
-/// Privacy choices for each provider. Every default is the private one.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct Privacy {
-    pub claude: ProviderPrivacy,
-    pub copilot: ProviderPrivacy,
-    pub codex: ProviderPrivacy,
-    pub custom: ProviderPrivacy,
+impl AssistantPreferences {
+    pub fn selected_model(&self) -> &str {
+        self.models.get(&self.provider).map_or("", String::as_str)
+    }
+    pub fn sharing_for(&self, database: &str) -> Option<crate::assistant_tools::Sharing> {
+        self.grants.get(database)?.get(&self.provider).copied()
+    }
+    pub fn clear_custom_grants(&mut self) {
+        for grants in self.grants.values_mut() {
+            grants.remove(&Provider::Custom);
+        }
+        self.grants.retain(|_, grants| !grants.is_empty());
+    }
 }
+/// Per-provider privacy; aliases on Provider preserve existing preference keys.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct Privacy(std::collections::BTreeMap<Provider, ProviderPrivacy>);
 impl Privacy {
     pub fn of(&self, provider: Provider) -> ProviderPrivacy {
-        match provider {
-            Provider::Claude => self.claude,
-            Provider::Copilot => self.copilot,
-            Provider::Codex => self.codex,
-            Provider::Custom => self.custom,
-        }
+        self.0.get(&provider).copied().unwrap_or_default()
     }
     pub fn of_mut(&mut self, provider: Provider) -> &mut ProviderPrivacy {
-        match provider {
-            Provider::Claude => &mut self.claude,
-            Provider::Copilot => &mut self.copilot,
-            Provider::Codex => &mut self.codex,
-            Provider::Custom => &mut self.custom,
-        }
+        self.0.entry(provider).or_default()
     }
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -230,15 +237,7 @@ impl ProviderPrivacy {
         }
     }
 }
-/// Which signed-in agent CLI the assistant starts.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub enum Provider {
-    #[default]
-    Claude,
-    Copilot,
-    Codex,
-    Custom,
-}
+pub use tursobench_assistant::vendor::Provider;
 /// The navigation sidebar and the assistant panel are shown or hidden independently.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -331,15 +330,31 @@ impl Preferences {
         while self.inspector_visibility.len() > 20 {
             self.inspector_visibility.pop_first();
         }
+        // Legacy sharing and model apply only to the previously selected vendor.
+        for (path, sharing) in std::mem::take(&mut self.assistant.sharing) {
+            self.assistant
+                .grants
+                .entry(path)
+                .or_default()
+                .entry(self.assistant.provider)
+                .or_insert(sharing);
+        }
+        if !self.assistant.model.is_empty() {
+            self.assistant
+                .models
+                .entry(self.assistant.provider)
+                .or_insert(std::mem::take(&mut self.assistant.model));
+        }
+        self.assistant.grants.retain(|path, grants| {
+            !grants.is_empty() && path.len() <= 4096 && Path::new(path).is_absolute()
+        });
+        while self.assistant.grants.len() > 50 {
+            self.assistant.grants.pop_first();
+        }
+        self.assistant.models.retain(|_, model| model.len() <= 200);
         self.assistant
-            .sharing
-            .retain(|path, _| path.len() <= 4096 && Path::new(path).is_absolute());
-        while self.assistant.sharing.len() > 50 {
-            self.assistant.sharing.pop_first();
-        }
-        if self.assistant.model.len() > 200 {
-            self.assistant.model.clear();
-        }
+            .executables
+            .retain(|_, path| path.is_absolute() && path.as_os_str().len() <= 4096);
         if self.assistant.custom_command.len() > 4096 {
             self.assistant.custom_command.clear();
         }
@@ -555,6 +570,25 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(5))
             .unwrap()
     }
+    #[test]
+    fn assistant_migration_scopes_legacy_consent_and_models_to_the_selected_vendor() {
+        use super::Provider;
+        let mut prefs = decode(r#"{"assistant":{"provider":"Codex","model":"my-model","sharing":{"/tmp/a.db":"Rows"},"privacy":{"claude":{"keep_history":true}}}}"#).unwrap();
+        assert_eq!(prefs.assistant.selected_model(), "my-model");
+        assert_eq!(
+            prefs.assistant.sharing_for("/tmp/a.db"),
+            Some(crate::assistant_tools::Sharing::Rows)
+        );
+        assert!(prefs.assistant.privacy.of(Provider::Claude).keep_history);
+        prefs.assistant.provider = Provider::Claude;
+        assert_eq!(prefs.assistant.sharing_for("/tmp/a.db"), None);
+        assert_eq!(prefs.assistant.selected_model(), "");
+        let encoded = serde_json::to_string(&prefs).unwrap();
+        let restored = decode(&encoded).unwrap();
+        assert_eq!(restored.assistant, prefs.assistant);
+        assert!(!encoded.contains("\"sharing\":"));
+    }
+
     #[test]
     fn shutdown_drains_the_latest_coalesced_snapshot() {
         let dir = tempfile::tempdir().unwrap();
