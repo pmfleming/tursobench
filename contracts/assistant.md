@@ -12,6 +12,13 @@ email is discarded and these fields stay in memory. Checks use separate bounded
 processes with no database tools or prompts. ACP checks create an empty session,
 close it when supported and may leave it in the vendor's history.
 
+Sign in uses Codex’s managed browser flow (with cancellation), an advertised ACP
+OAuth method, or Claude Code’s terminal login. A copyable terminal command is
+available if a browser or terminal cannot be launched. Sign out is available for
+Claude Code and Codex; ACP sign-out stays in the agent’s own CLI. Account jobs
+end all workspace conversations before changing the sign-in, have no database
+tools, and kill their process group on cancellation or timeout.
+
 | Agent | Command | Protocol |
 | --- | --- | --- |
 | Claude Code (default) | `claude -p` with stream-json input and output | Claude Code headless |

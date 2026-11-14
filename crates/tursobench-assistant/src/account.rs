@@ -298,6 +298,12 @@ impl Process {
     }
     fn wait(&mut self, cancel: &AtomicBool) -> Result<bool, String> {
         loop {
+            for line in self.lines.try_iter() {
+                self.bytes += line?.len();
+                if self.bytes > OUTPUT_LIMIT {
+                    return Err("The agent returned too much output".into());
+                }
+            }
             if cancel.load(Ordering::Relaxed) {
                 return Err("Cancelled".into());
             }
@@ -576,11 +582,13 @@ fn run(
         .collect();
     match operation {
         Operation::Login { method } => {
-            let method = method
-                .as_deref()
-                .and_then(|id| methods.iter().find(|m| m.id == id))
-                .or_else(|| methods.iter().find(|m| m.id == "oauth-personal"))
-                .or_else(|| methods.first());
+            let method = match method.as_deref() {
+                Some(id) => methods.iter().find(|m| m.id == id),
+                None => methods
+                    .iter()
+                    .find(|m| m.id == "oauth-personal")
+                    .or_else(|| methods.first()),
+            };
             let Some(method) = method else {
                 return Err("This agent requires sign-in through its terminal command".into());
             };
@@ -666,7 +674,7 @@ fn terminal_login(target: &Target, cancel: &AtomicBool) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
-    fn scripted(provider: Provider, body: &str) -> (tempfile::TempDir, Target) {
+    pub(super) fn scripted(provider: Provider, body: &str) -> (tempfile::TempDir, Target) {
         let dir = tempfile::tempdir().unwrap();
         let program = dir.path().join("agent");
         std::fs::write(&program, format!("#!/usr/bin/env python3\nimport sys,json\nif '--version' in sys.argv:\n print('test-agent 1.0');sys.exit(0)\n{body}")).unwrap();
@@ -800,5 +808,130 @@ for line in sys.stdin:
         let mut p = Process::spawn(&target, &[], CHECK).unwrap();
         stop.store(true, Ordering::Relaxed);
         assert_eq!(p.line(&stop).unwrap_err(), "Cancelled");
+    }
+}
+
+#[cfg(test)]
+mod login_tests {
+    use super::tests::scripted;
+    use super::*;
+    #[test]
+    fn codex_browser_login_completes_then_rechecks_status() {
+        let (_dir, target) = scripted(
+            Provider::Codex,
+            r#"
+def send(v): print(json.dumps(v),flush=True)
+for line in sys.stdin:
+ m=json.loads(line);method=m.get('method');i=m.get('id')
+ if method=='initialize': send({'id':i,'result':{}})
+ elif method=='initialized': pass
+ elif method=='account/login/start':
+  assert m['params']=={'type':'chatgpt'}
+  send({'id':i,'result':{'loginId':'login-1','type':'chatgpt','authUrl':'https://auth.openai.com/test-login'}})
+  send({'method':'account/login/completed','params':{'loginId':'unrelated','success':False}})
+  send({'method':'account/login/completed','params':{'loginId':'login-1','success':True}})
+ elif method=='account/read':
+  assert m['params']['refreshToken']==False
+  send({'id':i,'result':{'account':{'type':'chatgpt','planType':'plus'}}})
+ elif method=='model/list': send({'id':i,'result':{'data':[],'nextCursor':None}})
+ else: raise Exception('unexpected '+str(method))
+"#,
+        );
+        let browser = std::cell::RefCell::new(Vec::new());
+        let status = run(
+            &target,
+            &Operation::Login { method: None },
+            &AtomicBool::new(false),
+            |url| browser.borrow_mut().push(url),
+        )
+        .unwrap();
+        assert_eq!(status.state, SignIn::SignedIn);
+        assert_eq!(*browser.borrow(), ["https://auth.openai.com/test-login"]);
+    }
+    #[test]
+    fn codex_login_can_be_cancelled_without_waiting_for_the_browser() {
+        let (_dir, target) = scripted(
+            Provider::Codex,
+            r#"
+for line in sys.stdin:
+ m=json.loads(line)
+ if m.get('method')=='initialize': print(json.dumps({'id':m['id'],'result':{}}),flush=True)
+ elif m.get('method')=='account/login/start': print(json.dumps({'id':m['id'],'result':{'loginId':'l','authUrl':'https://auth.openai.com/test-login'}}),flush=True)
+ elif m.get('method')=='account/login/cancel': sys.exit(0)
+"#,
+        );
+        let cancel = AtomicBool::new(false);
+        let result = run(&target, &Operation::Login { method: None }, &cancel, |_| {
+            cancel.store(true, Ordering::Relaxed)
+        });
+        assert_eq!(result.unwrap_err(), "Cancelled");
+    }
+    #[test]
+    fn acp_login_uses_only_the_selected_advertised_method() {
+        let (_dir, target) = scripted(
+            Provider::Antigravity,
+            r#"
+authed=False
+for line in sys.stdin:
+ m=json.loads(line);method=m['method'];i=m['id'];result={}
+ if method=='initialize': result={'authMethods':[{'id':'oauth-personal','name':'Personal'},{'id':'oauth-business','name':'Enterprise'}]}
+ elif method=='authenticate':
+  assert m['params']=={'methodId':'oauth-business'};authed=True
+ elif method=='session/new':
+  assert authed;assert m['params']['mcpServers']==[];result={'sessionId':'new'}
+ else: raise Exception('unexpected '+method)
+ print(json.dumps({'id':i,'result':result}),flush=True)
+"#,
+        );
+        let status = run(
+            &target,
+            &Operation::Login {
+                method: Some("oauth-business".into()),
+            },
+            &AtomicBool::new(false),
+            |_| panic!(),
+        )
+        .unwrap();
+        assert_eq!(status.state, SignIn::SignedIn);
+        assert!(
+            run(
+                &target,
+                &Operation::Login {
+                    method: Some("not-advertised".into())
+                },
+                &AtomicBool::new(false),
+                |_| panic!()
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn codex_logout_rechecks_the_signed_out_state() {
+        let (_dir, target) = scripted(
+            Provider::Codex,
+            r#"
+logged_out=False
+for line in sys.stdin:
+ m=json.loads(line);method=m.get('method');i=m.get('id');result={}
+ if method=='initialized': continue
+ elif method=='account/logout': logged_out=True
+ elif method=='account/read':
+  assert logged_out;result={'account':None,'requiresOpenaiAuth':True}
+ elif method=='model/list': result={'data':[],'nextCursor':None}
+ elif method!='initialize': raise Exception('unexpected '+str(method))
+ print(json.dumps({'id':i,'result':result}),flush=True)
+"#,
+        );
+        assert_eq!(
+            run(
+                &target,
+                &Operation::Logout,
+                &AtomicBool::new(false),
+                |_| panic!()
+            )
+            .unwrap()
+            .state,
+            SignIn::SignedOut
+        );
     }
 }

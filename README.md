@@ -127,7 +127,8 @@ at `~/.config/tursobench/preferences.db` (or under `XDG_CONFIG_HOME`).
 Ask about the open database in a collapsible chat panel on the right. It runs
 the agent CLI you already use: Claude Code by default, Codex, Antigravity, Copilot
 CLI or another Agent Client Protocol agent. Settings → Assistant scans local
-installations and checks sign-in status. Credentials remain with the CLI; status,
+installations, checks sign-in status and starts the CLI’s own sign-in. Credentials
+remain with the CLI; status,
 method and plan stay in memory and email is discarded. Each database asks for
 each vendor whether to share the schema only
 or also query results. The agent reads through a separate `query_only`

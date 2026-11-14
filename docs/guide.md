@@ -273,7 +273,13 @@ Copilot CLI or any other Agent Client Protocol command. Each agent keeps its own
 model and privacy choices. Settings scans PATH and common installation folders,
 shows sign-in status and version, and offers an executable path override.
 Status checks never send database metadata; an ACP check may leave an empty
-session in the CLI history. Use Scan again after signing in from a terminal.
+session in the CLI history. Use **Sign in** to start the vendor’s own flow:
+Codex opens a browser; ACP agents offer their advertised OAuth methods (including
+Antigravity personal or enterprise); Claude Code opens a terminal. Cancel stops
+the helper. “Executable and terminal sign-in” has a copyable command if needed.
+Status is checked again when sign-in completes. Claude Code and Codex also offer
+Sign out; sign out of ACP agents in their own CLI. These account changes end
+existing workspace conversations. Use Scan again after a manual terminal login.
 
 The assistant panel sits on the right. Show or hide it with the icon on the right
 of the status bar. The sidebar toggle stays on the left. Ctrl B (sidebar) and Ctrl I

@@ -41,7 +41,8 @@ security reporting process; mention the TursoBench impact in a private report he
 - The assistant sends what the agent reads to that agent's vendor, under your
   own plan and the vendor's terms. Share only the schema for sensitive data.
   Settings checks CLI sign-in state, method and plan in separate processes.
-  Email is discarded; account details are not persisted. Credentials stay with
+  Sign-in starts the vendor’s browser or terminal flow. Email is discarded;
+  account details are not persisted. Credentials stay with
   the CLI, and TursoBench never sends the database's folder. Settings → Assistant → Privacy blocks Claude Code's and
   Codex's telemetry and history by default. TursoBench's tools are read-only; ACP
   agents keep their vendor's tools and settings; see the

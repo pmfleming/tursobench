@@ -20,6 +20,7 @@ pub(super) struct Row {
     pub error: Option<String>,
     pub browser: Option<String>,
     pub method: Option<String>,
+    pub activity: Option<&'static str>,
 }
 #[derive(Default)]
 pub(super) struct State {
@@ -70,6 +71,11 @@ impl App {
         }
         let target = self.account_target(provider);
         let row = self.accounts.rows.entry(provider).or_default();
+        row.activity = Some(match &operation {
+            Operation::Check => "Checking…",
+            Operation::Login { .. } => "Signing in…",
+            Operation::Logout => "Signing out…",
+        });
         row.job = None;
         row.error = None;
         row.browser = None;
@@ -103,6 +109,7 @@ impl App {
                     }
                     Event::Finished(result) => {
                         row.job = None;
+                        row.activity = None;
                         row.browser = None;
                         match result {
                             Ok(status) => {
@@ -142,7 +149,7 @@ impl App {
                     .unwrap_or(SignIn::Unknown);
                 let busy = row.job.is_some();
                 let (label, intent) = if busy {
-                    ("Checking…", Intent::Pending)
+                    (row.activity.unwrap_or("Checking…"), Intent::Pending)
                 } else {
                     match state {
                         SignIn::SignedIn => ("Signed in", Intent::Primary),
@@ -190,6 +197,22 @@ impl App {
                         } else if state == SignIn::Missing {
                             ui.hyperlink_to("Install", vendor.help);
                         } else {
+                            if state == SignIn::SignedIn
+                                && matches!(vendor.id, Provider::Claude | Provider::Codex)
+                            {
+                                if ui.small_button("Sign out").clicked() {
+                                    action = Some((vendor.id, Operation::Logout));
+                                }
+                            } else if state != SignIn::SignedIn
+                                && ui.small_button("Sign in").clicked()
+                            {
+                                action = Some((
+                                    vendor.id,
+                                    Operation::Login {
+                                        method: row.method.clone(),
+                                    },
+                                ));
+                            }
                             if icons::control(ui, Icon::Refresh, "Check agent", "", false, false)
                                 .clicked()
                             {
@@ -208,6 +231,17 @@ impl App {
         }
         let provider = self.preferences.assistant.provider;
         if let Some(row) = self.accounts.rows.get_mut(&provider) {
+            if row
+                .status
+                .as_ref()
+                .is_some_and(|s| s.state == SignIn::SignedIn)
+                && matches!(
+                    provider,
+                    Provider::Antigravity | Provider::Copilot | Provider::Custom
+                )
+            {
+                ui.small("Use the agent's own terminal command to sign out.");
+            }
             if let Some(error) = &row.error {
                 ui.colored_label(ui.visuals().error_fg_color, error);
             }
