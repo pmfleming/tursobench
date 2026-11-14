@@ -206,3 +206,42 @@ fn location_queries_hidden_in_views_are_refused() {
     );
     client.close();
 }
+
+#[test]
+fn serialized_results_fit_the_byte_budget_even_for_wide_and_escaped_rows() {
+    use tursobench_db::assistant::MAX_BYTES;
+    let (_dir, path) = fixture();
+    let client = Client::open(&path, Access::ReadOnly);
+    let tools = client.session.assistant();
+    for (count, value, expect_empty) in [
+        (200, "printf('%2000s', 'x')", true),
+        (50, "replace(printf('%2000s', 'x'), ' ', char(1))", true),
+        (40, "printf('%2000s', 'x')", false),
+    ] {
+        let columns = (0..count)
+            .map(|i| format!("{value} AS c{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let result = tools.call(Tool::Query(format!(
+            "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<10) SELECT {columns} FROM n"
+        )), WAIT).unwrap();
+        assert!(result.to_string().len() <= MAX_BYTES);
+        assert_eq!(result["limited"], true);
+        assert_eq!(result["rows"].as_array().unwrap().is_empty(), expect_empty);
+        assert_eq!(
+            result["row_count"].as_u64().unwrap() as usize,
+            result["rows"].as_array().unwrap().len()
+        );
+    }
+    // Column metadata alone also counts, including for an empty result.
+    let long_name = "x".repeat(MAX_BYTES);
+    assert!(
+        tools
+            .call(
+                Tool::Query(format!("SELECT 1 AS \"{long_name}\" WHERE 0")),
+                WAIT
+            )
+            .is_err()
+    );
+    client.close();
+}

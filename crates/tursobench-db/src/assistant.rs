@@ -370,25 +370,49 @@ async fn query_in_snapshot(
     }
     let mut rows = stmt.query(()).await.map_err(failure)?;
     let mut out = vec![];
-    let mut bytes = 0usize;
+    // Reserve the largest metadata envelope before admitting any rows. Count
+    // JSON bytes, including escapes and column names, rather than cell payloads.
+    let mut bytes = json!({
+        "columns": columns,
+        "rows": [],
+        "row_count": MAX_ROWS,
+        "limited": false,
+        "truncated_cells": MAX_ROWS * 512,
+        "note": limited_note(MAX_ROWS),
+    })
+    .to_string()
+    .len();
+    if bytes > MAX_BYTES {
+        return Err(Failure::input(
+            "The result's column names exceed the 256 KiB budget",
+        ));
+    }
     let mut limited = false;
     let mut truncated_cells = 0usize;
     while let Some(row) = rows.next().await.map_err(failure)? {
         if discard.discarded(request) {
             return Err(Failure::input("The query was stopped"));
         }
-        if out.len() == MAX_ROWS || bytes > MAX_BYTES {
+        if out.len() == MAX_ROWS {
             limited = true;
             break;
         }
         let mut cells = Vec::with_capacity(columns.len());
+        let mut row_truncated = 0usize;
         for i in 0..columns.len() {
-            let (cell, size, cut) = cell(from_engine(row.get_value(i).map_err(failure)?));
-            bytes += size;
-            truncated_cells += usize::from(cut);
+            let (cell, _, cut) = cell(from_engine(row.get_value(i).map_err(failure)?));
+            row_truncated += usize::from(cut);
             cells.push(cell);
         }
-        out.push(Json::Array(cells));
+        let row = Json::Array(cells);
+        let row_bytes = row.to_string().len() + usize::from(!out.is_empty());
+        if bytes.saturating_add(row_bytes) > MAX_BYTES {
+            limited = true;
+            break;
+        }
+        bytes += row_bytes;
+        truncated_cells += row_truncated;
+        out.push(row);
     }
     Ok(json!({
         "columns": columns,
@@ -397,11 +421,17 @@ async fn query_in_snapshot(
         "limited": limited,
         "truncated_cells": truncated_cells,
         "note": if limited {
-            format!("Only the first {} rows were returned; add LIMIT or aggregate.", out.len())
+            limited_note(out.len())
         } else {
             String::new()
         },
     }))
+}
+
+fn limited_note(rows: usize) -> String {
+    format!(
+        "Only the first {rows} rows were returned; add LIMIT, select fewer columns or aggregate."
+    )
 }
 
 /// JSON for one value, its approximate size and whether it was shortened.
