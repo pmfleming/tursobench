@@ -424,20 +424,84 @@ impl App {
                 Icon::Assistant,
                 ui.visuals().text_color(),
             );
-            let model = self.database.assistant.model.clone();
-            let name = self
-                .database
-                .assistant
-                .label
-                .clone()
-                .or_else(|| profile(&self.preferences.assistant).ok().map(|p| p.name))
-                .unwrap_or_else(|| "Assistant".into());
-            ui.strong(&name).on_hover_text(match &model {
-                Some(model) => format!("Your own signed-in {name} · {model}"),
-                None => format!(
-                    "Your own signed-in {name}. TursoBench never sees your sign-in. Choose the agent in Settings → Assistant."
-                ),
+            let mut provider = self.preferences.assistant.provider;
+            let name = provider.vendor().name;
+            let agent_picker = egui::ComboBox::from_id_salt("chat-agent")
+                .width(122.0)
+                .selected_text(name)
+                .show_ui(ui, |ui| {
+                    let dirs = tursobench_assistant::vendor::search_dirs();
+                    for vendor in tursobench_assistant::vendor::VENDORS {
+                        let status = self
+                            .accounts
+                            .rows
+                            .get(&vendor.id)
+                            .and_then(|row| row.status.as_ref());
+                        let installed = status
+                            .map(|s| s.state != tursobench_assistant::account::SignIn::Missing)
+                            .unwrap_or_else(|| {
+                                if vendor.id == crate::storage::Provider::Custom {
+                                    tursobench_assistant::vendor::command_words(
+                                        &self.preferences.assistant.custom_command,
+                                    )
+                                    .ok()
+                                    .and_then(|words| {
+                                        tursobench_assistant::vendor::resolve(
+                                            std::path::Path::new(&words[0]),
+                                            &dirs,
+                                        )
+                                    })
+                                    .is_some()
+                                } else {
+                                    let program = self
+                                        .preferences
+                                        .assistant
+                                        .executables
+                                        .get(&vendor.id)
+                                        .cloned()
+                                        .unwrap_or_else(|| vendor.command.into());
+                                    tursobench_assistant::vendor::resolve(&program, &dirs).is_some()
+                                }
+                            });
+                        let hint = if !installed {
+                            "Not installed"
+                        } else {
+                            match status.map(|s| s.state) {
+                                Some(tursobench_assistant::account::SignIn::SignedIn) => {
+                                    "Signed in"
+                                }
+                                Some(tursobench_assistant::account::SignIn::SignedOut) => {
+                                    "Signed out"
+                                }
+                                _ => "Installed",
+                            }
+                        };
+                        ui.add_enabled_ui(installed || vendor.id == provider, |ui| {
+                            ui.selectable_value(
+                                &mut provider,
+                                vendor.id,
+                                format!("{} · {hint}", vendor.name),
+                            );
+                        });
+                    }
+                    ui.separator();
+                    if ui.button("Manage agents…").clicked() {
+                        self.settings.open = true;
+                        self.settings.page = super::settings::Page::Assistant;
+                        ui.close();
+                    }
+                })
+                .response
+                .on_hover_text("Choose a local agent. Changing agent starts a new conversation.");
+            agent_picker.widget_info(|| {
+                let mut info =
+                    egui::WidgetInfo::labeled(egui::Role::ComboBox, true, "Assistant agent");
+                info.current_text_value = Some(name.into());
+                info
             });
+            if provider != self.preferences.assistant.provider {
+                self.select_assistant_provider(provider);
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if icons::control(ui, Icon::Close, "Hide assistant", "Ctrl I", false, false)
                     .clicked()
@@ -476,6 +540,101 @@ impl App {
                 }
             });
         });
+        self.assistant_model_picker(ui);
+    }
+
+    pub(super) fn select_assistant_model(&mut self, model: String) {
+        if model == self.preferences.assistant.selected_model() {
+            return;
+        }
+        self.preferences
+            .assistant
+            .models
+            .insert(self.preferences.assistant.provider, model);
+        self.reset_assistant_conversations();
+        self.preferences.normalize();
+        self.store.save(&self.preferences);
+    }
+
+    fn assistant_model_picker(&mut self, ui: &mut egui::Ui) {
+        use tursobench_assistant::account::Model;
+        let provider = self.preferences.assistant.provider;
+        let models = self
+            .accounts
+            .rows
+            .get(&provider)
+            .and_then(|r| r.status.as_ref())
+            .map(|s| s.models.clone())
+            .unwrap_or_else(|| {
+                if provider == crate::storage::Provider::Claude {
+                    ["sonnet", "opus", "haiku"]
+                        .map(|m| Model {
+                            id: m.into(),
+                            name: m.into(),
+                        })
+                        .to_vec()
+                } else {
+                    vec![]
+                }
+            });
+        let mut selected = self.preferences.assistant.selected_model().to_owned();
+        let label = models
+            .iter()
+            .find(|m| m.id == selected)
+            .map(|m| m.name.clone())
+            .unwrap_or_else(|| {
+                if selected.is_empty() {
+                    "Agent default".into()
+                } else {
+                    selected.clone()
+                }
+            });
+        ui.horizontal(|ui| {
+            ui.weak("Model");
+            let model_picker = egui::ComboBox::from_id_salt("chat-model")
+                .width((ui.available_width() - 4.0).max(100.0))
+                .selected_text(label)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut selected, String::new(), "Agent default");
+                    for model in &models {
+                        ui.selectable_value(&mut selected, model.id.clone(), &model.name);
+                    }
+                    ui.separator();
+                    if models.is_empty() && ui.button("Find available models").clicked() {
+                        self.settings.open = true;
+                        self.settings.page = super::settings::Page::Assistant;
+                        self.agent_account_job(
+                            ui.ctx(),
+                            provider,
+                            tursobench_assistant::account::Operation::Check,
+                        );
+                        ui.close();
+                    }
+                    if ui.button("Custom model in Settings…").clicked() {
+                        self.settings.open = true;
+                        self.settings.page = super::settings::Page::Assistant;
+                        ui.close();
+                    }
+                })
+                .response
+                .on_hover_text(format!(
+                    "Changing model starts a new conversation. Current model: {}",
+                    self.database
+                        .assistant
+                        .model
+                        .as_deref()
+                        .unwrap_or("agent default")
+                ));
+            model_picker.widget_info(|| {
+                let mut info =
+                    egui::WidgetInfo::labeled(egui::Role::ComboBox, true, "Assistant model picker");
+                info.current_text_value = Some(selected.clone());
+                info
+            });
+        });
+        if selected != self.preferences.assistant.selected_model() {
+            self.select_assistant_model(selected);
+        }
     }
 
     fn assistant_consent(&mut self, ui: &mut egui::Ui) {
@@ -935,6 +1094,7 @@ impl App {
                 }
                 self.setting_response(response);
             }
+            let previous_model = self.preferences.assistant.selected_model().to_owned();
             ui.horizontal(|ui| {
                 ui.label("Model")
                     .on_hover_text("Passed to the agent; leave empty for its own default");
@@ -954,6 +1114,9 @@ impl App {
                 });
                 self.setting_response(response);
             });
+            if previous_model != self.preferences.assistant.selected_model() {
+                self.reset_assistant_conversations();
+            }
             ui.weak("Applies to the next conversation.");
         });
         self.assistant_privacy(ui);
@@ -1101,23 +1264,38 @@ impl App {
         super::panels::section(ui, &title, |ui| {
             let mut changed = false;
             let mut privacy = self.preferences.assistant.privacy.of(provider);
-            match copy.switches {
-                Some([(telemetry, telemetry_tip), (history, history_tip)]) => {
-                    changed |= presentation::checkbox(ui, &mut privacy.telemetry_off, telemetry)
-                        .on_hover_text(telemetry_tip)
+            if provider == crate::storage::Provider::Antigravity {
+                changed |=
+                    presentation::checkbox(ui, &mut privacy.telemetry_off, "Block telemetry")
+                        .on_hover_text("Starts agy acp with --disable-telemetry")
                         .changed();
-                    changed |= presentation::checkbox(ui, &mut privacy.keep_history, history)
-                        .on_hover_text(history_tip)
-                        .changed();
-                }
-                None => guarantee(
+                guarantee(
                     ui,
                     Icon::Settings,
-                    &format!("Telemetry and history follow {name}'s own settings"),
-                    "TursoBench cannot change them for Agent Client Protocol agents; see \
-                     the agent's documentation.",
+                    "History follows Antigravity's own settings",
+                    "ACP does not offer a per-conversation history switch. Empty status sessions may appear in CLI history.",
                     false,
-                ),
+                );
+            } else {
+                match copy.switches {
+                    Some([(telemetry, telemetry_tip), (history, history_tip)]) => {
+                        changed |=
+                            presentation::checkbox(ui, &mut privacy.telemetry_off, telemetry)
+                                .on_hover_text(telemetry_tip)
+                                .changed();
+                        changed |= presentation::checkbox(ui, &mut privacy.keep_history, history)
+                            .on_hover_text(history_tip)
+                            .changed();
+                    }
+                    None => guarantee(
+                        ui,
+                        Icon::Settings,
+                        &format!("Telemetry and history follow {name}'s own settings"),
+                        "TursoBench cannot change them for Agent Client Protocol agents; see \
+                     the agent's documentation.",
+                        false,
+                    ),
+                }
             }
             changed |= presentation::checkbox(
                 ui,

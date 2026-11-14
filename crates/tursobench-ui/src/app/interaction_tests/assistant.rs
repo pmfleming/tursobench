@@ -548,3 +548,63 @@ fn agent_scan_reports_status_and_missing_executables_without_starting_a_conversa
     );
     app.close();
 }
+
+#[test]
+fn chat_header_pickers_change_model_and_vendor_with_fresh_consent() {
+    use crate::storage::Provider;
+    use tursobench_assistant::account::{Model, SignIn, Status};
+    let (dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
+    runtime_dir(&dir);
+    scripted(&mut app, &dir);
+    app.preferences.panels.assistant = true;
+    app.set_assistant_sharing(Sharing::Schema);
+    app.database.assistant.draft = "Hello".into();
+    app.send_assistant(&ctx);
+    wait_until(&mut app, &ctx, |a| !a.database.assistant.busy);
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    click(
+        &mut app,
+        &ctx,
+        control(&output, "Assistant model picker").center(),
+    );
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    click(&mut app, &ctx, control(&output, "sonnet").center());
+    assert_eq!(app.preferences.assistant.selected_model(), "sonnet");
+    assert!(app.database.assistant.host().is_none());
+    app.accounts.rows.entry(Provider::Codex).or_default().status = Some(Status {
+        state: SignIn::SignedIn,
+        models: vec![Model {
+            id: "gpt-test".into(),
+            name: "Test model".into(),
+        }],
+        ..Default::default()
+    });
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    click(&mut app, &ctx, control(&output, "Assistant agent").center());
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    click(
+        &mut app,
+        &ctx,
+        control(&output, "Codex · Signed in").center(),
+    );
+    assert_eq!(app.preferences.assistant.provider, Provider::Codex);
+    assert_eq!(
+        app.preferences
+            .assistant
+            .sharing_for(&app.database.tools.database_scope),
+        None
+    );
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    assert!(labelled(&output, "Schema only"));
+    click(
+        &mut app,
+        &ctx,
+        control(&output, "Assistant model picker").center(),
+    );
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    click(&mut app, &ctx, control(&output, "Test model").center());
+    assert_eq!(app.preferences.assistant.selected_model(), "gpt-test");
+    app.select_assistant_provider(Provider::Claude);
+    assert_eq!(app.preferences.assistant.selected_model(), "sonnet");
+    app.close();
+}

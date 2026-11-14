@@ -155,7 +155,15 @@ impl App {
                         SignIn::SignedIn => ("Signed in", Intent::Primary),
                         SignIn::SignedOut => ("Signed out", Intent::Pending),
                         SignIn::Missing => ("Not installed", Intent::Neutral),
-                        SignIn::Unknown if row.error.is_some() => ("Check failed", Intent::Danger),
+                        SignIn::Unknown
+                            if row.error.is_some()
+                                || row.status.as_ref().is_some_and(|s| s.issue.is_some()) =>
+                        {
+                            ("Check failed", Intent::Danger)
+                        }
+                        SignIn::Unknown if row.status.is_some() => {
+                            ("Status unavailable", Intent::Neutral)
+                        }
                         SignIn::Unknown => ("Not checked", Intent::Neutral),
                     }
                 };

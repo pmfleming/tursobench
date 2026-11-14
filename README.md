@@ -133,7 +133,8 @@ method and plan stay in memory and email is discarded. Each database asks for
 each vendor whether to share the schema only
 or also query results. The agent reads through a separate `query_only`
 connection and cannot write; it proposes SQL that opens in an editor tile for you
-to run. Settings → Assistant → Privacy sets, per agent, whether its CLI may send
+to run. The chat header chooses the vendor and model; switching starts a new
+conversation. Settings → Assistant → Privacy sets, per agent, whether its CLI may send
 telemetry, keep the conversation in its history or learn the database's file
 name; all are off by default except the file name. Ctrl B and Ctrl I hide or
 show the sidebar and the assistant independently.

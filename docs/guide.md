@@ -270,7 +270,10 @@ installed and signed in to, so it runs on your existing plan. Claude Code is the
 default; Settings → Assistant can switch to Codex (through `codex app-server`,
 with its shell and web search off and its read-only sandbox on), Antigravity,
 Copilot CLI or any other Agent Client Protocol command. Each agent keeps its own
-model and privacy choices. Settings scans PATH and common installation folders,
+model and privacy choices. The chat header has vendor and model pickers; changing
+either starts a new conversation. Codex and ACP model lists come from status
+checks; Claude offers aliases, and Settings accepts a custom model name.
+Settings scans PATH and common installation folders,
 shows sign-in status and version, and offers an executable path override.
 Status checks never send database metadata; an ACP check may leave an empty
 session in the CLI history. Use **Sign in** to start the vendor’s own flow:
