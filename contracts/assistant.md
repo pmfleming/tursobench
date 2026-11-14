@@ -104,7 +104,10 @@ them without asking for approval.
 
 Queries pass two independent guards. A parser gate accepts exactly one `SELECT`
 (including `WITH … SELECT`), `EXPLAIN SELECT` or `EXPLAIN QUERY PLAN SELECT`,
-and applies the coordinated-session rules. The worker then runs it on a dedicated
+and applies the coordinated-session rules. Referenced view definitions are checked
+transitively for location access in the same read snapshot as the query. This
+check is conservative: ambiguous references, including matching string literals,
+can be refused. The worker then runs it on a dedicated
 connection opened with `PRAGMA query_only = 1`, which Turso enforces. That
 connection is separate from the editor and browse connections. It sees committed
 data, never joins the editor's manual transaction, and uses the configured

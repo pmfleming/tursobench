@@ -100,19 +100,11 @@ pub(crate) fn validate(text: &str) -> Result<(), Failure> {
     use turso_parser::ast::{Cmd, Stmt};
     sql::validate_single(text)?;
     sql::validate_coordinated(text)?;
-    // `pragma_database_list` returns the database's full path, which names the
-    // user's folders; the assistant only ever learns the file name. Quoting
-    // cannot hide the name, so a plain search over the text is enough.
-    let plain: String = text
-        .chars()
-        .filter(|c| !matches!(c, '"' | '`' | '[' | ']'))
-        .collect::<String>()
-        .to_ascii_lowercase();
-    if plain.contains("pragma_database_list") {
-        return Err(Failure {
-            kind: tursobench_core::ErrorKind::ReadOnly,
-            message: "The assistant cannot read the database's location".into(),
-        });
+    if identifiers(text)?
+        .iter()
+        .any(|name| name == "pragma_database_list")
+    {
+        return Err(location_error());
     }
     let command = turso_parser::parser::Parser::new(text.as_bytes())
         .next_cmd()
@@ -132,6 +124,87 @@ pub(crate) fn validate(text: &str) -> Result<(), Failure> {
                 .into(),
         }),
     }
+}
+
+fn location_error() -> Failure {
+    Failure {
+        kind: tursobench_core::ErrorKind::ReadOnly,
+        message: "The assistant cannot read the database's location".into(),
+    }
+}
+
+// Include string tokens: SQLite also accepts single-quoted relation names.
+// This deliberately errs on the side of refusing ambiguous references.
+fn identifiers(text: &str) -> Result<Vec<String>, Failure> {
+    use turso_parser::token::TokenType;
+    let mut names = Vec::new();
+    let mut bracket = None::<String>;
+    for token in turso_parser::lexer::Lexer::new(text.as_bytes()) {
+        let token = token.map_err(|e| Failure::input(e.to_string()))?;
+        let name = std::str::from_utf8(token.value).map_err(|e| Failure::input(e.to_string()))?;
+        if let Some(content) = &mut bracket {
+            if token.token_type == TokenType::TK_RBRACKET {
+                names.push(content.to_ascii_lowercase());
+                bracket = None;
+            } else {
+                content.push_str(name);
+            }
+        } else if token.token_type == TokenType::TK_LBRACKET {
+            bracket = Some(String::new());
+        } else {
+            names.push(
+                turso_parser::ast::Name::from_string(name)
+                    .as_str()
+                    .to_ascii_lowercase(),
+            );
+        }
+    }
+    if bracket.is_some() {
+        return Err(Failure::input("Unclosed bracket identifier"));
+    }
+    Ok(names)
+}
+
+/// Check transitive view dependencies in the same read snapshot as execution.
+/// Inspecting only the submitted SQL misses names hidden behind views.
+async fn validate_views(c: &Connection, text: &str) -> Result<(), Failure> {
+    let mut rows = c
+        .query(
+            "SELECT name, sql FROM sqlite_schema WHERE type = 'view'",
+            (),
+        )
+        .await
+        .map_err(failure)?;
+    let mut views = std::collections::HashMap::new();
+    let mut bytes = 0usize;
+    while let Some(row) = rows.next().await.map_err(failure)? {
+        let turso::Value::Text(name) = row.get_value(0).map_err(failure)? else {
+            return Err(Failure::input("Unexpected view name"));
+        };
+        let turso::Value::Text(ddl) = row.get_value(1).map_err(failure)? else {
+            return Err(Failure::input("Unexpected view definition"));
+        };
+        bytes = bytes.saturating_add(name.len()).saturating_add(ddl.len());
+        if bytes > crate::COMMAND_BYTES {
+            return Err(Failure::input(
+                "View definitions exceed the assistant's schema budget",
+            ));
+        }
+        views.insert(name.to_ascii_lowercase(), ddl);
+    }
+    let mut pending = identifiers(text)?;
+    let mut seen = std::collections::HashSet::new();
+    while let Some(name) = pending.pop() {
+        if name == "pragma_database_list" {
+            return Err(location_error());
+        }
+        if seen.insert(name.clone())
+            && let Some(ddl) = views.get(&name)
+        {
+            pending.extend(identifiers(ddl)?);
+        }
+    }
+    Ok(())
 }
 
 pub(crate) async fn connect(
@@ -268,6 +341,23 @@ async fn describe(c: &Connection, name: &str) -> Reply {
 }
 
 async fn query(
+    c: &Connection,
+    text: &str,
+    request: u64,
+    discard: &crate::DeliveryControl,
+) -> Reply {
+    c.execute("BEGIN", ()).await.map_err(failure)?;
+    let result = async {
+        validate_views(c, text).await?;
+        query_in_snapshot(c, text, request, discard).await
+    }
+    .await;
+    let rollback = c.execute("ROLLBACK", ()).await.map_err(failure);
+    rollback?;
+    result
+}
+
+async fn query_in_snapshot(
     c: &Connection,
     text: &str,
     request: u64,

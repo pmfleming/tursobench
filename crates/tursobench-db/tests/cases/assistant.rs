@@ -168,3 +168,41 @@ fn results_are_bounded_and_calls_fail_cleanly_after_close() {
     client.close();
     assert!(tools.call(Tool::ListTables, WAIT).is_err());
 }
+
+#[test]
+fn location_queries_hidden_in_views_are_refused() {
+    let (_dir, path) = fixture();
+    let mut client = Client::open(&path, Access::ReadWrite);
+    client.sql("CREATE VIEW diagnostic AS SELECT file FROM pragma_database_list AS p");
+    client.sql("CREATE VIEW nested AS SELECT * FROM diagnostic");
+    client.sql(r#"CREATE VIEW "escaped""name" AS SELECT * FROM nested"#);
+    client.sql("CREATE VIEW [diagnostic view] AS SELECT * FROM nested");
+    let tools = client.session.assistant();
+    for sql in [
+        r#"SELECT * FROM "escaped""name""#,
+        "SELECT * FROM [diagnostic view]",
+        "SELECT * FROM diagnostic",
+        "SELECT * FROM nested AS n",
+        "SELECT * FROM 'nested'",
+        "EXPLAIN SELECT * FROM nested",
+        "EXPLAIN QUERY PLAN SELECT * FROM nested",
+        "WITH x AS (SELECT * FROM nested) SELECT * FROM x",
+    ] {
+        let error = tools.call(Tool::Query(sql.into()), WAIT).unwrap_err();
+        assert!(error.message.contains("location"), "{sql}: {error:?}");
+    }
+    // Unrelated views still work, and failed checks release their snapshot.
+    assert!(
+        tools
+            .call(Tool::Query("SELECT * FROM named".into()), WAIT)
+            .is_ok()
+    );
+    client.sql("DROP VIEW nested");
+    client.sql("CREATE VIEW nested AS SELECT name FROM pets");
+    assert!(
+        tools
+            .call(Tool::Query("SELECT * FROM nested".into()), WAIT)
+            .is_ok()
+    );
+    client.close();
+}
