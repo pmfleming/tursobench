@@ -268,18 +268,20 @@ SQL editors and dialog text fields retain their normal text paste/undo behavior.
 The assistant chats about the open database using the agent CLI you already
 installed and signed in to, so it runs on your existing plan. Claude Code is the
 default; Settings → Assistant can switch to Codex (through `codex app-server`,
-with its shell and web search off and its read-only sandbox on), Copilot CLI or
-any other Agent Client Protocol command, and can set a model. TursoBench never
-handles your sign-in: if the agent reports it is signed out, run its CLI (for
-example `claude`) in a terminal.
+with its shell and web search off and its read-only sandbox on), Antigravity,
+Copilot CLI or any other Agent Client Protocol command. Each agent keeps its own
+model and privacy choices. Settings scans PATH and common installation folders,
+shows sign-in status and version, and offers an executable path override.
+Status checks never send database metadata; an ACP check may leave an empty
+session in the CLI history. Use Scan again after signing in from a terminal.
 
-The assistant panel sits on the left beside the sidebar. Show or hide each one
-with the two icons at the left of the status bar, Ctrl B (sidebar) and Ctrl I
-(assistant), or the command palette. Either, both or neither can be visible, and
+The assistant panel sits on the right. Show or hide it with the icon on the right
+of the status bar. The sidebar toggle stays on the left. Ctrl B (sidebar) and Ctrl I
+(assistant), or the command palette, toggle them independently. Either, both or neither can be visible, and
 the choice persists. Ctrl P search and close confirmations bring a hidden sidebar
 back.
 
-Each database asks once what to share: **Schema only**, or **Schema and query
+Each database asks for each agent what to share: **Schema only**, or **Schema and query
 results**. Change it with the icon in the panel header, or forget it in Settings.
 The agent can list tables, describe one, run one read-only SELECT of at most
 200 rows when results are shared, and propose SQL. Proposed SQL, and any SQL block
@@ -289,11 +291,11 @@ Enter sends, Shift Enter adds a line and Stop interrupts the turn.
 Settings → Assistant → Privacy holds each agent's own privacy choices, all
 private by default: telemetry and error reports blocked, nothing saved to the
 CLI's history, and whether the agent may learn the database's file name (never
-its folder). It also lists what always holds, such as your sign-in and account
-details never reaching TursoBench. Copilot CLI and other ACP agents keep their
+its folder). Credentials stay with the CLI. Status, sign-in method and plan
+stay in memory and email is discarded. Copilot CLI and other ACP agents keep their
 own telemetry and history settings. The consent card links there.
 
-![Assistant beside the sidebar with a proposed UPDATE in the SQL tile.](assets/ui/assistant/assistant-conversation.png)
+![Assistant on the right with a proposed UPDATE in the SQL tile.](assets/ui/assistant/assistant-conversation.png)
 
 See the [assistant contract](../contracts/assistant.md) for what is sent, the
 read-only guards and process lifecycle.

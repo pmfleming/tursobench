@@ -309,10 +309,7 @@ fn privacy_is_chosen_per_provider_and_reaches_the_agent() {
     frame_at(&mut app, &ctx, SIZE, vec![]);
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
     assert!(labelled(&output, "PRIVACY · CLAUDE CODE"));
-    assert!(labelled(
-        &output,
-        "Sign-in and account details stay with the CLI"
-    ));
+    assert!(labelled(&output, "Credentials stay with the CLI"));
     click(
         &mut app,
         &ctx,
@@ -499,6 +496,55 @@ fn switching_vendor_requires_its_own_consent_and_keeps_its_model() {
             .assistant
             .sharing_for(&app.database.tools.database_scope),
         Some(Sharing::Rows)
+    );
+    app.close();
+}
+
+#[test]
+fn agent_scan_reports_status_and_missing_executables_without_starting_a_conversation() {
+    use tursobench_assistant::{
+        account::SignIn,
+        vendor::{Provider, VENDORS},
+    };
+    let (dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
+    runtime_dir(&dir);
+    for vendor in VENDORS {
+        app.preferences
+            .assistant
+            .executables
+            .insert(vendor.id, dir.path().join("not-installed"));
+    }
+    let script = dir.path().join("my claude");
+    std::fs::write(&script, "#!/usr/bin/env bash\nif [[ $1 == --version ]]; then echo 'Claude test'; else echo '{\"loggedIn\":true,\"authMethod\":\"claude.ai\",\"email\":\"private@example.com\"}'; fi\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    app.preferences
+        .assistant
+        .executables
+        .insert(Provider::Claude, script);
+    app.scan_assistant(&ctx);
+    wait_until(&mut app, &ctx, |a| {
+        a.accounts.rows.values().all(|row| row.job.is_none())
+    });
+    let status = app.accounts.rows[&Provider::Claude]
+        .status
+        .as_ref()
+        .unwrap();
+    assert_eq!(status.state, SignIn::SignedIn);
+    assert_eq!(status.version.as_deref(), Some("Claude test"));
+    assert_eq!(
+        app.accounts.rows[&Provider::Codex]
+            .status
+            .as_ref()
+            .unwrap()
+            .state,
+        SignIn::Missing
+    );
+    assert!(app.database.assistant.host().is_none());
+    assert!(app.preferences.assistant.grants.is_empty());
+    assert!(
+        !serde_json::to_string(&app.preferences)
+            .unwrap()
+            .contains("private@example.com")
     );
     app.close();
 }

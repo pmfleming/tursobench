@@ -24,6 +24,7 @@ struct State {
     /// The standing instructions travel with the first prompt.
     instructed: bool,
     failed: bool,
+    mode_pending: bool,
 }
 
 pub(crate) fn drive(spec: &Spec, input: &Receiver<Input>, link: &mut Link) {
@@ -93,7 +94,7 @@ fn flush(spec: &Spec, state: &mut State, link: &mut Link) {
     let Some(session) = state.session.clone() else {
         return;
     };
-    if state.prompt.is_some() {
+    if state.prompt.is_some() || state.mode_pending {
         return;
     }
     let Some(mut text) = state.queued.pop_front() else {
@@ -193,10 +194,26 @@ fn response(spec: &Spec, state: &mut State, link: &mut Link, id: Option<u64>, me
             };
             state.session = Some(session.to_owned());
             // Never inherit Auto when the agent offers the normal approval mode.
-            if result["modes"]["availableModes"]
+            let mode_option = result["configOptions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|o| {
+                    o["category"] == "mode"
+                        && o["options"]
+                            .as_array()
+                            .is_some_and(|options| options.iter().any(|v| v["value"] == "default"))
+                });
+            if let Some(config) = mode_option.and_then(|o| o["id"].as_str()) {
+                state.mode_pending = true;
+                if link.write(&json!({"jsonrpc":"2.0","id":SET_MODE,"method":"session/set_config_option","params":{"sessionId":session,"configId":config,"value":"default"}})).is_err() {
+                    return fail(state, link, "Could not select the agent's default permission mode".into());
+                }
+            } else if result["modes"]["availableModes"]
                 .as_array()
                 .is_some_and(|modes| modes.iter().any(|m| m["id"] == "default"))
             {
+                state.mode_pending = true;
                 let _ = link.write(&json!({"jsonrpc": "2.0", "id": SET_MODE, "method": "session/set_mode", "params": {"sessionId": session, "modeId": "default"}}));
             }
             let model = choose_model(spec, state, link, result);
@@ -210,6 +227,7 @@ fn response(spec: &Spec, state: &mut State, link: &mut Link, id: Option<u64>, me
             }
         }
         Some(SET_MODE) => {
+            state.mode_pending = false;
             if let Some(error) = error {
                 return fail(
                     state,

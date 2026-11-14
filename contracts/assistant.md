@@ -6,15 +6,17 @@ it database tools. It has no network, TLS or model-API code of its own.
 
 ## Credentials and vendors
 
-TursoBench never reads, stores, forwards or renders a sign-in. It does not open
-vendor credential files, offer a login, call ACP `authenticate`, or bundle or
-modify a vendor binary. When an agent reports that it is signed out, the panel
-names the CLI's own sign-in command for the user to run in a terminal.
+TursoBench never opens credential files or supplies, stores or refreshes tokens.
+Settings can discover local CLIs and ask for sign-in state, method and plan;
+email is discarded and these fields stay in memory. Checks use separate bounded
+processes with no database tools or prompts. ACP checks create an empty session,
+close it when supported and may leave it in the vendor's history.
 
 | Agent | Command | Protocol |
 | --- | --- | --- |
 | Claude Code (default) | `claude -p` with stream-json input and output | Claude Code headless |
 | Copilot CLI | `copilot --acp` | Agent Client Protocol v1 |
+| Antigravity | `agy acp` | Agent Client Protocol v1 |
 | Codex | `codex app-server` | Codex app-server JSON-RPC |
 | Other | Any command line the user enters | Agent Client Protocol v1 |
 
@@ -34,8 +36,8 @@ server replaces every MCP server in the user's Codex configuration. The relay
 and its token travel in `thread/start`, not on the command line. Every command,
 file-change, permission and elicitation request is declined with a visible
 notice. Other requests, including `account/chatgptAuthTokens/refresh`, are
-answered with "method not found". TursoBench never calls Codex's login, logout,
-account or token methods. Codex still offers its `apply_patch` tool and MCP
+answered with "method not found". The conversation driver never calls account or token methods; Settings uses a
+separate account process. Codex still offers its `apply_patch` tool and MCP
 resource listing; patches cannot write under the read-only sandbox and their
 approval requests are declined.
 
@@ -47,12 +49,14 @@ local files without asking. The consent card says so.
 
 ## Consent and sharing
 
-Nothing is sent until the user chooses, per database (by absolute path), either:
+Nothing is sent until the user chooses, per database (by absolute path) and provider, either:
 
 - **Schema only**: object names, columns, declared types, keys, indexes and DDL.
 - **Schema and query results**: also read-only queries and their results.
 
-The choice persists in application preferences, at most 50 databases. The
+The choice persists in application preferences, at most 50 databases. Legacy choices apply only to the previously selected
+provider. Switching provider ends all workspace conversations; changing a custom
+command or executable also forgets that custom agent's consent. The
 header toggles it and the change applies to a running agent at once; the next
 prompt tells the agent. Settings → Assistant lists every choice and can forget
 one, which also ends that database's conversation.
@@ -76,9 +80,9 @@ session transcript.
 
 These hold for every provider and are listed in the section as fixed rows:
 
-- Sign-in and account details (email, plan, tokens) stay with the CLI. TursoBench
-  opens no credential files and calls no login, account, token or `authenticate`
-  method.
+- Credentials stay with the CLI. Only sign-in status, method and plan are
+  retained in memory; email is discarded. No credential files are opened and
+  token refresh requests are refused.
 - The database's folder is never sent. Queries that name
   `pragma_database_list`, which returns the full path, are refused.
 - Nothing is sent until the database's sharing is chosen.

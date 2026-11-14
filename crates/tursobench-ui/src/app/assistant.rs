@@ -161,7 +161,7 @@ impl App {
         self.reset_assistant_conversations();
         self.store.save(&self.preferences);
     }
-    fn reset_assistant_conversations(&mut self) {
+    pub(super) fn reset_assistant_conversations(&mut self) {
         for database in std::iter::once(&mut self.database).chain(self.parked.values_mut()) {
             database.assistant.reset();
         }
@@ -860,9 +860,9 @@ pub(super) struct Profile {
     pub name: String,
     /// Who receives what the agent reads.
     pub vendor: &'static str,
-    program: PathBuf,
-    args: Vec<String>,
-    env: Vec<(String, String)>,
+    pub(super) program: PathBuf,
+    pub(super) args: Vec<String>,
+    pub(super) env: Vec<(String, String)>,
     protocol: Protocol,
     /// Shown when the program is not installed.
     missing: String,
@@ -917,16 +917,7 @@ impl App {
         use crate::storage::Provider;
         ui.spacing_mut().item_spacing.y = 4.0;
         super::panels::section(ui, "Agent", |ui| {
-            let mut selected = self.preferences.assistant.provider;
-            for vendor in tursobench_assistant::vendor::VENDORS {
-                ui.horizontal(|ui| {
-                    ui.radio_value(&mut selected, vendor.id, vendor.name);
-                    ui.weak(vendor.company);
-                });
-            }
-            if selected != self.preferences.assistant.provider {
-                self.select_assistant_provider(selected);
-            }
+            self.assistant_agents_ui(ui);
             if self.preferences.assistant.provider == Provider::Custom {
                 let before = self.preferences.assistant.custom_command.clone();
                 let response = ui.add(
@@ -940,6 +931,7 @@ impl App {
                 if before != self.preferences.assistant.custom_command {
                     self.preferences.assistant.clear_custom_grants();
                     self.reset_assistant_conversations();
+                    self.accounts.rows.remove(&Provider::Custom);
                 }
                 self.setting_response(response);
             }
@@ -1048,8 +1040,8 @@ fn privacy_copy(provider: crate::storage::Provider) -> PrivacyCopy {
                      writes nothing to its session history.",
                 ),
             ]),
-            sign_in: "TursoBench never opens Claude Code's credential files and never \
-                      reads, stores or sends your email, plan or tokens.",
+            sign_in: "Settings asks the CLI for sign-in state, method and plan. Email is discarded, \
+                      account details stay in memory, and credential files and tokens stay with the CLI.",
             tools: (
                 "No shell, file or web access",
                 "Claude Code's built-in tools are removed; only TursoBench's read-only \
@@ -1071,8 +1063,8 @@ fn privacy_copy(provider: crate::storage::Provider) -> PrivacyCopy {
                      so Codex writes nothing to its history.",
                 ),
             ]),
-            sign_in: "TursoBench never calls Codex's account, login or token methods, so \
-                      your email, plan and tokens never reach it.",
+            sign_in: "Settings asks Codex for sign-in state, method and plan with refreshToken=false. \
+                      Email is discarded and nothing is persisted. Tokens stay with Codex.",
             tools: (
                 "No shell or web search · read-only sandbox",
                 "Codex's shell, web search, apps, plugins and browser are switched off. \
@@ -1082,8 +1074,8 @@ fn privacy_copy(provider: crate::storage::Provider) -> PrivacyCopy {
         },
         Provider::Antigravity | Provider::Copilot | Provider::Custom => PrivacyCopy {
             switches: None,
-            sign_in: "TursoBench never calls the agent's authenticate method and never \
-                      reads, stores or sends its credentials or account details.",
+            sign_in: "Settings checks an empty ACP session without database tools. \
+                      Credentials remain with the CLI; no account fields are persisted.",
             tools: (
                 "Keeps its own tools",
                 "TursoBench declines the agent's requests to run commands or edit files, \
@@ -1146,7 +1138,7 @@ impl App {
             guarantee(
                 ui,
                 Icon::Lock,
-                "Sign-in and account details stay with the CLI",
+                "Credentials stay with the CLI",
                 copy.sign_in,
                 false,
             );
@@ -1162,7 +1154,7 @@ impl App {
                 ui,
                 Icon::Lock,
                 "Nothing is sent until a database's sharing is chosen",
-                "Each database asks once: schema only, or schema and query results.",
+                "Each database asks for each agent: schema only, or schema and query results.",
                 false,
             );
             let (label, tip, warn) = copy.tools;

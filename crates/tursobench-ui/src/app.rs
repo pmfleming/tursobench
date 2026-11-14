@@ -1,5 +1,6 @@
 use tursobench_core::{Access, Browse, ConnectionSettings, Ticket, TransactionState};
 mod assistant;
+mod assistant_accounts;
 mod checks;
 mod columns;
 mod commands;
@@ -52,6 +53,7 @@ enum View {
 }
 use sessions::DatabaseWorkspace;
 pub struct App {
+    accounts: assistant_accounts::State,
     settings: settings::State,
     comparison: schema_compare::State,
     database: DatabaseWorkspace,
@@ -108,6 +110,7 @@ impl App {
         let smoke = args.get(1).is_some_and(|a| a == "--smoke-test");
         let recovery_wake = ctx.clone();
         let mut app = Self {
+            accounts: Default::default(),
             settings: Default::default(),
             comparison: Default::default(),
             database: DatabaseWorkspace::new(ctx, 1),
@@ -387,6 +390,7 @@ impl App {
         }
     }
     fn poll_active(&mut self, ctx: &egui::Context) {
+        self.poll_assistant_accounts(ctx);
         self.poll_storage(ctx);
         self.poll_assistant();
         self.poll_recovery(ctx);

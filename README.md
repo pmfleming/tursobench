@@ -124,10 +124,12 @@ at `~/.config/tursobench/preferences.db` (or under `XDG_CONFIG_HOME`).
 
 ## Assistant
 
-Ask about the open database in a chat panel beside the sidebar. It runs the
-agent CLI you already use and are signed in to: Claude Code by default, or Copilot
-CLI, Codex or another Agent Client Protocol agent. TursoBench never handles your
-sign-in or an API key. Each database asks once whether to share the schema only
+Ask about the open database in a collapsible chat panel on the right. It runs
+the agent CLI you already use: Claude Code by default, Codex, Antigravity, Copilot
+CLI or another Agent Client Protocol agent. Settings → Assistant scans local
+installations and checks sign-in status. Credentials remain with the CLI; status,
+method and plan stay in memory and email is discarded. Each database asks for
+each vendor whether to share the schema only
 or also query results. The agent reads through a separate `query_only`
 connection and cannot write; it proposes SQL that opens in an editor tile for you
 to run. Settings → Assistant → Privacy sets, per agent, whether its CLI may send
@@ -135,7 +137,7 @@ telemetry, keep the conversation in its history or learn the database's file
 name; all are off by default except the file name. Ctrl B and Ctrl I hide or
 show the sidebar and the assistant independently.
 
-![Assistant beside the sidebar with a proposed UPDATE in the SQL tile.](docs/assets/ui/assistant/assistant-conversation.png)
+![Assistant on the right with a proposed UPDATE in the SQL tile.](docs/assets/ui/assistant/assistant-conversation.png)
 
 [Assistant guide](docs/guide.md#assistant) · [Assistant contract](contracts/assistant.md)
 
