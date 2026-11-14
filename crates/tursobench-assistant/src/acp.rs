@@ -329,19 +329,32 @@ fn request(link: &mut Link, method: &str, id: Json, params: &Json) {
 
 /// Only calls to TursoBench's own MCP tools are approved.
 fn is_ours(call: &Json) -> bool {
-    let server = crate::relay::SERVER_NAME;
-    let text = [
-        &call["title"],
-        &call["toolName"],
-        &call["name"],
-        &call["rawInput"]["server"],
-    ]
-    .iter()
-    .filter_map(|v| v.as_str())
-    .collect::<Vec<_>>()
-    .join(" ")
-    .to_lowercase();
-    text.contains(server)
+    const TOOLS: &[&str] = &["list_tables", "describe_table", "run_query", "propose_sql"];
+    let qualified = |name: &str| {
+        [
+            "mcp__tursobench__",
+            "tursobench/",
+            "tursobench.",
+            "tursobench__",
+        ]
+        .iter()
+        .any(|prefix| {
+            name.strip_prefix(prefix)
+                .is_some_and(|tool| TOOLS.contains(&tool))
+        })
+    };
+    // A title is display text, often containing shell arguments or file paths.
+    // Accept only a complete qualified tool name (and the known "Tool: " label).
+    let title = call["title"].as_str().unwrap_or_default();
+    let identity = call["toolName"].as_str().or_else(|| call["name"].as_str());
+    match identity {
+        Some(name) => {
+            qualified(name)
+                || (call["rawInput"]["server"] == crate::relay::SERVER_NAME
+                    && TOOLS.contains(&name))
+        }
+        None => qualified(title.strip_prefix("Tool: ").unwrap_or(title)),
+    }
 }
 
 fn session_update(update: &Json) -> Vec<Update> {
@@ -458,6 +471,24 @@ mod tests {
             &json!({"title": "Tool: tursobench.describe_table"})
         ));
         assert!(!is_ours(&json!({"title": "Run shell command: rm -rf ~"})));
+        for title in [
+            "Run shell: touch /tmp/tursobench-probe",
+            "Edit file /tmp/tursobench/config",
+            "tursobench/run_query; rm -rf ~",
+            "other_tursobench/run_query",
+            "tursobench/unknown",
+        ] {
+            assert!(!is_ours(&json!({"title": title})), "{title}");
+        }
+        assert!(!is_ours(
+            &json!({"title": "tursobench/run_query", "toolName": "shell"})
+        ));
+        assert!(!is_ours(
+            &json!({"title": "shell", "rawInput": {"server": "tursobench"}})
+        ));
+        assert!(is_ours(
+            &json!({"toolName": "run_query", "rawInput": {"server": "tursobench"}})
+        ));
         assert_eq!(
             short_title("Tool: tursobench.describe_table"),
             "tursobench.describe_table"

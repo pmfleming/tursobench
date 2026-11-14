@@ -22,7 +22,7 @@ while read -r line; do
     *'"method":"session/prompt"'*)
       case "$line" in *tursobench-instructions*'Be helpful'*) ;; *) echo "no instructions" >&2; exit 10;; esac
       echo '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hi"}}}}'
-      echo '{"jsonrpc":"2.0","id":900,"method":"session/request_permission","params":{"sessionId":"s1","toolCall":{"toolCallId":"x","title":"Run shell: ls"},"options":[{"optionId":"yes","name":"Allow","kind":"allow_once"},{"optionId":"no","name":"Reject","kind":"reject_once"}]}}'
+      echo '{"jsonrpc":"2.0","id":900,"method":"session/request_permission","params":{"sessionId":"s1","toolCall":{"toolCallId":"x","title":"Run shell: touch /tmp/tursobench-probe"},"options":[{"optionId":"yes","name":"Allow","kind":"allow_once"},{"optionId":"no","name":"Reject","kind":"reject_once"}]}}'
       read -r answer
       case "$answer" in *'"optionId":"no"'*) ;; *) echo "permission not declined: $answer" >&2; exit 7;; esac
       echo '{"jsonrpc":"2.0","id":901,"method":"session/request_permission","params":{"sessionId":"s1","toolCall":{"toolCallId":"y","title":"tursobench/list_tables"},"options":[{"optionId":"yes","name":"Allow","kind":"allow_once"},{"optionId":"no","name":"Reject","kind":"reject_once"}]}}'
@@ -77,7 +77,9 @@ fn a_scripted_acp_agent_gets_tools_but_no_shell_files_or_other_permissions() {
         }
     );
     assert_eq!(next(&agent), Update::Text("Hi".into()));
-    assert!(matches!(next(&agent), Update::Notice(text) if text.contains("Run shell: ls")));
+    assert!(
+        matches!(next(&agent), Update::Notice(text) if text.contains("Run shell: touch /tmp/tursobench-probe"))
+    );
     assert!(matches!(next(&agent), Update::ToolCall { name, .. } if name == "list_tables"));
     assert!(matches!(next(&agent), Update::ToolResult { ok: true, text, .. } if text == "[]"));
     assert_eq!(next(&agent), Update::TurnEnded { error: None });
