@@ -1,4 +1,4 @@
-//! The assistant panel sits beside the sidebar; each can be hidden on its own.
+//! The assistant panel sits on the right; it hides independently of navigation.
 //! It drives the user's own signed-in agent CLI (Claude Code by default, or an
 //! Agent Client Protocol agent) and offers it read-only tools for the database
 //! in this workspace. TursoBench never handles credentials.

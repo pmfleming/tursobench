@@ -32,6 +32,9 @@ fn sidebar_and_assistant_hide_independently_and_the_workspace_reclaims_their_wid
         if sidebar {
             assert!(app.database.ui.sidebar_rect.right() <= workspace.left());
         }
+        if assistant {
+            assert!(workspace.right() <= app.database.ui.assistant_rect.left());
+        }
         widths.push(workspace.width());
     }
     // Shown panels take width from the workspace; hiding both gives it all back.

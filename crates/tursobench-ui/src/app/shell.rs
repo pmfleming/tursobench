@@ -59,6 +59,8 @@ pub(super) struct UiState {
     #[cfg(test)]
     pub sidebar_rect: egui::Rect,
     #[cfg(test)]
+    pub assistant_rect: egui::Rect,
+    #[cfg(test)]
     pub grid_rect: egui::Rect,
     #[cfg(test)]
     pub visible_rows: usize,
@@ -87,6 +89,8 @@ impl UiState {
             transaction_rects: vec![],
             #[cfg(test)]
             sidebar_rect: egui::Rect::NOTHING,
+            #[cfg(test)]
+            assistant_rect: egui::Rect::NOTHING,
             #[cfg(test)]
             grid_rect: egui::Rect::NOTHING,
             #[cfg(test)]
@@ -140,6 +144,7 @@ impl App {
             self.database.ui.transaction_rects.clear();
             self.database.ui.ribbon_actions.clear();
             self.database.ui.sidebar_rect = egui::Rect::NOTHING;
+            self.database.ui.assistant_rect = egui::Rect::NOTHING;
             self.database.ui.visible_rows = 0;
         }
         let sidebar_width = if ui.available_width() < 900.0 {
@@ -170,14 +175,20 @@ impl App {
             #[cfg(not(test))]
             let _ = panel;
         }
-        // The assistant sits beside the sidebar; either, both or neither are shown.
+        // Navigation stays on the left; the assistant reserves the right edge.
         if self.preferences.panels.assistant {
             let max = (ui.available_width() - 360.0).clamp(260.0, 720.0);
-            egui::Panel::left("assistant-panel")
+            let panel = egui::Panel::right("assistant-panel")
                 .resizable(true)
                 .default_size(340.0_f32.min(max))
                 .size_range(260.0..=max)
                 .show(ui, |ui| self.assistant_ui(ui));
+            #[cfg(test)]
+            {
+                self.database.ui.assistant_rect = panel.response.rect;
+            }
+            #[cfg(not(test))]
+            let _ = panel;
         }
         self.status_bar(ui);
         egui::CentralPanel::default().show(ui, |ui| self.workspace_ui(ui));
@@ -322,6 +333,19 @@ impl App {
                         }
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if icons::control(
+                            ui,
+                            Icon::Assistant,
+                            "Assistant",
+                            "Ctrl I",
+                            self.preferences.panels.assistant,
+                            false,
+                        )
+                        .clicked()
+                        {
+                            self.toggle_assistant();
+                        }
+                        ui.separator();
                         self.status_details(ui)
                     });
                 });
@@ -343,18 +367,6 @@ impl App {
             .clicked()
             {
                 self.toggle_sidebar();
-            }
-            if icons::control(
-                ui,
-                Icon::Assistant,
-                "Assistant",
-                "Ctrl I",
-                panels.assistant,
-                false,
-            )
-            .clicked()
-            {
-                self.toggle_assistant();
             }
         });
         ui.separator();
