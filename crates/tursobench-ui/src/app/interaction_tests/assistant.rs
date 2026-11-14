@@ -608,3 +608,42 @@ fn chat_header_pickers_change_model_and_vendor_with_fresh_consent() {
     assert_eq!(app.preferences.assistant.selected_model(), "sonnet");
     app.close();
 }
+
+#[test]
+fn account_changes_stop_chat_and_block_new_turns_until_the_helper_finishes() {
+    use crate::storage::Provider;
+    use tursobench_assistant::account::Operation;
+    let (dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
+    runtime_dir(&dir);
+    scripted(&mut app, &dir);
+    app.set_assistant_sharing(Sharing::Schema);
+    app.database.assistant.draft = "Hello".into();
+    app.send_assistant(&ctx);
+    wait_until(&mut app, &ctx, |a| !a.database.assistant.busy);
+    let helper = dir.path().join("waiting-codex");
+    std::fs::write(
+        &helper,
+        "#!/usr/bin/env bash\nwhile read -r line; do :; done\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    app.preferences
+        .assistant
+        .executables
+        .insert(Provider::Codex, helper);
+    app.agent_account_job(&ctx, Provider::Codex, Operation::Login { method: None });
+    assert!(app.assistant_account_pending());
+    assert!(app.database.assistant.host().is_none());
+    app.database.assistant.draft = "Wait for account change".into();
+    app.send_assistant(&ctx);
+    assert!(app.database.assistant.host().is_none());
+    assert!(app.database.assistant.entries.is_empty());
+    app.accounts.rows[&Provider::Codex]
+        .job
+        .as_ref()
+        .unwrap()
+        .cancel();
+    wait_until(&mut app, &ctx, |a| !a.assistant_account_pending());
+    assert_eq!(app.database.assistant.draft, "Wait for account change");
+    app.close();
+}

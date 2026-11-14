@@ -329,7 +329,7 @@ impl App {
 
     pub(super) fn send_assistant(&mut self, ctx: &egui::Context) {
         let text = self.database.assistant.draft.trim().to_owned();
-        if text.is_empty() || self.database.assistant.busy {
+        if text.is_empty() || self.database.assistant.busy || self.assistant_account_pending() {
             return;
         }
         let Some(sharing) = self.assistant_sharing() else {
@@ -717,6 +717,7 @@ impl App {
         let send = ui.memory(|m| m.has_focus(id))
             && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
         let busy = self.database.assistant.busy;
+        let account_pending = self.assistant_account_pending();
         let edit = egui::TextEdit::multiline(&mut self.database.assistant.draft)
             .id(id)
             .desired_rows(2)
@@ -747,7 +748,7 @@ impl App {
                 } else {
                     let empty = self.database.assistant.draft.trim().is_empty();
                     if ui
-                        .add_enabled_ui(!empty, |ui| {
+                        .add_enabled_ui(!empty && !account_pending, |ui| {
                             icons::control(ui, Icon::Send, "Send", "Enter", false, false)
                         })
                         .inner
@@ -758,6 +759,9 @@ impl App {
                 }
             });
         });
+        if account_pending {
+            ui.small("Finish or cancel the account change in Settings to send a message.");
+        }
         if send && !busy {
             self.send_assistant(ui.ctx());
         }
@@ -770,7 +774,9 @@ fn explain(error: &str, sign_in: Option<&str>) -> String {
     let asks = ["login", "log in", "sign in", "authenticat", "unauthori"];
     if asks.iter().any(|w| lower.contains(w)) && !lower.contains("then try again") {
         let command = sign_in.unwrap_or("the agent's CLI");
-        format!("{error}\nSign in by running `{command}` in a terminal, then send again.")
+        format!(
+            "{error}\nSign in in Settings → Assistant, or run `{command}` in a terminal, then send again."
+        )
     } else if error.trim().is_empty() {
         "The agent gave no reason.".into()
     } else {
@@ -1331,7 +1337,7 @@ impl App {
             guarantee(
                 ui,
                 Icon::Lock,
-                "Nothing is sent until a database's sharing is chosen",
+                "No database content is sent until sharing is chosen",
                 "Each database asks for each agent: schema only, or schema and query results.",
                 false,
             );

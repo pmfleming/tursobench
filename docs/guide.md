@@ -302,7 +302,8 @@ private by default: telemetry and error reports blocked, nothing saved to the
 CLI's history, and whether the agent may learn the database's file name (never
 its folder). Credentials stay with the CLI. Status, sign-in method and plan
 stay in memory and email is discarded. Copilot CLI and other ACP agents keep their
-own telemetry and history settings. The consent card links there.
+own telemetry and history settings. Antigravity offers a telemetry switch, while
+its history follows its own settings. The consent card links there.
 
 ![Assistant on the right with a proposed UPDATE in the SQL tile.](assets/ui/assistant/assistant-conversation.png)
 

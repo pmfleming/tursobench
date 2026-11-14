@@ -17,7 +17,8 @@ OAuth method, or Claude Code’s terminal login. A copyable terminal command is
 available if a browser or terminal cannot be launched. Sign out is available for
 Claude Code and Codex; ACP sign-out stays in the agent’s own CLI. Account jobs
 end all workspace conversations before changing the sign-in, have no database
-tools, and kill their process group on cancellation or timeout.
+tools, and kill their process group on cancellation or timeout. Chat sends stay
+disabled until these jobs finish or are cancelled.
 
 | Agent | Command | Protocol |
 | --- | --- | --- |
@@ -43,26 +44,33 @@ server replaces every MCP server in the user's Codex configuration. The relay
 and its token travel in `thread/start`, not on the command line. Every command,
 file-change, permission and elicitation request is declined with a visible
 notice. Other requests, including `account/chatgptAuthTokens/refresh`, are
-answered with "method not found". The conversation driver never calls account or token methods; Settings uses a
-separate account process. Codex still offers its `apply_patch` tool and MCP
+answered with "method not found". The conversation driver never calls account
+or token methods; Settings uses a separate account process. Codex still offers its `apply_patch` tool and MCP
 resource listing; patches cannot write under the read-only sandbox and their
 approval requests are declined.
 
 The ACP client advertises no file-system or terminal capability and answers such
 requests with "method not found". It approves permission requests only for
 TursoBench's own tools and declines every other request with a visible notice.
+Antigravity explicitly selects its default permission mode before the first
+prompt; model changes are acknowledged before prompts are sent. It starts with
+`--disable-telemetry` when requested; history follows its own settings. Some
+Antigravity versions omit tool output from ACP updates; the UI shows the
+completion state without inventing a result.
+
 An ACP agent keeps whatever built-in tools its vendor gives it; some may read
 local files without asking. The consent card says so.
 
 ## Consent and sharing
 
-Nothing is sent until the user chooses, per database (by absolute path) and provider, either:
+No database content is sent until the user chooses, per database (by absolute
+path) and provider, either:
 
 - **Schema only**: object names, columns, declared types, keys, indexes and DDL.
 - **Schema and query results**: also read-only queries and their results.
 
-The choice persists in application preferences, at most 50 databases. Legacy choices apply only to the previously selected
-provider. Switching provider ends all workspace conversations; changing a custom
+The choice persists in application preferences, at most 50 databases. Legacy
+choices apply only to the previously selected provider. Switching provider ends all workspace conversations; changing a custom
 command or executable also forgets that custom agent's consent. The
 header toggles it and the change applies to a running agent at once; the next
 prompt tells the agent. Settings → Assistant lists every choice and can forget
@@ -92,7 +100,7 @@ These hold for every provider and are listed in the section as fixed rows:
   token refresh requests are refused.
 - The database's folder is never sent. Queries that name
   `pragma_database_list`, which returns the full path, are refused.
-- Nothing is sent until the database's sharing is chosen.
+- No database content is sent until sharing with that provider is chosen.
 - The agent's own tools: none for Claude Code; for Codex no shell or web search
   in a read-only sandbox; ACP agents keep theirs (see below).
 
@@ -159,7 +167,10 @@ file. Reopening the same database keeps the conversation.
   agents keep their own vendor tools.
 - Conversations are not saved; they end with the agent process. Up to 400
   entries are shown.
-- Copilot CLI and other ACP agents are covered by scripted protocol tests only.
-  Claude Code and Codex are also covered by opt-in live tests that use the
-  signed-in CLI: `cargo test -p tursobench-ui --test live_claude -- --ignored`
-  and `--test live_codex`.
+- Copilot CLI and custom ACP agents are covered by scripted protocol tests only.
+  Claude Code, Codex and Antigravity have opt-in live relay tests:
+  `cargo test -p tursobench-ui --test live_claude -- --ignored`,
+  `--test live_codex` and `--test live_antigravity`. Status-only live checks use
+  `cargo test -p tursobench-assistant --test live_accounts -- --ignored`.
+  Browser/terminal sign-in completion is covered by scripted peers; completing
+  a real vendor sign-in still requires a person.

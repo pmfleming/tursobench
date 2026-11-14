@@ -2,19 +2,20 @@
 
 ## Assistant and panel visibility — native Wayland
 
-The `assistant/` captures were taken on 2026-11-13 with synthetic data and
+The `assistant/` captures were taken on 2026-11-15 with synthetic data and
 isolated preferences under headless Weston/Mesa at 1366×768. The conversation is
-a seeded visual fixture: no agent CLI runs during the capture and nothing leaves
+a seeded visual fixture, as are the agent status/version rows: no agent CLI runs
+during the capture and nothing leaves
 the machine.
 
 | Capture | Behaviour |
 | --- | --- |
-| [Consent](assistant/assistant-consent.png) | First use per database: who receives the data and the two sharing choices. |
-| [Conversation](assistant/assistant-conversation.png) | Tool rows, a reply with a SQL block, and proposed SQL opened unrun in the SQL tile. |
+| [Consent](assistant/assistant-consent.png) | First use per database and vendor: who receives the data and the two sharing choices. |
+| [Conversation](assistant/assistant-conversation.png) | Right-side chat, vendor/model pickers, tool rows, a reply with a SQL block, and proposed SQL opened unrun in the SQL tile. |
 | [Without sidebar](assistant/assistant-without-sidebar.png) | Sidebar hidden, assistant shown. |
 | [Light](assistant/assistant-light.png) | The same in the light theme. |
 | [Both hidden](assistant/panels-hidden.png) | The workspace takes the full width; the status-bar toggles remain. |
-| [Settings](assistant/assistant-settings.png) | Agent choice, model, Claude Code's privacy choices and each database's sharing choice. |
+| [Settings](assistant/assistant-settings.png) | Local agent statuses, scan/retry, sign-in/out controls, executable override and per-agent privacy. |
 | [Privacy](assistant/assistant-privacy.png) | Codex's privacy choices and fixed promises, opened from the consent card's link. |
 
 Reproduce with:

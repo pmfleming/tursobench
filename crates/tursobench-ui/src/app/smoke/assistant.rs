@@ -84,6 +84,26 @@ impl App {
                 self.preferences.panels.assistant = false;
             }
             5 => {
+                use tursobench_assistant::{
+                    account::{SignIn, Status},
+                    vendor::Provider,
+                };
+                for (provider, state, version) in [
+                    (Provider::Claude, SignIn::SignedIn, "Claude Code · example"),
+                    (Provider::Codex, SignIn::SignedIn, "Codex · example"),
+                    (
+                        Provider::Antigravity,
+                        SignIn::SignedOut,
+                        "Antigravity · example",
+                    ),
+                    (Provider::Copilot, SignIn::Missing, ""),
+                ] {
+                    self.accounts.rows.entry(provider).or_default().status = Some(Status {
+                        state,
+                        version: Some(version.into()),
+                        ..Default::default()
+                    });
+                }
                 self.settings.open = true;
                 self.settings.page = crate::app::settings::Page::Assistant;
             }

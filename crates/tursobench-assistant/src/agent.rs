@@ -263,7 +263,9 @@ pub(crate) fn content_text(content: &Json) -> String {
 pub(crate) fn tool_name(name: &str) -> String {
     let server = crate::relay::SERVER_NAME;
     name.strip_prefix(&format!("mcp__{server}__"))
+        .or_else(|| name.strip_prefix(&format!("mcp_{server}_")))
         .or_else(|| name.strip_prefix(&format!("{server}__")))
+        .or_else(|| name.strip_prefix(&format!("{server}_")))
         .or_else(|| name.strip_prefix(&format!("{server}/")))
         .or_else(|| name.strip_prefix(&format!("{server}.")))
         .unwrap_or(name)

@@ -84,3 +84,56 @@ fn a_scripted_acp_agent_gets_tools_but_no_shell_files_or_other_permissions() {
     assert!(matches!(next(&agent), Update::ToolResult { ok: true, text, .. } if text == "[]"));
     assert_eq!(next(&agent), Update::TurnEnded { error: None });
 }
+
+#[test]
+fn acp_applies_permission_mode_and_grouped_model_before_sending_prompts() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("agent.py");
+    std::fs::write(&script, r#"
+import json,sys,select,os
+def read_line():
+ data=b''
+ while not data.endswith(b'\n'):
+  b=os.read(0,1)
+  if not b: return ''
+  data+=b
+ return data.decode()
+def send(v): print(json.dumps(v),flush=True)
+for line in iter(read_line, ''):
+ m=json.loads(line);method=m['method'];i=m.get('id')
+ if method=='initialize': send({'id':i,'result':{'protocolVersion':1}})
+ elif method=='session/new': send({'id':i,'result':{'sessionId':'s','configOptions':[{'id':'mode','category':'mode','currentValue':'auto','options':[{'value':'default'}]},{'id':'model','category':'model','currentValue':'small','options':[{'name':'Group','options':[{'value':'large','name':'Large'}]}]}]}})
+ elif method=='session/set_config_option':
+  if m['params']['configId']=='mode':
+   assert m['params']['value']=='default';send({'id':i,'result':{}})
+  else:
+   assert m['params']['value']=='large'
+   assert not select.select([sys.stdin],[],[],0.1)[0], 'prompt sent before model acknowledgement'
+   send({'id':i,'result':{}})
+ elif method=='session/prompt': send({'id':i,'result':{'stopReason':'end_turn'}})
+ else: raise Exception('unexpected '+str(method))
+"#).unwrap();
+    let agent = Agent::spawn(
+        Spec {
+            program: "python3".into(),
+            args: vec![script.to_string_lossy().into_owned()],
+            env: vec![],
+            cwd: dir.path().into(),
+            protocol: Protocol::Acp,
+            system_prompt: String::new(),
+            mcp: None,
+            model: Some("large".into()),
+            privacy: Default::default(),
+        },
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    agent.prompt("Hello");
+    assert_eq!(
+        next(&agent),
+        Update::Ready {
+            model: Some("large".into())
+        }
+    );
+    assert_eq!(next(&agent), Update::TurnEnded { error: None });
+}

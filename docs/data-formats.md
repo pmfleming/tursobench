@@ -137,14 +137,23 @@ Inspector visibility is saved per database in `inspector_visibility`, bounded to
 20 absolute UTF-8 paths / 4096 bytes per path. Missing fields default to an empty
 map in older preferences.
 
-`panels` stores whether the sidebar and the assistant are shown (default: sidebar
-only). `assistant` stores the chosen agent (`provider`: `Claude`, `Copilot`,
-`Codex` or `Custom`), a `custom_command` of up to 4096 bytes, a `model` of up to
-200 bytes, and `sharing`: `Schema` or `Rows` per absolute database path, bounded
-to 50 paths / 4096 bytes per path. A missing database means the user has not
-chosen yet. `privacy` holds `claude`, `copilot`, `codex` and `custom`, each with
-`telemetry_off` (default true), `keep_history` (default false) and
-`share_file_name` (default true). Conversations are never stored. Grid column presentation and inspected/filter values
+`panels` stores whether the sidebar and the right-side assistant are shown
+(default: sidebar only). `assistant` stores the chosen `provider` (`Claude`,
+`Codex`, `Antigravity`, `Copilot` or `Custom`) and a `custom_command` up to
+4096 bytes. `models` maps providers to model names up to 200 bytes; missing/empty
+means the CLI default. `executables` maps providers to optional absolute paths.
+`grants` maps absolute database paths to provider maps of `Schema` or `Rows`,
+bounded to 50 database paths / 4096 bytes per path. A missing provider/database
+pair means consent is required. Legacy `model` and `sharing` entries migrate
+only to the previously selected provider and are not written back.
+`privacy` maps providers to `telemetry_off` (default true), `keep_history`
+(default false) and `share_file_name` (default true); legacy lowercase provider
+keys are accepted. Antigravity's history follows the CLI's own settings.
+Changing a custom command or its executable revokes its grants. Account status,
+method, plan, versions, discovered model lists, authentication URLs and
+conversations are never stored. Email is discarded by account parsers.
+
+Grid column presentation and inspected/filter values
 are not persisted. Table retention uses a 200-row minimum and reserves 100 rows
 in flight; SQL's exact row setting is unchanged.
 

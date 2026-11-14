@@ -21,6 +21,7 @@ pub(super) struct Row {
     pub browser: Option<String>,
     pub method: Option<String>,
     pub activity: Option<&'static str>,
+    pub changing_account: bool,
 }
 #[derive(Default)]
 pub(super) struct State {
@@ -71,6 +72,7 @@ impl App {
         }
         let target = self.account_target(provider);
         let row = self.accounts.rows.entry(provider).or_default();
+        row.changing_account = !matches!(operation, Operation::Check);
         row.activity = Some(match &operation {
             Operation::Check => "Checking…",
             Operation::Login { .. } => "Signing in…",
@@ -92,6 +94,7 @@ impl App {
         }
     }
     pub(super) fn poll_assistant_accounts(&mut self, ctx: &egui::Context) {
+        let mut account_changed = false;
         if !self.settings.open || self.settings.page != super::settings::Page::Assistant {
             self.accounts.view_open = false;
         }
@@ -108,6 +111,8 @@ impl App {
                         row.browser = Some(url);
                     }
                     Event::Finished(result) => {
+                        account_changed |= row.changing_account;
+                        row.changing_account = false;
                         row.job = None;
                         row.activity = None;
                         row.browser = None;
@@ -125,6 +130,15 @@ impl App {
                 }
             }
         }
+        if account_changed {
+            self.reset_assistant_conversations();
+        }
+    }
+    pub(super) fn assistant_account_pending(&self) -> bool {
+        self.accounts
+            .rows
+            .values()
+            .any(|row| row.changing_account && row.job.is_some())
     }
     pub(super) fn assistant_agents_ui(&mut self, ui: &mut egui::Ui) {
         if !self.accounts.view_open {
@@ -197,10 +211,10 @@ impl App {
                         });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if busy {
-                            if ui.small_button("Cancel").clicked() {
-                                if let Some(job) = &row.job {
-                                    job.cancel();
-                                }
+                            if ui.small_button("Cancel").clicked()
+                                && let Some(job) = &row.job
+                            {
+                                job.cancel();
                             }
                         } else if state == SignIn::Missing {
                             ui.hyperlink_to("Install", vendor.help);

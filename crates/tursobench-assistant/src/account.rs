@@ -450,6 +450,15 @@ fn run(
     cancel: &AtomicBool,
     browser: impl Fn(String),
 ) -> Result<Status, String> {
+    let mut quiet_target = target.clone();
+    if target.provider == Provider::Claude {
+        quiet_target.env.extend(
+            crate::claude::QUIET_ENV
+                .iter()
+                .map(|(k, v)| ((*k).into(), (*v).into())),
+        );
+    }
+    let target = &quiet_target;
     if !target.program.is_file() {
         return Ok(Status {
             state: SignIn::Missing,
@@ -538,15 +547,14 @@ fn run(
             ) {
                 Ok(result) => {
                     for model in result["data"].as_array().into_iter().flatten() {
-                        if let Some(id) = field(&model["model"]).or_else(|| field(&model["id"])) {
-                            if model["hidden"] != true && !status.models.iter().any(|m| m.id == id)
-                            {
-                                status.models.push(Model {
-                                    name: field(&model["displayName"])
-                                        .unwrap_or_else(|| id.clone()),
-                                    id,
-                                });
-                            }
+                        if let Some(id) = field(&model["model"]).or_else(|| field(&model["id"]))
+                            && model["hidden"] != true
+                            && !status.models.iter().any(|m| m.id == id)
+                        {
+                            status.models.push(Model {
+                                name: field(&model["displayName"]).unwrap_or_else(|| id.clone()),
+                                id,
+                            });
                         }
                     }
                     cursor = result["nextCursor"].clone();
@@ -612,12 +620,11 @@ fn run(
     } else if let Some(session) = result["result"]["sessionId"].as_str() {
         status.state = SignIn::SignedIn;
         status.models = acp_models(&result["result"]);
-        if initialized["agentCapabilities"]["sessionCapabilities"]["close"].is_object() {
-            if p.rpc(4, "session/close", json!({"sessionId":session}), cancel)
+        if initialized["agentCapabilities"]["sessionCapabilities"]["close"].is_object()
+            && p.rpc(4, "session/close", json!({"sessionId":session}), cancel)
                 .is_err()
-            {
-                status.issue = Some("The empty status session could not be closed".into());
-            }
+        {
+            status.issue = Some("The empty status session could not be closed".into());
         }
     } else {
         status.issue = Some("The agent returned no status session".into());
@@ -659,6 +666,7 @@ fn terminal_login(target: &Target, cancel: &AtomicBool) -> Result<(), String> {
                 .args(prefix)
                 .arg(&target.program)
                 .args(target.provider.vendor().login)
+                .envs(target.env.iter().cloned())
                 .current_dir(&target.cwd);
             let mut process = Process::command(command, LOGIN)?;
             if !process.wait(cancel)? {

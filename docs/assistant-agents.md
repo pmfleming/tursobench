@@ -50,6 +50,28 @@ Local read-only probes confirmed Codex account status and eight models, and
 Antigravity's four advertised authentication methods, model/mode config options
 and successful `session/close`. No login or logout was performed.
 
+## Implementation validation
+
+All seven stages are implemented. Native Wayland captures show the right-side
+panel and settings using synthetic data and seeded account states. The installed
+Claude, Codex and Antigravity status probes pass. Antigravity's live relay test
+also passes against a synthetic tool with no real database. Its current ACP
+messages use exact `mcp_tursobench_` tool names and omit tool-result bodies;
+the adapter handles both without broadening approvals beyond known tools.
+
+Scripted peers cover Codex login completion/cancellation/logout, ACP advertised
+method selection, token-request rejection, grouped model options and waiting for
+permission-mode/model acknowledgements before sending prompts. Account changes
+stop workspace conversations and block chat sends until they finish.
+
+Browser/terminal sign-in completion with real accounts remains a manual check.
+Copilot is unavailable here and has scripted coverage. No real account was
+signed out or changed during validation.
+
+Validation passed in the pinned Nix shell: `cargo fmt --all --check`, workspace
+Clippy with warnings denied, workspace tests, workspace build, `engine-spike`,
+desktop/discovery/local-project smoke scripts and all seven assistant captures.
+
 ## Primary references
 
 - [Codex app-server](https://developers.openai.com/codex/app-server.md)

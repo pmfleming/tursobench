@@ -4,7 +4,7 @@
 //! TursoBench advertises no file-system or terminal capabilities, answers
 //! agent requests for them with "method not found", grants permission only for
 //! its own tools and declines everything else. It never calls `authenticate`:
-//! signing in stays in the agent's own CLI.
+//! the separate account module starts vendor-owned sign-in flows.
 use crate::agent::{Input, Link, Spec, Update, content_text, tool_name};
 use serde_json::{Value as Json, json};
 use std::{collections::VecDeque, sync::mpsc::Receiver};
@@ -25,6 +25,8 @@ struct State {
     instructed: bool,
     failed: bool,
     mode_pending: bool,
+    model_pending: bool,
+    original_model: Option<String>,
 }
 
 pub(crate) fn drive(spec: &Spec, input: &Receiver<Input>, link: &mut Link) {
@@ -94,7 +96,7 @@ fn flush(spec: &Spec, state: &mut State, link: &mut Link) {
     let Some(session) = state.session.clone() else {
         return;
     };
-    if state.prompt.is_some() || state.mode_pending {
+    if state.prompt.is_some() || state.mode_pending || state.model_pending {
         return;
     }
     let Some(mut text) = state.queued.pop_front() else {
@@ -216,11 +218,23 @@ fn response(spec: &Spec, state: &mut State, link: &mut Link, id: Option<u64>, me
                 state.mode_pending = true;
                 let _ = link.write(&json!({"jsonrpc": "2.0", "id": SET_MODE, "method": "session/set_mode", "params": {"sessionId": session, "modeId": "default"}}));
             }
+            state.original_model = result["configOptions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|o| o["category"] == "model")
+                .and_then(|o| o["currentValue"].as_str())
+                .or_else(|| result["models"]["currentModelId"].as_str())
+                .map(str::to_owned);
             let model = choose_model(spec, state, link, result);
             link.emit(Update::Ready { model });
         }
         Some(SET_MODEL) => {
+            state.model_pending = false;
             if let Some(error) = error {
+                link.emit(Update::Ready {
+                    model: state.original_model.clone(),
+                });
                 link.emit(Update::Notice(format!(
                     "The agent kept its default model: {error}"
                 )));
@@ -229,7 +243,7 @@ fn response(spec: &Spec, state: &mut State, link: &mut Link, id: Option<u64>, me
         Some(SET_MODE) => {
             state.mode_pending = false;
             if let Some(error) = error {
-                return fail(
+                fail(
                     state,
                     link,
                     format!("Could not select the agent's default permission mode: {error}"),
@@ -275,13 +289,13 @@ fn choose_model(spec: &Spec, state: &mut State, link: &mut Link, result: &Json) 
     if let Some(option) = option {
         let current = option["currentValue"].as_str().map(str::to_owned);
         let Some(wanted) = wanted else { return current };
-        let value = option["options"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|o| o["value"].as_str())
+        let available = crate::account::acp_models(result);
+        let value = available
+            .iter()
+            .map(|m| m.id.as_str())
             .find(|v| v.eq_ignore_ascii_case(wanted) || v.contains(wanted));
         if let (Some(value), Some(config)) = (value, option["id"].as_str()) {
+            state.model_pending = true;
             let _ = link.write(&json!({
                 "jsonrpc": "2.0",
                 "id": SET_MODEL,
@@ -306,6 +320,7 @@ fn choose_model(spec: &Spec, state: &mut State, link: &mut Link, result: &Json) 
         .find(|m| m.eq_ignore_ascii_case(wanted) || m.contains(wanted));
     match found {
         Some(model) => {
+            state.model_pending = true;
             let _ = link.write(&json!({
                 "jsonrpc": "2.0",
                 "id": SET_MODEL,
@@ -368,6 +383,7 @@ fn is_ours(call: &Json) -> bool {
     let qualified = |name: &str| {
         [
             "mcp__tursobench__",
+            "mcp_tursobench_",
             "tursobench/",
             "tursobench.",
             "tursobench__",
@@ -439,19 +455,33 @@ fn finished(id: &str, update: &Json) -> Option<Update> {
         .as_array()
         .into_iter()
         .flatten()
-        .map(|c| content_text(&json!([c["content"]])))
+        .map(|c| content_text(&json!([c.get("content").unwrap_or(c)])))
         .filter(|t| !t.is_empty())
         .collect::<Vec<_>>()
         .join("\n");
     let text = if text.is_empty() {
         update
             .get("rawOutput")
+            .filter(|o| !o.is_null())
             .map(|o| match o {
                 Json::String(s) => s.clone(),
-                other => content_text(&other["content"]).trim().to_owned(),
+                other => {
+                    let text = content_text(&other["content"]).trim().to_owned();
+                    if text.is_empty() {
+                        other.to_string()
+                    } else {
+                        text
+                    }
+                }
             })
             .filter(|t| !t.is_empty())
-            .unwrap_or_else(|| update["rawOutput"].to_string())
+            .unwrap_or_else(|| {
+                if ok {
+                    "Completed; the agent did not include tool output".into()
+                } else {
+                    "Failed; the agent did not include tool output".into()
+                }
+            })
     } else {
         text
     };
@@ -498,6 +528,36 @@ mod tests {
         );
         assert_eq!(
             session_update(
+                &json!({"sessionUpdate":"tool_call_update","toolCallId":"agy","status":"completed"})
+            ),
+            [Update::ToolResult {
+                id: "agy".into(),
+                ok: true,
+                text: "Completed; the agent did not include tool output".into()
+            }]
+        );
+        assert_eq!(
+            session_update(
+                &json!({"sessionUpdate":"tool_call_update","toolCallId":"direct","status":"completed","content":[{"type":"text","text":"result"}]})
+            ),
+            [Update::ToolResult {
+                id: "direct".into(),
+                ok: true,
+                text: "result".into()
+            }]
+        );
+        assert_eq!(
+            session_update(
+                &json!({"sessionUpdate":"tool_call_update","toolCallId":"raw","status":"completed","rawOutput":{"rows":[]}})
+            ),
+            [Update::ToolResult {
+                id: "raw".into(),
+                ok: true,
+                text: "{\"rows\":[]}".into()
+            }]
+        );
+        assert_eq!(
+            session_update(
                 &json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Hi"}})
             ),
             [Update::Text("Hi".into())]
@@ -524,6 +584,19 @@ mod tests {
         assert!(is_ours(
             &json!({"toolName": "run_query", "rawInput": {"server": "tursobench"}})
         ));
+        assert!(is_ours(
+            &json!({"name":"mcp_tursobench_list_tables","title":"Run mcp_tursobench_list_tables"})
+        ));
+        assert!(!is_ours(
+            &json!({"name":"mcp_tursobench_list_tables; touch /tmp/probe"})
+        ));
+        assert!(!is_ours(
+            &json!({"name":"shell","title":"Run mcp_tursobench_list_tables"})
+        ));
+        assert_eq!(
+            tool_name(&short_title("Run mcp_tursobench_list_tables")),
+            "list_tables"
+        );
         assert_eq!(
             short_title("Tool: tursobench.describe_table"),
             "tursobench.describe_table"
