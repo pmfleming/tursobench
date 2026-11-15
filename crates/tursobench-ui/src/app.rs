@@ -110,7 +110,13 @@ impl App {
         let smoke = args.get(1).is_some_and(|a| a == "--smoke-test");
         let recovery_wake = ctx.clone();
         let mut app = Self {
-            accounts: Default::default(),
+            // Tests and smoke runs never ask the user's own agent CLIs anything.
+            accounts: assistant_accounts::State {
+                automatic: !cfg!(test)
+                    && !smoke
+                    && std::env::var_os("TURSOBENCH_ASSISTANT_CAPTURE").is_none(),
+                ..Default::default()
+            },
             settings: Default::default(),
             comparison: Default::default(),
             database: DatabaseWorkspace::new(ctx, 1),

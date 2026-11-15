@@ -272,7 +272,9 @@ with its shell and web search off and its read-only sandbox on), Antigravity,
 Copilot CLI or any other Agent Client Protocol command. Each agent keeps its own
 model and privacy choices. The chat header has vendor and model pickers; changing
 either starts a new conversation. Codex and ACP model lists come from status
-checks; Claude offers aliases, and Settings accepts a custom model name.
+checks; Claude offers aliases, and Settings accepts a custom model name. The
+panel checks the selected agent the first time it is shown, and again after you
+choose another one, so its pickers fill without a visit to Settings.
 Settings scans PATH and common installation folders,
 shows sign-in status and version, and offers an executable path override.
 Status checks never send database metadata; an ACP check may leave an empty

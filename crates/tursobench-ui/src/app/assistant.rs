@@ -365,6 +365,7 @@ impl App {
 
     pub(super) fn assistant_ui(&mut self, ui: &mut egui::Ui) {
         self.poll_assistant();
+        self.check_selected_assistant(ui.ctx());
         self.assistant_header(ui);
         ui.separator();
         let Some(_) = self.assistant_database() else {
@@ -577,6 +578,11 @@ impl App {
                     vec![]
                 }
             });
+        let checking = self
+            .accounts
+            .rows
+            .get(&provider)
+            .is_some_and(|r| r.job.is_some());
         let mut selected = self.preferences.assistant.selected_model().to_owned();
         let label = models
             .iter()
@@ -600,9 +606,12 @@ impl App {
                         ui.selectable_value(&mut selected, model.id.clone(), &model.name);
                     }
                     ui.separator();
-                    if models.is_empty() && ui.button("Find available models").clicked() {
-                        self.settings.open = true;
-                        self.settings.page = super::settings::Page::Assistant;
+                    if checking {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.weak("Finding models…");
+                        });
+                    } else if models.is_empty() && ui.button("Find available models").clicked() {
                         self.agent_account_job(
                             ui.ctx(),
                             provider,

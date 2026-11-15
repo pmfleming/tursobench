@@ -665,3 +665,74 @@ fn only_the_selected_vendors_account_change_stops_chat_and_blocks_new_turns() {
     assert_eq!(app.database.assistant.draft, "Wait for account change");
     app.close();
 }
+
+#[test]
+fn the_panel_checks_the_selected_vendor_once_without_opening_settings() {
+    use crate::storage::Provider;
+    let (dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
+    runtime_dir(&dir);
+    // A stand-in for `codex app-server` that answers only status calls.
+    let codex = dir.path().join("codex");
+    std::fs::write(
+        &codex,
+        r#"#!/usr/bin/env bash
+[[ $1 == --version ]] && { echo 'codex test'; exit 0; }
+while read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*) echo '{"id":1,"result":{}}';;
+    *'"method":"account/read"'*) echo '{"id":4,"result":{"account":{"type":"chatgpt","planType":"pro"},"requiresOpenaiAuth":true}}';;
+    *'"method":"model/list"'*) echo '{"id":10,"result":{"data":[{"id":"gpt-test","displayName":"Test model"}],"nextCursor":null}}';;
+  esac
+done
+"#,
+    )
+    .unwrap();
+    let broken = dir.path().join("broken-claude");
+    std::fs::write(&broken, "#!/bin/sh\nexit 0\n").unwrap();
+    for script in [&codex, &broken] {
+        std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let executables = &mut app.preferences.assistant.executables;
+    executables.insert(Provider::Codex, codex);
+    executables.insert(Provider::Claude, broken);
+    app.preferences.assistant.provider = Provider::Codex;
+    app.preferences.panels.assistant = true;
+    app.accounts.automatic = true;
+
+    frame_at(&mut app, &ctx, SIZE, vec![]);
+    assert!(app.accounts.rows[&Provider::Codex].job.is_some());
+    wait_until(&mut app, &ctx, |a| {
+        a.accounts.rows[&Provider::Codex].job.is_none()
+    });
+    let models = &app.accounts.rows[&Provider::Codex]
+        .status
+        .as_ref()
+        .unwrap()
+        .models;
+    assert_eq!(models[0].id, "gpt-test");
+    assert!(!app.settings.open);
+    // Only the selected vendor is asked.
+    assert!(!app.accounts.rows.contains_key(&Provider::Antigravity));
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    click(
+        &mut app,
+        &ctx,
+        control(&output, "Assistant model picker").center(),
+    );
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    click(&mut app, &ctx, control(&output, "Test model").center());
+    assert_eq!(app.preferences.assistant.selected_model(), "gpt-test");
+
+    // Choosing another vendor checks it; a failed check is not retried each frame.
+    app.select_assistant_provider(Provider::Claude);
+    frame_at(&mut app, &ctx, SIZE, vec![]);
+    wait_until(&mut app, &ctx, |a| {
+        a.accounts.rows[&Provider::Claude].job.is_none()
+    });
+    assert!(app.accounts.rows[&Provider::Claude].error.is_some());
+    for _ in 0..3 {
+        frame_at(&mut app, &ctx, SIZE, vec![]);
+    }
+    assert!(app.accounts.rows[&Provider::Claude].job.is_none());
+    app.close();
+}

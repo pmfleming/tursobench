@@ -29,6 +29,9 @@ pub(super) struct State {
     pub view_open: bool,
     pub executable: String,
     pub editing: Option<Provider>,
+    /// Check agents without a click: when Settings → Assistant opens, and
+    /// for the selected vendor when the panel first needs its status.
+    pub automatic: bool,
 }
 impl App {
     pub(super) fn scan_assistant(&mut self, ctx: &egui::Context) {
@@ -46,6 +49,25 @@ impl App {
                     self.agent_account_job(ctx, vendor.id, Operation::Check);
                 }
             }
+        }
+    }
+    /// The panel's pickers need the selected vendor's status and models; check
+    /// it once when nothing is known yet, without opening Settings.
+    pub(super) fn check_selected_assistant(&mut self, ctx: &egui::Context) {
+        let provider = self.preferences.assistant.provider;
+        if !self.accounts.automatic
+            || (provider == Provider::Custom
+                && self.preferences.assistant.custom_command.trim().is_empty())
+        {
+            return;
+        }
+        let unknown = self
+            .accounts
+            .rows
+            .get(&provider)
+            .is_none_or(|row| row.status.is_none() && row.job.is_none() && row.error.is_none());
+        if unknown {
+            self.agent_account_job(ctx, provider, Operation::Check);
         }
     }
     fn account_target(&self, provider: Provider) -> Result<Target, String> {
@@ -143,7 +165,7 @@ impl App {
     pub(super) fn assistant_agents_ui(&mut self, ui: &mut egui::Ui) {
         if !self.accounts.view_open {
             self.accounts.view_open = true;
-            if !cfg!(test) && std::env::var_os("TURSOBENCH_ASSISTANT_CAPTURE").is_none() {
+            if self.accounts.automatic {
                 self.scan_assistant(ui.ctx());
             }
         }
