@@ -278,7 +278,11 @@ shows sign-in status and version, and offers an executable path override.
 Status checks never send database metadata; an ACP check may leave an empty
 session in the CLI history. Use **Sign in** to start the vendor’s own flow:
 Codex opens a browser; ACP agents offer their advertised OAuth methods (including
-Antigravity personal or enterprise); Claude Code opens a terminal. Cancel stops
+Antigravity personal or enterprise); Claude Code opens a terminal: `$TERMINAL`
+if set, then the desktop’s default (`xdg-terminal-exec`), then Ghostty, GNOME
+Terminal, Konsole, WezTerm, kitty, Alacritty, foot or xterm. When the terminal
+hands the window to an already running instance, status is checked every second
+until the sign-in finishes. Cancel stops
 the helper. “Executable and terminal sign-in” has a copyable command if needed.
 Status is checked again when sign-in completes. Claude Code and Codex also offer
 Sign out; sign out of ACP agents in their own CLI. These account changes end

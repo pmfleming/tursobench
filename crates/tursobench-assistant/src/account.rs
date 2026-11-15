@@ -121,6 +121,21 @@ const LOGIN: Duration = Duration::from_secs(600);
 const LINE_LIMIT: usize = 1024 * 1024;
 const OUTPUT_LIMIT: usize = 4 * LINE_LIMIT;
 
+/// A CLI update (or a concurrent fork inheriting a just-written script) can
+/// briefly leave its executable busy on Linux.
+fn spawn(command: &mut Command) -> std::io::Result<Child> {
+    let mut attempts = 0;
+    loop {
+        match command.spawn() {
+            Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) && attempts < 5 => {
+                attempts += 1;
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            result => return result,
+        }
+    }
+}
+
 struct Process {
     child: Child,
     stdin: ChildStdin,
@@ -144,19 +159,7 @@ impl Process {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        // A CLI update (or a concurrent fork inheriting a just-written script)
-        // can briefly leave its executable busy on Linux.
-        let mut attempts = 0;
-        let mut child = loop {
-            match command.spawn() {
-                Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) && attempts < 5 => {
-                    attempts += 1;
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-                result => break result,
-            }
-        }
-        .map_err(|e| -> String {
+        let mut child = spawn(&mut command).map_err(|e| -> String {
             if e.kind() == std::io::ErrorKind::NotFound {
                 "The agent executable was not found".into()
             } else {
@@ -467,7 +470,11 @@ fn run(
     }
     if target.provider == Provider::Claude {
         match operation {
-            Operation::Login { .. } => terminal_login(target, cancel)?,
+            Operation::Login { .. } => {
+                let preferred = std::env::var("TERMINAL").ok();
+                let found = terminals(preferred.as_deref(), &crate::vendor::search_dirs());
+                claude_login(target, &found, cancel)?;
+            }
             Operation::Logout => {
                 let mut p = Process::spawn(target, &["auth".into(), "logout".into()], CHECK)?;
                 if !p.wait(cancel)? {
@@ -476,15 +483,7 @@ fn run(
             }
             Operation::Check => {}
         }
-        let mut p = Process::spawn(target, &["auth".into(), "status".into()], CHECK)?;
-        let mut output = String::new();
-        let value = loop {
-            output.push_str(&p.line(cancel)?);
-            if let Ok(value) = serde_json::from_str::<Json>(&output) {
-                break value;
-            }
-        };
-        let mut status = claude_status(&value);
+        let mut status = claude_check(target, cancel)?;
         status.models = ["sonnet", "opus", "haiku"]
             .map(|id| Model {
                 id: id.into(),
@@ -649,33 +648,142 @@ fn version(target: &Target, cancel: &AtomicBool) -> Option<String> {
     let line = line.trim();
     (line.len() <= 200).then(|| line.to_owned())
 }
-fn terminal_login(target: &Target, cancel: &AtomicBool) -> Result<(), String> {
-    let dirs = crate::vendor::search_dirs();
-    for (terminal, prefix) in [
-        ("x-terminal-emulator", &["-e"][..]),
-        ("gnome-terminal", &["--wait", "--"][..]),
-        ("konsole", &["--nofork", "-e"][..]),
-        ("kitty", &["--"][..]),
-        ("alacritty", &["-e"][..]),
-        ("foot", &["-e"][..]),
-        ("xterm", &["-e"][..]),
-    ] {
-        if let Some(program) = crate::vendor::resolve(std::path::Path::new(terminal), &dirs) {
-            let mut command = Command::new(program);
-            command
-                .args(prefix)
-                .arg(&target.program)
-                .args(target.provider.vendor().login)
-                .envs(target.env.iter().cloned())
-                .current_dir(&target.cwd);
-            let mut process = Process::command(command, LOGIN)?;
-            if !process.wait(cancel)? {
-                return Err("Terminal sign-in did not complete; use the copyable command".into());
-            }
-            return Ok(());
+/// Terminals that run a command in a new window, and the arguments that go
+/// before the command. Those that wait for the window come first.
+const TERMINALS: &[(&str, &[&str])] = &[
+    ("xdg-terminal-exec", &[]),
+    ("x-terminal-emulator", &["-e"]),
+    ("gnome-terminal", &["--wait", "--"]),
+    ("konsole", &["--nofork", "-e"]),
+    ("ghostty", &["-e"]),
+    ("wezterm", &["start", "--always-new-process", "--"]),
+    ("kitty", &["--"]),
+    ("alacritty", &["-e"]),
+    ("foot", &["-e"]),
+    ("xterm", &["-e"]),
+];
+/// A terminal that exits this soon handed the window to a running instance.
+const HANDOFF: Duration = Duration::from_secs(3);
+const POLL: Duration = Duration::from_secs(1);
+
+/// Installed terminals in preference order: `$TERMINAL` first, then the
+/// desktop's chosen terminal, then common ones.
+pub fn terminals(preferred: Option<&str>, dirs: &[PathBuf]) -> Vec<(PathBuf, Vec<String>)> {
+    let known = |program: &std::path::Path| {
+        let name = program.file_name()?.to_str()?;
+        TERMINALS.iter().find(|(n, _)| *n == name).map(|(_, a)| *a)
+    };
+    let mut found: Vec<(PathBuf, Vec<String>)> = Vec::new();
+    if let Some(words) = preferred.and_then(|t| crate::vendor::command_words(t).ok())
+        && let Some(program) = crate::vendor::resolve(std::path::Path::new(&words[0]), dirs)
+    {
+        let mut args = words[1..].to_vec();
+        match known(&program) {
+            Some(prefix) => args.extend(prefix.iter().map(|s| (*s).to_owned())),
+            None => args.push("-e".into()),
+        }
+        found.push((program, args));
+    }
+    for (name, prefix) in TERMINALS {
+        if let Some(program) = crate::vendor::resolve(std::path::Path::new(name), dirs)
+            && !found.iter().any(|(p, _)| *p == program)
+        {
+            found.push((program, prefix.iter().map(|s| (*s).to_owned()).collect()));
         }
     }
-    Err("No supported terminal was found. Copy the sign-in command and run it in your terminal, then Scan again.".into())
+    found
+}
+
+/// Open the sign-in command in a terminal. `Ok(true)` means the terminal
+/// returned at once, so the sign-in may still be running in another window.
+fn terminal_login(
+    target: &Target,
+    terminals: &[(PathBuf, Vec<String>)],
+    cancel: &AtomicBool,
+) -> Result<bool, String> {
+    for (terminal, prefix) in terminals {
+        let started = Instant::now();
+        // The window belongs to the user: no pipes, and it is not killed when
+        // the terminal process hands it to another instance and exits.
+        let mut command = Command::new(terminal);
+        command
+            .args(prefix)
+            .arg(&target.program)
+            .args(target.provider.vendor().login)
+            .envs(target.env.iter().cloned())
+            .current_dir(&target.cwd)
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let Ok(mut child) = spawn(&mut command) else {
+            continue;
+        };
+        let stop = |child: &mut Child| {
+            unsafe {
+                libc::kill(-(child.id() as i32), libc::SIGKILL);
+            }
+            let _ = child.wait();
+        };
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                stop(&mut child);
+                return Err("Cancelled".into());
+            }
+            if started.elapsed() >= LOGIN {
+                stop(&mut child);
+                return Err("Terminal sign-in did not finish before the timeout".into());
+            }
+            match child.try_wait() {
+                Ok(Some(status)) if status.success() => return Ok(started.elapsed() < HANDOFF),
+                Ok(Some(_)) => {
+                    return Err(
+                        "Terminal sign-in did not complete; use the copyable command".into(),
+                    );
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+                Err(_) => return Err("Could not wait for the terminal".into()),
+            }
+        }
+    }
+    Err("No supported terminal was found. Set $TERMINAL, or copy the sign-in command and run it in your terminal, then Scan again.".into())
+}
+
+/// Claude Code signs in only in a terminal; wait for it to report signed in.
+fn claude_login(
+    target: &Target,
+    terminals: &[(PathBuf, Vec<String>)],
+    cancel: &AtomicBool,
+) -> Result<(), String> {
+    let started = Instant::now();
+    if !terminal_login(target, terminals, cancel)? {
+        return Ok(());
+    }
+    while started.elapsed() < LOGIN {
+        if claude_check(target, cancel)?.state == SignIn::SignedIn {
+            return Ok(());
+        }
+        let pause = Instant::now();
+        while pause.elapsed() < POLL {
+            if cancel.load(Ordering::Relaxed) {
+                return Err("Cancelled".into());
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    Ok(())
+}
+
+fn claude_check(target: &Target, cancel: &AtomicBool) -> Result<Status, String> {
+    let mut p = Process::spawn(target, &["auth".into(), "status".into()], CHECK)?;
+    let mut output = String::new();
+    let value = loop {
+        output.push_str(&p.line(cancel)?);
+        if let Ok(value) = serde_json::from_str::<Json>(&output) {
+            break value;
+        }
+    };
+    Ok(claude_status(&value))
 }
 
 #[cfg(test)]
@@ -911,6 +1019,107 @@ for line in sys.stdin:
                 |_| panic!()
             )
             .is_err()
+        );
+    }
+    fn executable(path: &std::path::Path, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(path, body).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    /// A Claude Code stand-in whose status follows a marker that login writes.
+    fn terminal_claude() -> (tempfile::TempDir, Target) {
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("claude");
+        executable(
+            &program,
+            "#!/usr/bin/env bash\nmarker=\"$(dirname \"$0\")/signed-in\"\ncase \"$1 $2\" in\n\
+             'auth login') touch \"$marker\";;\n\
+             'auth status') if [[ -e $marker ]]; then echo '{\"loggedIn\":true}'; else echo '{\"loggedIn\":false}'; fi;;\n\
+             esac\n",
+        );
+        let target = Target {
+            provider: Provider::Claude,
+            program,
+            args: vec![],
+            env: vec![],
+            cwd: dir.path().into(),
+        };
+        (dir, target)
+    }
+    #[test]
+    fn terminal_preference_comes_first_and_keeps_known_arguments() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["xterm", "ghostty", "myterm"] {
+            executable(&dir.path().join(name), "#!/bin/sh\n");
+        }
+        let dirs = [dir.path().to_owned()];
+        let names = |found: Vec<(PathBuf, Vec<String>)>| {
+            found
+                .into_iter()
+                .map(|(p, a)| (p.file_name().unwrap().to_string_lossy().into_owned(), a))
+                .collect::<Vec<_>>()
+        };
+        let s = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            names(terminals(None, &dirs)),
+            [("ghostty".into(), s(&["-e"])), ("xterm".into(), s(&["-e"]))]
+        );
+        assert_eq!(
+            names(terminals(Some("myterm --class x"), &dirs))[0],
+            ("myterm".into(), s(&["--class", "x", "-e"]))
+        );
+        let preferred = names(terminals(Some("xterm"), &dirs));
+        assert_eq!(preferred[0].0, "xterm");
+        assert_eq!(preferred.len(), 2);
+        assert_eq!(names(terminals(Some("missing"), &dirs)).len(), 2);
+    }
+    #[test]
+    fn a_waiting_terminal_runs_the_sign_in_command() {
+        let (dir, target) = terminal_claude();
+        let terminal = dir.path().join("term");
+        executable(&terminal, "#!/usr/bin/env bash\nshift\nexec \"$@\"\n");
+        claude_login(
+            &target,
+            &[(terminal, vec!["-e".into()])],
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert!(dir.path().join("signed-in").exists());
+    }
+    #[test]
+    fn a_terminal_that_hands_off_is_polled_and_its_window_survives() {
+        let (dir, target) = terminal_claude();
+        let terminal = dir.path().join("term");
+        // Exit at once and finish the sign-in later, as a single-instance terminal does.
+        executable(
+            &terminal,
+            "#!/usr/bin/env bash\nshift\n( sleep 0.5; \"$@\" ) >/dev/null 2>&1 &\nexit 0\n",
+        );
+        let started = Instant::now();
+        claude_login(
+            &target,
+            &[(terminal, vec!["-e".into()])],
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert!(dir.path().join("signed-in").exists());
+        assert!(started.elapsed() >= Duration::from_millis(500));
+    }
+    #[test]
+    fn a_failed_terminal_is_reported_and_none_found_explains_terminal() {
+        let (dir, target) = terminal_claude();
+        let terminal = dir.path().join("term");
+        executable(&terminal, "#!/bin/sh\nexit 1\n");
+        let cancel = AtomicBool::new(false);
+        assert!(
+            claude_login(&target, &[(terminal, vec![])], &cancel)
+                .unwrap_err()
+                .contains("did not complete")
+        );
+        assert!(
+            claude_login(&target, &[], &cancel)
+                .unwrap_err()
+                .contains("$TERMINAL")
         );
     }
     #[test]

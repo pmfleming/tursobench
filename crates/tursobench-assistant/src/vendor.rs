@@ -123,6 +123,10 @@ pub fn search_dirs() -> Vec<PathBuf> {
             dirs.extend(versions.into_iter().rev().take(32));
         }
     }
+    // NixOS installs a user's packages here; a GUI session may not have it on PATH.
+    if let Some(user) = std::env::var_os("USER").filter(|u| !u.is_empty()) {
+        dirs.push(Path::new("/etc/profiles/per-user").join(user).join("bin"));
+    }
     dirs.extend(
         [
             "/usr/local/bin",
