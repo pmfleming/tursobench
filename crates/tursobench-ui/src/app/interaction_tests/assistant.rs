@@ -736,3 +736,72 @@ done
     assert!(app.accounts.rows[&Provider::Claude].job.is_none());
     app.close();
 }
+
+#[test]
+fn cancelling_or_failing_a_sign_in_keeps_the_last_status_and_models() {
+    use crate::app::presentation::Intent;
+    use crate::storage::Provider;
+    use tursobench_assistant::account::{Model, Operation, SignIn, Status};
+    let (dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
+    runtime_dir(&dir);
+    let waiting = dir.path().join("waiting-codex");
+    let failing = dir.path().join("failing-codex");
+    std::fs::write(
+        &waiting,
+        "#!/usr/bin/env bash\nwhile read -r line; do :; done\n",
+    )
+    .unwrap();
+    std::fs::write(&failing, "#!/bin/sh\nexit 3\n").unwrap();
+    for script in [&waiting, &failing] {
+        std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let known = Status {
+        state: SignIn::SignedOut,
+        models: vec![Model {
+            id: "gpt-test".into(),
+            name: "Test model".into(),
+        }],
+        ..Default::default()
+    };
+    app.accounts.rows.entry(Provider::Codex).or_default().status = Some(known);
+    let login = Operation::Login { method: None };
+    let still_known = |app: &App| {
+        let status = app.accounts.rows[&Provider::Codex].status.as_ref().unwrap();
+        assert_eq!(status.state, SignIn::SignedOut);
+        assert_eq!(status.models[0].id, "gpt-test");
+    };
+
+    app.preferences
+        .assistant
+        .executables
+        .insert(Provider::Codex, waiting);
+    app.agent_account_job(&ctx, Provider::Codex, login.clone());
+    app.accounts.rows[&Provider::Codex]
+        .job
+        .as_ref()
+        .unwrap()
+        .cancel();
+    wait_until(&mut app, &ctx, |a| {
+        a.accounts.rows[&Provider::Codex].job.is_none()
+    });
+    still_known(&app);
+    assert_eq!(
+        app.accounts.rows[&Provider::Codex].describe(),
+        Some(("Signed out", Intent::Pending))
+    );
+
+    app.preferences
+        .assistant
+        .executables
+        .insert(Provider::Codex, failing);
+    app.agent_account_job(&ctx, Provider::Codex, login);
+    wait_until(&mut app, &ctx, |a| {
+        a.accounts.rows[&Provider::Codex].job.is_none()
+    });
+    still_known(&app);
+    assert_eq!(
+        app.accounts.rows[&Provider::Codex].describe(),
+        Some(("Sign-in failed", Intent::Danger))
+    );
+    app.close();
+}

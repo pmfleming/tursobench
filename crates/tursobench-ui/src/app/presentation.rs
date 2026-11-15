@@ -64,7 +64,7 @@ pub(super) fn keycap(ui: &mut egui::Ui, text: &str) -> egui::Response {
         .response
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Intent {
     Neutral,
     Primary,

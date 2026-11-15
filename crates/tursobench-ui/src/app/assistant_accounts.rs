@@ -21,7 +21,36 @@ pub(super) struct Row {
     pub browser: Option<String>,
     pub method: Option<String>,
     pub activity: Option<&'static str>,
+    /// What to call `error`: the check, sign-in or sign-out that failed.
+    pub failure: Option<&'static str>,
     pub changing_account: bool,
+}
+impl Row {
+    /// A short state and its colour; `None` until something is known.
+    pub fn describe(&self) -> Option<(&'static str, Intent)> {
+        if self.job.is_some() {
+            return Some((self.activity.unwrap_or("Checking…"), Intent::Pending));
+        }
+        if self.error.is_some() {
+            return Some((self.failure.unwrap_or("Check failed"), Intent::Danger));
+        }
+        let status = self.status.as_ref()?;
+        Some(match status.state {
+            SignIn::SignedIn => ("Signed in", Intent::Primary),
+            SignIn::SignedOut => ("Signed out", Intent::Pending),
+            SignIn::Missing => ("Not installed", Intent::Neutral),
+            SignIn::Unknown if status.issue.is_some() => ("Check failed", Intent::Danger),
+            SignIn::Unknown => ("Status unavailable", Intent::Neutral),
+        })
+    }
+}
+/// A small status dot; `state` is its tooltip and accessible name.
+pub(super) fn status_dot(ui: &mut egui::Ui, intent: Intent, state: &str) {
+    let color = presentation::intent_color(ui, intent);
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+    ui.painter().circle_filled(rect.center(), 3.0, color);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, state));
+    response.on_hover_text(state);
 }
 #[derive(Default)]
 pub(super) struct State {
@@ -98,11 +127,13 @@ impl App {
         let target = self.account_target(provider);
         let row = self.accounts.rows.entry(provider).or_default();
         row.changing_account = !matches!(operation, Operation::Check);
-        row.activity = Some(match &operation {
-            Operation::Check => "Checking…",
-            Operation::Login { .. } => "Signing in…",
-            Operation::Logout => "Signing out…",
-        });
+        let (activity, failure) = match &operation {
+            Operation::Check => ("Checking…", "Check failed"),
+            Operation::Login { .. } => ("Signing in…", "Sign-in failed"),
+            Operation::Logout => ("Signing out…", "Sign-out failed"),
+        };
+        row.activity = Some(activity);
+        row.failure = Some(failure);
         row.job = None;
         row.error = None;
         row.browser = None;
@@ -134,20 +165,20 @@ impl App {
                         ctx.open_url(egui::OpenUrl::new_tab(&url));
                         row.browser = Some(url);
                     }
-                    Event::Finished(result) => {
+                    Event::Finished(_) | Event::Cancelled => {
                         row.changing_account = false;
                         row.job = None;
                         row.activity = None;
                         row.browser = None;
-                        match result {
-                            Ok(status) => {
+                        // Cancelling or failing tells nothing new about the
+                        // account, so the last status and models stay.
+                        match event {
+                            Event::Finished(Ok(status)) => {
                                 row.error = None;
                                 row.status = Some(status);
                             }
-                            Err(error) => {
-                                row.error = Some(error);
-                                row.status = None;
-                            }
+                            Event::Finished(Err(error)) => row.error = Some(error),
+                            _ => row.error = None,
                         }
                     }
                 }
@@ -172,7 +203,10 @@ impl App {
         let mut selected = self.preferences.assistant.provider;
         let mut action = None;
         ui.horizontal(|ui| {
-            if ui.button("Scan again").on_hover_text("Search PATH and common installation folders; ask each CLI for sign-in status. An ACP check may create an empty session in its history.").clicked() { self.scan_assistant(ui.ctx()); }
+            if ui.button("Scan again").on_hover_text("Search PATH and common installation folders; ask each CLI for sign-in status. An ACP check may create an empty session in its history.").clicked() {
+                tursobench_assistant::vendor::forget_locations();
+                self.scan_assistant(ui.ctx());
+            }
             ui.weak("Local agents");
         });
         for vendor in VENDORS {
@@ -184,31 +218,10 @@ impl App {
                     .map(|s| s.state)
                     .unwrap_or(SignIn::Unknown);
                 let busy = row.job.is_some();
-                let (label, intent) = if busy {
-                    (row.activity.unwrap_or("Checking…"), Intent::Pending)
-                } else {
-                    match state {
-                        SignIn::SignedIn => ("Signed in", Intent::Primary),
-                        SignIn::SignedOut => ("Signed out", Intent::Pending),
-                        SignIn::Missing => ("Not installed", Intent::Neutral),
-                        SignIn::Unknown
-                            if row.error.is_some()
-                                || row.status.as_ref().is_some_and(|s| s.issue.is_some()) =>
-                        {
-                            ("Check failed", Intent::Danger)
-                        }
-                        SignIn::Unknown if row.status.is_some() => {
-                            ("Status unavailable", Intent::Neutral)
-                        }
-                        SignIn::Unknown => ("Not checked", Intent::Neutral),
-                    }
-                };
+                let (label, intent) = row.describe().unwrap_or(("Not checked", Intent::Neutral));
                 ui.horizontal(|ui| {
                     ui.radio_value(&mut selected, vendor.id, vendor.name);
-                    let color = presentation::intent_color(ui, intent);
-                    let (rect, _) =
-                        ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
-                    ui.painter().circle_filled(rect.center(), 3.0, color);
+                    status_dot(ui, intent, label);
                     let details = row
                         .status
                         .as_ref()
@@ -367,6 +380,9 @@ impl App {
                             self.reset_assistant_conversations();
                             self.preferences.normalize();
                             self.store.save(&self.preferences);
+                            // The old executable's status says nothing about the new one.
+                            tursobench_assistant::vendor::forget_locations();
+                            self.accounts.rows.remove(&provider);
                             self.agent_account_job(ui.ctx(), provider, Operation::Check);
                         } else {
                             self.accounts.rows.entry(provider).or_default().error =

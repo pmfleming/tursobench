@@ -12,6 +12,10 @@ pub const QUIET_ENV: &[(&str, &str)] = &[
     ("DISABLE_ERROR_REPORTING", "1"),
 ];
 
+/// The model aliases `claude --model` documents; Claude Code has no command
+/// that lists models, so these stand in for one.
+pub const MODEL_ALIASES: &[&str] = &["sonnet", "opus", "haiku", "fable"];
+
 /// Arguments that start a conversation with every built-in tool removed and no
 /// user or project settings, hooks, slash commands or other MCP servers.
 /// `privacy` decides whether Claude Code saves the session and reports usage.

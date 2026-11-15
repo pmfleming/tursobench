@@ -76,6 +76,8 @@ pub enum Operation {
 pub enum Event {
     Browser(String),
     Finished(Result<Status, String>),
+    /// Stopped by [`Job::cancel`]; nothing is known beyond the last status.
+    Cancelled,
 }
 pub struct Job {
     pub events: Receiver<Event>,
@@ -95,7 +97,10 @@ impl Job {
                     let _ = tx.send(Event::Browser(url));
                     wake();
                 });
-                let _ = tx.send(Event::Finished(result));
+                let _ = tx.send(match result {
+                    Err(_) if stop.load(Ordering::Relaxed) => Event::Cancelled,
+                    result => Event::Finished(result),
+                });
                 wake();
             });
         if spawned.is_err() {
@@ -117,6 +122,8 @@ impl Drop for Job {
 }
 
 const CHECK: Duration = Duration::from_secs(20);
+/// How long `claude auth status` may keep running after printing its answer.
+const STATUS_EXIT: Duration = Duration::from_secs(5);
 const LOGIN: Duration = Duration::from_secs(600);
 const LINE_LIMIT: usize = 1024 * 1024;
 const OUTPUT_LIMIT: usize = 4 * LINE_LIMIT;
@@ -377,6 +384,16 @@ fn codex_status(value: &Json) -> Status {
         ..Default::default()
     }
 }
+/// Claude Code's documented aliases, offered before and after a status check.
+pub fn claude_models() -> Vec<Model> {
+    crate::claude::MODEL_ALIASES
+        .iter()
+        .map(|id| Model {
+            id: (*id).into(),
+            name: (*id).into(),
+        })
+        .collect()
+}
 pub fn acp_models(result: &Json) -> Vec<Model> {
     let option = result["configOptions"]
         .as_array()
@@ -484,12 +501,7 @@ fn run(
             Operation::Check => {}
         }
         let mut status = claude_check(target, cancel)?;
-        status.models = ["sonnet", "opus", "haiku"]
-            .map(|id| Model {
-                id: id.into(),
-                name: id.into(),
-            })
-            .to_vec();
+        status.models = claude_models();
         status.version = version(target, cancel);
         return Ok(status);
     }
@@ -783,6 +795,10 @@ fn claude_check(target: &Target, cancel: &AtomicBool) -> Result<Status, String> 
             break value;
         }
     };
+    // Let it exit on its own: it may still be saving a refreshed token, and
+    // killing it then can sign the user out. Exit 1 only means signed out.
+    p.deadline = p.deadline.min(Instant::now() + STATUS_EXIT);
+    let _ = p.wait(cancel);
     Ok(claude_status(&value))
 }
 
@@ -1121,6 +1137,46 @@ for line in sys.stdin:
                 .unwrap_err()
                 .contains("$TERMINAL")
         );
+    }
+    #[test]
+    fn claude_status_may_finish_writing_after_it_answers() {
+        let (dir, target) = scripted(
+            Provider::Claude,
+            "import time,pathlib\nprint(json.dumps({'loggedIn':True}),flush=True)\n\
+             time.sleep(0.3)\npathlib.Path('finished').write_text('1')",
+        );
+        let status = run(
+            &target,
+            &Operation::Check,
+            &AtomicBool::new(false),
+            |_| panic!(),
+        )
+        .unwrap();
+        assert_eq!(status.state, SignIn::SignedIn);
+        assert!(dir.path().join("finished").exists());
+    }
+    #[test]
+    fn a_cancelled_job_reports_cancelled_not_a_failure() {
+        let (_dir, target) = scripted(
+            Provider::Codex,
+            r#"
+for line in sys.stdin:
+ m=json.loads(line)
+ if m.get('method')=='initialize': print(json.dumps({'id':m['id'],'result':{}}),flush=True)
+ elif m.get('method')=='account/login/start': print(json.dumps({'id':m['id'],'result':{'loginId':'l','authUrl':'https://auth.openai.com/test-login'}}),flush=True)
+"#,
+        );
+        let job = Job::start(target, Operation::Login { method: None }, Arc::new(|| {}));
+        let wait = Duration::from_secs(5);
+        assert!(matches!(
+            job.events.recv_timeout(wait),
+            Ok(Event::Browser(_))
+        ));
+        job.cancel();
+        assert!(matches!(
+            job.events.recv_timeout(wait),
+            Ok(Event::Cancelled)
+        ));
     }
     #[test]
     fn codex_logout_rechecks_the_signed_out_state() {

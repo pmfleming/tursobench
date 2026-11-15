@@ -152,6 +152,35 @@ pub fn resolve(program: &Path, dirs: &[PathBuf]) -> Option<PathBuf> {
     dirs.iter().map(|d| d.join(program)).find(|p| executable(p))
 }
 
+type Located = std::collections::HashMap<PathBuf, Option<PathBuf>>;
+static LOCATED: std::sync::Mutex<Option<(std::time::Instant, Located)>> =
+    std::sync::Mutex::new(None);
+/// How long a lookup is reused; the UI asks every frame.
+const LOCATED_FOR: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// [`resolve`] over [`search_dirs`], reused for a few seconds so callers that
+/// run every frame do not list directories and stat every candidate each time.
+pub fn locate(program: &Path) -> Option<PathBuf> {
+    let mut cache = LOCATED.lock().unwrap_or_else(|e| e.into_inner());
+    if cache
+        .as_ref()
+        .is_none_or(|(at, _)| at.elapsed() > LOCATED_FOR)
+    {
+        *cache = Some((std::time::Instant::now(), Located::new()));
+    }
+    let (_, located) = cache.as_mut().expect("just filled");
+    if let Some(found) = located.get(program) {
+        return found.clone();
+    }
+    let found = resolve(program, &search_dirs());
+    located.insert(program.to_owned(), found.clone());
+    found
+}
+/// Look again on the next [`locate`], after an install or a changed path.
+pub fn forget_locations() {
+    *LOCATED.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
 /// Split a user-entered command, supporting quoted paths without executing it.
 pub fn command_words(command: &str) -> Result<Vec<String>, String> {
     let mut words = Vec::new();
@@ -212,6 +241,17 @@ mod tests {
         );
         assert_eq!(resolve(&path, &[]), Some(path));
         assert_eq!(resolve(Path::new("../agent"), &[dir.path().into()]), None);
+    }
+    #[test]
+    fn located_programs_are_reused_until_forgotten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("late-agent");
+        assert_eq!(locate(&path), None);
+        std::fs::write(&path, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(locate(&path), None, "reused within the window");
+        forget_locations();
+        assert_eq!(locate(&path), Some(path));
     }
     #[test]
     fn commands_allow_spaces_but_never_evaluate_shell_syntax() {

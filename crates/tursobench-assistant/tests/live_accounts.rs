@@ -37,6 +37,7 @@ fn installed_agents_report_status_and_models() {
             }
             Event::Finished(Err(error)) => panic!("{}: {error}", vendor.name),
             Event::Browser(_) => panic!("a status check must never start sign-in"),
+            Event::Cancelled => panic!("{}: nothing cancelled the check", vendor.name),
         }
     }
 }

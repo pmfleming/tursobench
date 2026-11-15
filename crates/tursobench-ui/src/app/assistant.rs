@@ -431,58 +431,24 @@ impl App {
                 .width(122.0)
                 .selected_text(name)
                 .show_ui(ui, |ui| {
-                    let dirs = tursobench_assistant::vendor::search_dirs();
                     for vendor in tursobench_assistant::vendor::VENDORS {
-                        let status = self
-                            .accounts
-                            .rows
-                            .get(&vendor.id)
-                            .and_then(|row| row.status.as_ref());
-                        let installed = status
-                            .map(|s| s.state != tursobench_assistant::account::SignIn::Missing)
-                            .unwrap_or_else(|| {
-                                if vendor.id == crate::storage::Provider::Custom {
-                                    tursobench_assistant::vendor::command_words(
-                                        &self.preferences.assistant.custom_command,
+                        let (state, intent, installed) = self.agent_state(vendor.id);
+                        let accessible = format!("{} · {state}", vendor.name);
+                        ui.horizontal(|ui| {
+                            super::assistant_accounts::status_dot(ui, intent, state);
+                            ui.add_enabled_ui(installed || vendor.id == provider, |ui| {
+                                let item =
+                                    ui.selectable_value(&mut provider, vendor.id, vendor.name);
+                                item.widget_info(|| {
+                                    egui::WidgetInfo::selected(
+                                        egui::Role::Button,
+                                        item.enabled(),
+                                        vendor.id == provider,
+                                        &accessible,
                                     )
-                                    .ok()
-                                    .and_then(|words| {
-                                        tursobench_assistant::vendor::resolve(
-                                            std::path::Path::new(&words[0]),
-                                            &dirs,
-                                        )
-                                    })
-                                    .is_some()
-                                } else {
-                                    let program = self
-                                        .preferences
-                                        .assistant
-                                        .executables
-                                        .get(&vendor.id)
-                                        .cloned()
-                                        .unwrap_or_else(|| vendor.command.into());
-                                    tursobench_assistant::vendor::resolve(&program, &dirs).is_some()
-                                }
+                                });
+                                item.on_hover_text(state);
                             });
-                        let hint = if !installed {
-                            "Not installed"
-                        } else {
-                            match status.map(|s| s.state) {
-                                Some(tursobench_assistant::account::SignIn::SignedIn) => {
-                                    "Signed in"
-                                }
-                                Some(tursobench_assistant::account::SignIn::SignedOut) => {
-                                    "Signed out"
-                                }
-                                _ => "Installed",
-                            }
-                        };
-                        ui.add_enabled_ui(installed || vendor.id == provider, |ui| {
-                            ui.selectable_value(
-                                &mut provider,
-                                vendor.id,
-                                format!("{} · {hint}", vendor.name),
-                            );
                         });
                     }
                     ui.separator();
@@ -500,6 +466,8 @@ impl App {
                 info.current_text_value = Some(name.into());
                 info
             });
+            let (state, intent, _) = self.agent_state(provider);
+            super::assistant_accounts::status_dot(ui, intent, &format!("{name} · {state}"));
             if provider != self.preferences.assistant.provider {
                 self.select_assistant_provider(provider);
             }
@@ -544,6 +512,38 @@ impl App {
         self.assistant_model_picker(ui);
     }
 
+    /// What the header knows about one agent: a state, its colour, and whether
+    /// it can be chosen. Before any check, a cached lookup says if it is installed.
+    fn agent_state(&self, provider: crate::storage::Provider) -> (&'static str, Intent, bool) {
+        use tursobench_assistant::{account::SignIn, vendor};
+        let row = self.accounts.rows.get(&provider);
+        let installed = match row.and_then(|r| r.status.as_ref()) {
+            Some(status) => status.state != SignIn::Missing,
+            None if provider == crate::storage::Provider::Custom => {
+                vendor::command_words(&self.preferences.assistant.custom_command)
+                    .ok()
+                    .and_then(|words| vendor::locate(std::path::Path::new(&words[0])))
+                    .is_some()
+            }
+            None => {
+                let program = self
+                    .preferences
+                    .assistant
+                    .executables
+                    .get(&provider)
+                    .cloned()
+                    .unwrap_or_else(|| provider.vendor().command.into());
+                vendor::locate(&program).is_some()
+            }
+        };
+        let (state, intent) = row.and_then(|r| r.describe()).unwrap_or(if installed {
+            ("Installed", Intent::Neutral)
+        } else {
+            ("Not installed", Intent::Neutral)
+        });
+        (state, intent, installed)
+    }
+
     pub(super) fn select_assistant_model(&mut self, model: String) {
         if model == self.preferences.assistant.selected_model() {
             return;
@@ -558,7 +558,6 @@ impl App {
     }
 
     fn assistant_model_picker(&mut self, ui: &mut egui::Ui) {
-        use tursobench_assistant::account::Model;
         let provider = self.preferences.assistant.provider;
         let models = self
             .accounts
@@ -568,12 +567,7 @@ impl App {
             .map(|s| s.models.clone())
             .unwrap_or_else(|| {
                 if provider == crate::storage::Provider::Claude {
-                    ["sonnet", "opus", "haiku"]
-                        .map(|m| Model {
-                            id: m.into(),
-                            name: m.into(),
-                        })
-                        .to_vec()
+                    tursobench_assistant::account::claude_models()
                 } else {
                     vec![]
                 }
@@ -1047,7 +1041,7 @@ pub(super) struct Profile {
 pub(super) fn profile(
     preferences: &crate::storage::AssistantPreferences,
 ) -> Result<Profile, String> {
-    use tursobench_assistant::vendor::{Provider, command_words, resolve, search_dirs};
+    use tursobench_assistant::vendor::{Provider, command_words, locate};
     let vendor = preferences.provider.vendor();
     let mut words: Vec<String> = if preferences.provider == Provider::Custom {
         command_words(&preferences.custom_command)?
@@ -1062,7 +1056,7 @@ pub(super) fn profile(
         .get(&preferences.provider)
         .cloned()
         .unwrap_or_else(|| command.clone().into());
-    let program = resolve(&requested, &search_dirs()).unwrap_or(requested);
+    let program = locate(&requested).unwrap_or(requested);
     if preferences.provider == Provider::Antigravity
         && preferences.privacy.of(vendor.id).telemetry_off
     {
