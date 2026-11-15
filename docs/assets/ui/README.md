@@ -1,5 +1,45 @@
 # UI screenshots
 
+## README overview
+
+The `readme/` images were captured on 2026-11-15 from `aeb8938` under
+headless Weston/Mesa, using disposable synthetic databases and isolated
+preferences. All three use the application's explicit Dark mode, charcoal
+surfaces (`#141b18`, `#0c1210`) and mint accent (`#87d3ad`). The banner uses
+the same palette and canonical app icon. Screenshots are unmodified native
+captures; no personal database is opened.
+
+- `workspace.png`: five tiles, schema navigation, typed values and foreign keys
+  at 1800 × 1000.
+- `edit-review.png`: staged update, original-value predicates and exact typed
+  bindings at 1366 × 768. The edit is never committed.
+- `assistant.png`: vendor/model controls, database tools and proposed SQL at
+  1366 × 768. The conversation is a seeded fixture; no agent CLI runs and
+  nothing leaves the machine.
+
+Both capture passes verify the native Wayland backend and clean session close.
+Reproduce from the repository root with empty GTK theme inputs:
+
+```sh
+nix develop
+capture_config=$(mktemp -d)
+XDG_CONFIG_HOME="$capture_config" bash scripts/capture-v8.sh target/readme-refresh/workspace
+bash scripts/capture-assistant.sh target/readme-refresh/assistant
+rm -rf "$capture_config"
+mkdir -p docs/assets/ui/readme
+cp target/readme-refresh/workspace/workspace-dark.png docs/assets/ui/readme/workspace.png
+cp target/readme-refresh/workspace/review-dialog.png docs/assets/ui/readme/edit-review.png
+cp target/readme-refresh/assistant/assistant-conversation.png docs/assets/ui/readme/assistant.png
+```
+
+The banner source is `../tursobench-banner.svg`. With Inkscape installed:
+
+```sh
+inkscape docs/assets/tursobench-banner.svg --export-type=png --export-filename=docs/assets/tursobench-banner.png --export-width=2400
+```
+
+The PNG is 2400 × 440. Earlier capture sets below retain their original provenance.
+
 ## Assistant and panel visibility — native Wayland
 
 The `assistant/` captures were taken on 2026-11-15 with synthetic data and
@@ -137,7 +177,7 @@ local change and closes without committing it. Capture dimensions and the sideba
 scene files are verified by the script. Historical captures below retain their
 original provenance.
 
-## Current README — native Wayland
+## Current README — native Wayland (2026-11-04, historical)
 
 The `current/` images were captured on 2026-11-04 from the native Wayland app,
 using the current code after `584edac`, headless Weston/Mesa, the desktop GTK
@@ -171,10 +211,9 @@ nix develop -c bash scripts/capture-readme.sh /path/to/offline/session.db
 # Optional second argument selects the image output directory.
 ```
 
-The README banner is authored in `../tursobench-banner.svg`, rendered to PNG at
-2400 × 600 with Inkscape. It embeds the current canonical app icon and the chosen
-Joyce quotation; it restores the earlier emerald header treatment. The previous
-banner and screenshots remain as historical references.
+At capture time, the README banner used a 2400 × 600 emerald treatment with
+the canonical app icon and a Joyce quotation. The current banner has since
+been replaced by the README overview treatment above.
 
 ## Earlier README — real session database
 
