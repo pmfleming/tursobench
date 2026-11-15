@@ -62,7 +62,8 @@ the adapter handles both without broadening approvals beyond known tools.
 Scripted peers cover Codex login completion/cancellation/logout, ACP advertised
 method selection, token-request rejection, grouped model options and waiting for
 permission-mode/model acknowledgements before sending prompts. Account changes
-stop workspace conversations and block chat sends until they finish.
+to the selected vendor stop workspace conversations and block chat sends until
+they finish; changes to other vendors leave the chat running.
 
 Browser/terminal sign-in completion with real accounts remains a manual check.
 Copilot is unavailable here and has scripted coverage. No real account was

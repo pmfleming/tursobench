@@ -67,7 +67,10 @@ impl App {
         provider: Provider,
         operation: Operation,
     ) {
-        if !matches!(operation, Operation::Check) {
+        // Every conversation runs the selected vendor (choosing another starts
+        // afresh), so only a change to that vendor's account ends them.
+        if !matches!(operation, Operation::Check) && provider == self.preferences.assistant.provider
+        {
             self.reset_assistant_conversations();
         }
         let target = self.account_target(provider);
@@ -94,7 +97,6 @@ impl App {
         }
     }
     pub(super) fn poll_assistant_accounts(&mut self, ctx: &egui::Context) {
-        let mut account_changed = false;
         if !self.settings.open || self.settings.page != super::settings::Page::Assistant {
             self.accounts.view_open = false;
         }
@@ -111,7 +113,6 @@ impl App {
                         row.browser = Some(url);
                     }
                     Event::Finished(result) => {
-                        account_changed |= row.changing_account;
                         row.changing_account = false;
                         row.job = None;
                         row.activity = None;
@@ -130,15 +131,14 @@ impl App {
                 }
             }
         }
-        if account_changed {
-            self.reset_assistant_conversations();
-        }
     }
+    /// The selected vendor's sign-in or sign-out is still running. Sending
+    /// waits for it; other vendors' account changes never block the chat.
     pub(super) fn assistant_account_pending(&self) -> bool {
         self.accounts
             .rows
-            .values()
-            .any(|row| row.changing_account && row.job.is_some())
+            .get(&self.preferences.assistant.provider)
+            .is_some_and(|row| row.changing_account && row.job.is_some())
     }
     pub(super) fn assistant_agents_ui(&mut self, ui: &mut egui::Ui) {
         if !self.accounts.view_open {

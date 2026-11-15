@@ -15,10 +15,13 @@ close it when supported and may leave it in the vendor's history.
 Sign in uses Codex’s managed browser flow (with cancellation), an advertised ACP
 OAuth method, or Claude Code’s terminal login. A copyable terminal command is
 available if a browser or terminal cannot be launched. Sign out is available for
-Claude Code and Codex; ACP sign-out stays in the agent’s own CLI. Account jobs
-end all workspace conversations before changing the sign-in, have no database
-tools, and kill their process group on cancellation or timeout. Chat sends stay
-disabled until these jobs finish or are cancelled.
+Claude Code and Codex; ACP sign-out stays in the agent’s own CLI. Every
+conversation runs the selected vendor, so a sign-in or sign-out of that vendor
+ends all workspace conversations before changing the sign-in, and chat sends
+stay disabled until the job finishes or is cancelled. Account jobs for other
+vendors leave the chat running. Account jobs have no database tools and kill
+their process group on cancellation or timeout; a terminal opened for sign-in
+is the user’s window and is left open when the terminal process exits.
 
 | Agent | Command | Protocol |
 | --- | --- | --- |

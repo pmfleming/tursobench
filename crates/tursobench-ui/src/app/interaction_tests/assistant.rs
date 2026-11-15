@@ -610,7 +610,7 @@ fn chat_header_pickers_change_model_and_vendor_with_fresh_consent() {
 }
 
 #[test]
-fn account_changes_stop_chat_and_block_new_turns_until_the_helper_finishes() {
+fn only_the_selected_vendors_account_change_stops_chat_and_blocks_new_turns() {
     use crate::storage::Provider;
     use tursobench_assistant::account::Operation;
     let (dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
@@ -620,29 +620,47 @@ fn account_changes_stop_chat_and_block_new_turns_until_the_helper_finishes() {
     app.database.assistant.draft = "Hello".into();
     app.send_assistant(&ctx);
     wait_until(&mut app, &ctx, |a| !a.database.assistant.busy);
-    let helper = dir.path().join("waiting-codex");
+    let helper = dir.path().join("waiting-helper");
     std::fs::write(
         &helper,
         "#!/usr/bin/env bash\nwhile read -r line; do :; done\n",
     )
     .unwrap();
     std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
-    app.preferences
-        .assistant
-        .executables
-        .insert(Provider::Codex, helper);
+    for provider in [Provider::Codex, Provider::Claude] {
+        app.preferences
+            .assistant
+            .executables
+            .insert(provider, helper.clone());
+    }
+    let cancel = |app: &mut App, provider| {
+        app.accounts.rows[&provider].job.as_ref().unwrap().cancel();
+    };
+
+    // Signing in to another vendor leaves the Claude Code chat running.
     app.agent_account_job(&ctx, Provider::Codex, Operation::Login { method: None });
+    assert!(!app.assistant_account_pending());
+    assert!(app.database.assistant.host().is_some());
+    let entries = app.database.assistant.entries.len();
+    app.database.assistant.draft = "Still here".into();
+    app.send_assistant(&ctx);
+    wait_until(&mut app, &ctx, |a| !a.database.assistant.busy);
+    assert!(app.database.assistant.entries.len() > entries);
+    cancel(&mut app, Provider::Codex);
+    wait_until(&mut app, &ctx, |a| {
+        a.accounts.rows[&Provider::Codex].job.is_none()
+    });
+    assert!(app.database.assistant.host().is_some());
+
+    // Signing out of the selected vendor ends its chat and holds new turns.
+    app.agent_account_job(&ctx, Provider::Claude, Operation::Logout);
     assert!(app.assistant_account_pending());
     assert!(app.database.assistant.host().is_none());
     app.database.assistant.draft = "Wait for account change".into();
     app.send_assistant(&ctx);
     assert!(app.database.assistant.host().is_none());
     assert!(app.database.assistant.entries.is_empty());
-    app.accounts.rows[&Provider::Codex]
-        .job
-        .as_ref()
-        .unwrap()
-        .cancel();
+    cancel(&mut app, Provider::Claude);
     wait_until(&mut app, &ctx, |a| !a.assistant_account_pending());
     assert_eq!(app.database.assistant.draft, "Wait for account change");
     app.close();

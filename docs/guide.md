@@ -285,8 +285,9 @@ hands the window to an already running instance, status is checked every second
 until the sign-in finishes. Cancel stops
 the helper. “Executable and terminal sign-in” has a copyable command if needed.
 Status is checked again when sign-in completes. Claude Code and Codex also offer
-Sign out; sign out of ACP agents in their own CLI. These account changes end
-existing workspace conversations. Use Scan again after a manual terminal login.
+Sign out; sign out of ACP agents in their own CLI. Signing in or out of the
+agent you chat with ends its conversations; other agents’ account changes leave
+the chat running. Use Scan again after a manual terminal login.
 
 The assistant panel sits on the right. Show or hide it with the icon on the right
 of the status bar. The sidebar toggle stays on the left. Ctrl B (sidebar) and Ctrl I
