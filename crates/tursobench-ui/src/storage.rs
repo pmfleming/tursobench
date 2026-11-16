@@ -186,8 +186,29 @@ pub struct AssistantPreferences {
     >,
     /// What each agent CLI may keep or report, chosen separately per provider.
     pub privacy: Privacy,
+    /// Sessions left before each agent's notice of who receives the data shows
+    /// again; a missing provider has never seen it.
+    pub intro_skips: std::collections::BTreeMap<Provider, u8>,
+    /// How the chat's copy buttons format a reply or the conversation.
+    pub copy_format: CopyFormat,
+}
+/// The text format the assistant's copy buttons write to the clipboard.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum CopyFormat {
+    #[default]
+    Markdown,
+    Html,
 }
 impl AssistantPreferences {
+    /// Sessions that use an agent without repeating its notice, after it shows.
+    pub const INTRO_SKIPS: u8 = 4;
+    /// Whether this session shows the selected agent's notice; counts the session.
+    pub fn take_intro(&mut self) -> bool {
+        let skips = self.intro_skips.entry(self.provider).or_insert(0);
+        let show = *skips == 0;
+        *skips = if show { Self::INTRO_SKIPS } else { *skips - 1 };
+        show
+    }
     pub fn selected_model(&self) -> &str {
         self.models.get(&self.provider).map_or("", String::as_str)
     }
@@ -199,6 +220,7 @@ impl AssistantPreferences {
         self.grant_for(database).unwrap_or(self.default_sharing)
     }
     pub fn clear_custom_grants(&mut self) {
+        self.intro_skips.remove(&Provider::Custom);
         for grants in self.grants.values_mut() {
             grants.remove(&Provider::Custom);
         }
@@ -362,6 +384,9 @@ impl Preferences {
         self.assistant
             .executables
             .retain(|_, path| path.is_absolute() && path.as_os_str().len() <= 4096);
+        self.assistant
+            .intro_skips
+            .retain(|_, skips| *skips <= AssistantPreferences::INTRO_SKIPS);
         if self.assistant.custom_command.len() > 4096 {
             self.assistant.custom_command.clear();
         }

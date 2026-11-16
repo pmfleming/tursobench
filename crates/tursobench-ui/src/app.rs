@@ -1,6 +1,7 @@
 use tursobench_core::{Access, Browse, ConnectionSettings, Ticket, TransactionState};
 mod assistant;
 mod assistant_accounts;
+mod assistant_export;
 mod checks;
 mod columns;
 mod commands;

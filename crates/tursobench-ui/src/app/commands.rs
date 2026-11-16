@@ -32,6 +32,7 @@ pub(super) enum Command {
     CopyResults,
     ToggleSidebar,
     ToggleAssistant,
+    ToggleTiles,
 }
 
 pub(super) struct PaletteItem {
@@ -307,6 +308,7 @@ impl App {
             (Modifiers::CTRL, Key::Comma, Command::Settings),
             (Modifiers::CTRL, Key::B, Command::ToggleSidebar),
             (Modifiers::CTRL, Key::I, Command::ToggleAssistant),
+            (Modifiers::CTRL, Key::L, Command::ToggleTiles),
             (Modifiers::ALT, Key::ArrowLeft, Command::Back),
         ] {
             if !consumed(modifiers, key) {
@@ -603,6 +605,12 @@ impl App {
                 Command::ToggleAssistant,
             ),
             (
+                "Tile column",
+                "Ctrl L",
+                "tiles column collapse fold show hide toggle record structure sql editor",
+                Command::ToggleTiles,
+            ),
+            (
                 "Settings",
                 "Ctrl ,",
                 "preferences options",
@@ -672,7 +680,8 @@ impl App {
             | Command::Help
             | Command::Theme
             | Command::ToggleSidebar
-            | Command::ToggleAssistant => None,
+            | Command::ToggleAssistant
+            | Command::ToggleTiles => None,
             Command::Close if self.database.session.is_none() => Some("No database is open"),
             Command::Close => None,
             _ if !open => Some("Open a database first"),
@@ -836,6 +845,7 @@ impl App {
             }
             Command::ToggleSidebar => self.toggle_sidebar(),
             Command::ToggleAssistant => self.toggle_assistant(),
+            Command::ToggleTiles => self.toggle_tiles_column(),
             Command::Settings => self.settings.open = true,
             Command::Panel(panel) => {
                 self.show_sidebar();

@@ -200,6 +200,17 @@ fn cards(graph: &Graph<'_>, all: bool, pack_width: f32) -> Vec<(egui::Rect, Vec<
             (egui::Rect::from_min_size(egui::Pos2::ZERO, size), rows)
         })
         .collect();
+    // The height a layout packed to `pack_width` would reach; a long level wraps
+    // into side-by-side columns instead of growing past it.
+    let area: f32 = result
+        .iter()
+        .map(|(rect, _)| (WIDTH + 40.0) * (rect.height() + 45.0))
+        .sum();
+    let tallest = result
+        .iter()
+        .map(|(rect, _)| rect.height() + 45.0)
+        .fold(0.0, f32::max);
+    let column_height = (area / pack_width.max(WIDTH)).max(tallest);
     let mut unseen: BTreeSet<_> = (0..count).collect();
     let mut shelf = egui::Pos2::ZERO;
     let mut shelf_height = 0.0f32;
@@ -222,15 +233,30 @@ fn cards(graph: &Graph<'_>, all: bool, pack_width: f32) -> Vec<(egui::Rect, Vec<
                 }
             }
         }
-        let component_width = levels.len() as f32 * (WIDTH + 40.0);
+        let mut columns: Vec<Vec<usize>> = Vec::new();
+        for level in &levels {
+            let mut column = Vec::new();
+            let mut height = 0.0;
+            for &i in level {
+                let card = result[i].0.height() + 45.0;
+                if !column.is_empty() && height + card > column_height {
+                    columns.push(std::mem::take(&mut column));
+                    height = 0.0;
+                }
+                column.push(i);
+                height += card;
+            }
+            columns.push(column);
+        }
+        let component_width = columns.len() as f32 * (WIDTH + 40.0);
         if shelf.x > 0.0 && shelf.x + component_width > pack_width {
             shelf.x = 0.0;
             shelf.y += shelf_height + 30.0;
             shelf_height = 0.0;
         }
-        for (depth, level) in levels.iter().enumerate() {
+        for (depth, column) in columns.iter().enumerate() {
             let mut y = shelf.y;
-            for &i in level {
+            for &i in column {
                 result[i].0 = egui::Rect::from_min_size(
                     egui::pos2(shelf.x + depth as f32 * (WIDTH + 40.0), y),
                     result[i].0.size(),
@@ -758,7 +784,7 @@ impl DiagramState {
         if self.pack_width <= 0.0
             || (self.camera.auto_fit && self.camera.last_canvas_size != ui.available_size())
         {
-            let aspect = (ui.available_width() / ui.available_height().max(1.0)).clamp(0.5, 4.0);
+            let aspect = (ui.available_width() / ui.available_height().max(1.0)).clamp(0.5, 8.0);
             let area: f32 = graph
                 .tables
                 .iter()
@@ -950,6 +976,59 @@ mod tests {
         camera.apply_zoom(size);
         assert_eq!(camera.zoom, 1.0);
         assert!(((size * 0.5 - camera.pan) / camera.zoom - world_center).length() < 0.1);
+    }
+
+    #[test]
+    fn a_hub_with_many_children_spreads_across_a_wide_tile() {
+        use tursobench_core::{ForeignKey, Table};
+        let table = |name: String, targets: Vec<&str>| DiagramTable {
+            name: name.clone(),
+            error: None,
+            inspection: Some(Inspection {
+                table: Table {
+                    name,
+                    columns: vec![],
+                    is_table: true,
+                    has_rowid: true,
+                    binary_collations: true,
+                },
+                indexes: vec![],
+                foreign_keys: targets
+                    .into_iter()
+                    .map(|target| ForeignKey {
+                        id: 0,
+                        target: target.into(),
+                        columns: vec![],
+                        on_update: "NO ACTION".into(),
+                        on_delete: "NO ACTION".into(),
+                    })
+                    .collect(),
+            }),
+        };
+        let data = SchemaDiagram {
+            tables: std::iter::once(table("hub".into(), vec![]))
+                .chain((0..12).map(|i| table(format!("child{i}"), vec!["hub"])))
+                .collect(),
+            limited: false,
+        };
+        let layout = cards(&Graph::new(&data, false), false, 2000.0);
+        let bounds = layout
+            .iter()
+            .fold(egui::Rect::NOTHING, |r, (next, _)| r.union(*next));
+        // One long level wraps into several columns, so the map is wider than tall.
+        assert!(bounds.width() > bounds.height(), "{bounds:?}");
+        let columns: std::collections::BTreeSet<_> =
+            layout[1..].iter().map(|(r, _)| r.left() as i32).collect();
+        assert!(columns.len() > 1);
+        // The hub still sits left of every child, and no cards overlap.
+        assert!(
+            layout[1..]
+                .iter()
+                .all(|(r, _)| r.left() > layout[0].0.right())
+        );
+        for (i, (a, _)) in layout.iter().enumerate() {
+            assert!(layout[i + 1..].iter().all(|(b, _)| !a.intersects(*b)));
+        }
     }
 
     #[test]

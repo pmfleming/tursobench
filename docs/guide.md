@@ -70,7 +70,7 @@ unsupported. Shared access is an experimental Linux preview feature.
 ## Features
 
 - Startup database discovery across application data/state and development folders, with recent files, Turso/SQLite/unknown type icons, a per-file SQLite override, and search-folder controls. See [discovery behavior and limits](database-discovery.md).
-- Persistent database navigator and five tiles with compact local ribbons, full-length draggable dividers, minimize-to-header and workspace expansion. Tile proportions are saved per database.
+- Persistent database navigator and five tiles with compact local ribbons, full-length draggable dividers, a draggable line between SQL and its results, minimize-to-header and workspace expansion. Tile proportions, including the SQL split, are saved per database.
 - Engine-enforced read-only opening by default; read/write is explicit opt-in.
 - Searchable schema/DDL, native index/FK details, related-row navigation and read-only diagnostics.
 - Relationship-arranged schema home: tables, keys, composite/self/cyclic FKs, Map/List fallback and saved map layout.
@@ -287,7 +287,7 @@ if set, then the desktop’s default (`xdg-terminal-exec`), then Ghostty, GNOME
 Terminal, Konsole, WezTerm, kitty, Alacritty, foot or xterm. When the terminal
 hands the window to an already running instance, status is checked every second
 until the sign-in finishes. Cancel stops
-the helper. The selected agent's area shows its program and a copyable terminal
+the helper. Agent settings shows each agent's program and a copyable terminal
 sign-in command; the pencil sets an absolute executable path.
 Status is checked again when sign-in completes. Claude Code and Codex also offer
 Sign out; sign out of ACP agents in their own CLI. Signing in or out of the
@@ -297,8 +297,11 @@ the chat running. Use Scan again after a manual terminal login.
 The assistant panel sits on the right. Show or hide it with the icon on the right
 of the status bar. The sidebar toggle stays on the left. Ctrl B (sidebar) and Ctrl I
 (assistant), or the command palette, toggle them independently. Either, both or neither can be visible, and
-the choice persists. Ctrl P search and close confirmations bring a hidden sidebar
-back.
+the choice persists. A hidden panel leaves a thin line at its edge; click it to
+bring the panel back. Ctrl P search and close confirmations also bring a hidden
+sidebar back. The status-bar button next to the assistant's (Ctrl L) folds Record, Structure and
+SQL to a line the same way and reopens the tiles that were open; minimizing all
+three or dragging the column divider into the right edge also folds it.
 
 Each database shares **Schema and query results** by default; change the default in
 Settings → Assistant → Sharing. Two icons in the panel header switch the open
@@ -307,16 +310,26 @@ Settings lists those choices and can forget one.
 The agent can list tables, describe one, run one read-only SELECT of at most
 200 rows when results are shared, and propose SQL. Proposed SQL, and any SQL block
 in a reply, opens in a new SQL editor tile without running; you review and run it.
-Enter sends, Shift Enter adds a line and Stop interrupts the turn.
+Enter sends, Shift Enter adds a line and Stop interrupts the turn. The header's
+copy buttons put the last reply or the whole conversation on the clipboard, as
+Markdown or HTML (Settings → Assistant → Chat → Copy as); the agent's thinking
+is left out.
 
-Below the agent list, Settings → Assistant gathers the selected agent's program,
-terminal sign-in, model and privacy choices. Each agent keeps its own privacy
+Below the agent list, Agent settings holds any agent's program, terminal sign-in,
+model and privacy choices; pick the agent in "Settings for" without changing
+the one the chat uses. Each agent keeps its own privacy
 choices, all private by default: telemetry and error reports blocked, nothing saved to the
 CLI's history, and whether the agent may learn the database's file name (never
-its folder). Credentials stay with the CLI. Status, sign-in method and plan
-stay in memory and email is discarded. Copilot CLI and other ACP agents keep their
+its folder). Choices apply to the next conversation. Whatever the choices, the
+database's folder is never sent, row values are sent only while query results are
+shared, and credentials stay with the CLI: status, sign-in method and plan stay
+in memory and email is discarded. Claude Code gets no shell, file or web access;
+Codex has no shell or web search and runs in a read-only sandbox; ACP agents keep
+their own tools: TursoBench declines their requests to run commands or edit
+files, but some can read local files without asking. Copilot CLI and other ACP agents keep their
 own telemetry and history settings. Antigravity offers a telemetry switch, while
-its history follows its own settings. The notice above an empty conversation links there.
+its history follows its own settings. The notice above an empty conversation links there; it shows the first time each
+agent is used and every fifth session after.
 
 ![Assistant on the right with a proposed UPDATE in the SQL tile.](assets/ui/assistant/assistant-conversation.png)
 

@@ -6,6 +6,8 @@ use super::{
 };
 use eframe::egui;
 use tursobench_core::TransactionState;
+/// Space around a collapsed panel's line.
+const FOLD_MARGIN: i8 = 4;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub(super) enum ToolPanel {
@@ -174,9 +176,23 @@ impl App {
             }
             #[cfg(not(test))]
             let _ = panel;
+        } else if self.fold_panel(
+            ui,
+            egui::Panel::left("workspace-sidebar-line"),
+            "Show databases",
+        ) {
+            self.toggle_sidebar();
         }
         // Navigation stays on the left; the assistant reserves the right edge.
-        if self.preferences.panels.assistant {
+        if !self.preferences.panels.assistant {
+            if self.fold_panel(
+                ui,
+                egui::Panel::right("assistant-panel-line"),
+                "Show assistant",
+            ) {
+                self.toggle_assistant();
+            }
+        } else {
             let max = (ui.available_width() - 360.0).clamp(260.0, 720.0);
             let panel = egui::Panel::right("assistant-panel")
                 .resizable(true)
@@ -345,6 +361,18 @@ impl App {
                         {
                             self.toggle_assistant();
                         }
+                        if icons::control(
+                            ui,
+                            Icon::TilesColumn,
+                            "Record, Structure and SQL",
+                            "Ctrl L",
+                            !self.tiles_folded(),
+                            false,
+                        )
+                        .clicked()
+                        {
+                            self.toggle_tiles_column();
+                        }
                         ui.separator();
                         self.status_details(ui)
                     });
@@ -370,6 +398,22 @@ impl App {
             }
         });
         ui.separator();
+    }
+    /// A collapsed side panel: a full-height line that reopens it on click.
+    fn fold_panel(&mut self, ui: &mut egui::Ui, panel: egui::Panel, name: &str) -> bool {
+        panel
+            .resizable(false)
+            .show_separator_line(false)
+            .exact_size(super::tiling::LINE + 2.0 * f32::from(FOLD_MARGIN))
+            .frame(
+                egui::Frame::side_top_panel(ui.style())
+                    .inner_margin(egui::Margin::same(FOLD_MARGIN)),
+            )
+            .show(ui, |ui| {
+                let rect = ui.available_rect_before_wrap();
+                presentation::fold_line(ui, rect, name, name).clicked()
+            })
+            .inner
     }
     pub(super) fn toggle_sidebar(&mut self) {
         self.preferences.panels.sidebar = !self.preferences.panels.sidebar;

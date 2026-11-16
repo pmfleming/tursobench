@@ -24,7 +24,12 @@ fn sidebar_and_assistant_hide_independently_and_the_workspace_reclaims_their_wid
             sidebar,
             "sidebar {sidebar} assistant {assistant}"
         );
-        assert_eq!(label_exists(&output, "Hide assistant"), assistant);
+        assert_eq!(
+            app.database.ui.assistant_rect != egui::Rect::NOTHING,
+            assistant
+        );
+        // The status-bar button opens and closes it; a closed panel leaves a line.
+        assert_eq!(label_exists(&output, "Show assistant"), !assistant);
         // The status-bar toggles stay reachable whatever is hidden.
         assert!(label_exists(&output, "Sidebar"));
         assert!(label_exists(&output, "Assistant"));
@@ -37,9 +42,9 @@ fn sidebar_and_assistant_hide_independently_and_the_workspace_reclaims_their_wid
         }
         widths.push(workspace.width());
     }
-    // Shown panels take width from the workspace; hiding both gives it all back.
+    // Shown panels take width from the workspace; collapsing both leaves two thin lines.
     assert!(widths[1] < widths[0] && widths[0] < widths[3] && widths[2] < widths[3]);
-    assert!(widths[3] >= SIZE.x - 20.0);
+    assert!(widths[3] >= SIZE.x - 60.0);
     app.close();
 }
 
@@ -66,5 +71,62 @@ fn toggles_shortcuts_and_search_bring_panels_back() {
     frame_at(&mut app, &ctx, SIZE, vec![]);
     assert!(app.database.ui.sidebar_rect != egui::Rect::NOTHING);
     app.database.confirm_close = false;
+    app.close();
+}
+
+#[test]
+fn collapsed_areas_leave_lines_that_bring_them_back() {
+    use crate::app::tiling::Kind;
+    let (_dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
+    app.preferences.panels.sidebar = false;
+    app.preferences.panels.assistant = false;
+    app.database
+        .workspace
+        .minimized
+        .extend([Kind::Record, Kind::Structure, Kind::Sql]);
+    frame_at(&mut app, &ctx, SIZE, vec![]);
+    let mut output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    // The folded column gives its width to the left tiles.
+    let data = app.database.workspace.pane_rects[1].1;
+    assert!(data.width() > app.database.workspace.area.width() - 40.0);
+    for name in [
+        "Show databases",
+        "Show assistant",
+        "Show Record, Structure and SQL",
+    ] {
+        click(&mut app, &ctx, control(&output, name).center());
+        output = frame_at(&mut app, &ctx, SIZE, vec![]);
+        assert!(!label_exists(&output, name), "{name} stays a line");
+    }
+    assert!(app.preferences.panels.sidebar && app.preferences.panels.assistant);
+    assert!(app.database.workspace.minimized.is_empty());
+    app.close();
+}
+
+#[test]
+fn the_tiles_toggle_folds_the_column_and_reopens_what_was_open() {
+    use crate::app::tiling::Kind;
+    use std::collections::BTreeSet;
+    let (_dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
+    app.database
+        .workspace
+        .minimized
+        .extend([Kind::Record, Kind::Structure]);
+    frame_at(&mut app, &ctx, SIZE, vec![]);
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    click(
+        &mut app,
+        &ctx,
+        control(&output, "Record, Structure and SQL").center(),
+    );
+    assert!(app.tiles_folded());
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    assert!(label_exists(&output, "Show Record, Structure and SQL"));
+    // Ctrl L unfolds it with SQL open and the others still minimized.
+    press_key(&mut app, &ctx, egui::Key::L, egui::Modifiers::CTRL);
+    assert_eq!(
+        app.database.workspace.minimized,
+        BTreeSet::from([Kind::Record, Kind::Structure])
+    );
     app.close();
 }

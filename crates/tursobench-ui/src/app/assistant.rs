@@ -513,11 +513,6 @@ impl App {
                 self.select_assistant_provider(provider);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if icons::control(ui, Icon::Close, "Hide assistant", "Ctrl I", false, false)
-                    .clicked()
-                {
-                    self.toggle_assistant();
-                }
                 if let Some(current) = self.assistant_sharing() {
                     // Right to left: reads schema, then schema and results.
                     for sharing in [Sharing::Rows, Sharing::Schema] {
@@ -531,6 +526,35 @@ impl App {
                         }
                     }
                     ui.separator();
+                }
+                let format = self.preferences.assistant.copy_format;
+                let as_format = match format {
+                    crate::storage::CopyFormat::Markdown => "Markdown",
+                    crate::storage::CopyFormat::Html => "HTML",
+                };
+                let entries = &self.database.assistant.entries;
+                // Right to left: last reply, then the whole conversation.
+                let reply = super::assistant_export::last_reply(entries, format);
+                let copy = ui
+                    .add_enabled_ui(reply.is_some(), |ui| {
+                        icons::control(ui, Icon::CopyAll, "Copy conversation", "", false, false)
+                    })
+                    .inner
+                    .on_hover_text(format!("As {as_format}; change in Settings → Assistant"));
+                if copy.clicked() {
+                    let text = super::assistant_export::conversation(entries, name, format);
+                    ui.ctx().copy_text(text);
+                }
+                let copy = ui
+                    .add_enabled_ui(reply.is_some(), |ui| {
+                        icons::control(ui, Icon::Copy, "Copy last reply", "", false, false)
+                    })
+                    .inner
+                    .on_hover_text(format!("As {as_format}; change in Settings → Assistant"));
+                if copy.clicked()
+                    && let Some(reply) = reply
+                {
+                    ui.ctx().copy_text(reply);
                 }
                 let conversation = &self.database.assistant;
                 if ui
@@ -677,8 +701,22 @@ impl App {
         }
     }
 
-    /// Who receives what, above an empty conversation.
+    /// Who receives what, above an empty conversation: the first time an agent is
+    /// used, then once every few sessions. Decided once per session and agent.
     fn assistant_intro(&mut self, ui: &mut egui::Ui) {
+        let id = egui::Id::unique(("assistant-intro", self.preferences.assistant.provider));
+        let show = match ui.ctx().data(|d| d.get_temp::<bool>(id)) {
+            Some(show) => show,
+            None => {
+                let show = self.preferences.assistant.take_intro();
+                self.store.save(&self.preferences);
+                ui.ctx().data_mut(|d| d.insert_temp(id, show));
+                show
+            }
+        };
+        if !show {
+            return;
+        }
         ui.add_space(8.0);
         let text = match profile(&self.preferences.assistant) {
             Ok(profile) => {
@@ -721,6 +759,8 @@ impl App {
         self.settings.open = true;
         self.settings.page = super::settings::Page::Assistant;
         self.settings.reveal_privacy = true;
+        // The link is about the agent this chat uses.
+        self.accounts.configuring = Some(self.preferences.assistant.provider);
     }
 
     fn assistant_input(&mut self, ui: &mut egui::Ui) {
@@ -749,8 +789,6 @@ impl App {
         }
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
-            ui.weak("Reads only · proposes SQL for you to run")
-                .on_hover_text("Tools: list tables, describe a table, read-only SELECT when shared, and open SQL in an editor tile");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if busy {
                     if icons::control(ui, Icon::Stop, "Stop", "", false, false).clicked()
@@ -1094,17 +1132,44 @@ impl App {
     pub(super) fn assistant_settings(&mut self, ui: &mut egui::Ui) {
         use crate::storage::Provider;
         ui.spacing_mut().item_spacing.y = 4.0;
-        // Choose an agent above; everything below it belongs to that agent.
         super::panels::section(ui, "Agents", |ui| self.assistant_agents_ui(ui));
-        let name = self.preferences.assistant.provider.vendor().name;
-        // The chat panel's privacy link opens on the selected agent's area.
+        // The chat panel's privacy link opens on the chat agent's settings.
         if std::mem::take(&mut self.settings.reveal_privacy) {
             ui.scroll_to_cursor(Some(egui::Align::TOP));
         }
-        super::panels::section(ui, name, |ui| {
+        // Settings for any agent, whichever one the chat uses.
+        let provider = self.configured_agent();
+        let active = self.preferences.assistant.provider;
+        super::panels::section(ui, "Agent settings", |ui| {
             let grid = AgentGrid::new(ui);
+            let mut chosen = provider;
+            grid.field(ui, "Settings for", Column::Status, |ui| {
+                let named = |p: Provider| {
+                    let name = p.vendor().name;
+                    if p == active {
+                        format!("{name} · in use")
+                    } else {
+                        name.to_owned()
+                    }
+                };
+                egui::ComboBox::from_id_salt("agent-settings-for")
+                    .selected_text(named(provider))
+                    .show_ui(ui, |ui| {
+                        for vendor in tursobench_assistant::vendor::VENDORS {
+                            ui.selectable_value(&mut chosen, vendor.id, named(vendor.id));
+                        }
+                    })
+                    .response
+                    .widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::Role::ComboBox, true, "Settings for")
+                    });
+            });
+            if chosen != provider {
+                self.accounts.configuring = Some(chosen);
+                self.accounts.path_open = false;
+            }
             self.assistant_agent_status(ui);
-            if self.preferences.assistant.provider == Provider::Custom {
+            if provider == Provider::Custom {
                 let before = self.preferences.assistant.custom_command.clone();
                 let mut response = None;
                 grid.field(ui, "Command", Column::Rest, |ui| {
@@ -1120,7 +1185,9 @@ impl App {
                 });
                 if before != self.preferences.assistant.custom_command {
                     self.preferences.assistant.clear_custom_grants();
-                    self.reset_assistant_conversations();
+                    if active == Provider::Custom {
+                        self.reset_assistant_conversations();
+                    }
                     self.accounts.rows.remove(&Provider::Custom);
                 }
                 if let Some(response) = response {
@@ -1136,7 +1203,7 @@ impl App {
                         self.preferences
                             .assistant
                             .models
-                            .entry(self.preferences.assistant.provider)
+                            .entry(provider)
                             .or_default(),
                     )
                     .hint_text("Agent default")
@@ -1145,9 +1212,10 @@ impl App {
                 field.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::Role::TextInput, true, "Assistant model")
                 });
-                response = Some(
-                    field.on_hover_text("Passed to the agent; leave empty for its own default"),
-                );
+                response = Some(field.on_hover_text(
+                    "Passed to the agent; leave empty for its own default. Applies to the \
+                         next conversation.",
+                ));
             });
             if let Some(response) = response {
                 self.setting_response(response);
@@ -1155,10 +1223,26 @@ impl App {
             if previous_model != self.preferences.assistant.selected_model() {
                 self.reset_assistant_conversations();
             }
-            self.assistant_privacy(ui, grid);
-            grid.compact().field(ui, "", Column::Rest, |ui| {
-                ui.weak("Applies to the next conversation.");
+            self.assistant_privacy(ui, grid, provider);
+        });
+        super::panels::section(ui, "Chat", |ui| {
+            use crate::storage::CopyFormat;
+            let mut format = self.preferences.assistant.copy_format;
+            AgentGrid::new(ui).field(ui, "Copy as", Column::Rest, |ui| {
+                for (choice, name) in [
+                    (CopyFormat::Markdown, "Markdown"),
+                    (CopyFormat::Html, "HTML"),
+                ] {
+                    ui.selectable_value(&mut format, choice, name)
+                        .on_hover_text(
+                            "How the chat's copy buttons write a reply or the conversation",
+                        );
+                }
             });
+            if format != self.preferences.assistant.copy_format {
+                self.preferences.assistant.copy_format = format;
+                self.store.save(&self.preferences);
+            }
         });
         super::panels::section(ui, "Sharing", |ui| {
             let mut default = None;
@@ -1247,8 +1331,6 @@ impl App {
 struct PrivacyCopy {
     /// Telemetry and history switches, when the CLI lets TursoBench set them.
     switches: Option<[(&'static str, &'static str); 2]>,
-    sign_in: &'static str,
-    tools: (&'static str, &'static str, bool),
 }
 
 fn privacy_copy(provider: crate::storage::Provider) -> PrivacyCopy {
@@ -1268,14 +1350,6 @@ fn privacy_copy(provider: crate::storage::Provider) -> PrivacyCopy {
                      writes nothing to its session history.",
                 ),
             ]),
-            sign_in: "Settings asks the CLI for sign-in state, method and plan. Email is discarded, \
-                      account details stay in memory, and credential files and tokens stay with the CLI.",
-            tools: (
-                "No shell, file or web access",
-                "Claude Code's built-in tools are removed; only TursoBench's read-only \
-                 database tools remain.",
-                false,
-            ),
         },
         Provider::Codex => PrivacyCopy {
             switches: Some([
@@ -1291,34 +1365,22 @@ fn privacy_copy(provider: crate::storage::Provider) -> PrivacyCopy {
                      so Codex writes nothing to its history.",
                 ),
             ]),
-            sign_in: "Settings asks Codex for sign-in state, method and plan with refreshToken=false. \
-                      Email is discarded and nothing is persisted. Tokens stay with Codex.",
-            tools: (
-                "No shell or web search · read-only sandbox",
-                "Codex's shell, web search, apps, plugins and browser are switched off. \
-                 apply_patch remains but cannot write, and its requests are declined.",
-                false,
-            ),
         },
-        Provider::Antigravity | Provider::Copilot | Provider::Custom => PrivacyCopy {
-            switches: None,
-            sign_in: "Settings checks an empty ACP session without database tools. \
-                      Credentials remain with the CLI; no account fields are persisted.",
-            tools: (
-                "Keeps its own tools",
-                "TursoBench declines the agent's requests to run commands or edit files, \
-                 but some agents can read local files without asking.",
-                true,
-            ),
-        },
+        Provider::Antigravity | Provider::Copilot | Provider::Custom => {
+            PrivacyCopy { switches: None }
+        }
     }
 }
 
 impl App {
-    /// The selected agent's privacy switches and promises, on its settings grid.
-    fn assistant_privacy(&mut self, ui: &mut egui::Ui, grid: AgentGrid) {
-        let provider = self.preferences.assistant.provider;
-        let name = match profile(&self.preferences.assistant) {
+    /// The configured agent's privacy switches, on its settings grid; the fixed promises are in the docs.
+    fn assistant_privacy(
+        &mut self,
+        ui: &mut egui::Ui,
+        grid: AgentGrid,
+        provider: crate::storage::Provider,
+    ) {
+        let name = match self.profile_for(provider) {
             Ok(profile) => profile.name,
             Err(_) => "The agent".into(),
         };
@@ -1332,14 +1394,12 @@ impl App {
             |ui: &mut egui::Ui, label: &str, value: &mut bool, text: &str, tip: &str| {
                 grid.field(ui, label, Column::Rest, |ui| {
                     changed |= presentation::checkbox(ui, value, text)
-                        .on_hover_text(tip)
+                        .on_hover_text(format!("{tip}\nApplies to the next conversation."))
                         .changed();
                 });
             };
-        let note = |ui: &mut egui::Ui, label: &str, icon, text: &str, tip: &str, warn| {
-            grid.field(ui, label, Column::Rest, |ui| {
-                guarantee(ui, icon, text, tip, warn)
-            });
+        let note = |ui: &mut egui::Ui, label: &str, icon, text: &str, tip: &str| {
+            grid.field(ui, label, Column::Rest, |ui| guarantee(ui, icon, text, tip));
         };
         if provider == crate::storage::Provider::Antigravity {
             switch(
@@ -1355,7 +1415,6 @@ impl App {
                 Icon::Settings,
                 "History follows Antigravity's own settings",
                 "ACP does not offer a per-conversation history switch. Empty status sessions may appear in CLI history.",
-                false,
             );
         } else {
             match copy.switches {
@@ -1376,7 +1435,6 @@ impl App {
                     &format!("Telemetry and history follow {name}'s own settings"),
                     "TursoBench cannot change them for Agent Client Protocol agents; see \
                      the agent's documentation.",
-                    false,
                 ),
             }
         }
@@ -1393,52 +1451,13 @@ impl App {
             self.preferences.normalize();
             self.store.save(&self.preferences);
         }
-        note(
-            ui,
-            "",
-            Icon::Lock,
-            "Credentials stay with the CLI",
-            copy.sign_in,
-            false,
-        );
-        note(
-            ui,
-            "",
-            Icon::Lock,
-            "The database's folder is never sent",
-            "Paths stay on this machine. Queries that would reveal the database's \
-             location are refused.",
-            false,
-        );
-        note(
-            ui,
-            "",
-            Icon::Lock,
-            "Row values are sent only when query results are shared",
-            "Each database shares the default below unless changed with the icons in the \
-             chat panel: schema only, or schema and query results.",
-            false,
-        );
-        let (label, tip, warn) = copy.tools;
-        note(
-            ui,
-            "",
-            if warn { Icon::Help } else { Icon::Lock },
-            label,
-            tip,
-            warn,
-        );
     }
 }
 
-/// A fixed promise: an icon and a short line, with the details on hover.
-fn guarantee(ui: &mut egui::Ui, icon: Icon, label: &str, details: &str, warn: bool) {
+/// A quiet note in place of a switch: an icon and a short line, details on hover.
+fn guarantee(ui: &mut egui::Ui, icon: Icon, label: &str, details: &str) {
     ui.horizontal(|ui| {
-        let color = if warn {
-            presentation::intent_color(ui, Intent::Pending)
-        } else {
-            crate::appearance::Tokens::of(ui.ctx()).muted
-        };
+        let color = crate::appearance::Tokens::of(ui.ctx()).muted;
         let (rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
         icons::paint(ui.painter(), rect, icon, color);
         let text = egui::RichText::new(label).color(color);

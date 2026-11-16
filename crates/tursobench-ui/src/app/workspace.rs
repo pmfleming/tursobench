@@ -3,6 +3,7 @@ use super::{
     App, View,
     document::Document,
     icons::{self, Icon},
+    presentation,
     shell::{DetailMode, Nav, TableView},
     tiling::{self, Kind},
 };
@@ -16,6 +17,9 @@ pub(super) struct Workspace {
     pub expanded: Option<Kind>,
     pub splits: tiling::Splits,
     pub minimized: BTreeSet<Kind>,
+    /// Record, Structure and SQL tiles that were open when their column
+    /// folded; unfolding opens these again.
+    pub unfold: Vec<Kind>,
     pub visible: BTreeMap<Kind, u64>,
     pub next_id: u64,
     pub area: egui::Rect,
@@ -35,6 +39,7 @@ impl Default for Workspace {
             expanded: None,
             splits: Default::default(),
             minimized: Default::default(),
+            unfold: vec![],
             visible: Default::default(),
             next_id: 1,
             area: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 600.0)),
@@ -268,6 +273,36 @@ impl App {
             self.database.workspace.expanded = None;
         }
     }
+    /// Whether Record, Structure and SQL are folded to a line.
+    pub(super) fn tiles_folded(&self) -> bool {
+        tiling::folded(&self.database.workspace.minimized, 2..5)
+    }
+    /// Fold Record, Structure and SQL to a line, or open the ones that were
+    /// open before (all three if none were).
+    pub(super) fn toggle_tiles_column(&mut self) {
+        let column = &Kind::PANES[2..5];
+        let workspace = &mut self.database.workspace;
+        if tiling::folded(&workspace.minimized, 2..5) {
+            let open = std::mem::take(&mut workspace.unfold);
+            for kind in if open.is_empty() { column } else { &open[..] } {
+                workspace.minimized.remove(kind);
+            }
+        } else {
+            workspace.unfold = column
+                .iter()
+                .copied()
+                .filter(|kind| !workspace.minimized.contains(kind))
+                .collect();
+            workspace.minimized.extend(column);
+            if workspace
+                .expanded
+                .is_some_and(|kind| column.contains(&kind.pane()))
+            {
+                workspace.expanded = None;
+            }
+        }
+        self.save_workspace();
+    }
     pub(super) fn retile(&mut self) {
         self.database.workspace.minimized.clear();
         self.database.workspace.expanded = None;
@@ -298,7 +333,40 @@ impl App {
             .ctx()
             .pointer_interact_pos()
             .is_some_and(|p| ui.ctx().layer_id_at(p) == Some(ui.layer_id()));
-        for (kind, rect) in panes {
+        // A column whose tiles are all minimized is drawn as one line instead.
+        let minimized = &self.database.workspace.minimized;
+        let folds: Vec<_> = if panes.len() == 5 {
+            [
+                (0..2, "Show Relationships and Table data"),
+                (2..5, "Show Record, Structure and SQL"),
+            ]
+            .into_iter()
+            .filter(|(range, _)| tiling::folded(minimized, range.clone()))
+            .filter(|_| !(tiling::folded(minimized, 0..2) && tiling::folded(minimized, 2..5)))
+            .map(|(range, name)| {
+                let x = panes[range.start].1.x_range();
+                let area = self.database.workspace.area;
+                (range, name, egui::Rect::from_x_y_ranges(x, area.y_range()))
+            })
+            .collect()
+        } else {
+            vec![]
+        };
+        for (range, name, rect) in &folds {
+            if presentation::fold_line(ui, *rect, range.start, name).clicked() {
+                if range.start == 2 {
+                    self.toggle_tiles_column();
+                } else {
+                    for kind in &Kind::PANES[range.clone()] {
+                        self.database.workspace.minimized.remove(kind);
+                    }
+                }
+            }
+        }
+        for (index, (kind, rect)) in panes.into_iter().enumerate() {
+            if folds.iter().any(|(range, _, _)| range.contains(&index)) {
+                continue;
+            }
             let owner = self.pane_document(kind);
             if let Some(id) = owner {
                 self.switch_document(id);
@@ -580,6 +648,32 @@ impl App {
                     .line_segment(line, egui::Stroke::new(2.0, color));
             }
             if response.drag_stopped() {
+                // Dragging the column divider into an edge folds that column to a line.
+                let area = self.database.workspace.area;
+                let edge = tiling::MIN_WIDTH / 2.0;
+                if divider == tiling::Divider::Columns
+                    && let Some(x) = ui.input(|i| i.pointer.latest_pos()).map(|p| p.x)
+                {
+                    let column = if x > area.right() - edge {
+                        Some(2..5)
+                    } else if x < area.left() + edge {
+                        Some(0..2)
+                    } else {
+                        None
+                    };
+                    if column.clone().is_some_and(|c| c.start == 2) {
+                        if !self.tiles_folded() {
+                            self.toggle_tiles_column();
+                        }
+                        changed = true;
+                    } else if let Some(column) = column {
+                        self.database
+                            .workspace
+                            .minimized
+                            .extend(&Kind::PANES[column]);
+                        changed = true;
+                    }
+                }
                 self.save_workspace();
             }
         }
@@ -680,11 +774,45 @@ impl App {
     fn sql_pane(&mut self, ui: &mut egui::Ui) {
         let editor = self.database.document.id;
         if let Some(result) = self.sql_result_window(editor) {
-            let height = (ui.available_height() * 0.44).max(45.0);
-            egui::Panel::top("sql-editor")
+            // The editor keeps a saved share of the tile; the line between the
+            // editor and its results drags to change it.
+            let total = ui.available_height();
+            let range = 45.0..=(total - 80.0).max(45.0);
+            let height = (total * self.database.workspace.splits.sql_editor)
+                .clamp(*range.start(), *range.end());
+            let panel = egui::Panel::top("sql-editor")
                 .resizable(false)
                 .exact_size(height)
                 .show(ui, |ui| self.editor_ui(ui));
+            let edge = panel.response.rect;
+            let handle = egui::Rect::from_x_y_ranges(
+                edge.x_range(),
+                (edge.bottom() - 4.0)..=(edge.bottom() + 4.0),
+            );
+            let response = ui
+                .interact(handle, ui.scope_id().with("sql-split"), egui::Sense::drag())
+                .on_hover_cursor(egui::CursorIcon::ResizeVertical);
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::Role::Splitter,
+                    ui.is_enabled(),
+                    "Resize SQL and results",
+                )
+            });
+            if response.dragged() && total > 0.0 {
+                let height = (height + response.drag_delta().y).clamp(*range.start(), *range.end());
+                self.database.workspace.splits.sql_editor = (height / total).clamp(0.01, 0.99);
+                ui.ctx().request_repaint();
+            }
+            if response.hovered() || response.dragged() {
+                ui.painter().line_segment(
+                    [handle.left_center(), handle.right_center()],
+                    egui::Stroke::new(2.0, crate::appearance::Tokens::of(ui.ctx()).primary),
+                );
+            }
+            if response.drag_stopped() {
+                self.save_workspace();
+            }
             self.switch_document(result);
             if ui.rect_contains_pointer(ui.available_rect_before_wrap())
                 && ui.input(|i| i.pointer.any_pressed())

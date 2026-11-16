@@ -16,6 +16,8 @@ pub(super) enum Icon {
     Count,
     Export,
     Copy,
+    /// Copy with lines of text: the whole conversation.
+    CopyAll,
     Sql,
     History,
     Saved,
@@ -61,6 +63,8 @@ pub(super) enum Icon {
     Profile,
     Transfer,
     Sidebar,
+    /// The sidebar mirrored: the Record, Structure and SQL column.
+    TilesColumn,
     Assistant,
     Send,
     Stop,
@@ -234,6 +238,11 @@ fn widget(
     if let Some(selected) = selected {
         native = native.selected(selected);
     }
+    // A chosen mode reads at a glance: accent outline and accent icon.
+    let chosen = selected == Some(true) && !primary;
+    if chosen {
+        native = native.stroke(egui::Stroke::new(1.0, tokens.primary.gamma_multiply(0.6)));
+    }
     if primary {
         native = native.fill(tokens.primary);
     }
@@ -257,6 +266,8 @@ fn widget(
         icon,
         if primary {
             tokens.primary_ink
+        } else if chosen {
+            tokens.primary
         } else {
             ui.style().interact(&response).fg_stroke.color
         },
@@ -385,6 +396,12 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
         Copy => {
             box_(9., 9., 12., 12.);
             line(&[(5., 16.), (3., 16.), (3., 3.), (16., 3.), (16., 5.)]);
+        }
+        CopyAll => {
+            box_(9., 9., 12., 12.);
+            line(&[(5., 16.), (3., 16.), (3., 3.), (16., 3.), (16., 5.)]);
+            line(&[(12., 13.), (18., 13.)]);
+            line(&[(12., 17.), (16., 17.)]);
         }
         Sql => {
             box_(2., 4., 20., 16.);
@@ -654,6 +671,12 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
             line(&[(9., 4.), (9., 20.)]);
             line(&[(5., 8.), (7., 8.)]);
             line(&[(5., 11.), (7., 11.)]);
+        }
+        TilesColumn => {
+            box_(3., 4., 18., 16.);
+            line(&[(15., 4.), (15., 20.)]);
+            line(&[(17., 8.), (19., 8.)]);
+            line(&[(17., 11.), (19., 11.)]);
         }
         Assistant => {
             // A speech bubble holding a spark: a conversation with an agent.

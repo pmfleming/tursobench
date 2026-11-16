@@ -58,6 +58,9 @@ pub(super) struct State {
     pub view_open: bool,
     pub executable: String,
     pub editing: Option<Provider>,
+    /// The agent whose settings the settings area shows; independent of
+    /// the agent the chat uses. Starts on that agent.
+    pub configuring: Option<Provider>,
     /// The executable path field is showing.
     pub path_open: bool,
     /// Check agents without a click: when Settings → Assistant opens, and
@@ -102,9 +105,7 @@ impl App {
         }
     }
     fn account_target(&self, provider: Provider) -> Result<Target, String> {
-        let mut preferences = self.preferences.assistant.clone();
-        preferences.provider = provider;
-        let profile = profile(&preferences)?;
+        let profile = self.profile_for(provider)?;
         Ok(Target {
             provider,
             program: profile.program,
@@ -312,10 +313,26 @@ impl App {
             self.agent_account_job(ui.ctx(), provider, operation);
         }
     }
-    /// The selected agent's sign-in problems and choices, in its settings area.
+    /// The agent the settings area edits; the chat's agent until one is chosen.
+    pub(super) fn configured_agent(&mut self) -> Provider {
+        *self
+            .accounts
+            .configuring
+            .get_or_insert(self.preferences.assistant.provider)
+    }
+    /// How `provider` would be started, whichever agent the chat uses.
+    pub(super) fn profile_for(
+        &self,
+        provider: Provider,
+    ) -> Result<super::assistant::Profile, String> {
+        let mut preferences = self.preferences.assistant.clone();
+        preferences.provider = provider;
+        profile(&preferences)
+    }
+    /// The configured agent's sign-in problems and choices, in its settings area.
     pub(super) fn assistant_agent_status(&mut self, ui: &mut egui::Ui) {
         let grid = AgentGrid::new(ui);
-        let provider = self.preferences.assistant.provider;
+        let provider = self.configured_agent();
         let Some(row) = self.accounts.rows.get_mut(&provider) else {
             return;
         };
@@ -364,10 +381,10 @@ impl App {
             });
         }
     }
-    /// The selected agent's executable, terminal sign-in and path override.
+    /// The configured agent's executable, terminal sign-in and path override.
     pub(super) fn assistant_agent_program(&mut self, ui: &mut egui::Ui) {
-        let provider = self.preferences.assistant.provider;
-        let profile = profile(&self.preferences.assistant).ok();
+        let provider = self.configured_agent();
+        let profile = self.profile_for(provider).ok();
         {
             {
                 if self.accounts.editing != Some(provider) {
@@ -498,7 +515,9 @@ impl App {
                             if provider == Provider::Custom {
                                 self.preferences.assistant.clear_custom_grants();
                             }
-                            self.reset_assistant_conversations();
+                            if provider == self.preferences.assistant.provider {
+                                self.reset_assistant_conversations();
+                            }
                             self.preferences.normalize();
                             self.store.save(&self.preferences);
                             // The old executable's status says nothing about the new one.
@@ -648,6 +667,9 @@ impl AgentGrid {
                         .layout(layout),
                 );
                 child.set_clip_rect(area.intersect(ui.clip_rect()));
+                // Keep each widget inside its row, so neighbouring rows never overlap.
+                let fit = child.spacing().interact_size.y.min(self.height);
+                child.spacing_mut().interact_size.y = fit;
                 contents(&mut child);
             };
         add(ui, &mut cell);

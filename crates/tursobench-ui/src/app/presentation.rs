@@ -190,3 +190,53 @@ fn aligned_text(
         .with_clip_rect(rect.intersect(ui.clip_rect()))
         .galley(pos, galley, color);
 }
+
+/// A collapsed area: a thin strip with a grip. `name` is its tooltip and
+/// accessible name; a click reopens the area.
+pub(super) fn fold_line(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    name: &str,
+) -> egui::Response {
+    let tokens = crate::appearance::Tokens::of(ui.ctx());
+    let response = ui.interact(
+        rect,
+        ui.scope_id().with(("fold-line", id)),
+        egui::Sense::click(),
+    );
+    let hovered = response.hovered();
+    let painter = ui.painter_at(rect);
+    painter.rect(
+        rect,
+        rect.width().min(10.0) / 2.0,
+        if hovered {
+            tokens.raised_hover
+        } else {
+            tokens.raised
+        },
+        egui::Stroke::new(1.0, tokens.line),
+        egui::StrokeKind::Inside,
+    );
+    let grip = if hovered {
+        tokens.primary
+    } else {
+        tokens.muted
+    };
+    // Every line's grip sits at the window's vertical centre, so they align
+    // whichever panels and tiles are folded.
+    let middle = egui::pos2(
+        rect.center().x,
+        ui.ctx().content_rect().center().y.clamp(
+            rect.top() + 8.0,
+            (rect.bottom() - 8.0).max(rect.top() + 8.0),
+        ),
+    );
+    for dy in [-6.0, 0.0, 6.0] {
+        painter.circle_filled(middle + egui::vec2(0.0, dy), 1.5, grip);
+    }
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name));
+    response
+        .on_hover_text(name)
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+}

@@ -54,9 +54,9 @@ the machine.
 | [Conversation](assistant/assistant-conversation.png) | Right-side chat, vendor/model pickers, tool rows, a reply with a SQL block, and proposed SQL opened unrun in the SQL tile. |
 | [Without sidebar](assistant/assistant-without-sidebar.png) | Sidebar hidden, assistant shown. |
 | [Light](assistant/assistant-light.png) | The same in the light theme. |
-| [Both hidden](assistant/panels-hidden.png) | The workspace takes the full width; the status-bar toggles remain. |
+| [Both hidden](assistant/panels-hidden.png) | The workspace takes almost the full width; each hidden panel leaves a thin line that brings it back. |
 | [Settings](assistant/assistant-settings.png) | Local agent statuses, scan/retry, sign-in/out controls, executable override and per-agent privacy. |
-| [Privacy](assistant/assistant-privacy.png) | Codex's settings area (program, model, privacy choices and fixed promises), opened from the empty conversation's link. |
+| [Privacy](assistant/assistant-privacy.png) | Codex's settings area (program, model and privacy choices), opened from the empty conversation's link. |
 
 Reproduce with:
 

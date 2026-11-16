@@ -5,6 +5,8 @@ use std::collections::BTreeSet;
 
 pub(super) const GAP: f32 = 8.0;
 pub(super) const BAR: f32 = 44.0;
+/// A column whose tiles are all minimized folds to a line this wide.
+pub(super) const LINE: f32 = 10.0;
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
 )]
@@ -43,7 +45,7 @@ impl Kind {
         }
     }
 }
-const MIN_WIDTH: f32 = 180.0;
+pub(super) const MIN_WIDTH: f32 = 180.0;
 const MIN_HEIGHT: f32 = 96.0;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -51,12 +53,15 @@ const MIN_HEIGHT: f32 = 96.0;
 pub(super) struct Splits {
     pub column: f32,
     pub rows: [f32; 5],
+    /// The SQL tile's editor share of its height when results show below it.
+    pub sql_editor: f32,
 }
 impl Default for Splits {
     fn default() -> Self {
         Self {
             column: 0.63,
             rows: [0.85, 1.35, 1.08, 1.03, 1.0],
+            sql_editor: 0.44,
         }
     }
 }
@@ -67,6 +72,9 @@ impl Splits {
             && self.column < 1.0
             && self.rows.iter().all(|w| w.is_finite() && *w > 0.0)
             && self.rows.iter().sum::<f32>().is_finite()
+            && self.sql_editor.is_finite()
+            && self.sql_editor > 0.0
+            && self.sql_editor < 1.0
     }
     pub fn resize(
         &mut self,
@@ -137,13 +145,17 @@ pub(super) fn dividers(
     }
     let left = panes[0].1;
     let right = panes[2].1;
-    let mut handles = vec![(
-        Divider::Columns,
-        Rect::from_min_max(
-            pos2(left.right(), left.top()),
-            pos2(right.left(), area.bottom()),
-        ),
-    )];
+    let mut handles = vec![];
+    // A folded column stays a line; there is nothing to drag.
+    if !folded(minimized, 0..2) && !folded(minimized, 2..5) {
+        handles.push((
+            Divider::Columns,
+            Rect::from_min_max(
+                pos2(left.right(), left.top()),
+                pos2(right.left(), area.bottom()),
+            ),
+        ));
+    }
     for (a, b) in [(0, 1), (2, 3), (3, 4)] {
         if minimized.contains(&panes[a].0) || minimized.contains(&panes[b].0) {
             continue;
@@ -172,13 +184,23 @@ pub(super) fn layout(
     let gap = GAP.min(area.width().max(0.0));
     let available = (area.width() - gap).max(0.0);
     let min = MIN_WIDTH.min(available * 0.5);
-    let split = area.left() + (available * splits.column).clamp(min, available - min);
+    let split = match (folded(minimized, 0..2), folded(minimized, 2..5)) {
+        (false, true) => area.left() + (available - LINE).max(0.0),
+        (true, false) => area.left() + LINE.min(available),
+        _ => area.left() + (available * splits.column).clamp(min, available - min),
+    };
     let left = Rect::from_min_max(area.min, pos2(split, area.bottom()));
     let right = Rect::from_min_max(pos2(split + gap, area.top()), area.max);
     let mut tiles = Vec::with_capacity(5);
     stack(&mut tiles, left, 0..2, minimized, splits);
     stack(&mut tiles, right, 2..5, minimized, splits);
     tiles
+}
+/// Every tile in `indices` is minimized, so the column folds to a line.
+pub(super) fn folded(minimized: &BTreeSet<Kind>, indices: std::ops::Range<usize>) -> bool {
+    indices
+        .into_iter()
+        .all(|i| minimized.contains(&Kind::PANES[i]))
 }
 fn stack(
     tiles: &mut Vec<(Kind, Rect)>,
@@ -235,7 +257,7 @@ fn stack(
 }
 #[cfg(test)]
 mod tests {
-    use super::{BAR, Divider, Kind, Splits, dividers, layout};
+    use super::{BAR, Divider, Kind, LINE, Splits, dividers, folded, layout};
     use eframe::egui::{Pos2, Rect, vec2};
     use std::collections::BTreeSet;
     #[test]
@@ -253,10 +275,12 @@ mod tests {
                 Splits {
                     column: 0.4,
                     rows: [1.0, 2.0, 3.0, 1.0, 2.0],
+                    ..Splits::default()
                 },
                 Splits {
                     column: 0.99,
                     rows: [1e-20, 1.0, 1e20, 0.2, 1.0],
+                    ..Splits::default()
                 },
             ] {
                 for mask in 0..32 {
@@ -268,8 +292,19 @@ mod tests {
                     let tiles = layout(area, None, &minimized, &splits);
                     assert_eq!(tiles.len(), 5);
                     let handles = dividers(&tiles, &minimized, area);
-                    assert_eq!(handles[0].0, Divider::Columns);
-                    assert_eq!(handles[0].1.height(), area.height());
+                    let left = folded(&minimized, 0..2);
+                    let right = folded(&minimized, 2..5);
+                    if left || right {
+                        // A folded column is a line with no divider to drag.
+                        assert!(handles.iter().all(|(d, _)| *d != Divider::Columns));
+                        if left != right && size.x >= 720.0 {
+                            let line = if left { tiles[0].1 } else { tiles[2].1 };
+                            assert!((line.width() - LINE).abs() < 0.01);
+                        }
+                    } else {
+                        assert_eq!(handles[0].0, Divider::Columns);
+                        assert_eq!(handles[0].1.height(), area.height());
+                    }
                     assert!(tiles[0].1.bottom() < tiles[1].1.top());
                     for (i, (kind, rect)) in tiles.iter().enumerate() {
                         assert!(area.contains_rect(*rect));

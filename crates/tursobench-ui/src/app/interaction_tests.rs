@@ -2507,7 +2507,7 @@ fn full_length_workspace_dividers_resize_adjacent_tiles_and_preserve_live_state(
             }
         }
     }
-    for distance in [10000.0, -10000.0] {
+    for (distance, column) in [(10000.0, 2..5), (-10000.0, 0..2)] {
         let panes = &app.database.workspace.pane_rects;
         let handle = tiling::dividers(
             panes,
@@ -2516,6 +2516,16 @@ fn full_length_workspace_dividers_resize_adjacent_tiles_and_preserve_live_state(
         )[0]
         .1;
         drag(&mut app, handle.center(), egui::vec2(distance, 0.0));
+        // Dragging into an edge folds that column to a line; restoring it
+        // keeps the clamped split.
+        assert!(tiling::folded(
+            &app.database.workspace.minimized,
+            column.clone()
+        ));
+        for kind in &tiling::Kind::PANES[column] {
+            app.database.workspace.minimized.remove(kind);
+        }
+        frame(&mut app, &ctx, vec![]);
         assert!(
             app.database
                 .workspace
@@ -2608,6 +2618,7 @@ fn workspace_geometry_roundtrips_without_query_data_or_bindings() {
     app.database.workspace.splits = tiling::Splits {
         column: 0.48,
         rows: [1.0, 2.0, 1.5, 0.8, 1.0],
+        sql_editor: 0.6,
     };
     let snapshot = app.workspace_snapshot().unwrap();
     let encoded = serde_json::to_string(&snapshot).unwrap();
@@ -3758,3 +3769,46 @@ mod discoverability;
 mod panels;
 
 mod assistant;
+
+#[test]
+fn the_line_between_sql_and_its_results_drags_to_share_the_tile() {
+    const SIZE: egui::Vec2 = egui::vec2(1280.0, 720.0);
+    let (_dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
+    app.open_sql_window(false);
+    app.database.document.sql = "SELECT 1 AS answer".into();
+    app.run_sql();
+    wait(&mut app, &ctx);
+    app.focus_pane(tiling::Kind::Sql);
+    app.database.workspace.expanded = Some(tiling::Kind::Sql);
+    ctx.enable_accesskit();
+    frame_at(&mut app, &ctx, SIZE, vec![]);
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    let start = control(&output, "Resize SQL and results").center();
+    let before = app.database.workspace.splits.sql_editor;
+    let end = start + egui::vec2(0.0, 120.0);
+    frame_at(
+        &mut app,
+        &ctx,
+        SIZE,
+        vec![
+            egui::Event::PointerMoved(start),
+            pointer_button(start, true),
+        ],
+    );
+    for step in 1..=4 {
+        let pos = start + (end - start) * (step as f32 / 4.0);
+        frame_at(&mut app, &ctx, SIZE, vec![egui::Event::PointerMoved(pos)]);
+    }
+    frame_at(&mut app, &ctx, SIZE, vec![pointer_button(end, false)]);
+    let after = app.database.workspace.splits.sql_editor;
+    assert!(after > before + 0.05, "{before} -> {after}");
+    // The new share is part of the saved layout.
+    assert_eq!(
+        app.workspace_snapshot()
+            .map(|s| serde_json::to_value(s).unwrap()["splits"]["sql_editor"]
+                .as_f64()
+                .unwrap() as f32),
+        Some(after)
+    );
+    app.close();
+}

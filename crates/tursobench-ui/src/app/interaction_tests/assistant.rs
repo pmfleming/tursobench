@@ -322,8 +322,9 @@ fn privacy_is_chosen_per_provider_and_reaches_the_agent() {
     app.settings.page = crate::app::settings::Page::Assistant;
     frame_at(&mut app, &ctx, SIZE, vec![]);
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
-    assert!(labelled(&output, "CLAUDE CODE") && labelled(&output, "Privacy"));
-    assert!(labelled(&output, "Credentials stay with the CLI"));
+    assert!(labelled(&output, "AGENT SETTINGS") && labelled(&output, "Privacy"));
+    // Fixed promises live in the docs, not the settings area.
+    assert!(!labelled(&output, "Credentials stay with the CLI"));
     click(
         &mut app,
         &ctx,
@@ -347,16 +348,26 @@ fn privacy_is_chosen_per_provider_and_reaches_the_agent() {
         crate::storage::ProviderPrivacy::default()
     );
 
+    // Choosing the chat's agent leaves the settings area where it was.
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
     click(&mut app, &ctx, control(&output, "Codex").center());
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
-    assert!(labelled(&output, "Block analytics and telemetry"));
-    assert!(!labelled(
+    assert_eq!(
+        app.preferences.assistant.provider,
+        crate::storage::Provider::Codex
+    );
+    assert!(labelled(
         &output,
         "Save conversations in Claude Code's history"
     ));
-    click(&mut app, &ctx, control(&output, "Copilot CLI").center());
+    // The "Settings for" choice switches it, and leaves the chat's agent alone.
+    app.accounts.configuring = Some(crate::storage::Provider::Copilot);
+    frame_at(&mut app, &ctx, SIZE, vec![]);
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    assert_eq!(
+        app.preferences.assistant.provider,
+        crate::storage::Provider::Codex
+    );
     assert!(labelled(
         &output,
         "Telemetry and history follow Copilot CLI's own settings"
@@ -385,6 +396,33 @@ fn privacy_is_chosen_per_provider_and_reaches_the_agent() {
 }
 
 #[test]
+fn each_agents_notice_shows_on_first_use_then_every_few_sessions() {
+    use crate::storage::{AssistantPreferences, Provider};
+    let (dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
+    runtime_dir(&dir);
+    app.preferences.panels.assistant = true;
+    let notice = "Privacy settings";
+    let session = |app: &mut App| {
+        // A new session forgets what this one decided.
+        ctx.memory_mut(|m| m.data.clear());
+        frame_at(app, &ctx, SIZE, vec![]);
+        labelled(&frame_at(app, &ctx, SIZE, vec![]), notice)
+    };
+    assert!(session(&mut app), "first use shows the notice");
+    // Repainting within a session keeps the decision.
+    assert!(labelled(&frame_at(&mut app, &ctx, SIZE, vec![]), notice));
+    for _ in 0..AssistantPreferences::INTRO_SKIPS {
+        assert!(!session(&mut app));
+    }
+    assert!(session(&mut app), "shows again after a few sessions");
+    assert!(!session(&mut app));
+    // Another agent has its own first use.
+    app.select_assistant_provider(Provider::Codex);
+    assert!(session(&mut app));
+    app.close();
+}
+
+#[test]
 fn an_empty_conversation_links_to_the_agents_privacy_settings() {
     let (dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
     runtime_dir(&dir);
@@ -401,10 +439,9 @@ fn an_empty_conversation_links_to_the_agents_privacy_settings() {
         frame_at(&mut app, &ctx, SIZE, vec![]);
     }
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
-    // Scrolled so the switches and the promises below them are in view.
-    let switch = control(&output, "Block telemetry and error reports");
+    // Scrolled so the privacy switches are in view.
+    let switch = control(&output, "Tell the agent the database's file name");
     assert!(switch.top() > 0.0 && switch.bottom() < SIZE.y);
-    assert!(labelled(&output, "The database's folder is never sent"));
     app.close();
 }
 
@@ -816,6 +853,51 @@ fn cancelling_or_failing_a_sign_in_keeps_the_last_status_and_models() {
     assert_eq!(
         app.accounts.rows[&Provider::Codex].describe(),
         Some(("Sign-in failed", Intent::Danger))
+    );
+    app.close();
+}
+
+#[test]
+fn copy_buttons_write_the_reply_and_conversation_in_the_chosen_format() {
+    use crate::storage::CopyFormat;
+    let (_dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
+    app.preferences.panels.assistant = true;
+    app.database.assistant.entries =
+        vec![Entry::User("Hi".into()), Entry::Reply("**Done**".into())];
+    let copied = |app: &mut App, name: &str| -> Vec<String> {
+        frame_at(app, &ctx, SIZE, vec![]);
+        let output = frame_at(app, &ctx, SIZE, vec![]);
+        let pos = control(&output, name).center();
+        let press = |down| {
+            vec![
+                egui::Event::PointerMoved(pos),
+                super::pointer_button(pos, down),
+            ]
+        };
+        frame_at(app, &ctx, SIZE, press(true));
+        frame_at(app, &ctx, SIZE, press(false))
+            .platform_output
+            .commands
+            .into_iter()
+            .filter_map(|c| match c {
+                egui::OutputCommand::CopyText(text) => Some(text),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(copied(&mut app, "Copy last reply"), ["**Done**"]);
+    assert_eq!(
+        copied(&mut app, "Copy conversation"),
+        ["## You\n\nHi\n\n## Claude Code\n\n**Done**"]
+    );
+    app.preferences.assistant.copy_format = CopyFormat::Html;
+    assert_eq!(
+        copied(&mut app, "Copy last reply"),
+        ["<p><strong>Done</strong></p>"]
+    );
+    assert_eq!(
+        copied(&mut app, "Copy conversation"),
+        ["<h2>You</h2>\n<p>Hi</p>\n<h2>Claude Code</h2>\n<p><strong>Done</strong></p>"]
     );
     app.close();
 }

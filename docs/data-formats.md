@@ -146,7 +146,9 @@ means the CLI default. `executables` maps providers to optional absolute paths.
 database paths to provider maps of `Schema` or `Rows`, bounded to 50 database
 paths / 4096 bytes per path. A missing provider/database pair uses `default_sharing`. Legacy `model` and `sharing` entries migrate
 only to the previously selected provider and are not written back.
-`privacy` maps providers to `telemetry_off` (default true), `keep_history`
+`intro_skips` maps providers to the sessions (0-4) left before the assistant's
+notice shows again; a missing provider has not seen it yet. `copy_format` is
+`Markdown` (default) or `Html`: how the chat's copy buttons write text. `privacy` maps providers to `telemetry_off` (default true), `keep_history`
 (default false) and `share_file_name` (default true); legacy lowercase provider
 keys are accepted. Antigravity's history follows the CLI's own settings.
 Changing a custom command or its executable revokes its grants. Account status,

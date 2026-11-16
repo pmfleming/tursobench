@@ -62,7 +62,9 @@ Antigravity versions omit tool output from ACP updates; the UI shows the
 completion state without inventing a result.
 
 An ACP agent keeps whatever built-in tools its vendor gives it; some may read
-local files without asking. The notice above an empty conversation says so.
+local files without asking. The notice above an empty conversation says so; it
+names who receives the data and shows the first time each agent is used, then
+again after every four sessions that use it without it.
 
 ## Sharing
 
@@ -83,8 +85,9 @@ can forget one, which returns that database to the default.
 
 ## Privacy
 
-Settings → Assistant shows the selected agent's settings, privacy included, in
-one area below the agent list. Each provider
+Settings → Assistant edits any agent's settings, privacy included, in one area
+below the agent list; its "Settings for" choice is independent of the agent the
+chat uses. Each provider
 keeps its own choices, and every default is the private one. They apply to the
 next conversation.
 
@@ -99,7 +102,7 @@ changed. With the defaults, a Codex conversation writes only Codex's model cache
 to `~/.codex` (its shell snapshot feature is also off), and Claude Code writes no
 session transcript.
 
-These hold for every provider and are listed in the section as fixed rows:
+These hold for every provider, so the settings area does not repeat them:
 
 - Credentials stay with the CLI. Only sign-in status, method and plan are
   retained in memory; email is discarded. No credential files are opened and
