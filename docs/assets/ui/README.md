@@ -2,34 +2,88 @@
 
 ## README overview
 
-The `readme/` images were captured on 2026-11-15 from `aeb8938` under
+The `readme/` overview and tile images were captured on 2026-11-16 from the
+application code in `1e4278c` under
 headless Weston/Mesa, using disposable synthetic databases and isolated
-preferences. All three use the application's explicit Dark mode, charcoal
+preferences. They use the application's explicit Dark mode, charcoal
 surfaces (`#141b18`, `#0c1210`) and mint accent (`#87d3ad`). The banner uses
-the same palette and canonical app icon. Screenshots are unmodified native
-captures; no personal database is opened.
+the same palette and canonical app icon. The overview is a full native capture;
+tile and panel images are rectangular crops with no scaling, compositing or
+retouching. No personal database is opened.
 
 - `workspace.png`: five tiles, schema navigation, typed values and foreign keys
   at 1800 × 1000.
-- `edit-review.png`: staged update, original-value predicates and exact typed
-  bindings at 1366 × 768. The edit is never committed.
-- `assistant.png`: vendor/model controls, database tools and proposed SQL at
-  1366 × 768. The conversation is a seeded fixture; no agent CLI runs and
-  nothing leaves the machine.
+- `relationships.png`, `table-data.png`, `record.png`, `structure.png` and
+  `navigator.png`: individual tiles/panel cropped from the overview.
+- `sql.png`: expanded SQL tile with a real join and twelve result rows, using
+  a second synthetic fixture with 120 snapshots and 120 history records.
+- `assistant.png`: panel cropped from a 1366 × 768 capture, with vendor/model
+  controls, database tools and proposed SQL. The conversation is a seeded
+  fixture; no agent CLI runs and nothing leaves the machine.
+- `edit-review.png`: retained from the 2026-11-15 capture at `aeb8938`; staged
+  update, original-value predicates and typed bindings at 1366 × 768. The edit
+  was never committed. It is not part of the current README tour.
 
-Both capture passes verify the native Wayland backend and clean session close.
-Reproduce from the repository root with empty GTK theme inputs:
+All three capture passes verify the native Wayland backend and clean session
+close. Reproduce from the repository root with empty GTK theme inputs:
 
 ```sh
 nix develop
 capture_config=$(mktemp -d)
 XDG_CONFIG_HOME="$capture_config" bash scripts/capture-v8.sh target/readme-refresh/workspace
 bash scripts/capture-assistant.sh target/readme-refresh/assistant
+python3 - <<'PY'
+from pathlib import Path
+import sqlite3
+
+fixture = Path('target/readme-refresh/session.db')
+fixture.unlink(missing_ok=True)
+with sqlite3.connect(fixture) as db:
+    db.executescript('''
+        CREATE TABLE snapshots(id INTEGER PRIMARY KEY, bytes INTEGER NOT NULL, digest BLOB NOT NULL);
+        CREATE TABLE document_history(id INTEGER PRIMARY KEY, edit_seq INTEGER NOT NULL,
+            now_id INTEGER REFERENCES snapshots(id), tip_id INTEGER REFERENCES snapshots(id),
+            temp_id INTEGER REFERENCES snapshots(id));
+        CREATE INDEX history_snapshot ON document_history(temp_id);
+    ''')
+    db.executemany('INSERT INTO snapshots VALUES(?,?,?)',
+                   ((i, 1024*(i+1), bytes([i%256])*32) for i in range(120)))
+    db.executemany('INSERT INTO document_history VALUES(?,?,?,?,?)',
+                   ((i, 2*i, i, i, i) for i in range(120)))
+PY
+XDG_CONFIG_HOME="$capture_config" bash scripts/capture-readme.sh \
+  target/readme-refresh/session.db target/readme-refresh/sql
 rm -rf "$capture_config"
+```
+
+With Python and Pillow available, copy the full overview and crop the native
+images. Coordinates are `(left, top, right, bottom)` in source pixels; different
+font or layout settings may require adjusting them.
+
+```sh
 mkdir -p docs/assets/ui/readme
 cp target/readme-refresh/workspace/workspace-dark.png docs/assets/ui/readme/workspace.png
-cp target/readme-refresh/workspace/review-dialog.png docs/assets/ui/readme/edit-review.png
-cp target/readme-refresh/assistant/assistant-conversation.png docs/assets/ui/readme/assistant.png
+python3 - <<'PY'
+from pathlib import Path
+from PIL import Image
+
+root = Path('target/readme-refresh')
+out = Path('docs/assets/ui/readme')
+with Image.open(out / 'workspace.png') as image:
+    assert image.size == (1800, 1000)
+    for name, box in {
+        'relationships': (280, 8, 1216, 372),
+        'table-data': (280, 380, 1216, 958),
+        'record': (1224, 8, 1774, 332),
+        'structure': (1224, 340, 1774, 650),
+        'navigator': (0, 0, 272, 1000),
+    }.items():
+        image.crop(box).save(out / f'{name}.png', optimize=True)
+with Image.open(root / 'sql/sql-results.png') as image:
+    image.crop((280, 8, 1774, 958)).save(out / 'sql.png', optimize=True)
+with Image.open(root / 'assistant/assistant-conversation.png') as image:
+    image.crop((1027, 0, 1366, 768)).save(out / 'assistant.png', optimize=True)
+PY
 ```
 
 The banner source is `../tursobench-banner.svg`. With Inkscape installed:
