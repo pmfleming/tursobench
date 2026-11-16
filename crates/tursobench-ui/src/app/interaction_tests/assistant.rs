@@ -322,7 +322,7 @@ fn privacy_is_chosen_per_provider_and_reaches_the_agent() {
     app.settings.page = crate::app::settings::Page::Assistant;
     frame_at(&mut app, &ctx, SIZE, vec![]);
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
-    assert!(labelled(&output, "PRIVACY · CLAUDE CODE"));
+    assert!(labelled(&output, "CLAUDE CODE") && labelled(&output, "Privacy"));
     assert!(labelled(&output, "Credentials stay with the CLI"));
     click(
         &mut app,

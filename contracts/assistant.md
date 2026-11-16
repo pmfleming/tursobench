@@ -83,7 +83,8 @@ can forget one, which returns that database to the default.
 
 ## Privacy
 
-Settings → Assistant has a Privacy section for the selected agent. Each provider
+Settings → Assistant shows the selected agent's settings, privacy included, in
+one area below the agent list. Each provider
 keeps its own choices, and every default is the private one. They apply to the
 next conversation.
 

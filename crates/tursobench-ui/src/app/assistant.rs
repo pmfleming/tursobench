@@ -4,6 +4,7 @@
 //! in this workspace. TursoBench never handles credentials.
 use super::{
     App,
+    assistant_accounts::{AgentGrid, Column},
     icons::{self, Icon},
     presentation::{self, Intent},
 };
@@ -1093,30 +1094,44 @@ impl App {
     pub(super) fn assistant_settings(&mut self, ui: &mut egui::Ui) {
         use crate::storage::Provider;
         ui.spacing_mut().item_spacing.y = 4.0;
-        super::panels::section(ui, "Agent", |ui| {
-            self.assistant_agents_ui(ui);
+        // Choose an agent above; everything below it belongs to that agent.
+        super::panels::section(ui, "Agents", |ui| self.assistant_agents_ui(ui));
+        let name = self.preferences.assistant.provider.vendor().name;
+        // The chat panel's privacy link opens on the selected agent's area.
+        if std::mem::take(&mut self.settings.reveal_privacy) {
+            ui.scroll_to_cursor(Some(egui::Align::TOP));
+        }
+        super::panels::section(ui, name, |ui| {
+            let grid = AgentGrid::new(ui);
+            self.assistant_agent_status(ui);
             if self.preferences.assistant.provider == Provider::Custom {
                 let before = self.preferences.assistant.custom_command.clone();
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut self.preferences.assistant.custom_command)
-                        .hint_text("opencode acp")
-                        .desired_width(f32::INFINITY),
-                );
-                response.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::Role::TextInput, true, "Agent command")
+                let mut response = None;
+                grid.field(ui, "Command", Column::Rest, |ui| {
+                    let field = ui.add(
+                        egui::TextEdit::singleline(&mut self.preferences.assistant.custom_command)
+                            .hint_text("opencode acp")
+                            .desired_width(f32::INFINITY),
+                    );
+                    field.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::Role::TextInput, true, "Agent command")
+                    });
+                    response = Some(field);
                 });
                 if before != self.preferences.assistant.custom_command {
                     self.preferences.assistant.clear_custom_grants();
                     self.reset_assistant_conversations();
                     self.accounts.rows.remove(&Provider::Custom);
                 }
-                self.setting_response(response);
+                if let Some(response) = response {
+                    self.setting_response(response);
+                }
             }
+            self.assistant_agent_program(ui);
             let previous_model = self.preferences.assistant.selected_model().to_owned();
-            ui.horizontal(|ui| {
-                ui.label("Model")
-                    .on_hover_text("Passed to the agent; leave empty for its own default");
-                let response = ui.add(
+            let mut response = None;
+            grid.field(ui, "Model", Column::Rest, |ui| {
+                let field = ui.add(
                     egui::TextEdit::singleline(
                         self.preferences
                             .assistant
@@ -1127,17 +1142,24 @@ impl App {
                     .hint_text("Agent default")
                     .desired_width(f32::INFINITY),
                 );
-                response.widget_info(|| {
+                field.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::Role::TextInput, true, "Assistant model")
                 });
-                self.setting_response(response);
+                response = Some(
+                    field.on_hover_text("Passed to the agent; leave empty for its own default"),
+                );
             });
+            if let Some(response) = response {
+                self.setting_response(response);
+            }
             if previous_model != self.preferences.assistant.selected_model() {
                 self.reset_assistant_conversations();
             }
-            ui.weak("Applies to the next conversation.");
+            self.assistant_privacy(ui, grid);
+            grid.compact().field(ui, "", Column::Rest, |ui| {
+                ui.weak("Applies to the next conversation.");
+            });
         });
-        self.assistant_privacy(ui);
         super::panels::section(ui, "Sharing", |ui| {
             let mut default = None;
             ui.horizontal(|ui| {
@@ -1293,102 +1315,119 @@ fn privacy_copy(provider: crate::storage::Provider) -> PrivacyCopy {
 }
 
 impl App {
-    fn assistant_privacy(&mut self, ui: &mut egui::Ui) {
+    /// The selected agent's privacy switches and promises, on its settings grid.
+    fn assistant_privacy(&mut self, ui: &mut egui::Ui, grid: AgentGrid) {
         let provider = self.preferences.assistant.provider;
         let name = match profile(&self.preferences.assistant) {
             Ok(profile) => profile.name,
             Err(_) => "The agent".into(),
         };
         let copy = privacy_copy(provider);
-        let title = format!("Privacy · {name}");
-        if std::mem::take(&mut self.settings.reveal_privacy) {
-            ui.scroll_to_cursor(Some(egui::Align::TOP));
-        }
-        super::panels::section(ui, &title, |ui| {
-            let mut changed = false;
-            let mut privacy = self.preferences.assistant.privacy.of(provider);
-            if provider == crate::storage::Provider::Antigravity {
-                changed |=
-                    presentation::checkbox(ui, &mut privacy.telemetry_off, "Block telemetry")
-                        .on_hover_text("Starts agy acp with --disable-telemetry")
+        let grid = grid.compact();
+        let mut label = Some("Privacy");
+        let mut next = move || label.take().unwrap_or("");
+        let mut changed = false;
+        let mut privacy = self.preferences.assistant.privacy.of(provider);
+        let mut switch =
+            |ui: &mut egui::Ui, label: &str, value: &mut bool, text: &str, tip: &str| {
+                grid.field(ui, label, Column::Rest, |ui| {
+                    changed |= presentation::checkbox(ui, value, text)
+                        .on_hover_text(tip)
                         .changed();
-                guarantee(
-                    ui,
-                    Icon::Settings,
-                    "History follows Antigravity's own settings",
-                    "ACP does not offer a per-conversation history switch. Empty status sessions may appear in CLI history.",
-                    false,
-                );
-            } else {
-                match copy.switches {
-                    Some([(telemetry, telemetry_tip), (history, history_tip)]) => {
-                        changed |=
-                            presentation::checkbox(ui, &mut privacy.telemetry_off, telemetry)
-                                .on_hover_text(telemetry_tip)
-                                .changed();
-                        changed |= presentation::checkbox(ui, &mut privacy.keep_history, history)
-                            .on_hover_text(history_tip)
-                            .changed();
-                    }
-                    None => guarantee(
+                });
+            };
+        let note = |ui: &mut egui::Ui, label: &str, icon, text: &str, tip: &str, warn| {
+            grid.field(ui, label, Column::Rest, |ui| {
+                guarantee(ui, icon, text, tip, warn)
+            });
+        };
+        if provider == crate::storage::Provider::Antigravity {
+            switch(
+                ui,
+                next(),
+                &mut privacy.telemetry_off,
+                "Block telemetry",
+                "Starts agy acp with --disable-telemetry",
+            );
+            note(
+                ui,
+                next(),
+                Icon::Settings,
+                "History follows Antigravity's own settings",
+                "ACP does not offer a per-conversation history switch. Empty status sessions may appear in CLI history.",
+                false,
+            );
+        } else {
+            match copy.switches {
+                Some([(telemetry, telemetry_tip), (history, history_tip)]) => {
+                    switch(
                         ui,
-                        Icon::Settings,
-                        &format!("Telemetry and history follow {name}'s own settings"),
-                        "TursoBench cannot change them for Agent Client Protocol agents; see \
-                     the agent's documentation.",
-                        false,
-                    ),
+                        next(),
+                        &mut privacy.telemetry_off,
+                        telemetry,
+                        telemetry_tip,
+                    );
+                    switch(ui, next(), &mut privacy.keep_history, history, history_tip);
                 }
+                None => note(
+                    ui,
+                    next(),
+                    Icon::Settings,
+                    &format!("Telemetry and history follow {name}'s own settings"),
+                    "TursoBench cannot change them for Agent Client Protocol agents; see \
+                     the agent's documentation.",
+                    false,
+                ),
             }
-            changed |= presentation::checkbox(
-                ui,
-                &mut privacy.share_file_name,
-                "Tell the agent the database's file name",
-            )
-            .on_hover_text(
-                "When off, the agent is only told that a database is open. Its folder is \
-                 never sent.",
-            )
-            .changed();
-            if changed {
-                *self.preferences.assistant.privacy.of_mut(provider) = privacy;
-                self.preferences.normalize();
-                self.store.save(&self.preferences);
-            }
-            ui.add_space(4.0);
-            guarantee(
-                ui,
-                Icon::Lock,
-                "Credentials stay with the CLI",
-                copy.sign_in,
-                false,
-            );
-            guarantee(
-                ui,
-                Icon::Lock,
-                "The database's folder is never sent",
-                "Paths stay on this machine. Queries that would reveal the database's \
-                 location are refused.",
-                false,
-            );
-            guarantee(
-                ui,
-                Icon::Lock,
-                "Row values are sent only when query results are shared",
-                "Each database shares the default below unless changed with the icons in the \
-                 chat panel: schema only, or schema and query results.",
-                false,
-            );
-            let (label, tip, warn) = copy.tools;
-            guarantee(
-                ui,
-                if warn { Icon::Help } else { Icon::Lock },
-                label,
-                tip,
-                warn,
-            );
-            ui.weak("Applies to the next conversation.");
-        });
+        }
+        switch(
+            ui,
+            next(),
+            &mut privacy.share_file_name,
+            "Tell the agent the database's file name",
+            "When off, the agent is only told that a database is open. Its folder is \
+             never sent.",
+        );
+        if changed {
+            *self.preferences.assistant.privacy.of_mut(provider) = privacy;
+            self.preferences.normalize();
+            self.store.save(&self.preferences);
+        }
+        note(
+            ui,
+            "",
+            Icon::Lock,
+            "Credentials stay with the CLI",
+            copy.sign_in,
+            false,
+        );
+        note(
+            ui,
+            "",
+            Icon::Lock,
+            "The database's folder is never sent",
+            "Paths stay on this machine. Queries that would reveal the database's \
+             location are refused.",
+            false,
+        );
+        note(
+            ui,
+            "",
+            Icon::Lock,
+            "Row values are sent only when query results are shared",
+            "Each database shares the default below unless changed with the icons in the \
+             chat panel: schema only, or schema and query results.",
+            false,
+        );
+        let (label, tip, warn) = copy.tools;
+        note(
+            ui,
+            "",
+            if warn { Icon::Help } else { Icon::Lock },
+            label,
+            tip,
+            warn,
+        );
     }
 }
 
@@ -1404,7 +1443,11 @@ fn guarantee(ui: &mut egui::Ui, icon: Icon, label: &str, details: &str, warn: bo
         icons::paint(ui.painter(), rect, icon, color);
         let text = egui::RichText::new(label).color(color);
         let response = ui
-            .add(egui::Label::new(text).sense(egui::Sense::hover()))
+            .add(
+                egui::Label::new(text)
+                    .sense(egui::Sense::hover())
+                    .truncate(),
+            )
             .on_hover_text(details);
         response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, label));
     });

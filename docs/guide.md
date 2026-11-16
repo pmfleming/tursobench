@@ -287,7 +287,8 @@ if set, then the desktop’s default (`xdg-terminal-exec`), then Ghostty, GNOME
 Terminal, Konsole, WezTerm, kitty, Alacritty, foot or xterm. When the terminal
 hands the window to an already running instance, status is checked every second
 until the sign-in finishes. Cancel stops
-the helper. “Executable and terminal sign-in” has a copyable command if needed.
+the helper. The selected agent's area shows its program and a copyable terminal
+sign-in command; the pencil sets an absolute executable path.
 Status is checked again when sign-in completes. Claude Code and Codex also offer
 Sign out; sign out of ACP agents in their own CLI. Signing in or out of the
 agent you chat with ends its conversations; other agents’ account changes leave
@@ -308,8 +309,9 @@ The agent can list tables, describe one, run one read-only SELECT of at most
 in a reply, opens in a new SQL editor tile without running; you review and run it.
 Enter sends, Shift Enter adds a line and Stop interrupts the turn.
 
-Settings → Assistant → Privacy holds each agent's own privacy choices, all
-private by default: telemetry and error reports blocked, nothing saved to the
+Below the agent list, Settings → Assistant gathers the selected agent's program,
+terminal sign-in, model and privacy choices. Each agent keeps its own privacy
+choices, all private by default: telemetry and error reports blocked, nothing saved to the
 CLI's history, and whether the agent may learn the database's file name (never
 its folder). Credentials stay with the CLI. Status, sign-in method and plan
 stay in memory and email is discarded. Copilot CLI and other ACP agents keep their

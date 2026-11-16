@@ -56,7 +56,7 @@ the machine.
 | [Light](assistant/assistant-light.png) | The same in the light theme. |
 | [Both hidden](assistant/panels-hidden.png) | The workspace takes the full width; the status-bar toggles remain. |
 | [Settings](assistant/assistant-settings.png) | Local agent statuses, scan/retry, sign-in/out controls, executable override and per-agent privacy. |
-| [Privacy](assistant/assistant-privacy.png) | Codex's privacy choices and fixed promises, opened from the empty conversation's link. |
+| [Privacy](assistant/assistant-privacy.png) | Codex's settings area (program, model, privacy choices and fixed promises), opened from the empty conversation's link. |
 
 Reproduce with:
 
