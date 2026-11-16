@@ -110,6 +110,44 @@ enum Action {
     Copy(String),
 }
 
+/// Apply a sharing change to a conversation's agent and tell it with the next prompt.
+fn sharing_changed(conversation: &mut Conversation, previous: Sharing, sharing: Sharing) {
+    if let Some(running) = &conversation.running {
+        running.host.set_sharing(sharing);
+    }
+    if previous == sharing || (conversation.entries.is_empty() && conversation.running.is_none()) {
+        return;
+    }
+    let (note, text) = match sharing {
+        Sharing::Schema => (
+            "The user now shares only the schema; run_query is refused.",
+            "Now sharing only the schema",
+        ),
+        Sharing::Rows => (
+            "The user now also shares query results; run_query is available.",
+            "Now sharing the schema and query results",
+        ),
+    };
+    conversation.note = Some(note.into());
+    conversation.push(Entry::Notice(Intent::Neutral, text.into()));
+}
+
+/// The two sharing choices, as the ribbon and settings show them.
+pub(super) fn sharing_choice(sharing: Sharing) -> (Icon, &'static str, &'static str) {
+    match sharing {
+        Sharing::Schema => (
+            Icon::Structure,
+            "Share the schema only",
+            "Table and column names, keys, indexes and CREATE statements",
+        ),
+        Sharing::Rows => (
+            Icon::Data,
+            "Share the schema and query results",
+            "Also lets it run read-only SELECT queries of at most 200 rows and read the results",
+        ),
+    }
+}
+
 impl App {
     fn assistant_database(&self) -> Option<String> {
         (!self.database.tools.database_scope.is_empty()
@@ -118,14 +156,15 @@ impl App {
     }
     fn assistant_sharing(&self) -> Option<Sharing> {
         let database = self.assistant_database()?;
-        self.preferences.assistant.sharing_for(&database)
+        Some(self.preferences.assistant.sharing_for(&database))
     }
+    /// Remember a choice for this database and selected agent, and apply it at once.
     pub(super) fn set_assistant_sharing(&mut self, sharing: Sharing) {
         let Some(database) = self.assistant_database() else {
             return;
         };
-        let previous = self
-            .preferences
+        let previous = self.preferences.assistant.sharing_for(&database);
+        self.preferences
             .assistant
             .grants
             .entry(database)
@@ -133,23 +172,24 @@ impl App {
             .insert(self.preferences.assistant.provider, sharing);
         self.preferences.normalize();
         self.store.save(&self.preferences);
-        let conversation = &mut self.database.assistant;
-        if let Some(running) = &conversation.running {
-            running.host.set_sharing(sharing);
+        sharing_changed(&mut self.database.assistant, previous, sharing);
+    }
+    /// Change what databases without their own choice share, in every workspace.
+    pub(super) fn set_default_assistant_sharing(&mut self, sharing: Sharing) {
+        let previous = self.preferences.assistant.default_sharing;
+        if previous == sharing {
+            return;
         }
-        if previous.is_some() && previous != Some(sharing) {
-            let (note, text) = match sharing {
-                Sharing::Schema => (
-                    "The user now shares only the schema; run_query is refused.",
-                    "Now sharing only the schema",
-                ),
-                Sharing::Rows => (
-                    "The user now also shares query results; run_query is available.",
-                    "Now sharing the schema and query results",
-                ),
-            };
-            conversation.note = Some(note.into());
-            conversation.push(Entry::Notice(Intent::Neutral, text.into()));
+        self.preferences.assistant.default_sharing = sharing;
+        self.store.save(&self.preferences);
+        let assistant = &self.preferences.assistant;
+        for database in std::iter::once(&mut self.database).chain(self.parked.values_mut()) {
+            if assistant
+                .grant_for(&database.tools.database_scope)
+                .is_none()
+            {
+                sharing_changed(&mut database.assistant, previous, sharing);
+            }
         }
     }
 
@@ -377,7 +417,6 @@ impl App {
             return;
         };
         let Some(sharing) = self.assistant_sharing() else {
-            self.assistant_consent(ui);
             return;
         };
         egui::Panel::bottom("assistant-input")
@@ -390,6 +429,7 @@ impl App {
             .stick_to_bottom(true)
             .show(ui, |ui| {
                 if self.database.assistant.entries.is_empty() {
+                    self.assistant_intro(ui);
                     let hint = match sharing {
                         Sharing::Schema => "Ask about tables, keys or how to write a query",
                         Sharing::Rows => "Ask about the schema or the data",
@@ -477,23 +517,19 @@ impl App {
                 {
                     self.toggle_assistant();
                 }
-                if let Some(sharing) = self.assistant_sharing() {
-                    let (icon, name, next) = match sharing {
-                        Sharing::Schema => (
-                            Icon::Structure,
-                            "Sharing the schema only · click to also share query results",
-                            Sharing::Rows,
-                        ),
-                        Sharing::Rows => (
-                            Icon::Data,
-                            "Sharing the schema and query results · click to share the schema only",
-                            Sharing::Schema,
-                        ),
-                    };
-                    if icons::control(ui, icon, name, "", sharing == Sharing::Rows, false).clicked()
-                    {
-                        self.set_assistant_sharing(next);
+                if let Some(current) = self.assistant_sharing() {
+                    // Right to left: reads schema, then schema and results.
+                    for sharing in [Sharing::Rows, Sharing::Schema] {
+                        let (icon, name, detail) = sharing_choice(sharing);
+                        if icons::control(ui, icon, name, "", sharing == current, false)
+                            .on_hover_text(detail)
+                            .clicked()
+                            && sharing != current
+                        {
+                            self.set_assistant_sharing(sharing);
+                        }
                     }
+                    ui.separator();
                 }
                 let conversation = &self.database.assistant;
                 if ui
@@ -640,7 +676,8 @@ impl App {
         }
     }
 
-    fn assistant_consent(&mut self, ui: &mut egui::Ui) {
+    /// Who receives what, above an empty conversation.
+    fn assistant_intro(&mut self, ui: &mut egui::Ui) {
         ui.add_space(8.0);
         let text = match profile(&self.preferences.assistant) {
             Ok(profile) => {
@@ -668,34 +705,6 @@ impl App {
             Err(error) => error,
         };
         presentation::notice(ui, Icon::Lock, Intent::Neutral, &text);
-        ui.add_space(8.0);
-        ui.label("Choose what this database shares:");
-        ui.add_space(4.0);
-        if ui
-            .add(presentation::action(ui, "Schema only", Intent::Primary))
-            .on_hover_text("Table and column names, keys, indexes and CREATE statements")
-            .clicked()
-        {
-            self.set_assistant_sharing(Sharing::Schema);
-            self.database.assistant.focus = true;
-        }
-        ui.add_space(4.0);
-        if ui
-            .add(presentation::action(
-                ui,
-                "Schema and query results",
-                Intent::Neutral,
-            ))
-            .on_hover_text(
-                "Also lets it run read-only SELECT queries of at most 200 rows and read the results",
-            )
-            .clicked()
-        {
-            self.set_assistant_sharing(Sharing::Rows);
-            self.database.assistant.focus = true;
-        }
-        ui.add_space(8.0);
-        ui.weak("Change it later with the sharing icon above.");
         ui.add_space(4.0);
         if ui
             .link("Privacy settings")
@@ -1130,18 +1139,38 @@ impl App {
         });
         self.assistant_privacy(ui);
         super::panels::section(ui, "Sharing", |ui| {
+            let mut default = None;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 3.0;
+                ui.label("Default").on_hover_text(
+                    "What each database shares until you change it with the icons in the \
+                     chat panel",
+                );
+                let current = self.preferences.assistant.default_sharing;
+                for sharing in [Sharing::Schema, Sharing::Rows] {
+                    let (icon, name, detail) = sharing_choice(sharing);
+                    let name = format!("Default: {}", name.to_lowercase());
+                    if icons::control(ui, icon, &name, "", sharing == current, false)
+                        .on_hover_text(detail)
+                        .clicked()
+                    {
+                        default = Some(sharing);
+                    }
+                }
+                ui.weak(sharing_choice(current).1);
+            });
+            if let Some(sharing) = default {
+                self.set_default_assistant_sharing(sharing);
+            }
             if self.preferences.assistant.grants.is_empty() {
-                ui.weak("No database shares anything yet. Each one asks first.");
                 return;
             }
+            ui.add_space(4.0);
             let mut forget = None;
             for (path, grants) in &self.preferences.assistant.grants {
                 for (provider, sharing) in grants {
                     ui.horizontal(|ui| {
-                        let (icon, name) = match sharing {
-                            Sharing::Schema => (Icon::Structure, "Schema only"),
-                            Sharing::Rows => (Icon::Data, "Schema and query results"),
-                        };
+                        let (icon, name, _) = sharing_choice(*sharing);
                         let (rect, response) =
                             ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
                         icons::paint(ui.painter(), rect, icon, ui.visuals().text_color());
@@ -1155,7 +1184,7 @@ impl App {
                             if icons::control(
                                 ui,
                                 Icon::Trash,
-                                "Forget; ask again",
+                                "Forget; use the default",
                                 "",
                                 false,
                                 false,
@@ -1169,15 +1198,20 @@ impl App {
                 }
             }
             if let Some((path, provider)) = forget {
-                if let Some(grants) = self.preferences.assistant.grants.get_mut(&path) {
-                    grants.remove(&provider);
-                }
+                let previous = self
+                    .preferences
+                    .assistant
+                    .grants
+                    .get_mut(&path)
+                    .and_then(|grants| grants.remove(&provider));
+                let default = self.preferences.assistant.default_sharing;
                 for database in std::iter::once(&mut self.database).chain(self.parked.values_mut())
                 {
                     if path == database.tools.database_scope
                         && provider == self.preferences.assistant.provider
+                        && let Some(previous) = previous
                     {
-                        database.assistant.reset();
+                        sharing_changed(&mut database.assistant, previous, default);
                     }
                 }
                 self.preferences.normalize();
@@ -1340,8 +1374,9 @@ impl App {
             guarantee(
                 ui,
                 Icon::Lock,
-                "No database content is sent until sharing is chosen",
-                "Each database asks for each agent: schema only, or schema and query results.",
+                "Row values are sent only when query results are shared",
+                "Each database shares the default below unless changed with the icons in the \
+                 chat panel: schema only, or schema and query results.",
                 false,
             );
             let (label, tip, warn) = copy.tools;

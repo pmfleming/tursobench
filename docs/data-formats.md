@@ -142,9 +142,9 @@ map in older preferences.
 `Codex`, `Antigravity`, `Copilot` or `Custom`) and a `custom_command` up to
 4096 bytes. `models` maps providers to model names up to 200 bytes; missing/empty
 means the CLI default. `executables` maps providers to optional absolute paths.
-`grants` maps absolute database paths to provider maps of `Schema` or `Rows`,
-bounded to 50 database paths / 4096 bytes per path. A missing provider/database
-pair means consent is required. Legacy `model` and `sharing` entries migrate
+`default_sharing` is `Schema` or `Rows` (default `Rows`). `grants` maps absolute
+database paths to provider maps of `Schema` or `Rows`, bounded to 50 database
+paths / 4096 bytes per path. A missing provider/database pair uses `default_sharing`. Legacy `model` and `sharing` entries migrate
 only to the previously selected provider and are not written back.
 `privacy` maps providers to `telemetry_off` (default true), `keep_history`
 (default false) and `share_file_name` (default true); legacy lowercase provider

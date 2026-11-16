@@ -174,9 +174,12 @@ pub struct AssistantPreferences {
     pub model: String,
     pub models: std::collections::BTreeMap<Provider, String>,
     pub executables: std::collections::BTreeMap<Provider, PathBuf>,
-    /// Keyed by absolute database path; a missing entry means not yet chosen.
+    /// Legacy per-database choices, migrated into `grants`.
     #[serde(skip_serializing)]
     pub sharing: std::collections::BTreeMap<String, crate::assistant_tools::Sharing>,
+    /// What a database shares with an agent until it is changed for that database.
+    pub default_sharing: crate::assistant_tools::Sharing,
+    /// Choices made for one database and provider; they override the default.
     pub grants: std::collections::BTreeMap<
         String,
         std::collections::BTreeMap<Provider, crate::assistant_tools::Sharing>,
@@ -188,8 +191,12 @@ impl AssistantPreferences {
     pub fn selected_model(&self) -> &str {
         self.models.get(&self.provider).map_or("", String::as_str)
     }
-    pub fn sharing_for(&self, database: &str) -> Option<crate::assistant_tools::Sharing> {
+    /// This database's own choice for the selected provider, if it has one.
+    pub fn grant_for(&self, database: &str) -> Option<crate::assistant_tools::Sharing> {
         self.grants.get(database)?.get(&self.provider).copied()
+    }
+    pub fn sharing_for(&self, database: &str) -> crate::assistant_tools::Sharing {
+        self.grant_for(database).unwrap_or(self.default_sharing)
     }
     pub fn clear_custom_grants(&mut self) {
         for grants in self.grants.values_mut() {
@@ -576,12 +583,21 @@ mod tests {
         let mut prefs = decode(r#"{"assistant":{"provider":"Codex","model":"my-model","sharing":{"/tmp/a.db":"Rows"},"privacy":{"claude":{"keep_history":true}}}}"#).unwrap();
         assert_eq!(prefs.assistant.selected_model(), "my-model");
         assert_eq!(
-            prefs.assistant.sharing_for("/tmp/a.db"),
+            prefs.assistant.grant_for("/tmp/a.db"),
             Some(crate::assistant_tools::Sharing::Rows)
         );
         assert!(prefs.assistant.privacy.of(Provider::Claude).keep_history);
         prefs.assistant.provider = Provider::Claude;
-        assert_eq!(prefs.assistant.sharing_for("/tmp/a.db"), None);
+        assert_eq!(prefs.assistant.grant_for("/tmp/a.db"), None);
+        assert_eq!(
+            prefs.assistant.sharing_for("/tmp/a.db"),
+            crate::assistant_tools::Sharing::Rows
+        );
+        prefs.assistant.default_sharing = crate::assistant_tools::Sharing::Schema;
+        assert_eq!(
+            prefs.assistant.sharing_for("/tmp/a.db"),
+            crate::assistant_tools::Sharing::Schema
+        );
         assert_eq!(prefs.assistant.selected_model(), "");
         let encoded = serde_json::to_string(&prefs).unwrap();
         let restored = decode(&encoded).unwrap();

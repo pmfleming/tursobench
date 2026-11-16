@@ -22,12 +22,13 @@ pub const NAMES: [&str; 4] = [LIST_TABLES, DESCRIBE_TABLE, RUN_QUERY, PROPOSE_SQ
 const TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_PROPOSAL: usize = 256 * 1024;
 
-/// What the user lets the agent read, chosen per database.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// What the user lets the agent read: a default, changeable per database.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Sharing {
     /// Names, columns, keys, indexes and DDL; no row values.
     Schema,
     /// The schema and the results of read-only queries.
+    #[default]
     Rows,
 }
 

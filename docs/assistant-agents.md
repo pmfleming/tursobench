@@ -4,7 +4,7 @@ Implementation record, 2026-11-15. Each stage is committed independently:
 
 1. Verify vendor interfaces and decide account boundaries.
 2. Move the collapsible assistant to the right.
-3. Centralize providers, discover local binaries, and scope models and consent.
+3. Centralize providers, discover local binaries, and scope models and sharing choices.
 4. Add Settings discovery/status and vendor-owned sign-in flows.
 5. Add agent and model pickers to the conversation.
 6. Complete regression coverage, native captures and user documentation.
@@ -17,9 +17,10 @@ opens credential files, accepts passwords/API keys, or supplies or refreshes
 tokens. Account operations use separate, bounded child processes without
 database tools. Conversation drivers continue to reject credential requests.
 
-Changing provider ends conversations in every workspace; consent belongs to the
-database and provider. Legacy consent migrates only to the previously selected
-provider. Custom ACP commands require fresh consent when changed.
+Changing provider ends conversations in every workspace; sharing choices belong to
+the database and provider, falling back to the default in settings. Legacy
+choices migrate only to the previously selected provider. Changing a custom ACP
+command forgets its choices.
 
 ## Interfaces checked
 

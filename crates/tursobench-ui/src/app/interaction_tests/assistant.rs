@@ -42,7 +42,7 @@ fn runtime_dir(_: &tempfile::TempDir) {
 }
 
 #[test]
-fn a_conversation_asks_for_consent_streams_tools_and_proposes_sql_without_running_it() {
+fn a_conversation_shares_results_by_default_streams_tools_and_proposes_sql_without_running_it() {
     let (dir, ctx, mut app) = fixture(
         &[
             "CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT)",
@@ -54,19 +54,11 @@ fn a_conversation_asks_for_consent_streams_tools_and_proposes_sql_without_runnin
     scripted(&mut app, &dir);
     app.preferences.panels.assistant = true;
     let database = app.database.tools.database_scope.clone();
-    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
-    click(
-        &mut app,
-        &ctx,
-        control(&output, "Schema and query results").center(),
-    );
+    frame_at(&mut app, &ctx, SIZE, vec![]);
+    assert_eq!(app.preferences.assistant.grant_for(&database), None);
     assert_eq!(
-        app.preferences
-            .assistant
-            .grants
-            .get(&database)
-            .and_then(|g| g.get(&app.preferences.assistant.provider)),
-        Some(&Sharing::Rows)
+        app.preferences.assistant.sharing_for(&database),
+        Sharing::Rows
     );
 
     app.database.assistant.draft = "What is in t?".into();
@@ -115,8 +107,17 @@ fn a_conversation_asks_for_consent_streams_tools_and_proposes_sql_without_runnin
     );
     assert!(still.text.contains("[[2]]"), "{}", still.text);
 
-    // Schema-only sharing takes effect at once for the running agent.
-    app.set_assistant_sharing(Sharing::Schema);
+    // The ribbon switches to schema only at once for the running agent.
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    click(
+        &mut app,
+        &ctx,
+        control(&output, "Share the schema only").center(),
+    );
+    assert_eq!(
+        app.preferences.assistant.grant_for(&database),
+        Some(Sharing::Schema)
+    );
     let refused = host.call(RUN_QUERY, &serde_json::json!({"sql": "SELECT 1"}));
     assert!(refused.is_error);
     assert!(matches!(
@@ -127,13 +128,10 @@ fn a_conversation_asks_for_consent_streams_tools_and_proposes_sql_without_runnin
 }
 
 #[test]
-fn a_missing_agent_is_explained_and_no_conversation_starts_without_consent() {
+fn a_missing_agent_is_explained() {
     let (dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
     runtime_dir(&dir);
     app.database.assistant.draft = "hello".into();
-    app.send_assistant(&ctx);
-    assert!(app.database.assistant.entries.is_empty() && !app.database.assistant.busy);
-    app.set_assistant_sharing(Sharing::Schema);
     app.database.assistant.program = Some(dir.path().join("no-such-claude"));
     app.send_assistant(&ctx);
     assert!(matches!(
@@ -218,10 +216,26 @@ fn an_acp_agent_can_be_chosen_in_settings_and_its_own_edits_are_declined() {
     click(
         &mut app,
         &ctx,
-        control(&output, "Forget; ask again").center(),
+        control(&output, "Forget; use the default").center(),
     );
     assert!(app.preferences.assistant.grants.is_empty());
-    assert!(app.database.assistant.entries.is_empty());
+    // The conversation goes on with the default, and is told so.
+    assert!(matches!(
+        app.database.assistant.entries.last(),
+        Some(Entry::Notice(_, text)) if text == "Now sharing the schema and query results"
+    ));
+    // Changing the default reaches a database without its own choice.
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    click(
+        &mut app,
+        &ctx,
+        control(&output, "Default: share the schema only").center(),
+    );
+    assert_eq!(app.preferences.assistant.default_sharing, Sharing::Schema);
+    assert!(matches!(
+        app.database.assistant.entries.last(),
+        Some(Entry::Notice(_, text)) if text == "Now sharing only the schema"
+    ));
     app.close();
 }
 
@@ -371,7 +385,7 @@ fn privacy_is_chosen_per_provider_and_reaches_the_agent() {
 }
 
 #[test]
-fn the_consent_card_links_to_the_agents_privacy_settings() {
+fn an_empty_conversation_links_to_the_agents_privacy_settings() {
     let (dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
     runtime_dir(&dir);
     app.preferences.panels.assistant = true;
@@ -395,7 +409,7 @@ fn the_consent_card_links_to_the_agents_privacy_settings() {
 }
 
 #[test]
-fn forgetting_sharing_stops_a_background_conversation() {
+fn forgetting_sharing_applies_the_default_to_a_background_conversation() {
     let (dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
     runtime_dir(&dir);
     app.settings.open = true;
@@ -452,22 +466,25 @@ fn forgetting_sharing_stops_a_background_conversation() {
     click(
         &mut app,
         &ctx,
-        control(&output, "Forget; ask again").center(),
+        control(&output, "Forget; use the default").center(),
     );
     assert!(app.preferences.assistant.grants.is_empty());
     let background = &app.parked[&id].assistant;
-    assert!(background.entries.is_empty());
-    assert!(background.host().is_none());
+    assert!(background.host().is_some());
+    assert!(matches!(
+        background.entries.last(),
+        Some(Entry::Notice(_, text)) if text == "Now sharing the schema and query results"
+    ));
     app.close();
 }
 
 #[test]
-fn switching_vendor_requires_its_own_consent_and_keeps_its_model() {
+fn switching_vendor_keeps_each_vendors_sharing_and_model() {
     use crate::storage::Provider;
     let (dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
     runtime_dir(&dir);
     scripted(&mut app, &dir);
-    app.set_assistant_sharing(Sharing::Rows);
+    app.set_assistant_sharing(Sharing::Schema);
     app.preferences
         .assistant
         .models
@@ -483,19 +500,16 @@ fn switching_vendor_requires_its_own_consent_and_keeps_its_model() {
         app.preferences
             .assistant
             .sharing_for(&app.database.tools.database_scope),
-        None
+        Sharing::Rows
     );
     assert_eq!(app.preferences.assistant.selected_model(), "");
-    app.database.assistant.draft = "Do not send".into();
-    app.send_assistant(&ctx);
-    assert!(app.database.assistant.entries.is_empty());
     app.select_assistant_provider(Provider::Claude);
     assert_eq!(app.preferences.assistant.selected_model(), "sonnet");
     assert_eq!(
         app.preferences
             .assistant
             .sharing_for(&app.database.tools.database_scope),
-        Some(Sharing::Rows)
+        Sharing::Schema
     );
     app.close();
 }
@@ -550,7 +564,7 @@ fn agent_scan_reports_status_and_missing_executables_without_starting_a_conversa
 }
 
 #[test]
-fn chat_header_pickers_change_model_and_vendor_with_fresh_consent() {
+fn chat_header_pickers_change_model_and_vendor_with_its_own_sharing() {
     use crate::storage::Provider;
     use tursobench_assistant::account::{Model, SignIn, Status};
     let (dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
@@ -592,10 +606,10 @@ fn chat_header_pickers_change_model_and_vendor_with_fresh_consent() {
         app.preferences
             .assistant
             .sharing_for(&app.database.tools.database_scope),
-        None
+        Sharing::Rows
     );
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
-    assert!(labelled(&output, "Schema only"));
+    assert!(labelled(&output, "Share the schema and query results"));
     click(
         &mut app,
         &ctx,

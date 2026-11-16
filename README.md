@@ -10,7 +10,7 @@ Read-only by default; compatible local peers share access.
 ![Workspace](docs/assets/ui/readme/workspace.png)
 ![Edit review](docs/assets/ui/readme/edit-review.png)
 
-Claude Code, Codex and ACP assistants use consent-scoped database tools;
+Claude Code, Codex and ACP assistants use sharing-scoped database tools;
 proposed writes require execution in the editor.
 
 ![Assistant (seeded conversation)](docs/assets/ui/readme/assistant.png)

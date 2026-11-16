@@ -299,8 +299,10 @@ of the status bar. The sidebar toggle stays on the left. Ctrl B (sidebar) and Ct
 the choice persists. Ctrl P search and close confirmations bring a hidden sidebar
 back.
 
-Each database asks for each agent what to share: **Schema only**, or **Schema and query
-results**. Change it with the icon in the panel header, or forget it in Settings.
+Each database shares **Schema and query results** by default; change the default in
+Settings → Assistant → Sharing. Two icons in the panel header switch the open
+database between **Schema only** and **Schema and query results** at any time;
+Settings lists those choices and can forget one.
 The agent can list tables, describe one, run one read-only SELECT of at most
 200 rows when results are shared, and propose SQL. Proposed SQL, and any SQL block
 in a reply, opens in a new SQL editor tile without running; you review and run it.
@@ -312,7 +314,7 @@ CLI's history, and whether the agent may learn the database's file name (never
 its folder). Credentials stay with the CLI. Status, sign-in method and plan
 stay in memory and email is discarded. Copilot CLI and other ACP agents keep their
 own telemetry and history settings. Antigravity offers a telemetry switch, while
-its history follows its own settings. The consent card links there.
+its history follows its own settings. The notice above an empty conversation links there.
 
 ![Assistant on the right with a proposed UPDATE in the SQL tile.](assets/ui/assistant/assistant-conversation.png)
 

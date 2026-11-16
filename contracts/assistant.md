@@ -62,22 +62,24 @@ Antigravity versions omit tool output from ACP updates; the UI shows the
 completion state without inventing a result.
 
 An ACP agent keeps whatever built-in tools its vendor gives it; some may read
-local files without asking. The consent card says so.
+local files without asking. The notice above an empty conversation says so.
 
-## Consent and sharing
+## Sharing
 
-No database content is sent until the user chooses, per database (by absolute
-path) and provider, either:
+Each database shares one of two levels with the agent. Settings → Assistant →
+Sharing sets the default, **Schema and query results** unless changed:
 
 - **Schema only**: object names, columns, declared types, keys, indexes and DDL.
 - **Schema and query results**: also read-only queries and their results.
 
-The choice persists in application preferences, at most 50 databases. Legacy
-choices apply only to the previously selected provider. Switching provider ends all workspace conversations; changing a custom
-command or executable also forgets that custom agent's consent. The
-header toggles it and the change applies to a running agent at once; the next
-prompt tells the agent. Settings → Assistant lists every choice and can forget
-one, which also ends that database's conversation.
+Two icons in the chat panel header switch the open database between them, per
+database (by absolute path) and provider; the choice persists in application
+preferences, at most 50 databases. Legacy choices apply only to the previously
+selected provider. Switching provider ends all workspace conversations; changing
+a custom command or executable also forgets that custom agent's choices. A change
+to a choice or to the default applies to a running agent at once, and the next
+prompt tells the agent. Settings → Assistant lists every per-database choice and
+can forget one, which returns that database to the default.
 
 ## Privacy
 
@@ -103,11 +105,12 @@ These hold for every provider and are listed in the section as fixed rows:
   token refresh requests are refused.
 - The database's folder is never sent. Queries that name
   `pragma_database_list`, which returns the full path, are refused.
-- No database content is sent until sharing with that provider is chosen.
+- Row values are sent only when query results are shared; schema only sends
+  none.
 - The agent's own tools: none for Claude Code; for Codex no shell or web search
   in a read-only sandbox; ACP agents keep theirs (see below).
 
-The consent card links to the section.
+The notice above an empty conversation links to the section.
 
 ## Tools
 
@@ -156,7 +159,7 @@ time before any MCP message is served.
 One agent process runs per workspace conversation, started on the first message.
 Stop sends Claude's interrupt control request, Codex's `turn/interrupt` or ACP
 `session/cancel`. New
-conversation, forgetting the database's sharing choice, or opening a different
+conversation or opening a different
 database in the workspace kills the agent and removes its socket and config
 file. Reopening the same database keeps the conversation.
 

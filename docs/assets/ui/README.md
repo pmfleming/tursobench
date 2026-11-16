@@ -50,13 +50,13 @@ the machine.
 
 | Capture | Behaviour |
 | --- | --- |
-| [Consent](assistant/assistant-consent.png) | First use per database and vendor: who receives the data and the two sharing choices. |
+| [Consent](assistant/assistant-consent.png) | An empty conversation: who receives the data, with the two sharing icons in the header. |
 | [Conversation](assistant/assistant-conversation.png) | Right-side chat, vendor/model pickers, tool rows, a reply with a SQL block, and proposed SQL opened unrun in the SQL tile. |
 | [Without sidebar](assistant/assistant-without-sidebar.png) | Sidebar hidden, assistant shown. |
 | [Light](assistant/assistant-light.png) | The same in the light theme. |
 | [Both hidden](assistant/panels-hidden.png) | The workspace takes the full width; the status-bar toggles remain. |
 | [Settings](assistant/assistant-settings.png) | Local agent statuses, scan/retry, sign-in/out controls, executable override and per-agent privacy. |
-| [Privacy](assistant/assistant-privacy.png) | Codex's privacy choices and fixed promises, opened from the consent card's link. |
+| [Privacy](assistant/assistant-privacy.png) | Codex's privacy choices and fixed promises, opened from the empty conversation's link. |
 
 Reproduce with:
 
