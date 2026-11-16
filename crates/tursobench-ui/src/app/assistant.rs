@@ -771,12 +771,69 @@ impl App {
             && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
         let busy = self.database.assistant.busy;
         let account_pending = self.assistant_account_pending();
+        // Send, or Stop while the agent works, sits inside the box's corner;
+        // the right margin keeps text from running under it.
+        const BUTTON: f32 = 32.0;
         let edit = egui::TextEdit::multiline(&mut self.database.assistant.draft)
             .id(id)
             .desired_rows(2)
             .desired_width(f32::INFINITY)
+            .margin(egui::Margin {
+                left: 4,
+                right: (BUTTON + 10.0) as i8,
+                top: 2,
+                bottom: 2,
+            })
             .hint_text("Ask about this database · Enter sends");
         let response = ui.add(edit);
+        let corner = egui::Rect::from_min_size(
+            response.rect.right_bottom() - egui::vec2(BUTTON + 5.0, BUTTON + 5.0),
+            egui::vec2(BUTTON, BUTTON),
+        );
+        if busy {
+            let stop = ui.interact(corner, id.with("stop"), egui::Sense::click());
+            let red = ui.visuals().error_fg_color;
+            let fill = if stop.hovered() {
+                red
+            } else {
+                red.gamma_multiply(0.85)
+            };
+            ui.painter().rect_filled(corner, 8.0, fill);
+            icons::paint(
+                ui.painter(),
+                egui::Rect::from_center_size(corner.center(), egui::vec2(18.0, 18.0)),
+                Icon::Stop,
+                egui::Color32::WHITE,
+            );
+            stop.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Stop"));
+            if stop
+                .on_hover_text("Stop the agent's turn")
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+                && let Some(running) = &self.database.assistant.running
+            {
+                running.agent.cancel();
+            }
+        } else {
+            let empty = self.database.assistant.draft.trim().is_empty();
+            let clicked = ui
+                .scope_builder(
+                    egui::UiBuilder::new().max_rect(corner).layout(
+                        egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                    ),
+                    |ui| {
+                        ui.add_enabled_ui(!empty && !account_pending, |ui| {
+                            icons::control(ui, Icon::Send, "Send", "Enter", false, false)
+                        })
+                        .inner
+                        .clicked()
+                    },
+                )
+                .inner;
+            if clicked {
+                self.send_assistant(ui.ctx());
+            }
+        }
         response.widget_info(|| {
             egui::WidgetInfo::labeled(
                 egui::Role::MultilineTextInput,
@@ -787,29 +844,6 @@ impl App {
         if std::mem::take(&mut self.database.assistant.focus) {
             response.request_focus();
         }
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 3.0;
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if busy {
-                    if icons::control(ui, Icon::Stop, "Stop", "", false, false).clicked()
-                        && let Some(running) = &self.database.assistant.running
-                    {
-                        running.agent.cancel();
-                    }
-                } else {
-                    let empty = self.database.assistant.draft.trim().is_empty();
-                    if ui
-                        .add_enabled_ui(!empty && !account_pending, |ui| {
-                            icons::control(ui, Icon::Send, "Send", "Enter", false, false)
-                        })
-                        .inner
-                        .clicked()
-                    {
-                        self.send_assistant(ui.ctx());
-                    }
-                }
-            });
-        });
         if account_pending {
             ui.small("Finish or cancel the account change in Settings to send a message.");
         }
