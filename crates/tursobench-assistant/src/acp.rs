@@ -14,6 +14,7 @@ const INITIALIZE: u64 = 1;
 const NEW_SESSION: u64 = 2;
 const SET_MODEL: u64 = 3;
 const SET_MODE: u64 = 4;
+const SET_EFFORT: u64 = 5;
 
 #[derive(Default)]
 struct State {
@@ -27,11 +28,19 @@ struct State {
     mode_pending: bool,
     model_pending: bool,
     original_model: Option<String>,
+    /// The reasoning level the user chose; `None` restores `original_effort`.
+    effort: Option<String>,
+    effort_pending: bool,
+    /// The session's `thought_level` config option, its levels and first value.
+    effort_option: Option<String>,
+    effort_values: Vec<String>,
+    original_effort: Option<String>,
 }
 
 pub(crate) fn drive(spec: &Spec, input: &Receiver<Input>, link: &mut Link) {
     let mut state = State {
         next_id: 10,
+        effort: spec.effort.clone(),
         ..Default::default()
     };
     let initialize = json!({
@@ -58,6 +67,12 @@ pub(crate) fn drive(spec: &Spec, input: &Receiver<Input>, link: &mut Link) {
             Input::Prompt(text) => {
                 state.queued.push_back(text);
                 flush(spec, &mut state, link);
+            }
+            Input::Effort(level) => {
+                state.effort = level;
+                if state.session.is_some() {
+                    apply_effort(&mut state, link);
+                }
             }
             Input::Cancel => {
                 if let Some(session) = &state.session {
@@ -96,7 +111,7 @@ fn flush(spec: &Spec, state: &mut State, link: &mut Link) {
     let Some(session) = state.session.clone() else {
         return;
     };
-    if state.prompt.is_some() || state.mode_pending || state.model_pending {
+    if state.prompt.is_some() || state.mode_pending || state.model_pending || state.effort_pending {
         return;
     }
     let Some(mut text) = state.queued.pop_front() else {
@@ -226,6 +241,22 @@ fn response(spec: &Spec, state: &mut State, link: &mut Link, id: Option<u64>, me
                 .and_then(|o| o["currentValue"].as_str())
                 .or_else(|| result["models"]["currentModelId"].as_str())
                 .map(str::to_owned);
+            let thought = result["configOptions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|o| o["category"] == "thought_level");
+            state.effort_option = thought.and_then(|o| o["id"].as_str()).map(str::to_owned);
+            state.original_effort = thought
+                .and_then(|o| o["currentValue"].as_str())
+                .map(str::to_owned);
+            state.effort_values = crate::account::acp_efforts(result)
+                .into_iter()
+                .map(|e| e.id)
+                .collect();
+            if state.effort.is_some() {
+                apply_effort(state, link);
+            }
             let model = choose_model(spec, state, link, result);
             link.emit(Update::Ready { model });
         }
@@ -237,6 +268,14 @@ fn response(spec: &Spec, state: &mut State, link: &mut Link, id: Option<u64>, me
                 });
                 link.emit(Update::Notice(format!(
                     "The agent kept its default model: {error}"
+                )));
+            }
+        }
+        Some(SET_EFFORT) => {
+            state.effort_pending = false;
+            if let Some(error) = error {
+                link.emit(Update::Notice(format!(
+                    "The agent kept its reasoning level: {error}"
                 )));
             }
         }
@@ -264,6 +303,42 @@ fn response(spec: &Spec, state: &mut State, link: &mut Link, id: Option<u64>, me
         }
         _ => {}
     }
+}
+
+/// Set the session's `thought_level` to the chosen level, or back to the one
+/// it started with.
+fn apply_effort(state: &mut State, link: &mut Link) {
+    let Some(session) = state.session.clone() else {
+        return;
+    };
+    let Some(config) = state.effort_option.clone() else {
+        if state.effort.is_some() {
+            link.emit(Update::Notice(
+                "The agent does not offer reasoning levels".into(),
+            ));
+        }
+        return;
+    };
+    let Some(value) = state
+        .effort
+        .clone()
+        .or_else(|| state.original_effort.clone())
+    else {
+        return;
+    };
+    if !state.effort_values.contains(&value) {
+        link.emit(Update::Notice(format!(
+            "The agent does not offer the reasoning level {value}"
+        )));
+        return;
+    }
+    state.effort_pending = true;
+    let _ = link.write(&json!({
+        "jsonrpc": "2.0",
+        "id": SET_EFFORT,
+        "method": "session/set_config_option",
+        "params": {"sessionId": session, "configId": config, "value": value},
+    }));
 }
 
 fn fail(state: &mut State, link: &mut Link, error: String) {

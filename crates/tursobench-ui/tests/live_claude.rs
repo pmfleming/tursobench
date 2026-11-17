@@ -38,7 +38,7 @@ impl ToolHost for Upper {
 fn signed_in_claude_calls_relay_tools_with_built_in_tools_removed() {
     let exe = std::path::PathBuf::from(env!("CARGO_BIN_EXE_tursobench"));
     let endpoint = Endpoint::start(Arc::new(Upper), exe).unwrap();
-    let spec = claude::spec(
+    let mut spec = claude::spec(
         "claude".into(),
         relay::private_dir().unwrap(),
         endpoint.config_path(),
@@ -47,6 +47,7 @@ fn signed_in_claude_calls_relay_tools_with_built_in_tools_removed() {
         Some("haiku"),
         Default::default(),
     );
+    spec.effort = Some("low".into());
     let agent = Agent::spawn(spec, Arc::new(|| {})).unwrap();
     agent.prompt(
         "Call the upper tool with the text 'turso bench', then reply with only its output.",

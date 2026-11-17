@@ -305,6 +305,14 @@ fn labelled(output: &egui::FullOutput, name: &str) -> bool {
     })
 }
 
+/// The current value a named control reports.
+fn value_of(output: &egui::FullOutput, name: &str) -> Option<String> {
+    crate::app::test_ui::nodes(output)
+        .iter()
+        .find(|(_, node)| node.label().is_some_and(|l| l == name))
+        .and_then(|(_, node)| node.value().map(str::to_owned))
+}
+
 /// A stand-in for `claude -p` that records how it was started.
 const RECORDING_SCRIPT: &str = r#"#!/usr/bin/env bash
 { printf 'ARGS %s\n' "$*"; printf 'QUIET %s\n' "${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-unset}"; } > "$0.log"
@@ -627,6 +635,7 @@ fn chat_header_pickers_change_model_and_vendor_with_its_own_sharing() {
         models: vec![Model {
             id: "gpt-test".into(),
             name: "Test model".into(),
+            ..Default::default()
         }],
         ..Default::default()
     });
@@ -811,6 +820,7 @@ fn cancelling_or_failing_a_sign_in_keeps_the_last_status_and_models() {
         models: vec![Model {
             id: "gpt-test".into(),
             name: "Test model".into(),
+            ..Default::default()
         }],
         ..Default::default()
     };
@@ -899,5 +909,87 @@ fn copy_buttons_write_the_reply_and_conversation_in_the_chosen_format() {
         copied(&mut app, "Copy conversation"),
         ["<h2>You</h2>\n<p>Hi</p>\n<h2>Claude Code</h2>\n<p><strong>Done</strong></p>"]
     );
+    app.close();
+}
+
+#[test]
+fn the_reasoning_level_changes_mid_conversation_and_follows_each_codex_model() {
+    use crate::storage::Provider;
+    use tursobench_assistant::account::{Model, SignIn, Status};
+    let (dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
+    runtime_dir(&dir);
+    // A Claude stand-in that records what it is sent.
+    let log = dir.path().join("sent.log");
+    let script = dir.path().join("claude");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/usr/bin/env bash\nwhile read -r line; do\n  printf '%s\\n' \"$line\" >> '{}'\n  case \"$line\" in *'\"type\":\"user\"'*) echo '{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"ok\"}}';; esac\ndone\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    app.database.assistant.program = Some(script);
+    app.preferences.panels.assistant = true;
+    app.database.assistant.draft = "Hello".into();
+    app.send_assistant(&ctx);
+    wait_until(&mut app, &ctx, |a| !a.database.assistant.busy);
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    assert_eq!(
+        value_of(&output, "Assistant reasoning level").as_deref(),
+        Some("Default")
+    );
+    click(
+        &mut app,
+        &ctx,
+        control(&output, "Assistant reasoning level").center(),
+    );
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    click(&mut app, &ctx, control(&output, "Extra high").center());
+    assert_eq!(app.preferences.assistant.selected_effort(), "xhigh");
+    // Unlike a model change, the conversation and its agent carry on.
+    assert!(app.database.assistant.host().is_some());
+    assert!(!app.database.assistant.entries.is_empty());
+    let sent = || std::fs::read_to_string(&log).unwrap_or_default();
+    wait_until(&mut app, &ctx, |_| {
+        sent().contains(r#""effortLevel":"xhigh""#)
+    });
+    assert!(sent().contains("get_settings"));
+    // Back to the default: the level read at start is restored (unknown here).
+    app.select_assistant_effort(String::new());
+    wait_until(&mut app, &ctx, |_| sent().contains(r#""effortLevel":null"#));
+
+    // Codex lists levels per model; the default model stands in for none.
+    let model = |id: &str, efforts: &[&str], default: bool| Model {
+        id: id.into(),
+        name: id.into(),
+        efforts: efforts.iter().map(|e| (*e).into()).collect(),
+        default_effort: Some("low".into()),
+        default,
+    };
+    app.accounts.rows.entry(Provider::Codex).or_default().status = Some(Status {
+        state: SignIn::SignedIn,
+        models: vec![
+            model("deep", &["low", "high", "ultra"], true),
+            model("quick", &["low"], false),
+        ],
+        ..Default::default()
+    });
+    app.select_assistant_provider(Provider::Codex);
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    assert_eq!(
+        value_of(&output, "Assistant reasoning level").as_deref(),
+        Some("Default · Low")
+    );
+    app.select_assistant_effort("ultra".into());
+    assert_eq!(app.assistant_effort().as_deref(), Some("ultra"));
+    // A model without that level falls back to the agent's own.
+    app.select_assistant_model("quick".into());
+    assert_eq!(app.preferences.assistant.selected_effort(), "ultra");
+    assert_eq!(app.assistant_effort(), None);
+    // Claude keeps its own choice.
+    app.select_assistant_provider(Provider::Claude);
+    assert_eq!(app.preferences.assistant.selected_effort(), "");
     app.close();
 }

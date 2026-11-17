@@ -277,6 +277,11 @@ known status. Codex and ACP model lists come from status
 checks; Claude offers aliases, and Settings accepts a custom model name. The
 panel checks the selected agent the first time it is shown, and again after you
 choose another one, so its pickers fill without a visit to Settings.
+Beside the model, a gauge picker sets the reasoning level: the agent's default or
+one of its levels (Claude Code: low to max; Codex: the levels each model lists;
+ACP agents: their own thought levels, when they offer them). Unlike the model, a
+new level applies from the next message without ending the conversation, and
+each agent remembers its own choice.
 Settings scans PATH and common installation folders,
 shows sign-in status and version, and offers an executable path override.
 Status checks never send database metadata; an ACP check may leave an empty

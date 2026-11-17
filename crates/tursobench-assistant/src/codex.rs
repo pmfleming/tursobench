@@ -84,12 +84,17 @@ pub fn spec(
             .map(str::trim)
             .filter(|m| !m.is_empty())
             .map(str::to_owned),
+        effort: None,
         privacy,
     }
 }
 
 #[derive(Default)]
 struct State {
+    /// The reasoning level the user chose; `None` uses `original`.
+    effort: Option<String>,
+    /// The level the thread started with, as `thread/start` reported it.
+    original: Option<String>,
     thread: Option<String>,
     /// The running turn: the request that starts it, then its id.
     starting: Option<u64>,
@@ -109,6 +114,7 @@ struct State {
 pub(crate) fn drive(spec: &Spec, input: &Receiver<Input>, link: &mut Link) {
     let mut state = State {
         next_id: 10,
+        effort: spec.effort.clone(),
         ..Default::default()
     };
     let initialize = json!({
@@ -129,6 +135,7 @@ pub(crate) fn drive(spec: &Spec, input: &Receiver<Input>, link: &mut Link) {
         match message {
             Input::Prompt(text) => state.queued.push_back(text),
             Input::Cancel => cancel(&mut state, link),
+            Input::Effort(level) => state.effort = level,
             Input::Line(line) => {
                 let Ok(message) = serde_json::from_str::<Json>(&line) else {
                     continue;
@@ -186,11 +193,17 @@ fn flush(state: &mut State, link: &mut Link) {
     state.spoke = false;
     state.streamed.clear();
     state.error = None;
+    let mut params = json!({"threadId": thread, "input": [{"type": "text", "text": text}]});
+    // A turn's effort sticks for later turns, so the original level is sent
+    // explicitly to undo an earlier choice.
+    if let Some(effort) = state.effort.as_ref().or(state.original.as_ref()) {
+        params["effort"] = json!(effort);
+    }
     let request = json!({
         "jsonrpc": "2.0",
         "id": state.next_id,
         "method": "turn/start",
-        "params": {"threadId": thread, "input": [{"type": "text", "text": text}]},
+        "params": params,
     });
     if let Err(e) = link.write(&request) {
         state.starting = None;
@@ -248,6 +261,7 @@ fn response(spec: &Spec, state: &mut State, link: &mut Link, id: Option<u64>, me
                 return fail(state, link, "Codex returned no conversation".into());
             };
             state.thread = Some(thread.to_owned());
+            state.original = result["reasoningEffort"].as_str().map(str::to_owned);
             link.emit(Update::Ready {
                 model: result["model"].as_str().map(str::to_owned),
             });

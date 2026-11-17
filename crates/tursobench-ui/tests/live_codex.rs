@@ -38,7 +38,7 @@ impl ToolHost for Upper {
 fn signed_in_codex_calls_relay_tools_in_a_read_only_thread() {
     let exe = std::path::PathBuf::from(env!("CARGO_BIN_EXE_tursobench"));
     let endpoint = Endpoint::start(Arc::new(Upper), exe).unwrap();
-    let spec = codex::spec(
+    let mut spec = codex::spec(
         "codex".into(),
         relay::private_dir().unwrap(),
         endpoint.launch().clone(),
@@ -46,6 +46,7 @@ fn signed_in_codex_calls_relay_tools_in_a_read_only_thread() {
         None,
         Default::default(),
     );
+    spec.effort = Some("low".into());
     let agent = Agent::spawn(spec, Arc::new(|| {})).unwrap();
     agent.prompt(
         "Call the upper tool with the text 'turso bench', then reply with only its output.",

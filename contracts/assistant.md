@@ -66,6 +66,22 @@ local files without asking. The notice above an empty conversation says so; it
 names who receives the data and shows the first time each agent is used, then
 again after every four sessions that use it without it.
 
+## Reasoning level
+
+The chat's reasoning picker offers the agent's default and the levels it accepts.
+Each provider keeps its own choice. It applies from the next message of every
+running conversation; nothing restarts. Choosing the default again restores the
+level the agent started with.
+
+| Agent | Levels | How it is set |
+| --- | --- | --- |
+| Claude Code | `low`, `medium`, `high`, `xhigh`, `max` (`--effort`); the CLI caps them at the model's maximum | `apply_flag_settings` control request with `effortLevel`. A `get_settings` request at start records the level in use; only its applied effort is read |
+| Codex | Each model's `supportedReasoningEfforts` from `model/list` | `effort` on every `turn/start`; the thread's starting `reasoningEffort` is sent to undo a choice |
+| ACP agents | The session's `thought_level` config option, when offered | `session/set_config_option` before the first prompt, then on each change |
+
+A remembered level the current model does not list is not sent; the agent uses
+its own.
+
 ## Sharing
 
 Each database shares one of two levels with the agent. Settings → Assistant →

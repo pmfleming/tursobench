@@ -26,8 +26,19 @@ pub enum SignIn {
     Unknown,
     Missing,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Model {
+    pub id: String,
+    pub name: String,
+    /// Reasoning levels this model accepts, when the agent lists them per model.
+    pub efforts: Vec<String>,
+    pub default_effort: Option<String>,
+    /// Whether this is the model the agent uses when none is chosen.
+    pub default: bool,
+}
+/// A reasoning level an agent offers whatever the model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Effort {
     pub id: String,
     pub name: String,
 }
@@ -43,6 +54,8 @@ pub struct Status {
     pub method: Option<String>,
     pub plan: Option<String>,
     pub models: Vec<Model>,
+    /// Reasoning levels for every model (ACP agents); Codex lists them per model.
+    pub efforts: Vec<Effort>,
     pub auth_methods: Vec<AuthMethod>,
     pub issue: Option<String>,
 }
@@ -54,6 +67,7 @@ impl Default for Status {
             method: None,
             plan: None,
             models: vec![],
+            efforts: vec![],
             auth_methods: vec![],
             issue: None,
         }
@@ -391,8 +405,46 @@ pub fn claude_models() -> Vec<Model> {
         .map(|id| Model {
             id: (*id).into(),
             name: (*id).into(),
+            ..Default::default()
         })
         .collect()
+}
+/// Claude Code's documented `--effort` levels; the CLI caps them at what the
+/// model supports.
+pub fn claude_efforts() -> Vec<Effort> {
+    crate::claude::EFFORT_LEVELS
+        .iter()
+        .map(|id| Effort {
+            id: (*id).into(),
+            name: (*id).into(),
+        })
+        .collect()
+}
+/// The levels of an ACP session's `thought_level` config option.
+pub fn acp_efforts(result: &Json) -> Vec<Effort> {
+    let mut efforts = vec![];
+    fn options(values: &Json, efforts: &mut Vec<Effort>) {
+        for option in values.as_array().into_iter().flatten().take(50) {
+            if option["options"].is_array() {
+                options(&option["options"], efforts);
+            } else if let Some(id) = field(&option["value"]) {
+                efforts.push(Effort {
+                    name: field(&option["name"]).unwrap_or_else(|| id.clone()),
+                    id,
+                });
+            }
+        }
+    }
+    if let Some(option) = result["configOptions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|o| o["category"] == "thought_level")
+    {
+        options(&option["options"], &mut efforts);
+    }
+    efforts.truncate(50);
+    efforts
 }
 pub fn acp_models(result: &Json) -> Vec<Model> {
     let option = result["configOptions"]
@@ -409,6 +461,7 @@ pub fn acp_models(result: &Json) -> Vec<Model> {
                 models.push(Model {
                     name: field(&option["name"]).unwrap_or_else(|| id.clone()),
                     id,
+                    ..Default::default()
                 });
             }
             if models.len() >= 200 {
@@ -429,6 +482,7 @@ pub fn acp_models(result: &Json) -> Vec<Model> {
                 models.push(Model {
                     name: field(&model["name"]).unwrap_or_else(|| id.clone()),
                     id,
+                    ..Default::default()
                 });
             }
         }
@@ -562,9 +616,19 @@ fn run(
                             && model["hidden"] != true
                             && !status.models.iter().any(|m| m.id == id)
                         {
+                            let efforts = model["supportedReasoningEfforts"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(|e| field(&e["reasoningEffort"]))
+                                .take(20)
+                                .collect();
                             status.models.push(Model {
                                 name: field(&model["displayName"]).unwrap_or_else(|| id.clone()),
                                 id,
+                                efforts,
+                                default_effort: field(&model["defaultReasoningEffort"]),
+                                default: model["isDefault"] == true,
                             });
                         }
                     }
@@ -631,6 +695,7 @@ fn run(
     } else if let Some(session) = result["result"]["sessionId"].as_str() {
         status.state = SignIn::SignedIn;
         status.models = acp_models(&result["result"]);
+        status.efforts = acp_efforts(&result["result"]);
         if initialized["agentCapabilities"]["sessionCapabilities"]["close"].is_object()
             && p.rpc(4, "session/close", json!({"sessionId":session}), cancel)
                 .is_err()
@@ -857,7 +922,7 @@ for line in sys.stdin:
   send({'id':i,'result':{'account':{'type':'chatgpt','planType':'pro','email':'private@example.com','token':'SECRET'}}})
  elif method=='model/list':
   cursor=m['params']['cursor'];model='first' if cursor is None else 'second'
-  send({'id':i,'result':{'data':[{'id':model,'model':model,'displayName':model}], 'nextCursor':'next' if cursor is None else None}})
+  send({'id':i,'result':{'data':[{'id':model,'model':model,'displayName':model,'isDefault':model=='second','defaultReasoningEffort':'low','supportedReasoningEfforts':[{'reasoningEffort':'low','description':'Fast'},{'reasoningEffort':'high','description':'Deep'}]}], 'nextCursor':'next' if cursor is None else None}})
  else: raise Exception('unexpected method '+str(method))
 "#,
         );
@@ -877,6 +942,11 @@ for line in sys.stdin:
                 .collect::<Vec<_>>(),
             ["first", "second"]
         );
+        // Each model carries its own reasoning levels and default.
+        let second = &status.models[1];
+        assert!(second.default && !status.models[0].default);
+        assert_eq!(second.efforts, ["low", "high"]);
+        assert_eq!(second.default_effort.as_deref(), Some("low"));
         assert!(!format!("{status:?}").contains("SECRET"));
         assert!(!format!("{status:?}").contains("private@example.com"));
     }
@@ -893,7 +963,7 @@ for line in sys.stdin:
   send({'id':i,'result':{'agentCapabilities':{'sessionCapabilities':{'close':{}}},'authMethods':[{'id':'oauth-personal','name':'Google'},{'id':'gemini-api-key','name':'Key'}]}})
  elif method=='session/new':
   assert m['params']['mcpServers']==[]
-  send({'id':i,'result':{'sessionId':'empty','configOptions':[{'category':'model','options':[{'value':'m','name':'Model'}]}]}})
+  send({'id':i,'result':{'sessionId':'empty','configOptions':[{'category':'model','options':[{'value':'m','name':'Model'}]},{'category':'thought_level','options':[{'value':'deep','name':'Deep'}]}]}})
  elif method=='session/close':
   assert m['params']=={'sessionId':'empty'}
   send({'id':i,'result':{}})
@@ -910,6 +980,13 @@ for line in sys.stdin:
         assert_eq!(status.state, SignIn::SignedIn);
         assert_eq!(status.auth_methods.len(), 1);
         assert_eq!(status.models[0].id, "m");
+        assert_eq!(
+            status.efforts,
+            [Effort {
+                id: "deep".into(),
+                name: "Deep".into()
+            }]
+        );
         assert_eq!(status.issue, None);
     }
     #[test]

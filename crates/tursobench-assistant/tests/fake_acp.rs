@@ -64,6 +64,7 @@ fn a_scripted_acp_agent_gets_tools_but_no_shell_files_or_other_permissions() {
             }),
             model: Some("fake-large".into()),
             privacy: Default::default(),
+            effort: None,
         },
         Arc::new(|| {}),
     )
@@ -86,7 +87,7 @@ fn a_scripted_acp_agent_gets_tools_but_no_shell_files_or_other_permissions() {
 }
 
 #[test]
-fn acp_applies_permission_mode_and_grouped_model_before_sending_prompts() {
+fn acp_applies_permission_mode_grouped_model_and_effort_before_sending_prompts() {
     let dir = tempfile::tempdir().unwrap();
     let script = dir.path().join("agent.py");
     std::fs::write(&script, r#"
@@ -99,18 +100,26 @@ def read_line():
   data+=b
  return data.decode()
 def send(v): print(json.dumps(v),flush=True)
+efforts=[];prompts=0;unacked=[]
 for line in iter(read_line, ''):
  m=json.loads(line);method=m['method'];i=m.get('id')
  if method=='initialize': send({'id':i,'result':{'protocolVersion':1}})
- elif method=='session/new': send({'id':i,'result':{'sessionId':'s','configOptions':[{'id':'mode','category':'mode','currentValue':'auto','options':[{'value':'default'}]},{'id':'model','category':'model','currentValue':'small','options':[{'name':'Group','options':[{'value':'large','name':'Large'}]}]}]}})
+ elif method=='session/new': send({'id':i,'result':{'sessionId':'s','configOptions':[{'id':'mode','category':'mode','currentValue':'auto','options':[{'value':'default'}]},{'id':'model','category':'model','currentValue':'small','options':[{'name':'Group','options':[{'value':'large','name':'Large'}]}]},{'id':'effort','category':'thought_level','currentValue':'medium','options':[{'value':'low'},{'value':'medium'},{'value':'high','name':'High'}]}]}})
  elif method=='session/set_config_option':
-  if m['params']['configId']=='mode':
-   assert m['params']['value']=='default';send({'id':i,'result':{}})
-  else:
-   assert m['params']['value']=='large'
-   assert not select.select([sys.stdin],[],[],0.1)[0], 'prompt sent before model acknowledgement'
-   send({'id':i,'result':{}})
- elif method=='session/prompt': send({'id':i,'result':{'stopReason':'end_turn'}})
+  config=m['params']['configId'];value=m['params']['value']
+  if config=='mode': assert value=='default'
+  elif config=='model': assert value=='large'
+  else: efforts.append(value)
+  # Acknowledge once the client goes quiet; a prompt before then is an error.
+  unacked.append(i)
+  if not select.select([sys.stdin],[],[],0.1)[0]:
+   for j in unacked: send({'id':j,'result':{}})
+   unacked=[]
+ elif method=='session/prompt':
+  assert not unacked, 'prompt sent before the settings were acknowledged'
+  prompts+=1
+  assert efforts==(['high'] if prompts==1 else ['high','medium']), efforts
+  send({'id':i,'result':{'stopReason':'end_turn'}})
  else: raise Exception('unexpected '+str(method))
 "#).unwrap();
     let agent = Agent::spawn(
@@ -124,6 +133,7 @@ for line in iter(read_line, ''):
             mcp: None,
             model: Some("large".into()),
             privacy: Default::default(),
+            effort: Some("high".into()),
         },
         Arc::new(|| {}),
     )
@@ -135,5 +145,9 @@ for line in iter(read_line, ''):
             model: Some("large".into())
         }
     );
+    assert_eq!(next(&agent), Update::TurnEnded { error: None });
+    // Back to the agent's own level: the session's first value is set again.
+    agent.set_effort(None);
+    agent.prompt("Again");
     assert_eq!(next(&agent), Update::TurnEnded { error: None });
 }

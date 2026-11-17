@@ -173,6 +173,8 @@ pub struct AssistantPreferences {
     #[serde(skip_serializing)]
     pub model: String,
     pub models: std::collections::BTreeMap<Provider, String>,
+    /// Reasoning level per provider; a missing one keeps the agent's own.
+    pub efforts: std::collections::BTreeMap<Provider, String>,
     pub executables: std::collections::BTreeMap<Provider, PathBuf>,
     /// Legacy per-database choices, migrated into `grants`.
     #[serde(skip_serializing)]
@@ -211,6 +213,9 @@ impl AssistantPreferences {
     }
     pub fn selected_model(&self) -> &str {
         self.models.get(&self.provider).map_or("", String::as_str)
+    }
+    pub fn selected_effort(&self) -> &str {
+        self.efforts.get(&self.provider).map_or("", String::as_str)
     }
     /// This database's own choice for the selected provider, if it has one.
     pub fn grant_for(&self, database: &str) -> Option<crate::assistant_tools::Sharing> {
@@ -381,6 +386,9 @@ impl Preferences {
             self.assistant.grants.pop_first();
         }
         self.assistant.models.retain(|_, model| model.len() <= 200);
+        self.assistant
+            .efforts
+            .retain(|_, effort| !effort.is_empty() && effort.len() <= 40);
         self.assistant
             .executables
             .retain(|_, path| path.is_absolute() && path.as_os_str().len() <= 4096);

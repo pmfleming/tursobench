@@ -105,7 +105,7 @@ the machine.
 | Capture | Behaviour |
 | --- | --- |
 | [Consent](assistant/assistant-consent.png) | An empty conversation: who receives the data, with the two sharing icons in the header. |
-| [Conversation](assistant/assistant-conversation.png) | Right-side chat, vendor/model pickers, tool rows, a reply with a SQL block, and proposed SQL opened unrun in the SQL tile. |
+| [Conversation](assistant/assistant-conversation.png) | Right-side chat, vendor/model pickers, the reasoning-level picker, tool rows, a reply with a SQL block, and proposed SQL opened unrun in the SQL tile. |
 | [Without sidebar](assistant/assistant-without-sidebar.png) | Sidebar hidden, assistant shown. |
 | [Light](assistant/assistant-light.png) | The same in the light theme. |
 | [Both hidden](assistant/panels-hidden.png) | The workspace takes almost the full width; each hidden panel leaves a thin line that brings it back. |

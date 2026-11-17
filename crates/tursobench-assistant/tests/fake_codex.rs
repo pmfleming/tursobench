@@ -1,6 +1,7 @@
 //! Drive a scripted `codex app-server`: handshake, an ephemeral read-only
 //! thread carrying only TursoBench's tools, streaming, declined approvals, a
-//! refused token request and an interrupted turn.
+//! refused token request, a chosen then restored reasoning level and an
+//! interrupted turn.
 use std::{sync::Arc, time::Duration};
 use tursobench_assistant::{
     agent::{Agent, Update},
@@ -20,9 +21,10 @@ while read -r line; do
       for want in '"ephemeral":true' '"sandbox":"read-only"' '"approvalPolicy":"untrusted"' \
                   '"baseInstructions":"Be helpful"' '"model":"gpt-fake"' '--mcp-relay' \
                   '"TURSOBENCH_MCP_TOKEN":"t"' '"mcp_servers":{"tursobench"'; do has "$want"; done
-      echo '{"id":'"$id"',"result":{"thread":{"id":"th1"},"model":"gpt-fake"}}';;
+      echo '{"id":'"$id"',"result":{"thread":{"id":"th1"},"model":"gpt-fake","reasoningEffort":"low"}}';;
     *'"method":"turn/start"'*'"text":"Hello"'*)
       has '"threadId":"th1"'
+      has '"effort":"high"'
       echo '{"id":'"$id"',"result":{"turn":{"id":"tu1","status":"inProgress"}}}'
       echo '{"method":"turn/started","params":{"threadId":"th1","turn":{"id":"tu1"}}}'
       echo '{"method":"item/agentMessage/delta","params":{"threadId":"th1","turnId":"tu1","itemId":"m1","delta":"Hi"}}'
@@ -34,6 +36,7 @@ while read -r line; do
       echo '{"method":"item/completed","params":{"item":{"type":"mcpToolCall","id":"c1","server":"tursobench","tool":"list_tables","status":"completed","arguments":{},"result":{"content":[{"type":"text","text":"[]"}],"isError":false},"error":null}}}'
       echo '{"method":"turn/completed","params":{"threadId":"th1","turn":{"id":"tu1","status":"completed","error":null}}}';;
     *'"method":"turn/start"'*'"text":"Long"'*)
+      has '"effort":"low"'
       echo '{"id":'"$id"',"result":{"turn":{"id":"tu2","status":"inProgress"}}}'
       read -r line; has '"method":"turn/interrupt"'; has '"turnId":"tu2"'
       echo '{"method":"turn/completed","params":{"threadId":"th1","turn":{"id":"tu2","status":"interrupted","error":null}}}';;
@@ -67,6 +70,7 @@ fn a_scripted_codex_gets_only_our_tools_and_no_approvals_or_tokens() {
         Some("gpt-fake"),
         Default::default(),
     );
+    spec.effort = Some("high".into());
     spec.args = vec![script.to_string_lossy().into_owned()];
     let agent = Agent::spawn(spec, Arc::new(|| {})).unwrap();
     // A prompt sent before the thread exists waits for it.
@@ -83,6 +87,8 @@ fn a_scripted_codex_gets_only_our_tools_and_no_approvals_or_tokens() {
     assert!(matches!(next(&agent), Update::ToolResult { ok: true, text, .. } if text == "[]"));
     assert_eq!(next(&agent), Update::TurnEnded { error: None });
 
+    // Back to the agent's own level: the thread's original is sent again.
+    agent.set_effort(None);
     agent.prompt("Long");
     // Stop before the turn id is known: the interrupt follows it.
     agent.cancel();

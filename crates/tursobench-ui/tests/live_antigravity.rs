@@ -47,6 +47,7 @@ fn signed_in_antigravity_calls_our_relay_tools() {
             mcp: Some(endpoint.launch().clone()),
             model: None,
             privacy: Default::default(),
+            effort: None,
         },
         Arc::new(|| {}),
     )

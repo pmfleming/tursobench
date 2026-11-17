@@ -16,6 +16,11 @@ pub const QUIET_ENV: &[(&str, &str)] = &[
 /// that lists models, so these stand in for one.
 pub const MODEL_ALIASES: &[&str] = &["sonnet", "opus", "haiku", "fable"];
 
+/// The levels `claude --effort` documents. They are applied with the
+/// `apply_flag_settings` control request, which also works mid-conversation.
+pub const EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+const SETTINGS_REQUEST: &str = "tursobench-settings";
+
 /// Arguments that start a conversation with every built-in tool removed and no
 /// user or project settings, hooks, slash commands or other MCP servers.
 /// `privacy` decides whether Claude Code saves the session and reports usage.
@@ -79,12 +84,25 @@ pub fn spec(
         system_prompt: system_prompt.into(),
         mcp: None,
         model: model.map(str::to_owned),
+        effort: None,
         privacy,
     }
 }
 
-pub(crate) fn drive(input: &Receiver<Input>, link: &mut Link) {
+pub(crate) fn drive(spec: &Spec, input: &Receiver<Input>, link: &mut Link) {
     let mut interrupts = 0u64;
+    let mut changes = 0u64;
+    // The level Claude Code starts with, so the default can be restored. Only
+    // the applied effort is read from the reply.
+    let mut original: Option<String> = None;
+    let _ = link.write(&json!({
+        "type": "control_request",
+        "request_id": SETTINGS_REQUEST,
+        "request": {"subtype": "get_settings"},
+    }));
+    if let Some(level) = &spec.effort {
+        set_effort(link, &mut changes, Some(level));
+    }
     while let Ok(message) = input.recv() {
         match message {
             Input::Prompt(text) => {
@@ -106,10 +124,31 @@ pub(crate) fn drive(input: &Receiver<Input>, link: &mut Link) {
                     "request": {"subtype": "interrupt"},
                 }));
             }
+            Input::Effort(level) => {
+                let level = level.or_else(|| original.clone());
+                set_effort(link, &mut changes, level.as_deref());
+            }
             Input::Line(line) => {
                 let Ok(message) = serde_json::from_str::<Json>(&line) else {
                     continue;
                 };
+                if message["type"] == "control_response" {
+                    let response = &message["response"];
+                    let id = response["request_id"].as_str().unwrap_or_default();
+                    if id == SETTINGS_REQUEST {
+                        original = response["response"]["applied"]["effort"]
+                            .as_str()
+                            .map(str::to_owned);
+                    } else if id.starts_with("tursobench-effort") && response["subtype"] == "error"
+                    {
+                        link.emit(Update::Notice(format!(
+                            "Claude Code kept its reasoning level: {}",
+                            response["error"]
+                                .as_str()
+                                .unwrap_or("it refused the change")
+                        )));
+                    }
+                }
                 for update in parse(&message) {
                     link.emit(update);
                 }
@@ -206,6 +245,16 @@ fn blocks(message: &Json) -> impl Iterator<Item = &Json> {
         .into_iter()
         .flatten()
         .filter(|_| message.get("parent_tool_use_id").is_none_or(Json::is_null))
+}
+
+/// Ask Claude Code to use `level`, or its own default when `None` is unknown.
+fn set_effort(link: &mut Link, changes: &mut u64, level: Option<&str>) {
+    *changes += 1;
+    let _ = link.write(&json!({
+        "type": "control_request",
+        "request_id": format!("tursobench-effort-{changes}"),
+        "request": {"subtype": "apply_flag_settings", "settings": {"effortLevel": level}},
+    }));
 }
 
 #[cfg(test)]

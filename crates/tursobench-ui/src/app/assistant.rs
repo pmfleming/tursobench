@@ -16,12 +16,26 @@ use std::{
     sync::{Arc, Mutex, mpsc},
 };
 use tursobench_assistant::{
+    account::Effort,
     agent::{Agent, Protocol, Spec, Update},
     claude, codex,
     relay::{self, Endpoint},
 };
 
 const MAX_ENTRIES: usize = 400;
+
+/// A reasoning level as the picker names it.
+fn effort_name(id: &str) -> String {
+    match id {
+        "xhigh" => "Extra high".into(),
+        _ => {
+            let mut chars = id.chars();
+            chars.next().map_or_else(String::new, |first| {
+                first.to_uppercase().chain(chars).collect()
+            })
+        }
+    }
+}
 const MAX_TOOL_TEXT: usize = 4096;
 
 pub(super) enum Entry {
@@ -313,6 +327,7 @@ impl App {
             .trim()
             .to_owned();
         let model = (!model.is_empty()).then_some(model.as_str());
+        let effort = self.assistant_effort();
         let privacy = self
             .preferences
             .assistant
@@ -320,7 +335,7 @@ impl App {
             .of(self.preferences.assistant.provider);
         let prompt =
             tools::system_prompt(privacy.share_file_name.then_some(name.as_str()), sharing);
-        let spec = match profile.protocol {
+        let mut spec = match profile.protocol {
             Protocol::ClaudeStream => claude::spec(
                 program,
                 cwd,
@@ -348,8 +363,11 @@ impl App {
                 mcp: Some(endpoint.launch().clone()),
                 model: model.map(str::to_owned),
                 privacy: privacy.agent(),
+                effort: None,
             },
         };
+        // Every protocol applies the level in its driver, not on the command line.
+        spec.effort = effort;
         let agent = Agent::spawn(spec, wake).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 profile.missing.clone()
@@ -663,6 +681,81 @@ impl App {
         (state, intent, installed)
     }
 
+    /// The reasoning levels the selected agent and model offer, and the level
+    /// the agent uses when none is chosen, when it says.
+    fn assistant_efforts(&self) -> (Vec<Effort>, Option<String>) {
+        use crate::storage::Provider;
+        let provider = self.preferences.assistant.provider;
+        let status = self
+            .accounts
+            .rows
+            .get(&provider)
+            .and_then(|r| r.status.as_ref());
+        let named = |ids: &[String]| {
+            ids.iter()
+                .map(|id| Effort {
+                    name: effort_name(id),
+                    id: id.clone(),
+                })
+                .collect()
+        };
+        match provider {
+            Provider::Claude => {
+                let ids: Vec<String> = tursobench_assistant::account::claude_efforts()
+                    .into_iter()
+                    .map(|e| e.id)
+                    .collect();
+                (named(&ids), None)
+            }
+            // Codex lists levels per model; the default model stands in for none.
+            Provider::Codex => {
+                let selected = self.preferences.assistant.selected_model();
+                status
+                    .and_then(|s| {
+                        s.models.iter().find(|m| {
+                            if selected.is_empty() {
+                                m.default
+                            } else {
+                                m.id == selected
+                            }
+                        })
+                    })
+                    .map(|m| (named(&m.efforts), m.default_effort.clone()))
+                    .unwrap_or_default()
+            }
+            _ => (status.map(|s| s.efforts.clone()).unwrap_or_default(), None),
+        }
+    }
+
+    /// The chosen reasoning level, when the agent offers it.
+    pub(super) fn assistant_effort(&self) -> Option<String> {
+        let chosen = self.preferences.assistant.selected_effort();
+        (!chosen.is_empty() && self.assistant_efforts().0.iter().any(|e| e.id == chosen))
+            .then(|| chosen.to_owned())
+    }
+
+    /// Remember a reasoning level for the selected agent and use it from the
+    /// next message of every running conversation; empty restores the agent's own.
+    pub(super) fn select_assistant_effort(&mut self, effort: String) {
+        if effort == self.preferences.assistant.selected_effort() {
+            return;
+        }
+        let provider = self.preferences.assistant.provider;
+        if effort.is_empty() {
+            self.preferences.assistant.efforts.remove(&provider);
+        } else {
+            self.preferences.assistant.efforts.insert(provider, effort);
+        }
+        self.preferences.normalize();
+        self.store.save(&self.preferences);
+        let effort = self.assistant_effort();
+        for database in std::iter::once(&self.database).chain(self.parked.values()) {
+            if let Some(running) = &database.assistant.running {
+                running.agent.set_effort(effort.clone());
+            }
+        }
+    }
+
     pub(super) fn select_assistant_model(&mut self, model: String) {
         if model == self.preferences.assistant.selected_model() {
             return;
@@ -708,10 +801,13 @@ impl App {
                     selected.clone()
                 }
             });
+        let (efforts, default_effort) = self.assistant_efforts();
+        // The reasoning picker sits beside the model when the agent offers levels.
+        let effort_width = if efforts.is_empty() { 0.0 } else { 128.0 };
         ui.horizontal(|ui| {
             ui.weak("Model");
             let model_picker = egui::ComboBox::from_id_salt("chat-model")
-                .width((ui.available_width() - 4.0).max(100.0))
+                .width((ui.available_width() - 4.0 - effort_width).max(100.0))
                 .selected_text(label)
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut selected, String::new(), "Agent default");
@@ -753,9 +849,69 @@ impl App {
                 info.current_text_value = Some(selected.clone());
                 info
             });
+            if !efforts.is_empty() {
+                self.assistant_effort_picker(ui, &efforts, default_effort.as_deref());
+            }
         });
         if selected != self.preferences.assistant.selected_model() {
             self.select_assistant_model(selected);
+        }
+    }
+
+    /// How hard the agent thinks: the agent's default or one of its levels.
+    fn assistant_effort_picker(
+        &mut self,
+        ui: &mut egui::Ui,
+        efforts: &[Effort],
+        default: Option<&str>,
+    ) {
+        let mut selected = self.preferences.assistant.selected_effort().to_owned();
+        let default_name = default.map_or_else(
+            || "Default".to_owned(),
+            |level| format!("Default · {}", effort_name(level)),
+        );
+        // A remembered level this model lacks shows, and acts, as the default.
+        let label = efforts
+            .iter()
+            .find(|e| e.id == selected)
+            .map_or_else(|| default_name.clone(), |e| e.name.clone());
+        let (rect, icon) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+        icons::paint(
+            ui.painter(),
+            rect,
+            Icon::Gauge,
+            ui.visuals().weak_text_color(),
+        );
+        icon.on_hover_text("Reasoning level");
+        let picker = ui
+            .scope(|ui| {
+                let width = (ui.available_width() - 4.0).max(60.0);
+                ui.set_max_width(width);
+                egui::ComboBox::from_id_salt("chat-effort")
+                    .width(width)
+                    .truncate()
+                    .selected_text(&label)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut selected, String::new(), &default_name);
+                        for effort in efforts {
+                            ui.selectable_value(&mut selected, effort.id.clone(), &effort.name);
+                        }
+                    })
+                    .response
+            })
+            .inner
+            .on_hover_text(
+                "Reasoning level: how much the agent thinks before it answers. \
+                 Applies from the next message.",
+            );
+        picker.widget_info(|| {
+            let mut info =
+                egui::WidgetInfo::labeled(egui::Role::ComboBox, true, "Assistant reasoning level");
+            info.current_text_value = Some(label.clone());
+            info
+        });
+        if selected != self.preferences.assistant.selected_effort() {
+            self.select_assistant_effort(selected);
         }
     }
 

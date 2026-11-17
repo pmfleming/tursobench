@@ -86,6 +86,8 @@ pub struct Spec {
     /// The tool relay, for protocols that configure MCP per session (ACP, Codex).
     pub mcp: Option<crate::relay::Launch>,
     pub model: Option<String>,
+    /// A reasoning level to use instead of the agent's own; it can change later.
+    pub effort: Option<String>,
     /// History and telemetry choices, for protocols that set them per conversation.
     pub privacy: Privacy,
 }
@@ -95,6 +97,8 @@ pub(crate) enum Input {
     Eof,
     Prompt(String),
     Cancel,
+    /// Use this reasoning level from the next turn; `None` restores the agent's own.
+    Effort(Option<String>),
 }
 
 /// The driver side: write to the agent, report to the UI.
@@ -174,7 +178,7 @@ impl Agent {
             .spawn(move || {
                 let mut link = link;
                 match spec.protocol {
-                    Protocol::ClaudeStream => crate::claude::drive(&input, &mut link),
+                    Protocol::ClaudeStream => crate::claude::drive(&spec, &input, &mut link),
                     Protocol::Acp => crate::acp::drive(&spec, &input, &mut link),
                     Protocol::CodexAppServer => crate::codex::drive(&spec, &input, &mut link),
                 }
@@ -196,6 +200,11 @@ impl Agent {
     }
     pub fn prompt(&self, text: impl Into<String>) {
         let _ = self.inbox.send(Input::Prompt(text.into()));
+    }
+    /// Change the reasoning level from the next message; `None` goes back to the
+    /// level the agent started with.
+    pub fn set_effort(&self, effort: Option<String>) {
+        let _ = self.inbox.send(Input::Effort(effort));
     }
     /// Ask the agent to stop the current turn; it still ends it with `TurnEnded`.
     pub fn cancel(&self) {
