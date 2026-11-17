@@ -130,3 +130,53 @@ fn the_tiles_toggle_folds_the_column_and_reopens_what_was_open() {
     );
     app.close();
 }
+
+#[test]
+fn the_chat_expands_to_the_workspace_like_a_tile() {
+    use crate::app::tiling::Kind;
+    let (_dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
+    app.preferences.panels.assistant = true;
+    frame_at(&mut app, &ctx, SIZE, vec![]);
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    let side = app.database.ui.assistant_rect;
+    let tiles = app.database.ui.workspace_rect;
+    assert!(label_exists(&output, "Minimize to header"));
+    click(
+        &mut app,
+        &ctx,
+        control(&output, "Expand chat to workspace").center(),
+    );
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    assert!(app.assistant_expanded());
+    // The chat takes the tiles' place; the sidebar and status bar stay.
+    let chat = app.database.ui.assistant_rect;
+    assert!(chat.left() <= tiles.left() + 1.0 && chat.right() >= side.right() - 1.0);
+    assert!(app.database.ui.sidebar_rect.right() <= chat.left());
+    assert!(label_exists(&output, "Restore workspace"));
+    assert!(!label_exists(&output, "Minimize to header"));
+    // Ctrl Alt Enter restores it, as it does a tile.
+    press_key(
+        &mut app,
+        &ctx,
+        egui::Key::Enter,
+        egui::Modifiers::CTRL | egui::Modifiers::ALT,
+    );
+    assert!(!app.assistant_expanded());
+    assert!(app.database.workspace.expanded.is_none());
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    assert_eq!(app.database.ui.assistant_rect, side);
+    // A tile asking for attention, such as proposed SQL, shows the tiles again.
+    click(
+        &mut app,
+        &ctx,
+        control(&output, "Expand chat to workspace").center(),
+    );
+    assert!(app.assistant_expanded());
+    app.focus_pane(Kind::Sql);
+    assert!(!app.assistant_expanded());
+    // Hiding the chat ends the expansion.
+    app.toggle_assistant_expanded();
+    app.toggle_assistant();
+    assert!(!app.assistant_expanded() && !app.database.ui.assistant_expanded);
+    app.close();
+}

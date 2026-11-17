@@ -96,7 +96,7 @@ The PNG is 2400 × 440. Earlier capture sets below retain their original provena
 
 ## Assistant and panel visibility — native Wayland
 
-The `assistant/` captures were taken on 2026-11-15 with synthetic data and
+The `assistant/` captures were taken on 2026-11-17 with synthetic data and
 isolated preferences under headless Weston/Mesa at 1366×768. The conversation is
 a seeded visual fixture, as are the agent status/version rows: no agent CLI runs
 during the capture and nothing leaves
@@ -111,6 +111,7 @@ the machine.
 | [Both hidden](assistant/panels-hidden.png) | The workspace takes almost the full width; each hidden panel leaves a thin line that brings it back. |
 | [Settings](assistant/assistant-settings.png) | Local agent statuses, scan/retry, sign-in/out controls, executable override and per-agent privacy. |
 | [Privacy](assistant/assistant-privacy.png) | Codex's settings area (program, model and privacy choices), opened from the empty conversation's link. |
+| [Expanded](assistant/assistant-expanded.png) | The chat expanded to the workspace like a tile; the sidebar stays and the header icon restores the tiles. |
 
 Reproduce with:
 

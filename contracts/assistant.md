@@ -160,6 +160,9 @@ The socket (mode 0600) and a Claude `--mcp-config` file (0600) live in
 192-bit token, passed to the relay in its environment and compared in constant
 time before any MCP message is served.
 
+The chat panel can expand to fill the workspace in place of the tiles, as a tile
+does; this changes only layout, not the conversation or its agent.
+
 One agent process runs per workspace conversation, started on the first message.
 Stop sends Claude's interrupt control request, Codex's `turn/interrupt` or ACP
 `session/cancel`. New

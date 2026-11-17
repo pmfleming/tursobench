@@ -19,6 +19,7 @@ columns. Tile proportions are saved per database.
 - Expand fills the workspace while preserving the database navigator. Restore
   returns to the fixed arrangement and preserves the other minimized tiles.
 - Ctrl Alt Enter expands/restores the focused tile. Ctrl Tab cycles the five tiles.
+  While the chat is expanded to the workspace, Ctrl Alt Enter restores it instead.
   Escape dismisses an active edit, popup or dialog before restoring expansion.
 - Tile ribbons expose actions directly with 18-point icons and 30-point buttons
   inside 44-point headers. Titles use a 13.5-point base size, and thin dividers group

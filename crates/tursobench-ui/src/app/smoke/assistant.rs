@@ -15,6 +15,7 @@ const SCENES: &[&str] = &[
     "panels-hidden.png",
     "assistant-settings.png",
     "assistant-privacy.png",
+    "assistant-expanded.png",
 ];
 
 impl App {
@@ -107,9 +108,14 @@ impl App {
                 self.settings.open = true;
                 self.settings.page = crate::app::settings::Page::Assistant;
             }
-            _ => {
+            6 => {
                 self.preferences.assistant.provider = crate::storage::Provider::Codex;
                 self.open_assistant_privacy();
+            }
+            _ => {
+                self.settings.open = false;
+                self.preferences.assistant.provider = crate::storage::Provider::Claude;
+                self.database.ui.assistant_expanded = true;
             }
         }
     }

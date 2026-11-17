@@ -150,7 +150,7 @@ pub(super) fn sharing_choice(sharing: Sharing) -> (Icon, &'static str, &'static 
 }
 
 impl App {
-    fn assistant_database(&self) -> Option<String> {
+    pub(super) fn assistant_database(&self) -> Option<String> {
         (!self.database.tools.database_scope.is_empty()
             && (self.database.session.is_some() || !self.database.assistant.entries.is_empty()))
         .then(|| self.database.tools.database_scope.clone())
@@ -459,60 +459,31 @@ impl App {
     fn assistant_header(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
-            icons::paint(
-                ui.painter(),
-                rect,
-                Icon::Assistant,
-                ui.visuals().text_color(),
-            );
-            let mut provider = self.preferences.assistant.provider;
-            let name = provider.vendor().name;
-            let agent_picker = egui::ComboBox::from_id_salt("chat-agent")
-                .width(122.0)
-                .selected_text(name)
-                .show_ui(ui, |ui| {
-                    for vendor in tursobench_assistant::vendor::VENDORS {
-                        let (state, intent, installed) = self.agent_state(vendor.id);
-                        let accessible = format!("{} · {state}", vendor.name);
-                        ui.horizontal(|ui| {
-                            super::assistant_accounts::status_dot(ui, intent, state);
-                            ui.add_enabled_ui(installed || vendor.id == provider, |ui| {
-                                let item =
-                                    ui.selectable_value(&mut provider, vendor.id, vendor.name);
-                                item.widget_info(|| {
-                                    egui::WidgetInfo::selected(
-                                        egui::Role::Button,
-                                        item.enabled(),
-                                        vendor.id == provider,
-                                        &accessible,
-                                    )
-                                });
-                                item.on_hover_text(state);
-                            });
-                        });
-                    }
-                    ui.separator();
-                    if ui.button("Manage agents…").clicked() {
-                        self.settings.open = true;
-                        self.settings.page = super::settings::Page::Assistant;
-                        ui.close();
-                    }
-                })
-                .response
-                .on_hover_text("Choose a local agent. Changing agent starts a new conversation.");
-            agent_picker.widget_info(|| {
-                let mut info =
-                    egui::WidgetInfo::labeled(egui::Role::ComboBox, true, "Assistant agent");
-                info.current_text_value = Some(name.into());
-                info
-            });
-            let (state, intent, _) = self.agent_state(provider);
-            super::assistant_accounts::status_dot(ui, intent, &format!("{name} · {state}"));
-            if provider != self.preferences.assistant.provider {
-                self.select_assistant_provider(provider);
-            }
+            let name = self.preferences.assistant.provider.vendor().name;
+            // The icons claim their room first; the agent picker gets the rest.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // The same control, place and wording as a tile's expand button.
+                let expanded = self.assistant_expanded();
+                let expand = ui
+                    .add_enabled_ui(self.assistant_database().is_some(), |ui| {
+                        icons::control(
+                            ui,
+                            Icon::Fit,
+                            if expanded {
+                                "Restore workspace"
+                            } else {
+                                "Expand chat to workspace"
+                            },
+                            if expanded { "Ctrl Alt Enter" } else { "" },
+                            expanded,
+                            false,
+                        )
+                    })
+                    .inner;
+                if expand.clicked() {
+                    self.toggle_assistant_expanded();
+                }
+                ui.separator();
                 if let Some(current) = self.assistant_sharing() {
                     // Right to left: reads schema, then schema and results.
                     for sharing in [Sharing::Rows, Sharing::Schema] {
@@ -568,9 +539,96 @@ impl App {
                     self.database.assistant.reset();
                     self.database.assistant.focus = true;
                 }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    self.assistant_agent_picker(ui);
+                });
             });
         });
         self.assistant_model_picker(ui);
+    }
+
+    /// The header's icon, agent picker and status dot, narrowed to fit.
+    fn assistant_agent_picker(&mut self, ui: &mut egui::Ui) {
+        let mut provider = self.preferences.assistant.provider;
+        let name = provider.vendor().name;
+        // The width that shows the whole name: text, arrow and padding.
+        let spacing = ui.spacing();
+        let full = ui
+            .painter()
+            .layout_no_wrap(
+                name.into(),
+                egui::TextStyle::Button.resolve(ui.style()),
+                egui::Color32::WHITE,
+            )
+            .size()
+            .x
+            + spacing.icon_width
+            + spacing.icon_spacing
+            + 2.0 * spacing.button_padding.x
+            + 14.0;
+        // The status dot, its gap and spacing take 20 points; the title icon
+        // only shows when the whole name still fits beside it.
+        if ui.available_width() >= full + 20.0 + 23.0 {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
+            icons::paint(
+                ui.painter(),
+                rect,
+                Icon::Assistant,
+                ui.visuals().text_color(),
+            );
+        }
+        let width = (ui.available_width() - 20.0).clamp(72.0, full);
+        // A truncating combo grows into all the room it is given, so cap it.
+        let agent_picker = ui
+            .scope(|ui| {
+                ui.set_max_width(width);
+                egui::ComboBox::from_id_salt("chat-agent")
+                    .width(width)
+                    .truncate()
+                    .selected_text(name)
+                    .show_ui(ui, |ui| {
+                        for vendor in tursobench_assistant::vendor::VENDORS {
+                            let (state, intent, installed) = self.agent_state(vendor.id);
+                            let accessible = format!("{} · {state}", vendor.name);
+                            ui.horizontal(|ui| {
+                                super::assistant_accounts::status_dot(ui, intent, state);
+                                ui.add_enabled_ui(installed || vendor.id == provider, |ui| {
+                                    let item =
+                                        ui.selectable_value(&mut provider, vendor.id, vendor.name);
+                                    item.widget_info(|| {
+                                        egui::WidgetInfo::selected(
+                                            egui::Role::Button,
+                                            item.enabled(),
+                                            vendor.id == provider,
+                                            &accessible,
+                                        )
+                                    });
+                                    item.on_hover_text(state);
+                                });
+                            });
+                        }
+                        ui.separator();
+                        if ui.button("Manage agents…").clicked() {
+                            self.settings.open = true;
+                            self.settings.page = super::settings::Page::Assistant;
+                            ui.close();
+                        }
+                    })
+                    .response
+            })
+            .inner
+            .on_hover_text("Choose a local agent. Changing agent starts a new conversation.");
+        agent_picker.widget_info(|| {
+            let mut info = egui::WidgetInfo::labeled(egui::Role::ComboBox, true, "Assistant agent");
+            info.current_text_value = Some(name.into());
+            info
+        });
+        let (state, intent, _) = self.agent_state(provider);
+        super::assistant_accounts::status_dot(ui, intent, &format!("{name} · {state}"));
+        ui.add_space(6.0);
+        if provider != self.preferences.assistant.provider {
+            self.select_assistant_provider(provider);
+        }
     }
 
     /// What the header knows about one agent: a state, its colour, and whether

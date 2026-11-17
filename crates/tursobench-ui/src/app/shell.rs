@@ -52,6 +52,8 @@ pub(super) struct UiState {
     pub palette_index: usize,
     pub export_open: bool,
     pub access_dialog: bool,
+    /// The chat fills the workspace in place of the tiles, like an expanded tile.
+    pub assistant_expanded: bool,
     pub font_rx: Option<std::sync::mpsc::Receiver<(egui::FontDefinitions, String)>>,
     pub font_label: String,
     #[cfg(test)]
@@ -83,6 +85,7 @@ impl UiState {
             palette_index: 0,
             export_open: false,
             access_dialog: false,
+            assistant_expanded: false,
             font_rx: Some(crate::appearance::system_fonts(ctx.clone())),
             font_label: "Loading system fonts; built-in fallback available".into(),
             #[cfg(test)]
@@ -129,7 +132,11 @@ impl App {
                     egui::Key::Enter,
                 )
             }) {
-                self.expand_window(self.database.workspace.focused);
+                if self.assistant_expanded() {
+                    self.toggle_assistant_expanded();
+                } else {
+                    self.expand_window(self.database.workspace.focused);
+                }
             }
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Tab)) {
                 let panes = super::tiling::Kind::PANES;
@@ -183,8 +190,12 @@ impl App {
         ) {
             self.toggle_sidebar();
         }
-        // Navigation stays on the left; the assistant reserves the right edge.
-        if !self.preferences.panels.assistant {
+        // Navigation stays on the left; the assistant reserves the right edge,
+        // or takes the whole workspace when expanded.
+        let chat_fills = self.assistant_expanded();
+        if chat_fills {
+            // Drawn in the central panel below.
+        } else if !self.preferences.panels.assistant {
             if self.fold_panel(
                 ui,
                 egui::Panel::right("assistant-panel-line"),
@@ -196,7 +207,7 @@ impl App {
             let max = (ui.available_width() - 360.0).clamp(260.0, 720.0);
             let panel = egui::Panel::right("assistant-panel")
                 .resizable(true)
-                .default_size(340.0_f32.min(max))
+                .default_size(372.0_f32.min(max))
                 .size_range(260.0..=max)
                 .show(ui, |ui| self.assistant_ui(ui));
             #[cfg(test)]
@@ -207,7 +218,17 @@ impl App {
             let _ = panel;
         }
         self.status_bar(ui);
-        egui::CentralPanel::default().show(ui, |ui| self.workspace_ui(ui));
+        if chat_fills {
+            let panel = egui::CentralPanel::default().show(ui, |ui| self.assistant_ui(ui));
+            #[cfg(test)]
+            {
+                self.database.ui.assistant_rect = panel.response.rect;
+            }
+            #[cfg(not(test))]
+            let _ = panel;
+        } else {
+            egui::CentralPanel::default().show(ui, |ui| self.workspace_ui(ui));
+        }
         self.edit_windows(&ctx);
         self.inspection_surfaces(&ctx);
         self.command_palette(&ctx);
@@ -423,8 +444,24 @@ impl App {
         self.preferences.panels.assistant = !self.preferences.panels.assistant;
         if self.preferences.panels.assistant {
             self.assistant_focus();
+        } else {
+            self.database.ui.assistant_expanded = false;
         }
         self.save_panels();
+    }
+    /// Whether the chat fills the workspace. It can only while it is shown
+    /// and has a database to talk about.
+    pub(super) fn assistant_expanded(&self) -> bool {
+        self.database.ui.assistant_expanded
+            && self.preferences.panels.assistant
+            && self.assistant_database().is_some()
+    }
+    /// Expand the chat to the workspace, or give the workspace back to the tiles.
+    pub(super) fn toggle_assistant_expanded(&mut self) {
+        self.database.ui.assistant_expanded = !self.assistant_expanded();
+        if self.database.ui.assistant_expanded {
+            self.assistant_focus();
+        }
     }
     fn save_panels(&mut self) {
         self.preferences.normalize();

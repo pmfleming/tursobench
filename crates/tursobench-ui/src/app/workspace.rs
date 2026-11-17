@@ -94,6 +94,8 @@ impl App {
         }
     }
     pub(super) fn focus_pane(&mut self, kind: Kind) {
+        // A tile asked for attention, so the chat gives the workspace back.
+        self.database.ui.assistant_expanded = false;
         self.database.workspace.active = kind.pane();
         self.database.workspace.minimized.remove(&kind.pane());
         if self.database.workspace.expanded.is_some() {
@@ -123,6 +125,7 @@ impl App {
             self.database.workspace.visible.insert(Kind::Sql, source);
         }
         self.database.workspace.focused = id;
+        self.database.ui.assistant_expanded = false;
         self.database.workspace.active = kind.pane();
         self.database.workspace.minimized.remove(&kind.pane());
         if self.database.workspace.expanded.is_some() {

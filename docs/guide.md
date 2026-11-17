@@ -303,6 +303,10 @@ sidebar back. The status-bar button next to the assistant's (Ctrl L) folds Recor
 SQL to a line the same way and reopens the tiles that were open; minimizing all
 three or dragging the column divider into the right edge also folds it.
 
+Like a tile, the chat can expand to fill the workspace: use the icon at the right
+of its header, and the same icon or Ctrl Alt Enter to restore. The sidebar stays.
+Opening proposed SQL, or any tile taking focus, gives the workspace back to the tiles.
+
 Each database shares **Schema and query results** by default; change the default in
 Settings → Assistant → Sharing. Two icons in the panel header switch the open
 database between **Schema only** and **Schema and query results** at any time;
