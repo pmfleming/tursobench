@@ -68,6 +68,10 @@ pub(super) enum Icon {
     Assistant,
     Send,
     Stop,
+    /// A tick: the chosen item in a list.
+    Check,
+    /// A five-point star: favourites.
+    Star,
 }
 
 pub(super) fn button(ui: &mut egui::Ui, icon: Icon, name: &str, shortcut: &str) -> egui::Response {
@@ -430,6 +434,8 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
             line(&[(16., 15.), (8., 15.)]);
             line(&[(10., 13.), (8., 15.), (10., 17.)]);
         }
+        Check => line(&[(4., 12.5), (9.5, 18.), (20., 6.5)]),
+        Star => line(&star_points(12., 12.6, 9.5)),
         Gauge => {
             line(&[
                 (3., 17.),
@@ -718,6 +724,34 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
                 (12., 18.),
             ]);
         }
+    }
+}
+
+/// A closed five-point star in 24-unit icon space, starting at the top point.
+fn star_points(cx: f32, cy: f32, outer: f32) -> Vec<(f32, f32)> {
+    (0..=10)
+        .map(|i| {
+            let radius = if i % 2 == 0 { outer } else { outer * 0.42 };
+            let angle = std::f32::consts::PI * (i as f32 / 5.0 - 0.5);
+            (cx + radius * angle.cos(), cy + radius * angle.sin())
+        })
+        .collect()
+}
+
+/// A filled star: a chosen favourite.
+pub(super) fn paint_filled_star(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
+    let p = |(x, y): (f32, f32)| {
+        rect.min + egui::vec2(x * rect.width() / 24.0, y * rect.height() / 24.0)
+    };
+    let points = star_points(12., 12.6, 9.5);
+    let centre = p((12., 12.6));
+    // The star is not convex: fill it as triangles around its centre.
+    for pair in points.windows(2) {
+        painter.add(egui::Shape::convex_polygon(
+            vec![centre, p(pair[0]), p(pair[1])],
+            color,
+            Stroke::NONE,
+        ));
     }
 }
 

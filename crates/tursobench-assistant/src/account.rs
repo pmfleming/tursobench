@@ -404,7 +404,8 @@ pub fn claude_models() -> Vec<Model> {
         .iter()
         .map(|id| Model {
             id: (*id).into(),
-            name: (*id).into(),
+            // The alias, capitalised as Anthropic names the family.
+            name: id[..1].to_uppercase() + &id[1..],
             ..Default::default()
         })
         .collect()

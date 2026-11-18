@@ -25,7 +25,7 @@ use tursobench_assistant::{
 const MAX_ENTRIES: usize = 400;
 
 /// A reasoning level as the picker names it.
-fn effort_name(id: &str) -> String {
+pub(super) fn effort_name(id: &str) -> String {
     match id {
         "xhigh" => "Extra high".into(),
         _ => {
@@ -562,31 +562,15 @@ impl App {
                 });
             });
         });
-        self.assistant_model_picker(ui);
     }
 
-    /// The header's icon, agent picker and status dot, narrowed to fit.
+    /// The header's icon, model picker and status dot, narrowed to fit.
     fn assistant_agent_picker(&mut self, ui: &mut egui::Ui) {
-        let mut provider = self.preferences.assistant.provider;
+        let provider = self.preferences.assistant.provider;
         let name = provider.vendor().name;
-        // The width that shows the whole name: text, arrow and padding.
-        let spacing = ui.spacing();
-        let full = ui
-            .painter()
-            .layout_no_wrap(
-                name.into(),
-                egui::TextStyle::Button.resolve(ui.style()),
-                egui::Color32::WHITE,
-            )
-            .size()
-            .x
-            + spacing.icon_width
-            + spacing.icon_spacing
-            + 2.0 * spacing.button_padding.x
-            + 14.0;
         // The status dot, its gap and spacing take 20 points; the title icon
-        // only shows when the whole name still fits beside it.
-        if ui.available_width() >= full + 20.0 + 23.0 {
+        // only shows when there is room to spare beside the picker.
+        if ui.available_width() >= 240.0 {
             let (rect, _) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
             icons::paint(
                 ui.painter(),
@@ -595,63 +579,18 @@ impl App {
                 ui.visuals().text_color(),
             );
         }
-        let width = (ui.available_width() - 20.0).clamp(72.0, full);
-        // A truncating combo grows into all the room it is given, so cap it.
-        let agent_picker = ui
-            .scope(|ui| {
-                ui.set_max_width(width);
-                egui::ComboBox::from_id_salt("chat-agent")
-                    .width(width)
-                    .truncate()
-                    .selected_text(name)
-                    .show_ui(ui, |ui| {
-                        for vendor in tursobench_assistant::vendor::VENDORS {
-                            let (state, intent, installed) = self.agent_state(vendor.id);
-                            let accessible = format!("{} · {state}", vendor.name);
-                            ui.horizontal(|ui| {
-                                super::assistant_accounts::status_dot(ui, intent, state);
-                                ui.add_enabled_ui(installed || vendor.id == provider, |ui| {
-                                    let item =
-                                        ui.selectable_value(&mut provider, vendor.id, vendor.name);
-                                    item.widget_info(|| {
-                                        egui::WidgetInfo::selected(
-                                            egui::Role::Button,
-                                            item.enabled(),
-                                            vendor.id == provider,
-                                            &accessible,
-                                        )
-                                    });
-                                    item.on_hover_text(state);
-                                });
-                            });
-                        }
-                        ui.separator();
-                        if ui.button("Manage agents…").clicked() {
-                            self.settings.open = true;
-                            self.settings.page = super::settings::Page::Assistant;
-                            ui.close();
-                        }
-                    })
-                    .response
-            })
-            .inner
-            .on_hover_text("Choose a local agent. Changing agent starts a new conversation.");
-        agent_picker.widget_info(|| {
-            let mut info = egui::WidgetInfo::labeled(egui::Role::ComboBox, true, "Assistant agent");
-            info.current_text_value = Some(name.into());
-            info
-        });
+        self.assistant_model_menu(ui, ui.available_width() - 20.0);
         let (state, intent, _) = self.agent_state(provider);
         super::assistant_accounts::status_dot(ui, intent, &format!("{name} · {state}"));
         ui.add_space(6.0);
-        if provider != self.preferences.assistant.provider {
-            self.select_assistant_provider(provider);
-        }
     }
 
     /// What the header knows about one agent: a state, its colour, and whether
     /// it can be chosen. Before any check, a cached lookup says if it is installed.
-    fn agent_state(&self, provider: crate::storage::Provider) -> (&'static str, Intent, bool) {
+    pub(super) fn agent_state(
+        &self,
+        provider: crate::storage::Provider,
+    ) -> (&'static str, Intent, bool) {
         use tursobench_assistant::{account::SignIn, vendor};
         let row = self.accounts.rows.get(&provider);
         let installed = match row.and_then(|r| r.status.as_ref()) {
@@ -683,9 +622,16 @@ impl App {
 
     /// The reasoning levels the selected agent and model offer, and the level
     /// the agent uses when none is chosen, when it says.
-    fn assistant_efforts(&self) -> (Vec<Effort>, Option<String>) {
+    pub(super) fn assistant_efforts(&self) -> (Vec<Effort>, Option<String>) {
+        self.efforts_for(self.preferences.assistant.provider)
+    }
+
+    /// The reasoning levels an agent and its chosen model offer, and its default.
+    pub(super) fn efforts_for(
+        &self,
+        provider: crate::storage::Provider,
+    ) -> (Vec<Effort>, Option<String>) {
         use crate::storage::Provider;
-        let provider = self.preferences.assistant.provider;
         let status = self
             .accounts
             .rows
@@ -709,7 +655,7 @@ impl App {
             }
             // Codex lists levels per model; the default model stands in for none.
             Provider::Codex => {
-                let selected = self.preferences.assistant.selected_model();
+                let selected = self.model_for(provider);
                 status
                     .and_then(|s| {
                         s.models.iter().find(|m| {
@@ -734,13 +680,28 @@ impl App {
             .then(|| chosen.to_owned())
     }
 
+    /// The level remembered for an agent; empty is its own.
+    pub(super) fn effort_for(&self, provider: crate::storage::Provider) -> &str {
+        self.preferences
+            .assistant
+            .efforts
+            .get(&provider)
+            .map_or("", String::as_str)
+    }
+
     /// Remember a reasoning level for the selected agent and use it from the
     /// next message of every running conversation; empty restores the agent's own.
+    #[cfg(test)]
     pub(super) fn select_assistant_effort(&mut self, effort: String) {
-        if effort == self.preferences.assistant.selected_effort() {
+        self.select_effort_for(self.preferences.assistant.provider, effort);
+    }
+
+    /// Remember a reasoning level for an agent; when it is the agent in use,
+    /// running conversations take it from their next message.
+    pub(super) fn select_effort_for(&mut self, provider: crate::storage::Provider, effort: String) {
+        if effort == self.effort_for(provider) {
             return;
         }
-        let provider = self.preferences.assistant.provider;
         if effort.is_empty() {
             self.preferences.assistant.efforts.remove(&provider);
         } else {
@@ -748,6 +709,9 @@ impl App {
         }
         self.preferences.normalize();
         self.store.save(&self.preferences);
+        if provider != self.preferences.assistant.provider {
+            return;
+        }
         let effort = self.assistant_effort();
         for database in std::iter::once(&self.database).chain(self.parked.values()) {
             if let Some(running) = &database.assistant.running {
@@ -756,163 +720,9 @@ impl App {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn select_assistant_model(&mut self, model: String) {
-        if model == self.preferences.assistant.selected_model() {
-            return;
-        }
-        self.preferences
-            .assistant
-            .models
-            .insert(self.preferences.assistant.provider, model);
-        self.reset_assistant_conversations();
-        self.preferences.normalize();
-        self.store.save(&self.preferences);
-    }
-
-    fn assistant_model_picker(&mut self, ui: &mut egui::Ui) {
-        let provider = self.preferences.assistant.provider;
-        let models = self
-            .accounts
-            .rows
-            .get(&provider)
-            .and_then(|r| r.status.as_ref())
-            .map(|s| s.models.clone())
-            .unwrap_or_else(|| {
-                if provider == crate::storage::Provider::Claude {
-                    tursobench_assistant::account::claude_models()
-                } else {
-                    vec![]
-                }
-            });
-        let checking = self
-            .accounts
-            .rows
-            .get(&provider)
-            .is_some_and(|r| r.job.is_some());
-        let mut selected = self.preferences.assistant.selected_model().to_owned();
-        let label = models
-            .iter()
-            .find(|m| m.id == selected)
-            .map(|m| m.name.clone())
-            .unwrap_or_else(|| {
-                if selected.is_empty() {
-                    "Agent default".into()
-                } else {
-                    selected.clone()
-                }
-            });
-        let (efforts, default_effort) = self.assistant_efforts();
-        // The reasoning picker sits beside the model when the agent offers levels.
-        let effort_width = if efforts.is_empty() { 0.0 } else { 128.0 };
-        ui.horizontal(|ui| {
-            ui.weak("Model");
-            let model_picker = egui::ComboBox::from_id_salt("chat-model")
-                .width((ui.available_width() - 4.0 - effort_width).max(100.0))
-                .selected_text(label)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut selected, String::new(), "Agent default");
-                    for model in &models {
-                        ui.selectable_value(&mut selected, model.id.clone(), &model.name);
-                    }
-                    ui.separator();
-                    if checking {
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.weak("Finding models…");
-                        });
-                    } else if models.is_empty() && ui.button("Find available models").clicked() {
-                        self.agent_account_job(
-                            ui.ctx(),
-                            provider,
-                            tursobench_assistant::account::Operation::Check,
-                        );
-                        ui.close();
-                    }
-                    if ui.button("Custom model in Settings…").clicked() {
-                        self.settings.open = true;
-                        self.settings.page = super::settings::Page::Assistant;
-                        ui.close();
-                    }
-                })
-                .response
-                .on_hover_text(format!(
-                    "Changing model starts a new conversation. Current model: {}",
-                    self.database
-                        .assistant
-                        .model
-                        .as_deref()
-                        .unwrap_or("agent default")
-                ));
-            model_picker.widget_info(|| {
-                let mut info =
-                    egui::WidgetInfo::labeled(egui::Role::ComboBox, true, "Assistant model picker");
-                info.current_text_value = Some(selected.clone());
-                info
-            });
-            if !efforts.is_empty() {
-                self.assistant_effort_picker(ui, &efforts, default_effort.as_deref());
-            }
-        });
-        if selected != self.preferences.assistant.selected_model() {
-            self.select_assistant_model(selected);
-        }
-    }
-
-    /// How hard the agent thinks: the agent's default or one of its levels.
-    fn assistant_effort_picker(
-        &mut self,
-        ui: &mut egui::Ui,
-        efforts: &[Effort],
-        default: Option<&str>,
-    ) {
-        let mut selected = self.preferences.assistant.selected_effort().to_owned();
-        let default_name = default.map_or_else(
-            || "Default".to_owned(),
-            |level| format!("Default · {}", effort_name(level)),
-        );
-        // A remembered level this model lacks shows, and acts, as the default.
-        let label = efforts
-            .iter()
-            .find(|e| e.id == selected)
-            .map_or_else(|| default_name.clone(), |e| e.name.clone());
-        let (rect, icon) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
-        icons::paint(
-            ui.painter(),
-            rect,
-            Icon::Gauge,
-            ui.visuals().weak_text_color(),
-        );
-        icon.on_hover_text("Reasoning level");
-        let picker = ui
-            .scope(|ui| {
-                let width = (ui.available_width() - 4.0).max(60.0);
-                ui.set_max_width(width);
-                egui::ComboBox::from_id_salt("chat-effort")
-                    .width(width)
-                    .truncate()
-                    .selected_text(&label)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut selected, String::new(), &default_name);
-                        for effort in efforts {
-                            ui.selectable_value(&mut selected, effort.id.clone(), &effort.name);
-                        }
-                    })
-                    .response
-            })
-            .inner
-            .on_hover_text(
-                "Reasoning level: how much the agent thinks before it answers. \
-                 Applies from the next message.",
-            );
-        picker.widget_info(|| {
-            let mut info =
-                egui::WidgetInfo::labeled(egui::Role::ComboBox, true, "Assistant reasoning level");
-            info.current_text_value = Some(label.clone());
-            info
-        });
-        if selected != self.preferences.assistant.selected_effort() {
-            self.select_assistant_effort(selected);
-        }
+        self.choose_assistant_model(self.preferences.assistant.provider, model);
     }
 
     /// Who receives what, above an empty conversation: the first time an agent is

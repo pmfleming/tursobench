@@ -270,14 +270,18 @@ installed and signed in to, so it runs on your existing plan. Claude Code is the
 default; Settings → Assistant can switch to Codex (through `codex app-server`,
 with its shell and web search off and its read-only sandbox on), Antigravity,
 Copilot CLI or any other Agent Client Protocol command. Each agent keeps its own
-model and privacy choices. The chat header has vendor and model pickers, with a
-status dot for each agent (hover for signed in, signed out or not installed);
-changing either starts a new conversation. Cancelling a sign-in keeps the last
+model and privacy choices. One picker in the chat header, showing the agent's
+badge, model and reasoning level, chooses all three. Its rail lists the agents,
+each with a status dot (hover for signed in, signed out or not installed), and
+your favourites; browsing an agent there changes nothing until you pick one of
+its models. Search filters the list, Ctrl 1 to 9 pick the listed models, and the
+star on a row keeps it in favourites. Changing agent or model starts a new
+conversation. Cancelling a sign-in keeps the last
 known status. Codex and ACP model lists come from status
 checks; Claude offers aliases, and Settings accepts a custom model name. The
 panel checks the selected agent the first time it is shown, and again after you
-choose another one, so its pickers fill without a visit to Settings.
-Beside the model, a gauge picker sets the reasoning level: the agent's default or
+choose another one, so the picker fills without a visit to Settings.
+The picker's right column sets the reasoning level: the agent's default or
 one of its levels (Claude Code: low to max; Codex: the levels each model lists;
 ACP agents: their own thought levels, when they offer them). Unlike the model, a
 new level applies from the next message without ending the conversation, and

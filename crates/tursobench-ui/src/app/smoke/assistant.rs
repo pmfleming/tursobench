@@ -16,6 +16,7 @@ const SCENES: &[&str] = &[
     "assistant-settings.png",
     "assistant-privacy.png",
     "assistant-expanded.png",
+    "assistant-model-picker.png",
 ];
 
 impl App {
@@ -112,10 +113,28 @@ impl App {
                 self.preferences.assistant.provider = crate::storage::Provider::Codex;
                 self.open_assistant_privacy();
             }
-            _ => {
+            7 => {
                 self.settings.open = false;
                 self.preferences.assistant.provider = crate::storage::Provider::Claude;
                 self.database.ui.assistant_expanded = true;
+            }
+            _ => {
+                use crate::storage::{FavouriteModel, Provider};
+                self.database.ui.assistant_expanded = false;
+                self.preferences
+                    .assistant
+                    .models
+                    .insert(Provider::Claude, "opus".into());
+                self.preferences
+                    .assistant
+                    .efforts
+                    .insert(Provider::Claude, "high".into());
+                self.preferences.assistant.favourite_models = vec![FavouriteModel {
+                    provider: Provider::Claude,
+                    model: "opus".into(),
+                }];
+                self.accounts.menu = Default::default();
+                egui::Popup::open_id(ctx, crate::app::assistant_picker::menu_id());
             }
         }
     }

@@ -68,7 +68,9 @@ again after every four sessions that use it without it.
 
 ## Reasoning level
 
-The chat's reasoning picker offers the agent's default and the levels it accepts.
+The reasoning column of the chat's model picker offers the agent's default and the
+levels it accepts; when the agent names its default level, that row is tagged
+"Default" and choosing it stores no level.
 Each provider keeps its own choice. It applies from the next message of every
 running conversation; nothing restarts. Choosing the default again restores the
 level the agent started with.

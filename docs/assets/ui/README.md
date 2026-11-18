@@ -96,7 +96,7 @@ The PNG is 2400 × 440. Earlier capture sets below retain their original provena
 
 ## Assistant and panel visibility — native Wayland
 
-The `assistant/` captures were taken on 2026-11-17 with synthetic data and
+The `assistant/` captures were taken on 2026-11-18 with synthetic data and
 isolated preferences under headless Weston/Mesa at 1366×768. The conversation is
 a seeded visual fixture, as are the agent status/version rows: no agent CLI runs
 during the capture and nothing leaves
@@ -105,13 +105,14 @@ the machine.
 | Capture | Behaviour |
 | --- | --- |
 | [Consent](assistant/assistant-consent.png) | An empty conversation: who receives the data, with the two sharing icons in the header. |
-| [Conversation](assistant/assistant-conversation.png) | Right-side chat, vendor/model pickers, the reasoning-level picker, tool rows, a reply with a SQL block, and proposed SQL opened unrun in the SQL tile. |
+| [Conversation](assistant/assistant-conversation.png) | Right-side chat, the one model picker (agent badge, model and reasoning level), tool rows, a reply with a SQL block, and proposed SQL opened unrun in the SQL tile. |
 | [Without sidebar](assistant/assistant-without-sidebar.png) | Sidebar hidden, assistant shown. |
 | [Light](assistant/assistant-light.png) | The same in the light theme. |
 | [Both hidden](assistant/panels-hidden.png) | The workspace takes almost the full width; each hidden panel leaves a thin line that brings it back. |
 | [Settings](assistant/assistant-settings.png) | Local agent statuses, scan/retry, sign-in/out controls, executable override and per-agent privacy. |
 | [Privacy](assistant/assistant-privacy.png) | Codex's settings area (program, model and privacy choices), opened from the empty conversation's link. |
 | [Expanded](assistant/assistant-expanded.png) | The chat expanded to the workspace like a tile; the sidebar stays and the header icon restores the tiles. |
+| [Model picker](assistant/assistant-model-picker.png) | The picker open: favourites and agents on the rail with status dots, searchable models with Ctrl 1–9 and a starred favourite, and the reasoning levels for the chosen model. |
 
 Reproduce with:
 

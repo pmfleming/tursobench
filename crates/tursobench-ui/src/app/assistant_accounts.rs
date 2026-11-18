@@ -66,6 +66,8 @@ pub(super) struct State {
     /// Check agents without a click: when Settings → Assistant opens, and
     /// for the selected vendor when the panel first needs its status.
     pub automatic: bool,
+    /// The chat's model picker while it is open.
+    pub menu: super::assistant_picker::Menu,
 }
 impl App {
     pub(super) fn scan_assistant(&mut self, ctx: &egui::Context) {

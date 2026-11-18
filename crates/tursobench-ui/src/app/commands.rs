@@ -249,6 +249,9 @@ impl App {
         if self.database.ui.palette_open {
             return;
         }
+        if self.model_menu_keys(ctx) {
+            return;
+        }
         if self.database.workspace.enabled && self.database.workspace.active == Kind::Sql
             || !self.database.workspace.enabled && self.database.document.ui.sql_open
         {

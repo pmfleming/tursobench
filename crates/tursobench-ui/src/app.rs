@@ -2,6 +2,7 @@ use tursobench_core::{Access, Browse, ConnectionSettings, Ticket, TransactionSta
 mod assistant;
 mod assistant_accounts;
 mod assistant_export;
+mod assistant_picker;
 mod checks;
 mod columns;
 mod commands;

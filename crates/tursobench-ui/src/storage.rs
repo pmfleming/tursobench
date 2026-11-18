@@ -175,6 +175,8 @@ pub struct AssistantPreferences {
     pub models: std::collections::BTreeMap<Provider, String>,
     /// Reasoning level per provider; a missing one keeps the agent's own.
     pub efforts: std::collections::BTreeMap<Provider, String>,
+    /// Models starred in the chat's model picker, across agents, in the order starred.
+    pub favourite_models: Vec<FavouriteModel>,
     pub executables: std::collections::BTreeMap<Provider, PathBuf>,
     /// Legacy per-database choices, migrated into `grants`.
     #[serde(skip_serializing)]
@@ -193,6 +195,12 @@ pub struct AssistantPreferences {
     pub intro_skips: std::collections::BTreeMap<Provider, u8>,
     /// How the chat's copy buttons format a reply or the conversation.
     pub copy_format: CopyFormat,
+}
+/// One starred model: an agent and its model id; empty is the agent's default.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FavouriteModel {
+    pub provider: Provider,
+    pub model: String,
 }
 /// The text format the assistant's copy buttons write to the clipboard.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -386,6 +394,11 @@ impl Preferences {
             self.assistant.grants.pop_first();
         }
         self.assistant.models.retain(|_, model| model.len() <= 200);
+        let mut seen = std::collections::BTreeSet::new();
+        self.assistant
+            .favourite_models
+            .retain(|f| f.model.len() <= 200 && seen.insert((f.provider, f.model.clone())));
+        self.assistant.favourite_models.truncate(24);
         self.assistant
             .efforts
             .retain(|_, effort| !effort.is_empty() && effort.len() <= 40);

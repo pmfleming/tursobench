@@ -305,6 +305,17 @@ fn labelled(output: &egui::FullOutput, name: &str) -> bool {
     })
 }
 
+/// Click at the size the test measured controls at.
+fn tap(app: &mut App, ctx: &egui::Context, pos: egui::Pos2) {
+    for pressed in [true, false] {
+        let events = vec![
+            egui::Event::PointerMoved(pos),
+            super::pointer_button(pos, pressed),
+        ];
+        frame_at(app, ctx, SIZE, events);
+    }
+}
+
 /// The current value a named control reports.
 fn value_of(output: &egui::FullOutput, name: &str) -> Option<String> {
     crate::app::test_ui::nodes(output)
@@ -609,8 +620,9 @@ fn agent_scan_reports_status_and_missing_executables_without_starting_a_conversa
 }
 
 #[test]
-fn chat_header_pickers_change_model_and_vendor_with_its_own_sharing() {
-    use crate::storage::Provider;
+fn one_picker_changes_agent_model_and_favourites_with_each_agents_sharing() {
+    use crate::app::assistant_picker::menu_id;
+    use crate::storage::{FavouriteModel, Provider};
     use tursobench_assistant::account::{Model, SignIn, Status};
     let (dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
     runtime_dir(&dir);
@@ -621,15 +633,25 @@ fn chat_header_pickers_change_model_and_vendor_with_its_own_sharing() {
     app.send_assistant(&ctx);
     wait_until(&mut app, &ctx, |a| !a.database.assistant.busy);
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
-    click(
+    assert_eq!(
+        value_of(&output, "Assistant model picker").as_deref(),
+        Some("Claude Code")
+    );
+    tap(
         &mut app,
         &ctx,
         control(&output, "Assistant model picker").center(),
     );
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
-    click(&mut app, &ctx, control(&output, "sonnet").center());
+    tap(&mut app, &ctx, control(&output, "Sonnet").center());
     assert_eq!(app.preferences.assistant.selected_model(), "sonnet");
     assert!(app.database.assistant.host().is_none());
+    // The picker stays open so the reasoning level can follow the model.
+    assert!(egui::Popup::is_id_open(&ctx, menu_id()));
+    let ctrl_3 = super::key_event(egui::Key::Num3, true, egui::Modifiers::CTRL);
+    frame_at(&mut app, &ctx, SIZE, vec![ctrl_3]);
+    assert_eq!(app.preferences.assistant.selected_model(), "opus");
+
     app.accounts.rows.entry(Provider::Codex).or_default().status = Some(Status {
         state: SignIn::SignedIn,
         models: vec![Model {
@@ -639,33 +661,50 @@ fn chat_header_pickers_change_model_and_vendor_with_its_own_sharing() {
         }],
         ..Default::default()
     });
+    // Browsing another agent's models changes nothing until one is chosen.
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
-    click(&mut app, &ctx, control(&output, "Assistant agent").center());
-    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
-    click(
+    tap(
         &mut app,
         &ctx,
         control(&output, "Codex · Signed in").center(),
     );
+    assert_eq!(app.preferences.assistant.provider, Provider::Claude);
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    tap(
+        &mut app,
+        &ctx,
+        control(&output, "Favourite Test model").center(),
+    );
+    assert_eq!(
+        app.preferences.assistant.favourite_models,
+        [FavouriteModel {
+            provider: Provider::Codex,
+            model: "gpt-test".into()
+        }]
+    );
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    tap(&mut app, &ctx, control(&output, "Favourites").center());
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    tap(&mut app, &ctx, control(&output, "Test model").center());
     assert_eq!(app.preferences.assistant.provider, Provider::Codex);
+    assert_eq!(app.preferences.assistant.selected_model(), "gpt-test");
     assert_eq!(
         app.preferences
             .assistant
             .sharing_for(&app.database.tools.database_scope),
         Sharing::Rows
     );
+    let escape = super::key_event(egui::Key::Escape, true, egui::Modifiers::NONE);
+    frame_at(&mut app, &ctx, SIZE, vec![escape]);
+    assert!(!egui::Popup::is_id_open(&ctx, menu_id()));
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
     assert!(labelled(&output, "Share the schema and query results"));
-    click(
-        &mut app,
-        &ctx,
-        control(&output, "Assistant model picker").center(),
+    assert_eq!(
+        value_of(&output, "Assistant model picker").as_deref(),
+        Some("Test model")
     );
-    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
-    click(&mut app, &ctx, control(&output, "Test model").center());
-    assert_eq!(app.preferences.assistant.selected_model(), "gpt-test");
     app.select_assistant_provider(Provider::Claude);
-    assert_eq!(app.preferences.assistant.selected_model(), "sonnet");
+    assert_eq!(app.preferences.assistant.selected_model(), "opus");
     app.close();
 }
 
@@ -936,17 +975,26 @@ fn the_reasoning_level_changes_mid_conversation_and_follows_each_codex_model() {
     app.send_assistant(&ctx);
     wait_until(&mut app, &ctx, |a| !a.database.assistant.busy);
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    tap(
+        &mut app,
+        &ctx,
+        control(&output, "Assistant model picker").center(),
+    );
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
     assert_eq!(
         value_of(&output, "Assistant reasoning level").as_deref(),
         Some("Default")
     );
-    click(
+    tap(
         &mut app,
         &ctx,
-        control(&output, "Assistant reasoning level").center(),
+        control(&output, "Reasoning Extra high").center(),
     );
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
-    click(&mut app, &ctx, control(&output, "Extra high").center());
+    assert_eq!(
+        value_of(&output, "Assistant model picker").as_deref(),
+        Some("Claude Code · Extra high")
+    );
     assert_eq!(app.preferences.assistant.selected_effort(), "xhigh");
     // Unlike a model change, the conversation and its agent carry on.
     assert!(app.database.assistant.host().is_some());
@@ -976,13 +1024,23 @@ fn the_reasoning_level_changes_mid_conversation_and_follows_each_codex_model() {
         ],
         ..Default::default()
     });
-    app.select_assistant_provider(Provider::Codex);
+    // Browsing Codex in the open picker shows its levels; choosing one
+    // is remembered for Codex without leaving Claude Code.
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    tap(
+        &mut app,
+        &ctx,
+        control(&output, "Codex · Signed in").center(),
+    );
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
     assert_eq!(
         value_of(&output, "Assistant reasoning level").as_deref(),
         Some("Default · Low")
     );
-    app.select_assistant_effort("ultra".into());
+    tap(&mut app, &ctx, control(&output, "Reasoning Ultra").center());
+    assert_eq!(app.preferences.assistant.provider, Provider::Claude);
+    assert_eq!(app.preferences.assistant.efforts[&Provider::Codex], "ultra");
+    app.select_assistant_provider(Provider::Codex);
     assert_eq!(app.assistant_effort().as_deref(), Some("ultra"));
     // A model without that level falls back to the agent's own.
     app.select_assistant_model("quick".into());

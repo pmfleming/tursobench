@@ -31,7 +31,7 @@ export TURSOBENCH_ASSISTANT_CAPTURE=1
 binary=${TURSOBENCH_BINARY:-target/debug/tursobench}
 python3 scripts/wayland-run.py --width 1440 --height 840 -- timeout 75 "$binary" --smoke-test "$work/sample.db"
 for name in assistant-consent assistant-conversation assistant-without-sidebar \
-    assistant-light panels-hidden assistant-settings; do
+    assistant-light panels-hidden assistant-settings assistant-model-picker; do
   test -s "$output/$name.png" || { echo "missing $name.png" >&2; exit 1; }
 done
 echo "Assistant captures written to $output"
