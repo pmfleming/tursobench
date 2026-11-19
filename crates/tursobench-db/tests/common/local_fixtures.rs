@@ -5,31 +5,40 @@ use turso::{Builder, Connection, params};
 pub const NAMES: [&str; 4] = ["scratchpad", "agenda", "notifications", "clipboard"];
 pub const ROWS: usize = 205;
 
+/// Each project file's schema, application id and user version.
+const SCHEMAS: [(&str, &str, i64, i64); 4] = [
+    (
+        "scratchpad",
+        include_str!("../../../../tests/fixtures/local-projects/scratchpad.sql"),
+        0x5350_4350,
+        9,
+    ),
+    (
+        "agenda",
+        include_str!("../../../../tests/fixtures/local-projects/agenda.sql"),
+        0x4147_4e44,
+        1,
+    ),
+    (
+        "notifications",
+        include_str!("../../../../tests/fixtures/local-projects/notifications.sql"),
+        0x4e4f_5446,
+        1,
+    ),
+    (
+        "clipboard",
+        include_str!("../../../../tests/fixtures/local-projects/clipboard.sql"),
+        0x434c_4950,
+        1,
+    ),
+];
+
 pub async fn create(path: &Path, name: &str) -> turso::Result<()> {
     assert!(!path.exists(), "fixture creation never overwrites files");
-    let (schema, application, version) = match name {
-        "scratchpad" => (
-            include_str!("../../../../tests/fixtures/local-projects/scratchpad.sql"),
-            0x5350_4350,
-            9,
-        ),
-        "agenda" => (
-            include_str!("../../../../tests/fixtures/local-projects/agenda.sql"),
-            0x4147_4e44,
-            1,
-        ),
-        "notifications" => (
-            include_str!("../../../../tests/fixtures/local-projects/notifications.sql"),
-            0x4e4f_5446,
-            1,
-        ),
-        "clipboard" => (
-            include_str!("../../../../tests/fixtures/local-projects/clipboard.sql"),
-            0x434c_4950,
-            1,
-        ),
-        _ => panic!("unknown fixture"),
-    };
+    let (_, schema, application, version) = SCHEMAS
+        .into_iter()
+        .find(|(fixture, ..)| *fixture == name)
+        .expect("unknown fixture");
     let db = Builder::new_local(path.to_str().unwrap())
         .with_io(turso::IoBackend::Syscall)
         .experimental_index_method(true)

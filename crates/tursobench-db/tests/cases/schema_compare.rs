@@ -113,10 +113,8 @@ fn comparison_captures_readonly_schema_and_classifies_manual_changes() {
 }
 #[test]
 fn migration_checks_schema_in_transaction_and_rolls_back_failed_batches() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("migration.db");
-    common::create(
-        &path,
+    let (_dir, path) = common::database(
+        "migration.db",
         &[
             "CREATE TABLE t(id INTEGER PRIMARY KEY)",
             "INSERT INTO t VALUES(1)",
@@ -139,11 +137,7 @@ fn migration_checks_schema_in_transaction_and_rolls_back_failed_batches() {
         expected: original,
     });
     assert!(stale.failure.unwrap().message.contains("schema changed"));
-    assert_eq!(
-        c.sql("SELECT count(*) FROM sqlite_schema WHERE name='stale'")
-            .rows,
-        vec![vec![Value::Integer(0)]]
-    );
+    assert_eq!(c.count("sqlite_schema WHERE name='stal'"), 0);
     let current = capture(&mut c);
     let failed = c.run(Operation::Migration {
         sql: "CREATE TABLE main.undone(x); CREATE TABLE main.t(x);".into(),
@@ -151,11 +145,7 @@ fn migration_checks_schema_in_transaction_and_rolls_back_failed_batches() {
     });
     assert!(failed.rolled_back);
     assert!(failed.result.completion.unwrap().error.is_some());
-    assert_eq!(
-        c.sql("SELECT count(*) FROM sqlite_schema WHERE name='undone'")
-            .rows,
-        vec![vec![Value::Integer(0)]]
-    );
+    assert_eq!(c.count("sqlite_schema WHERE name='undon'"), 0);
     assert_eq!(capture(&mut c), current);
     for sql in [
         "DROP TABLE t",

@@ -1,11 +1,9 @@
 use crate::common::{self, Client};
-use tursobench_core::{Access, Browse, CommitOutcome, Edit, ErrorKind, Failure, Value};
+use tursobench_core::{Access, CommitOutcome, Edit, ErrorKind, Failure, Value};
 use tursobench_db::Operation;
 fn fixture() -> (tempfile::TempDir, Client) {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("edits.db");
-    common::create(
-        &path,
+    let (dir, path) = common::database(
+        "edits.db",
         &[
             "CREATE TABLE items(a INTEGER NOT NULL, b TEXT NOT NULL, data BLOB, label TEXT DEFAULT 'default', PRIMARY KEY(a,b))",
             "INSERT INTO items VALUES (1,'key',X'00FF',NULL), (2,'other',NULL,'')",
@@ -21,14 +19,7 @@ fn composite_changed_keys_null_blob_and_defaults() {
         "CREATE TABLE nullable_keys(a TEXT, b INTEGER, data TEXT COLLATE NOCASE, PRIMARY KEY(a,b))",
     );
     h.sql("INSERT INTO nullable_keys VALUES('x',NULL,'a'),('x',NULL,'A')");
-    let nullable = h.run(Operation::Browse(Browse {
-        options: Default::default(),
-        table: "nullable_keys".into(),
-        offset: 0,
-        sort: None,
-        descending: false,
-        filters: vec![],
-    }));
+    let nullable = h.run(Operation::Browse(common::browse("nullable_keys")));
     let ordered = nullable.result.rows;
     // Nullable PK ties now follow physical row identity, preserving insertion order.
     assert_eq!(ordered[0][2], Value::Text("a".into()));
@@ -84,10 +75,7 @@ fn composite_changed_keys_null_blob_and_defaults() {
         ),
         CommitOutcome::Committed { .. }
     ));
-    assert_eq!(
-        h.sql("SELECT count(*) FROM items").rows,
-        vec![vec![Value::Integer(2)]]
-    );
+    assert_eq!(h.count("items"), 2);
 }
 
 #[test]

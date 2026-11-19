@@ -1,10 +1,12 @@
 use crate::common::{self, Client, snapshot};
-use std::{collections::BTreeMap, path::Path};
-use tursobench_core::*;
+use std::collections::BTreeMap;
+use tursobench_core::{
+    Access, Bindings, Browse, Budget, Delivery, ErrorKind, Filter, FilterExpr, FilterOp, Value,
+};
 use tursobench_db::{Diagnostic, Operation};
-fn fixture(path: &Path) {
-    common::create(
-        path,
+fn fixture(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    common::database(
+        name,
         &[
             "CREATE TABLE parent(a INTEGER, b TEXT, payload TEXT, PRIMARY KEY(a,b)) STRICT",
             "CREATE TABLE child(id INTEGER PRIMARY KEY,a INTEGER,b TEXT,note TEXT,FOREIGN KEY(a,b) REFERENCES parent ON DELETE CASCADE) STRICT",
@@ -13,37 +15,12 @@ fn fixture(path: &Path) {
             "INSERT INTO parent VALUES(7,'001','original')",
             "INSERT INTO child VALUES(1,7,'001','needle'),(2,NULL,NULL,NULL)",
         ],
-    );
-}
-
-#[test]
-fn foreign_key_check_detects_orphans_and_respects_parent_semantics() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("orphans.db");
-    common::create(
-        &path,
-        &[
-            "CREATE TABLE p(a INTEGER, b TEXT COLLATE NOCASE, PRIMARY KEY(a,b))",
-            "CREATE TABLE c(id INTEGER PRIMARY KEY,a TEXT,b TEXT,FOREIGN KEY(a,b) REFERENCES p)",
-            "INSERT INTO p VALUES(7,'Alpha')",
-            "INSERT INTO c VALUES(1,'007','alpha'),(2,'8','orphan'),(3,NULL,'exempt')",
-        ],
-    );
-    let mut client = Client::open(&path, Access::ReadOnly);
-    let result = client.run(Operation::Diagnostic(Diagnostic::ForeignKeys));
-    assert!(result.failure.is_none(), "{:?}", result.failure);
-    assert!(result.result.completion.as_ref().unwrap().error.is_none());
-    assert_eq!(result.result.rows.len(), 1);
-    assert_eq!(result.result.rows[0][3], Value::Integer(1));
-    assert_eq!(result.result.rows[0][4], Value::Integer(2));
-    client.close();
+    )
 }
 
 #[test]
 fn catalog_preserves_large_definitions_and_more_than_one_thousand_indexes() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("catalog.db");
-    common::create(&path, &["CREATE TABLE t(id INTEGER PRIMARY KEY)"]);
+    let (_dir, path) = common::database("catalog.db", &["CREATE TABLE t(id INTEGER PRIMARY KEY)"]);
     let mut client = Client::open(&path, Access::ReadWrite);
     for n in 0..1001 {
         client.sql(&format!("CREATE INDEX i{n} ON t(id)"));
@@ -70,9 +47,7 @@ fn catalog_preserves_large_definitions_and_more_than_one_thousand_indexes() {
 
 #[test]
 fn readonly_vacuum_into_and_attach_do_not_create_files() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("source.db");
-    common::create(&path, &["CREATE TABLE t(id INTEGER PRIMARY KEY)"]);
+    let (dir, path) = common::database("source.db", &["CREATE TABLE t(id INTEGER PRIMARY KEY)"]);
     let before = snapshot(dir.path());
     let mut client = Client::open(&path, Access::ReadOnly);
     for sql in [
@@ -94,10 +69,8 @@ fn readonly_vacuum_into_and_attach_do_not_create_files() {
 
 #[test]
 fn seek_paging_grouped_filters_counts_and_reference_pages_are_complete() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("paging.db");
-    common::create(
-        &path,
+    let (_dir, path) = common::database(
+        "paging.db",
         &[
             "CREATE TABLE p(id INTEGER PRIMARY KEY)",
             "INSERT INTO p VALUES(1)",
@@ -122,14 +95,7 @@ fn seek_paging_grouped_filters_counts_and_reference_pages_are_complete() {
         .result;
     assert_eq!(legacy.rows.len(), 100);
     assert_eq!(legacy.completion.unwrap().delivery, Delivery::Limited);
-    let mut spec = Browse {
-        table: "c".into(),
-        offset: 0,
-        sort: None,
-        descending: false,
-        filters: vec![],
-        options: Default::default(),
-    };
+    let mut spec = common::browse("c");
     spec.options.relation = Some(Box::new((key, vec![Value::Integer(1)])));
     let first = client.run(Operation::Browse(spec.clone())).result;
     spec.options.cursor = first.rows.last().cloned();
@@ -164,12 +130,8 @@ fn seek_paging_grouped_filters_counts_and_reference_pages_are_complete() {
     );
     assert_eq!(client.run(Operation::Browse(spec)).result.rows.len(), 4);
     let mut sorted = Browse {
-        table: "c".into(),
-        offset: 0,
         sort: Some(2),
-        descending: false,
-        filters: vec![],
-        options: Default::default(),
+        ..common::browse("c")
     };
     sorted.options.sorts.push((1, true));
     let expected = client
@@ -190,10 +152,8 @@ fn seek_paging_grouped_filters_counts_and_reference_pages_are_complete() {
 
 #[test]
 fn large_values_keep_rows_and_save_exact_original_bytes() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("large.db");
-    common::create(
-        &path,
+    let (dir, path) = common::database(
+        "large.db",
         &[
             "CREATE TABLE t(id INTEGER PRIMARY KEY,value TEXT)",
             "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<151) INSERT INTO t SELECT x,CASE WHEN x=50 THEN hex(zeroblob(50000)) ELSE 'small' END FROM n",
@@ -243,10 +203,8 @@ fn large_values_keep_rows_and_save_exact_original_bytes() {
 
 #[test]
 fn wide_rows_signal_page_continuation_instead_of_stalling() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("wide.db");
-    common::create(
-        &path,
+    let (_dir, path) = common::database(
+        "wide.db",
         &[
             "CREATE TABLE t(id INTEGER PRIMARY KEY,value TEXT)",
             "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<151) INSERT INTO t SELECT x,hex(zeroblob(25000)) FROM n",
@@ -269,9 +227,7 @@ fn wide_rows_signal_page_continuation_instead_of_stalling() {
 
 #[test]
 fn scripts_report_partial_success_and_atomic_rollback() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("scripts.db");
-    common::create(&path, &["CREATE TABLE t(id INTEGER PRIMARY KEY)"]);
+    let (_dir, path) = common::database("scripts.db", &["CREATE TABLE t(id INTEGER PRIMARY KEY)"]);
     let mut c = Client::open(&path, Access::ReadWrite);
     for atomic in [false, true] {
         c.sql("DELETE FROM t");
@@ -286,10 +242,7 @@ fn scripts_report_partial_success_and_atomic_rollback() {
         assert!(reply.script[0].completion.error.is_none());
         assert!(reply.script[1].completion.error.is_some());
         assert_eq!(reply.rolled_back, atomic);
-        assert_eq!(
-            c.sql("SELECT count(*) FROM t").rows,
-            vec![vec![Value::Integer(if atomic { 0 } else { 1 })]]
-        );
+        assert_eq!(c.count("t"), i64::from(!atomic));
     }
     let reply = c.run(Operation::Script {
         sql: "INSERT INTO t VALUES(7); SELECT id FROM t".into(),
@@ -311,9 +264,7 @@ fn scripts_report_partial_success_and_atomic_rollback() {
 
 #[test]
 fn native_metadata_related_lookup_and_diagnostics_preserve_readonly_bytes() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("workbench.db");
-    fixture(&path);
+    let (dir, path) = fixture("workbench.db");
     let before = snapshot(dir.path());
     let mut client = Client::open(&path, Access::ReadOnly);
     let reply = client.run(Operation::Inspect("child".into()));
@@ -386,9 +337,7 @@ fn native_metadata_related_lookup_and_diagnostics_preserve_readonly_bytes() {
 }
 #[test]
 fn diagram_includes_isolated_quoted_cyclic_and_composite_tables_without_writes() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("diagram.db");
-    fixture(&path);
+    let (dir, path) = fixture("diagram.db");
     let mut client = Client::open(&path, Access::ReadWrite);
     for sql in [
         "CREATE TABLE isolated(value TEXT)",
@@ -465,10 +414,8 @@ fn diagram_includes_isolated_quoted_cyclic_and_composite_tables_without_writes()
     assert_eq!(snapshot(dir.path()), before);
 }
 #[test]
-fn diagram_uses_committed_schema_not_the_editor_transaction() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("snapshot.db");
-    fixture(&path);
+fn diagram_reads_committed_schema_within_its_discovery_budget() {
+    let (_dir, path) = fixture("snapshot.db");
     let mut client = Client::open(&path, Access::ReadWrite);
     client.sql("BEGIN");
     client.sql("CREATE TABLE pending_schema(id INTEGER PRIMARY KEY)");
@@ -490,14 +437,6 @@ fn diagram_uses_committed_schema_not_the_editor_transaction() {
         4
     );
     client.sql("ROLLBACK");
-    client.close();
-}
-#[test]
-fn diagram_marks_discovery_budget_and_keeps_result_ownership_separate() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("budget.db");
-    fixture(&path);
-    let mut client = Client::open(&path, Access::ReadWrite);
     client.sql("BEGIN");
     for i in 0..511 {
         client.sql(&format!("CREATE TABLE t{i:04}(id INTEGER PRIMARY KEY)"));
@@ -512,9 +451,7 @@ fn diagram_marks_discovery_budget_and_keeps_result_ownership_separate() {
 }
 #[test]
 fn named_parameters_and_explain_are_bound_and_non_mutating() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("workbench.db");
-    fixture(&path);
+    let (_dir, path) = fixture("workbench.db");
     let mut client = Client::open(&path, Access::ReadWrite);
     let parameters = Bindings::Named(BTreeMap::from([
         (
@@ -575,10 +512,7 @@ fn named_parameters_and_explain_are_bound_and_non_mutating() {
         assert!(!reply.result.rows.is_empty());
         assert_eq!(reply.result.completion.unwrap().changed, 0);
     }
-    assert_eq!(
-        client.sql("SELECT count(*) FROM child").rows,
-        vec![vec![Value::Integer(2)]]
-    );
+    assert_eq!(client.count("child"), 2);
     for sql in [
         "PRAGMA foreign_keys=OFF",
         "BEGIN",
@@ -602,19 +536,14 @@ fn named_parameters_and_explain_are_bound_and_non_mutating() {
         budget: Budget::default(),
     });
     assert!(missing.result.completion.unwrap().error.is_some());
-    assert_eq!(
-        client.sql("SELECT count(*) FROM child").rows,
-        vec![vec![Value::Integer(2)]]
-    );
+    assert_eq!(client.count("child"), 2);
     client.close();
 }
 
 #[test]
 fn typed_filter_chips_bind_values_escape_contains_and_combine_null_predicates() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("filters.db");
-    common::create(
-        &path,
+    let (dir, path) = common::database(
+        "filters.db",
         &[
             r#"CREATE TABLE "filter rows"(id INTEGER PRIMARY KEY, "odd""col" TEXT, n INTEGER, bytes BLOB)"#,
             r#"INSERT INTO "filter rows" VALUES(1,'100%_\literal',1,X'00FF'),(2,'x'' OR 1=1 --',3,X'01'),(3,NULL,9223372036854775807,NULL)"#,
@@ -624,12 +553,8 @@ fn typed_filter_chips_bind_values_escape_contains_and_combine_null_predicates() 
     let mut c = Client::open(&path, Access::ReadOnly);
     let mut run = |filters: Vec<Filter>| {
         c.run(Operation::Browse(Browse {
-            options: Default::default(),
-            table: "filter rows".into(),
-            offset: 0,
-            sort: None,
-            descending: false,
             filters,
+            ..common::browse("filter rows")
         }))
     };
     let f = |column, op, value| Filter { column, op, value };
@@ -713,20 +638,26 @@ fn typed_filter_chips_bind_values_escape_contains_and_combine_null_predicates() 
 }
 
 #[test]
-fn reverse_references_use_parent_affinity_and_collation_and_reject_changed_keys() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("reverse.db");
-    common::create(
-        &path,
+fn foreign_keys_use_parent_affinity_and_collation_in_checks_and_references() {
+    let (dir, path) = common::database(
+        "reverse.db",
         &[
             "CREATE TABLE parent(a INTEGER,b TEXT COLLATE NOCASE,PRIMARY KEY(a,b))",
             "CREATE TABLE child(id INTEGER PRIMARY KEY,a TEXT,b TEXT,FOREIGN KEY(a,b) REFERENCES parent)",
             "INSERT INTO parent VALUES(7,'Alpha')",
-            "INSERT INTO child VALUES(1,'007','alpha'),(2,'7','ALPHA'),(3,NULL,NULL)",
+            "INSERT INTO child VALUES(1,'007','alpha'),(2,'7','ALPHA'),(3,NULL,NULL),(4,'8','orphan'),(5,NULL,'exempt')",
         ],
     );
     let before = snapshot(dir.path());
     let mut c = Client::open(&path, Access::ReadOnly);
+    // Only the orphan violates; NULL keys are exempt and affinity/collation match.
+    let check = c.run(Operation::Diagnostic(Diagnostic::ForeignKeys));
+    assert!(check.failure.is_none(), "{:?}", check.failure);
+    assert!(check.result.completion.as_ref().unwrap().error.is_none());
+    let violations = Value::Integer(1);
+    let checked_tables = Value::Integer(2);
+    assert_eq!(check.result.rows.len(), 1);
+    assert_eq!(check.result.rows[0][3..5], [violations, checked_tables]);
     let info = c.run(Operation::Inspect("child".into())).info.unwrap();
     let key = info.foreign_keys[0].clone();
     let values = vec![Value::Integer(7), Value::Text("Alpha".into())];
@@ -775,10 +706,8 @@ fn reverse_references_use_parent_affinity_and_collation_and_reject_changed_keys(
 
 #[test]
 fn suggested_index_executes_and_is_not_suggested_twice() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("advice.db");
-    common::create(
-        &path,
+    let (_dir, path) = common::database(
+        "advice.db",
         &[
             "CREATE TABLE items(id INTEGER PRIMARY KEY, label TEXT)",
             "INSERT INTO items VALUES(1,'a'),(2,'b')",
@@ -809,10 +738,8 @@ fn suggested_index_executes_and_is_not_suggested_twice() {
 
 #[test]
 fn profiles_exact_sampled_and_keyless_values_without_writing() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("profile.db");
-    common::create(
-        &path,
+    let (dir, path) = common::database(
+        "profile.db",
         &[
             "CREATE TABLE items(value)",
             "INSERT INTO items VALUES(1),(3),(NULL),('abc')",
@@ -864,9 +791,7 @@ fn profiles_exact_sampled_and_keyless_values_without_writing() {
 #[test]
 fn admin_settings_readback_is_scoped_and_readonly_changes_are_rejected() {
     use tursobench_db::admin::Change;
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("admin.db");
-    common::create(&path, &["CREATE TABLE t(id INTEGER)"]);
+    let (dir, path) = common::database("admin.db", &["CREATE TABLE t(id INTEGER)"]);
     let before = snapshot(dir.path());
     let mut client = Client::open(&path, Access::ReadOnly);
     let dashboard = client.run(Operation::Admin(None));

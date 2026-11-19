@@ -1,36 +1,32 @@
 use crate::common::{self, Client};
-use tursobench_core::*;
+use tursobench_core::{Access, ImportFormat, ImportSpec, InputKind, TransferOutcome, Value};
 use tursobench_db::Operation;
 
-fn browse(table: &str) -> Browse {
-    Browse {
-        table: table.into(),
-        offset: 0,
-        sort: None,
-        descending: false,
-        filters: vec![],
-        options: Default::default(),
-    }
-}
-fn spec(path: &std::path::Path, table: &str, columns: Vec<String>, atomic: bool) -> ImportSpec {
-    ImportSpec {
+/// Imports typed JSONL into `table`, mapping every source column by name.
+fn import(
+    c: &mut Client,
+    path: &std::path::Path,
+    table: &str,
+    columns: &[String],
+    atomic: bool,
+) -> TransferOutcome {
+    let spec = ImportSpec {
         path: path.into(),
         table: table.into(),
         format: ImportFormat::JsonLines,
-        source_columns: columns.clone(),
-        mapping: columns,
+        source_columns: columns.to_vec(),
+        mapping: columns.to_vec(),
         kinds: vec![],
         null_marker: "\\N".into(),
         atomic,
-    }
+    };
+    c.run(Operation::Import(spec)).transfer.unwrap()
 }
 
 #[test]
 fn complete_export_import_and_corrupt_input_transactions_are_truthful() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("source.db");
-    common::create(
-        &path,
+    let (dir, path) = common::database(
+        "source.db",
         &[
             "CREATE TABLE source(id INTEGER PRIMARY KEY,value TEXT)",
             "CREATE TABLE target(id INTEGER PRIMARY KEY,value TEXT)",
@@ -44,7 +40,7 @@ fn complete_export_import_and_corrupt_input_transactions_are_truthful() {
     let export = c
         .run(Operation::ExportTable {
             path: output.clone(),
-            spec: browse("source"),
+            spec: common::browse("source"),
         })
         .transfer
         .unwrap();
@@ -59,15 +55,7 @@ fn complete_export_import_and_corrupt_input_transactions_are_truthful() {
         })
         .preview
         .unwrap();
-    let imported = c
-        .run(Operation::Import(spec(
-            &output,
-            "target",
-            preview.columns.clone(),
-            true,
-        )))
-        .transfer
-        .unwrap();
+    let imported = import(&mut c, &output, "target", &preview.columns, true);
     assert!(imported.error.is_none(), "{}", imported.message);
     assert_eq!(imported.rows, 1205);
     assert_eq!(
@@ -81,45 +69,21 @@ fn complete_export_import_and_corrupt_input_transactions_are_truthful() {
         data.lines().take(1206).collect::<Vec<_>>().join("\n"),
     )
     .unwrap();
-    let atomic = c
-        .run(Operation::Import(spec(
-            &corrupt,
-            "invalid",
-            preview.columns.clone(),
-            true,
-        )))
-        .transfer
-        .unwrap();
+    let atomic = import(&mut c, &corrupt, "invalid", &preview.columns, true);
     assert!(atomic.error.is_some());
     assert_eq!(atomic.rows, 0);
-    assert_eq!(
-        c.sql("SELECT count(*) FROM invalid").rows,
-        vec![vec![Value::Integer(0)]]
-    );
-    let partial = c
-        .run(Operation::Import(spec(
-            &corrupt,
-            "partial",
-            preview.columns,
-            false,
-        )))
-        .transfer
-        .unwrap();
+    assert_eq!(c.count("invalid"), 0);
+    let partial = import(&mut c, &corrupt, "partial", &preview.columns, false);
     assert!(partial.error.is_some());
     assert_eq!(partial.rows, 1000);
-    assert_eq!(
-        c.sql("SELECT count(*) FROM partial").rows,
-        vec![vec![Value::Integer(1000)]]
-    );
+    assert_eq!(c.count("partial"), 1000);
     c.close();
 }
 
 #[test]
 fn csv_mapping_preserves_quoted_multiline_text_null_and_blobs() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("csv.db");
-    common::create(
-        &path,
+    let (dir, path) = common::database(
+        "csv.db",
         &["CREATE TABLE target(id INTEGER PRIMARY KEY,value TEXT,note TEXT,data BLOB)"],
     );
     let input = dir.path().join("input.csv");
@@ -181,10 +145,8 @@ fn csv_mapping_preserves_quoted_multiline_text_null_and_blobs() {
 
 #[test]
 fn execute_export_runs_a_write_once_and_backup_contains_committed_wal() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("source.db");
-    common::create(
-        &path,
+    let (dir, path) = common::database(
+        "source.db",
         &["CREATE TABLE t(id INTEGER PRIMARY KEY,value TEXT)"],
     );
     let mut c = Client::open(&path, Access::ReadWrite);
@@ -197,10 +159,7 @@ fn execute_export_runs_a_write_once_and_backup_contains_committed_wal() {
     let export = c.run(operation()).transfer.unwrap();
     assert!(export.error.is_none(), "{}", export.message);
     assert!(c.run(operation()).failure.is_some());
-    assert_eq!(
-        c.sql("SELECT count(*) FROM t").rows,
-        vec![vec![Value::Integer(1)]]
-    );
+    assert_eq!(c.count("t"), 1);
     let checkpoint = c.run(Operation::Checkpoint).transfer.unwrap();
     assert!(checkpoint.error.is_none());
     c.sql("INSERT INTO t(value) VALUES('recent WAL row')");
@@ -212,10 +171,7 @@ fn execute_export_runs_a_write_once_and_backup_contains_committed_wal() {
     assert!(result.error.is_none(), "{}", result.message);
     c.close();
     let mut restored = Client::open(&backup, Access::ReadOnly);
-    assert_eq!(
-        restored.sql("SELECT count(*) FROM t").rows,
-        vec![vec![Value::Integer(2)]]
-    );
+    assert_eq!(restored.count("t"), 2);
     assert_eq!(
         restored.sql("SELECT value FROM t WHERE id=2").rows,
         vec![vec![Value::Text("recent WAL row".into())]]
@@ -225,10 +181,8 @@ fn execute_export_runs_a_write_once_and_backup_contains_committed_wal() {
 
 #[test]
 fn sql_real_literals_are_checked_against_actual_engine_roundtrips() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("reals.db");
-    common::create(
-        &path,
+    let (_dir, path) = common::database(
+        "reals.db",
         &["CREATE TABLE t(id INTEGER PRIMARY KEY,value DECIMAL(10,2))"],
     );
     let mut c = Client::open(&path, Access::ReadOnly);

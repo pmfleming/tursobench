@@ -128,16 +128,13 @@ fn peer() {
 }
 
 fn fixture() -> (tempfile::TempDir, std::path::PathBuf) {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("shared.db");
-    common::create(
-        &path,
+    common::database(
+        "shared.db",
         &[
             "CREATE TABLE items(id INTEGER PRIMARY KEY, value TEXT)",
             "INSERT INTO items VALUES(1,'initial')",
         ],
-    );
-    (dir, path)
+    )
 }
 
 #[test]
@@ -253,17 +250,13 @@ fn close_ack_releases_all_admission_locks_and_protected_reads_preserve_content()
     let (dir, path) = fixture();
     for _ in 0..8 {
         let before = common::snapshot(dir.path());
-        let s = tursobench_db::Session::open(path.clone(), Access::ReadOnly, || {}).unwrap();
+        let (s, opened) = common::start(&path, Access::ReadOnly);
         assert!(matches!(
-            common::event(&s).kind,
+            opened,
             EventKind::Opened(Coordination::ProtectedReadOnly)
         ));
         common::run(&s, 1, tursobench_db::Operation::Schema);
-        s.close();
-        assert!(matches!(
-            common::event(&s).kind,
-            EventKind::Closed { rollback: Ok(()) }
-        ));
+        common::close(&s);
         assert_eq!(common::snapshot(dir.path()), before);
         // No delay: Closed promises every lock has already been released.
         let (_legacy, reply) = Peer::start(&path, "legacy");
@@ -279,10 +272,8 @@ fn hard_link_aliases_are_rejected_before_creating_coordination_sidecars() {
     std::fs::hard_link(&path, &alias).unwrap();
     let before = common::snapshot(dir.path());
     for p in [&path, &alias] {
-        let s = tursobench_db::Session::open(p.clone(), Access::ReadOnly, || {}).unwrap();
-        assert!(
-            matches!(common::event(&s).kind, EventKind::Failed(e) if e.message.contains("Hard-linked"))
-        );
+        let (_session, opened) = common::start(p, Access::ReadOnly);
+        assert!(matches!(opened, EventKind::Failed(e) if e.message.contains("Hard-linked")));
     }
     assert!(!dir.path().join("shared.db-tshm").exists());
     assert!(!dir.path().join("alias.db-tshm").exists());
@@ -298,15 +289,13 @@ fn application_admission_blocks_legacy_writers_and_reserves_readonly_fallback() 
         let usage = tursobench_db::processes_using(&path);
         assert!(!usage.applications.is_empty() || usage.incomplete);
         for access in [Access::ReadOnly, Access::ReadWrite] {
-            let s = tursobench_db::Session::open(path.clone(), access, || {}).unwrap();
-            assert!(
-                matches!(common::event(&s).kind, EventKind::Failed(e) if e.kind == ErrorKind::Busy)
-            );
+            let (_session, opened) = common::start(&path, access);
+            assert!(matches!(opened, EventKind::Failed(e) if e.kind == ErrorKind::Busy));
         }
     }
-    let s = tursobench_db::Session::open(path.clone(), Access::ReadOnly, || {}).unwrap();
+    let (s, opened) = common::start(&path, Access::ReadOnly);
     assert!(matches!(
-        common::event(&s).kind,
+        opened,
         EventKind::Opened(Coordination::ProtectedReadOnly)
     ));
     let (_legacy, ready) = Peer::start(&path, "legacy");
@@ -318,43 +307,26 @@ fn application_admission_blocks_legacy_writers_and_reserves_readonly_fallback() 
             .recv_timeout(Duration::from_millis(100))
             .is_err()
     );
-    let denied = tursobench_db::Session::open(path.clone(), Access::ReadWrite, || {}).unwrap();
-    assert!(
-        matches!(common::event(&denied).kind, EventKind::Failed(e) if e.kind == ErrorKind::Busy)
-    );
-    s.close();
-    assert!(matches!(
-        common::event(&s).kind,
-        EventKind::Closed { rollback: Ok(()) }
-    ));
+    let (_denied, refused) = common::start(&path, Access::ReadWrite);
+    assert!(matches!(refused, EventKind::Failed(e) if e.kind == ErrorKind::Busy));
+    common::close(&s);
     assert!(blocked.reply().starts_with("ERROR|"));
     drop(blocked);
     let (mut writer, ready) = Peer::start(&path, "writer");
     assert_eq!(ready, "READY|true");
-    let s = tursobench_db::Session::open(path.clone(), Access::ReadOnly, || {}).unwrap();
-    assert!(matches!(
-        common::event(&s).kind,
-        EventKind::Opened(Coordination::SharedWal)
-    ));
+    let (s, opened) = common::start(&path, Access::ReadOnly);
+    assert!(matches!(opened, EventKind::Opened(Coordination::SharedWal)));
     writer.ok("UPDATE items SET value='visible'");
     let result = common::run(
         &s,
         1,
-        tursobench_db::Operation::Execute {
-            sql: "SELECT value FROM items".into(),
-            parameters: vec![],
-            budget: Default::default(),
-        },
+        common::execute("SELECT value FROM items", Default::default()),
     );
     assert_eq!(
         result.result.rows,
         vec![vec![tursobench_core::Value::Text("visible".into())]]
     );
-    s.close();
-    assert!(matches!(
-        common::event(&s).kind,
-        EventKind::Closed { rollback: Ok(()) }
-    ));
+    common::close(&s);
 }
 
 #[test]

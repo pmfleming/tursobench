@@ -1,6 +1,9 @@
-use crate::common::{Client, local_fixtures as fixtures, snapshot as bytes};
+use crate::common::{self, Client, local_fixtures as fixtures, snapshot as bytes};
 
-use tursobench_core::*;
+use tursobench_core::{
+    Access, Browse, CommitOutcome, Delivery, Edit, ErrorKind, Failure, TransactionState, Value,
+    quote_identifier,
+};
 use tursobench_db::Operation;
 
 fn fixture(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
@@ -62,9 +65,6 @@ fn exact_project_schemas_open_browse_filter_page_and_preserve_readonly_files() {
         let key = table.keys()[0];
         let wanted = first.rows[0][key].clone();
         let filtered = c.run(Operation::Browse(Browse {
-            options: Default::default(),
-            table: paged.into(),
-            offset: 0,
             sort: Some(key),
             descending: true,
             filters: vec![tursobench_core::Filter {
@@ -72,6 +72,7 @@ fn exact_project_schemas_open_browse_filter_page_and_preserve_readonly_files() {
                 op: tursobench_core::FilterOp::Equal,
                 value: wanted,
             }],
+            ..common::browse(paged)
         }));
         assert_eq!(filtered.result.rows, vec![first.rows[0].clone()]);
         assert_eq!(
