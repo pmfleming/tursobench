@@ -73,6 +73,23 @@ impl DeliveryControl {
     fn finished(&self, request: u64) {
         self.requests.lock().unwrap().remove(&request);
     }
+    /// Lets `discard` interrupt `connection` for `request` until the guard drops.
+    fn interruptible(&self, request: u64, connection: &turso::Connection) -> Interruptible<'_> {
+        let connection = connection.clone();
+        *self.active_read.lock().unwrap() = Some(ActiveRead {
+            request,
+            interrupt: Box::new(move || {
+                let _ = connection.interrupt();
+            }),
+        });
+        Interruptible(self)
+    }
+}
+struct Interruptible<'a>(&'a DeliveryControl);
+impl Drop for Interruptible<'_> {
+    fn drop(&mut self) {
+        *self.0.active_read.lock().unwrap() = None;
+    }
 }
 
 pub enum Operation {
@@ -166,9 +183,25 @@ pub enum Operation {
     CommitEdits(DraftBatch),
     Close,
 }
+fn values(v: &[Value]) -> usize {
+    v.iter().map(Value::bytes).sum()
+}
+fn browse_bytes(b: &Browse) -> usize {
+    b.table.len()
+        + b.filters.iter().map(|f| f.value.bytes()).sum::<usize>()
+        + b.options
+            .predicate
+            .as_ref()
+            .map_or(0, |e| e.bytes().min(COMMAND_BYTES))
+        + b.options.cursor.as_deref().map_or(0, values)
+        + b.options
+            .relation
+            .as_deref()
+            .map_or(0, |(key, v)| key.bytes() + values(v))
+}
 impl Operation {
+    /// Estimated retained bytes, charged against the pending-request budget.
     fn bytes(&self) -> usize {
-        let values = |v: &[Value]| v.iter().map(Value::bytes).sum::<usize>();
         std::mem::size_of::<Self>()
             + match self {
                 Self::Migration { sql, expected } => sql.len() + expected.bytes(),
@@ -181,16 +214,7 @@ impl Operation {
                     sql,
                     parameters,
                 } => path.as_os_str().len() + sql.len() + parameters.bytes(),
-                Self::ExportTable { path, spec } => {
-                    path.as_os_str().len()
-                        + spec.table.len()
-                        + spec.filters.iter().map(|f| f.value.bytes()).sum::<usize>()
-                        + spec
-                            .options
-                            .predicate
-                            .as_ref()
-                            .map_or(0, |p| p.bytes().min(COMMAND_BYTES))
-                }
+                Self::ExportTable { path, spec } => path.as_os_str().len() + browse_bytes(spec),
                 Self::Import(spec) => {
                     spec.path.as_os_str().len()
                         + spec.table.len()
@@ -210,51 +234,8 @@ impl Operation {
                 | Self::Explain {
                     sql, parameters, ..
                 } => sql.len() + parameters.bytes(),
-                Self::Browse(b) | Self::CountFiltered(b) => {
-                    b.table.len()
-                        + b.filters.iter().map(|f| f.value.bytes()).sum::<usize>()
-                        + b.options
-                            .predicate
-                            .as_ref()
-                            .map_or(0, |e| e.bytes().min(COMMAND_BYTES))
-                        + b.options.cursor.as_ref().map_or(0, |row| values(row))
-                        + b.options.relation.as_deref().map_or(0, |(key, v)| {
-                            key.target.len()
-                                + values(v)
-                                + key
-                                    .columns
-                                    .iter()
-                                    .map(|(a, b)| a.len() + b.as_ref().map_or(0, String::len))
-                                    .sum::<usize>()
-                        })
-                }
-                Self::CommitEdits(batch) => {
-                    batch.table.name.len()
-                        + batch
-                            .table
-                            .columns
-                            .iter()
-                            .map(|c| {
-                                c.name.len()
-                                    + c.declared_type.len()
-                                    + c.default_sql.as_ref().map_or(0, String::len)
-                            })
-                            .sum::<usize>()
-                        + batch
-                            .edits
-                            .iter()
-                            .map(|edit| match edit {
-                                tursobench_core::Edit::Insert { values: v } => {
-                                    v.iter().flatten().map(Value::bytes).sum()
-                                }
-                                tursobench_core::Edit::Update { original, changes } => {
-                                    values(original)
-                                        + changes.iter().map(|(_, v)| v.bytes()).sum::<usize>()
-                                }
-                                tursobench_core::Edit::Delete { original } => values(original),
-                            })
-                            .sum::<usize>()
-                }
+                Self::Browse(b) | Self::CountFiltered(b) => browse_bytes(b),
+                Self::CommitEdits(batch) => batch.bytes(),
                 Self::Lookup { table, keys } => {
                     table.len() + keys.iter().map(|(k, v)| k.len() + v.bytes()).sum::<usize>()
                 }
@@ -272,18 +253,7 @@ impl Operation {
                     table,
                     key,
                     values: v,
-                } => {
-                    table.len()
-                        + values(v)
-                        + key.target.len()
-                        + key.on_update.len()
-                        + key.on_delete.len()
-                        + key
-                            .columns
-                            .iter()
-                            .map(|(a, b)| a.len() + b.as_ref().map_or(0, String::len))
-                            .sum::<usize>()
-                }
+                } => table.len() + values(v) + key.bytes(),
                 Self::PreviewImport {
                     path,
                     kinds,

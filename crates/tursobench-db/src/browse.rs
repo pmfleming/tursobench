@@ -4,10 +4,64 @@ use tursobench_core::{
     Browse, Failure, Filter, FilterExpr, FilterOp, Table, TableColumn, Value, quote_identifier,
 };
 
-pub(crate) async fn describe(c: &Connection, name: &str) -> Result<Table, Failure> {
-    if name.len() > 64 * 1024 {
-        return Err(Failure::input("Table name exceeds metadata budget"));
+/// Facts parsed from bounded CREATE text; missing or oversized DDL gives defaults.
+#[derive(Default)]
+struct Declaration {
+    types: std::collections::BTreeMap<String, String>,
+    rowid_key: Option<String>,
+    has_rowid: bool,
+    binary_collations: bool,
+}
+impl Declaration {
+    fn parse(ddl: &str) -> Self {
+        let collates = crate::sql::tokens(ddl).iter().any(|t| {
+            t.style == crate::sql::TokenStyle::Keyword
+                && ddl[t.range.clone()].trim().eq_ignore_ascii_case("COLLATE")
+        });
+        Self {
+            types: crate::sql::declared_types(ddl),
+            rowid_key: crate::sql::inline_rowid_key(ddl),
+            has_rowid: crate::sql::has_rowid(ddl),
+            binary_collations: !collates,
+        }
     }
+    /// One `PRAGMA table_xinfo` row, preferring the declared type spelling.
+    fn column(&self, row: &turso::Row) -> Result<TableColumn, Failure> {
+        let get = |i| row.get_value(i).map(from_engine).map_err(failure);
+        let text = |i| match get(i)? {
+            Value::Text(s) => Ok(s),
+            _ => Err(Failure::input("Unexpected schema metadata")),
+        };
+        let integer = |i| match get(i)? {
+            Value::Integer(n) => Ok(n),
+            _ => Err(Failure::input("Unexpected schema metadata")),
+        };
+        let name = text(1)?;
+        let reported_type = text(2)?;
+        let declared_type = self
+            .types
+            .get(&name.to_ascii_lowercase())
+            .cloned()
+            .unwrap_or(reported_type);
+        let rowid_key = self
+            .rowid_key
+            .as_ref()
+            .is_some_and(|key| key.eq_ignore_ascii_case(&name));
+        Ok(TableColumn {
+            declared_type,
+            not_null: integer(3)? != 0 || rowid_key,
+            default_sql: match get(4)? {
+                Value::Text(s) => Some(s),
+                _ => None,
+            },
+            primary_key: integer(5)?,
+            hidden: integer(6)?,
+            name,
+        })
+    }
+}
+/// Whether `name` is a table (not a view), and its parsed declaration.
+async fn declaration(c: &Connection, name: &str) -> Result<(bool, Declaration), Failure> {
     let mut r = c
         .query(
             "SELECT type, sql FROM sqlite_schema WHERE name = ?1 COLLATE NOCASE AND type IN ('table', 'view')",
@@ -20,30 +74,19 @@ pub(crate) async fn describe(c: &Connection, name: &str) -> Result<Table, Failur
         .await
         .map_err(failure)?
         .ok_or_else(|| Failure::input("Table or view no longer exists"))?;
-    let kind = schema.get_value(0).map_err(failure)?;
-    let declarations = match schema.get_value(1).map_err(failure)? {
-        turso::Value::Text(ddl) if ddl.len() <= 1024 * 1024 => crate::sql::declared_types(&ddl),
-        _ => Default::default(),
-    };
-    let rowid_key = match schema.get_value(1).map_err(failure)? {
-        turso::Value::Text(ddl) if ddl.len() <= 1024 * 1024 => crate::sql::inline_rowid_key(&ddl),
-        _ => None,
-    };
-    let has_rowid = match schema.get_value(1).map_err(failure)? {
-        turso::Value::Text(ddl) if ddl.len() <= 1024 * 1024 => crate::sql::has_rowid(&ddl),
-        _ => false,
-    };
-    let binary_collations = match schema.get_value(1).map_err(failure)? {
-        turso::Value::Text(ddl) if ddl.len() <= 1024 * 1024 => {
-            !crate::sql::tokens(&ddl).iter().any(|t| {
-                t.style == crate::sql::TokenStyle::Keyword
-                    && ddl[t.range.clone()].trim().eq_ignore_ascii_case("COLLATE")
-            })
-        }
-        _ => false,
+    let is_table = schema.get_value(0).map_err(failure)? == turso::Value::Text("table".into());
+    let declaration = match schema.get_value(1).map_err(failure)? {
+        turso::Value::Text(ddl) if ddl.len() <= 1024 * 1024 => Declaration::parse(&ddl),
+        _ => Declaration::default(),
     };
     while r.next().await.map_err(failure)?.is_some() {}
-    drop(r);
+    Ok((is_table, declaration))
+}
+pub(crate) async fn describe(c: &Connection, name: &str) -> Result<Table, Failure> {
+    if name.len() > 64 * 1024 {
+        return Err(Failure::input("Table name exceeds metadata budget"));
+    }
+    let (is_table, declaration) = declaration(c, name).await?;
     let mut r = c
         .query(
             format!("PRAGMA table_xinfo({})", quote_identifier(name)),
@@ -54,35 +97,8 @@ pub(crate) async fn describe(c: &Connection, name: &str) -> Result<Table, Failur
     let mut columns = Vec::new();
     let mut bytes = name.len();
     while let Some(row) = r.next().await.map_err(failure)? {
-        let get = |i| row.get_value(i).map(from_engine).map_err(failure);
-        let text = |i| match get(i)? {
-            Value::Text(s) => Ok(s),
-            _ => Err(Failure::input("Unexpected schema metadata")),
-        };
-        let integer = |i| match get(i)? {
-            Value::Integer(n) => Ok(n),
-            _ => Err(Failure::input("Unexpected schema metadata")),
-        };
-        let column = TableColumn {
-            name: text(1)?,
-            declared_type: declarations
-                .get(&text(1)?.to_ascii_lowercase())
-                .cloned()
-                .unwrap_or(text(2)?),
-            not_null: integer(3)? != 0
-                || rowid_key
-                    .as_ref()
-                    .is_some_and(|name| name.eq_ignore_ascii_case(&text(1).unwrap_or_default())),
-            default_sql: match get(4)? {
-                Value::Text(s) => Some(s),
-                _ => None,
-            },
-            primary_key: integer(5)?,
-            hidden: integer(6)?,
-        };
-        bytes += column.name.len()
-            + column.declared_type.len()
-            + column.default_sql.as_ref().map_or(0, String::len);
+        let column = declaration.column(&row)?;
+        bytes += column.bytes();
         if bytes > 1024 * 1024 {
             return Err(Failure::input("Table descriptor exceeds 1 MiB"));
         }
@@ -94,9 +110,9 @@ pub(crate) async fn describe(c: &Connection, name: &str) -> Result<Table, Failur
     Ok(Table {
         name: name.into(),
         columns,
-        is_table: kind == turso::Value::Text("table".into()),
-        has_rowid,
-        binary_collations,
+        is_table,
+        has_rowid: declaration.has_rowid,
+        binary_collations: declaration.binary_collations,
     })
 }
 
@@ -265,7 +281,7 @@ fn filtered<'a>(
     }
     Ok((builder, parts))
 }
-pub(crate) fn count_sql(
+fn count_sql(
     table: &Table,
     spec: &Browse,
     relation: Option<(String, Vec<Value>)>,
@@ -287,32 +303,41 @@ fn where_clause(parts: &[String]) -> String {
         format!(" WHERE {}", parts.join(" AND "))
     }
 }
-pub(crate) fn browse_sql(
-    table: &Table,
-    spec: Browse,
-    relation: Option<(String, Vec<Value>)>,
-) -> Result<(String, Vec<Value>), Failure> {
-    if table.columns.is_empty() || table.columns.iter().any(|c| c.hidden != 0) {
-        return Err(Failure::input(
-            "Hidden/generated columns are not supported by this browser",
-        ));
-    }
-    let (mut builder, mut predicates) = filtered(table, &spec, relation)?;
-    let mut order = order_columns(table, &spec)?;
-    let seek = spec.options.cursor.as_ref();
-    if let Some(cursor) = seek {
-        if !supports_seek(table) || cursor.len() != table.columns.len() {
-            return Err(Failure::input(
-                "Cursor requires a proven non-null primary key",
-            ));
-        }
+fn direction(descending: bool) -> &'static str {
+    if descending { "DESC" } else { "ASC" }
+}
+/// An unshadowed name for the implicit rowid, if the table has one.
+fn rowid_alias(table: &Table) -> Option<&'static str> {
+    let shadowed = |name: &str| {
+        table
+            .columns
+            .iter()
+            .any(|c| c.name.eq_ignore_ascii_case(name))
+    };
+    table
+        .has_rowid
+        .then(|| {
+            ["rowid", "_rowid_", "oid"]
+                .into_iter()
+                .find(|name| !shadowed(name))
+        })
+        .flatten()
+}
+impl Predicates<'_> {
+    /// Rows strictly after `cursor` in `order`: one branch per order prefix.
+    fn seek(
+        &mut self,
+        order: &[(usize, bool)],
+        cursor: &[Value],
+        reverse: bool,
+    ) -> Result<String, Failure> {
         let mut branches = Vec::new();
         let mut prefix = Vec::new();
-        for &(i, desc) in &order {
-            let col = builder.column(i)?;
-            let param = builder.bind(cursor[i].clone())?;
-            let less = desc != spec.options.reverse;
-            let cmp = match (&cursor[i], less, table.columns[i].not_null) {
+        for &(i, desc) in order {
+            let col = self.column(i)?;
+            let param = self.bind(cursor[i].clone())?;
+            let less = desc != reverse;
+            let cmp = match (&cursor[i], less, self.table.columns[i].not_null) {
                 (Value::Null, true, _) => "0".into(),
                 (Value::Null, false, _) => format!("{col} IS NOT NULL"),
                 (_, true, false) => format!("({col} < {param} OR {col} IS NULL)"),
@@ -324,62 +349,32 @@ pub(crate) fn browse_sql(
             branches.push(format!("({})", branch.join(" AND ")));
             prefix.push(format!("{col} IS {param}"));
         }
-        predicates.push(format!("({})", branches.join(" OR ")));
+        Ok(format!("({})", branches.join(" OR ")))
     }
-    let mut terms = order
-        .iter()
-        .map(|&(i, desc)| {
-            Ok(format!(
-                "{} {}",
-                builder.column(i)?,
-                if desc != spec.options.reverse {
-                    "DESC"
-                } else {
-                    "ASC"
-                }
-            ))
-        })
-        .collect::<Result<Vec<_>, Failure>>()?;
-    if !supports_seek(table) {
-        let rowid = table
-            .has_rowid
-            .then(|| {
-                ["rowid", "_rowid_", "oid"].into_iter().find(|name| {
-                    !table
-                        .columns
-                        .iter()
-                        .any(|c| c.name.eq_ignore_ascii_case(name))
-                })
-            })
-            .flatten();
-        if let Some(rowid) = rowid {
-            terms.push(format!(
+    /// Without a seekable key, rowid (or every remaining column, binary and
+    /// by storage class) makes the order total.
+    fn tiebreak(&self, order: &[(usize, bool)], descending: bool) -> Result<Vec<String>, Failure> {
+        if let Some(rowid) = rowid_alias(self.table) {
+            return Ok(vec![format!(
                 "{} {}",
                 quote_identifier(rowid),
-                if spec.descending != spec.options.reverse {
-                    "DESC"
-                } else {
-                    "ASC"
-                }
-            ));
-        } else {
-            for i in 0..table.columns.len() {
-                if !table.is_table || !order.iter().any(|(col, _)| *col == i) {
-                    order.push((i, false));
-                    terms.push(format!(
-                        "{} COLLATE BINARY, typeof({})",
-                        builder.column(i)?,
-                        builder.column(i)?
-                    ));
-                }
+                direction(descending)
+            )]);
+        }
+        let mut terms = Vec::new();
+        for i in 0..self.table.columns.len() {
+            if !self.table.is_table || !order.iter().any(|(col, _)| *col == i) {
+                let col = self.column(i)?;
+                terms.push(format!("{col} COLLATE BINARY, typeof({col})"));
             }
         }
+        Ok(terms)
     }
-    let names = (0..table.columns.len())
-        .map(|i| builder.column(i))
-        .collect::<Result<Vec<_>, _>>()?
-        .join(", ");
-    let offset = if seek.is_some() { 0 } else { spec.offset };
+}
+/// The bounded LIMIT and OFFSET for one page.
+fn window(spec: &Browse) -> Result<(usize, usize), Failure> {
+    let seek = spec.options.cursor.is_some();
+    let offset = if seek { 0 } else { spec.offset };
     let limit = if spec.options.page_rows == 0 {
         100
     } else {
@@ -388,12 +383,53 @@ pub(crate) fn browse_sql(
     if spec.options.page_bytes > 4 * 1024 * 1024 {
         return Err(Failure::input("Page byte budget exceeds 4 MiB"));
     }
-    if limit > 100 || (spec.options.tail && (seek.is_some() || spec.options.reverse)) {
+    if limit > 100 || (spec.options.tail && (seek || spec.options.reverse)) {
         return Err(Failure::input("Invalid controlled page window"));
     }
     if offset > i64::MAX as usize {
         return Err(Failure::input("Row offset exceeds engine integer range"));
     }
+    Ok((limit, offset))
+}
+fn browse_sql(
+    table: &Table,
+    spec: Browse,
+    relation: Option<(String, Vec<Value>)>,
+) -> Result<(String, Vec<Value>), Failure> {
+    if table.columns.is_empty() || table.columns.iter().any(|c| c.hidden != 0) {
+        return Err(Failure::input(
+            "Hidden/generated columns are not supported by this browser",
+        ));
+    }
+    let (mut builder, mut predicates) = filtered(table, &spec, relation)?;
+    let order = order_columns(table, &spec)?;
+    let reverse = spec.options.reverse;
+    if let Some(cursor) = &spec.options.cursor {
+        if !supports_seek(table) || cursor.len() != table.columns.len() {
+            return Err(Failure::input(
+                "Cursor requires a proven non-null primary key",
+            ));
+        }
+        predicates.push(builder.seek(&order, cursor, reverse)?);
+    }
+    let mut terms = order
+        .iter()
+        .map(|&(i, desc)| {
+            Ok(format!(
+                "{} {}",
+                builder.column(i)?,
+                direction(desc != reverse)
+            ))
+        })
+        .collect::<Result<Vec<_>, Failure>>()?;
+    if !supports_seek(table) {
+        terms.extend(builder.tiebreak(&order, spec.descending != reverse)?);
+    }
+    let names = (0..table.columns.len())
+        .map(|i| builder.column(i))
+        .collect::<Result<Vec<_>, _>>()?
+        .join(", ");
+    let (limit, offset) = window(&spec)?;
     Ok((
         format!(
             "SELECT {names} FROM {} AS c{} ORDER BY {} LIMIT {limit} OFFSET {offset}",
@@ -405,7 +441,23 @@ pub(crate) fn browse_sql(
     ))
 }
 
-pub(crate) async fn relationship(
+/// The page query for `spec`, with the table it reads.
+pub(crate) async fn page(
+    c: &Connection,
+    spec: Browse,
+) -> Result<(Table, String, Vec<Value>), Failure> {
+    let table = describe(c, &spec.table).await?;
+    let relation = relationship(c, &table, &spec).await?;
+    let (sql, parameters) = browse_sql(&table, spec, relation)?;
+    Ok((table, sql, parameters))
+}
+pub(crate) async fn count(c: &Connection, spec: &Browse) -> Result<(String, Vec<Value>), Failure> {
+    let table = describe(c, &spec.table).await?;
+    let relation = relationship(c, &table, spec).await?;
+    count_sql(&table, spec, relation)
+}
+
+async fn relationship(
     c: &Connection,
     table: &Table,
     spec: &Browse,

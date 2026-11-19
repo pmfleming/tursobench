@@ -1,9 +1,10 @@
 //! Conservative external-change notifications; no uncommitted content is read.
 use std::{
     path::{Path, PathBuf},
-    time::SystemTime,
+    sync::mpsc::{Receiver, RecvTimeoutError},
+    time::{Duration, Instant, SystemTime},
 };
-use tursobench_core::{ErrorKind, Failure};
+use tursobench_core::{Coordination, ErrorKind, Failure};
 
 #[derive(PartialEq, Eq)]
 struct Stamp {
@@ -38,18 +39,10 @@ fn stamp(path: &Path) -> Result<Option<Stamp>, Failure> {
     }))
 }
 async fn schema_version(c: &turso::Connection) -> Result<i64, Failure> {
-    let mut rows = c
-        .query("PRAGMA schema_version", ())
-        .await
-        .map_err(crate::connection::failure)?;
-    let row = rows
-        .next()
-        .await
-        .map_err(crate::connection::failure)?
-        .ok_or_else(|| Failure::input("Schema version is unavailable"))?;
-    match row.get_value(0).map_err(crate::connection::failure)? {
-        turso::Value::Integer(version) => Ok(version),
-        _ => Err(Failure::input("Invalid schema version")),
+    match crate::connection::pragma(c, "PRAGMA schema_version").await? {
+        Some(turso::Value::Integer(version)) => Ok(version),
+        Some(_) => Err(Failure::input("Invalid schema version")),
+        None => Err(Failure::input("Schema version is unavailable")),
     }
 }
 
@@ -90,5 +83,52 @@ impl Changes {
         self.schema = schema;
         self.prior = next;
         Ok(Some(changed))
+    }
+}
+
+const INTERVAL: Duration = Duration::from_millis(500);
+/// Paces change observation; only shared-WAL sessions observe external writers.
+pub(crate) struct Watch {
+    changes: Option<Changes>,
+    observed: Instant,
+}
+impl Watch {
+    pub(crate) async fn start(
+        path: &Path,
+        c: &turso::Connection,
+        coordination: Coordination,
+    ) -> Result<Self, Failure> {
+        let changes = match coordination {
+            Coordination::SharedWal => Some(Changes::new(path, c).await?),
+            Coordination::ProtectedReadOnly => None,
+        };
+        Ok(Self {
+            changes,
+            observed: Instant::now(),
+        })
+    }
+    /// Once per interval, `Some(schema)` when committed content changed.
+    /// Busy or interrupted observations wait for the next interval.
+    pub(crate) async fn poll(&mut self, c: &turso::Connection) -> Result<Option<bool>, Failure> {
+        if self.observed.elapsed() < INTERVAL {
+            return Ok(None);
+        }
+        self.observed = Instant::now();
+        let Some(changes) = &mut self.changes else {
+            return Ok(None);
+        };
+        match changes.poll(c).await {
+            Err(e) if matches!(e.kind, ErrorKind::Busy | ErrorKind::Interrupted) => Ok(None),
+            result => result,
+        }
+    }
+    /// Protected read-only sessions need no timer. Shared sessions wake only
+    /// for a command or the next external-change observation deadline.
+    pub(crate) fn receive<T>(&self, rx: &Receiver<T>) -> Result<T, RecvTimeoutError> {
+        if self.changes.is_some() {
+            rx.recv_timeout(INTERVAL.saturating_sub(self.observed.elapsed()))
+        } else {
+            rx.recv().map_err(|_| RecvTimeoutError::Disconnected)
+        }
     }
 }

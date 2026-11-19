@@ -61,6 +61,13 @@ impl Depot {
             bytes: bytes as u64,
         }))
     }
+    fn backing(&mut self, id: u64) -> Result<(&mut std::fs::File, usize), Failure> {
+        self.files
+            .iter_mut()
+            .find(|(key, _, _)| *key == id)
+            .map(|(_, file, size)| (file, *size))
+            .ok_or_else(|| Failure::input("Value backing expired or belongs to another session"))
+    }
     pub(crate) fn read(
         &mut self,
         id: u64,
@@ -70,45 +77,27 @@ impl Depot {
         if size == 0 || size > 64 * 1024 {
             return Err(Failure::input("Value chunks require 1–65536 bytes"));
         }
-        let (_, file, total) = self
-            .files
-            .iter_mut()
-            .find(|(key, _, _)| *key == id)
-            .ok_or_else(|| Failure::input("Value backing expired or belongs to another session"))?;
-        if offset > *total as u64 {
+        let (file, total) = self.backing(id)?;
+        if offset > total as u64 {
             return Err(Failure::input("Offset exceeds value size"));
         }
-        file.seek(SeekFrom::Start(offset))
-            .map_err(|e| Failure::input(e.to_string()))?;
-        let mut data = vec![0; size.min(*total - offset as usize)];
-        file.read_exact(&mut data)
-            .map_err(|e| Failure::input(e.to_string()))?;
-        Ok((data, *total as u64))
+        file.seek(SeekFrom::Start(offset)).map_err(input)?;
+        let mut data = vec![0; size.min(total - offset as usize)];
+        file.read_exact(&mut data).map_err(input)?;
+        Ok((data, total as u64))
     }
     pub(crate) fn save(&mut self, id: u64, path: &Path) -> Result<(), Failure> {
-        let (_, file, _) = self
-            .files
-            .iter_mut()
-            .find(|(key, _, _)| *key == id)
-            .ok_or_else(|| Failure::input("Value backing expired or belongs to another session"))?;
-        let parent = path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        let mut output =
-            tempfile::NamedTempFile::new_in(parent).map_err(|e| Failure::input(e.to_string()))?;
-        file.seek(SeekFrom::Start(0))
-            .map_err(|e| Failure::input(e.to_string()))?;
-        std::io::copy(file, &mut output).map_err(|e| Failure::input(e.to_string()))?;
-        output
-            .as_file()
-            .sync_all()
-            .map_err(|e| Failure::input(e.to_string()))?;
-        output
-            .persist_noclobber(path)
-            .map_err(|e| Failure::input(e.to_string()))?;
+        let (file, _) = self.backing(id)?;
+        let mut output = crate::transfers::sibling_temp(path).map_err(input)?;
+        file.seek(SeekFrom::Start(0)).map_err(input)?;
+        std::io::copy(file, &mut output).map_err(input)?;
+        output.as_file().sync_all().map_err(input)?;
+        output.persist_noclobber(path).map_err(input)?;
         Ok(())
     }
+}
+fn input(e: impl std::fmt::Display) -> Failure {
+    Failure::input(e.to_string())
 }
 
 #[cfg(test)]

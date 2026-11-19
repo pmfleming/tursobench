@@ -13,6 +13,19 @@ pub enum Edit {
         original: Vec<Value>,
     },
 }
+impl Edit {
+    /// Value bytes this edit retains.
+    pub fn bytes(&self) -> usize {
+        let values = |v: &[Value]| v.iter().map(Value::bytes).sum::<usize>();
+        match self {
+            Self::Insert { values: v } => v.iter().flatten().map(Value::bytes).sum(),
+            Self::Update { original, changes } => {
+                values(original) + changes.iter().map(|(_, v)| v.bytes()).sum::<usize>()
+            }
+            Self::Delete { original } => values(original),
+        }
+    }
+}
 #[derive(Debug, Clone)]
 pub struct DraftBatch {
     pub table: Table,
@@ -30,6 +43,17 @@ pub enum CommitOutcome {
     Unknown(Failure),
 }
 impl DraftBatch {
+    /// Table descriptor and value bytes this batch retains.
+    pub fn bytes(&self) -> usize {
+        self.table.name.len()
+            + self
+                .table
+                .columns
+                .iter()
+                .map(crate::TableColumn::bytes)
+                .sum::<usize>()
+            + self.edits.iter().map(Edit::bytes).sum::<usize>()
+    }
     pub fn stage_cell(&mut self, original: Vec<Value>, column: usize, value: Value) {
         self.edits
             .retain(|e| !matches!(e, Edit::Delete { original: o } if *o == original));
@@ -110,38 +134,46 @@ impl DraftBatch {
         Ok(statements)
     }
 }
-fn generate(table: &Table, edit: &Edit) -> Result<BoundEdit, Failure> {
-    let invalid = |v: &Value| matches!(v,Value::Real(n) if !n.is_finite());
-    if match edit {
-        Edit::Insert { values } => values.iter().flatten().any(invalid),
-        Edit::Update { changes, .. } => changes.iter().any(|(_, v)| invalid(v)),
-        Edit::Delete { .. } => false,
-    } {
-        return Err(Failure::input("New edit values must be finite"));
-    }
-
-    let name = quote_identifier(&table.name);
-    let column = |i: usize| {
-        table
-            .columns
-            .get(i)
-            .map(|c| quote_identifier(&c.name))
-            .ok_or_else(|| Failure::input("Invalid edit column"))
-    };
-    let mut params = Vec::new();
-    let mut bind = |value: Value| -> Result<String, Failure> {
+fn column(table: &Table, i: usize) -> Result<String, Failure> {
+    table
+        .columns
+        .get(i)
+        .map(|c| quote_identifier(&c.name))
+        .ok_or_else(|| Failure::input("Invalid edit column"))
+}
+fn storage_class(value: &Value) -> Result<&'static str, Failure> {
+    Ok(match value {
+        Value::Null => "null",
+        Value::Integer(_) => "integer",
+        Value::Real(_) => "real",
+        Value::Text(_) => "text",
+        Value::Blob(_) => "blob",
+        Value::Deferred(_) => {
+            return Err(Failure::input(
+                "Original row contains deferred cells; full originals are required for editing",
+            ));
+        }
+    })
+}
+/// Parameters bound so far; each bound value becomes the next `?N`.
+#[derive(Default)]
+struct Binder {
+    params: Vec<Value>,
+}
+impl Binder {
+    fn bind(&mut self, value: Value) -> Result<String, Failure> {
         if matches!(value, Value::Deferred(_))
             || value.bytes() > 64 * 1024
             || matches!(&value, Value::Real(n) if n.is_nan())
         {
             return Err(Failure::input("Edit value is oversized or non-finite"));
         }
-        params.push(value);
-        Ok(format!("?{}", params.len()))
-    };
-    let predicate = |original: &[Value],
-                     bind: &mut dyn FnMut(Value) -> Result<String, Failure>|
-     -> Result<String, Failure> {
+        self.params.push(value);
+        Ok(format!("?{}", self.params.len()))
+    }
+    /// Matches exactly the original row: per column, the same storage class
+    /// and the same value under binary collation.
+    fn original(&mut self, table: &Table, original: &[Value]) -> Result<String, Failure> {
         if original.len() != table.columns.len()
             || table
                 .keys()
@@ -152,79 +184,93 @@ fn generate(table: &Table, edit: &Edit) -> Result<BoundEdit, Failure> {
                 "Original row lacks a complete non-NULL primary key",
             ));
         }
-        original
-            .iter()
-            .enumerate()
-            .map(|(i, v)| {
-                let name = column(i)?;
-                let kind = match v {
-                    Value::Null => "null",
-                    Value::Integer(_) => "integer",
-                    Value::Real(_) => "real",
-                    Value::Text(_) => "text",
-                    Value::Blob(_) => "blob",
-                    Value::Deferred(_) => return Err(Failure::input("Original row contains deferred cells; full originals are required for editing")),
-                };
-                Ok(format!(
-                    "(typeof({name}) = {} AND {name} COLLATE BINARY IS {})",
-                    bind(Value::Text(kind.into()))?,
-                    bind(v.clone())?
-                ))
-            })
-            .collect::<Result<Vec<_>, _>>()
-            .map(|p| p.join(" AND "))
-    };
-    let sql = match edit {
-        Edit::Insert { values } => {
-            if values.len() != table.columns.len() {
-                return Err(Failure::input(
-                    "Insert must specify one optional value per column",
-                ));
-            }
-            let mut columns = Vec::new();
-            let mut slots = Vec::new();
-            for (i, v) in values.iter().enumerate() {
-                if let Some(v) = v {
-                    columns.push(column(i)?);
-                    slots.push(bind(v.clone())?);
-                }
-            }
-            if columns.is_empty() {
-                format!("INSERT INTO {name} DEFAULT VALUES")
-            } else {
-                format!(
-                    "INSERT INTO {name} ({}) VALUES ({})",
-                    columns.join(", "),
-                    slots.join(", ")
-                )
+        let mut predicates = Vec::new();
+        for (i, v) in original.iter().enumerate() {
+            let name = column(table, i)?;
+            let kind = self.bind(Value::Text(storage_class(v)?.into()))?;
+            let value = self.bind(v.clone())?;
+            predicates.push(format!(
+                "(typeof({name}) = {kind} AND {name} COLLATE BINARY IS {value})"
+            ));
+        }
+        Ok(predicates.join(" AND "))
+    }
+    fn insert(&mut self, table: &Table, values: &[Option<Value>]) -> Result<String, Failure> {
+        let name = quote_identifier(&table.name);
+        if values.len() != table.columns.len() {
+            return Err(Failure::input(
+                "Insert must specify one optional value per column",
+            ));
+        }
+        let mut columns = Vec::new();
+        let mut slots = Vec::new();
+        for (i, v) in values.iter().enumerate() {
+            if let Some(v) = v {
+                columns.push(column(table, i)?);
+                slots.push(self.bind(v.clone())?);
             }
         }
-        Edit::Update { original, changes } => {
-            if changes.is_empty() {
-                return Err(Failure::input("Empty update"));
-            }
-            let mut seen = std::collections::HashSet::new();
-            let mut assignments = Vec::new();
-            for (i, v) in changes {
-                if !seen.insert(i) {
-                    return Err(Failure::input("Duplicate update column"));
-                }
-                assignments.push(format!("{} = {}", column(*i)?, bind(v.clone())?));
-            }
+        Ok(if columns.is_empty() {
+            format!("INSERT INTO {name} DEFAULT VALUES")
+        } else {
             format!(
-                "UPDATE {name} SET {} WHERE {}",
-                assignments.join(", "),
-                predicate(original, &mut bind)?
+                "INSERT INTO {name} ({}) VALUES ({})",
+                columns.join(", "),
+                slots.join(", ")
             )
+        })
+    }
+    fn update(
+        &mut self,
+        table: &Table,
+        original: &[Value],
+        changes: &[(usize, Value)],
+    ) -> Result<String, Failure> {
+        if changes.is_empty() {
+            return Err(Failure::input("Empty update"));
         }
+        let mut seen = std::collections::HashSet::new();
+        let mut assignments = Vec::new();
+        for (i, v) in changes {
+            if !seen.insert(i) {
+                return Err(Failure::input("Duplicate update column"));
+            }
+            assignments.push(format!(
+                "{} = {}",
+                column(table, *i)?,
+                self.bind(v.clone())?
+            ));
+        }
+        Ok(format!(
+            "UPDATE {} SET {} WHERE {}",
+            quote_identifier(&table.name),
+            assignments.join(", "),
+            self.original(table, original)?
+        ))
+    }
+}
+fn generate(table: &Table, edit: &Edit) -> Result<BoundEdit, Failure> {
+    let invalid = |v: &Value| matches!(v,Value::Real(n) if !n.is_finite());
+    if match edit {
+        Edit::Insert { values } => values.iter().flatten().any(invalid),
+        Edit::Update { changes, .. } => changes.iter().any(|(_, v)| invalid(v)),
+        Edit::Delete { .. } => false,
+    } {
+        return Err(Failure::input("New edit values must be finite"));
+    }
+    let mut binder = Binder::default();
+    let sql = match edit {
+        Edit::Insert { values } => binder.insert(table, values)?,
+        Edit::Update { original, changes } => binder.update(table, original, changes)?,
         Edit::Delete { original } => format!(
-            "DELETE FROM {name} WHERE {}",
-            predicate(original, &mut bind)?
+            "DELETE FROM {} WHERE {}",
+            quote_identifier(&table.name),
+            binder.original(table, original)?
         ),
     };
     Ok(BoundEdit {
         sql,
-        parameters: params,
+        parameters: binder.params,
     })
 }
 

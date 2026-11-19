@@ -246,6 +246,20 @@ pub struct Completion {
     pub transaction: TransactionState,
     pub error: Option<Failure>,
 }
+impl Completion {
+    /// A complete, error-free outcome that has read and changed nothing yet.
+    pub fn new(transaction: TransactionState) -> Self {
+        Self {
+            elapsed_ms: 0,
+            delivery: Delivery::Complete,
+            rows_seen: 0,
+            page_has_more: None,
+            changed: 0,
+            transaction,
+            error: None,
+        }
+    }
+}
 #[derive(Debug, Clone)]
 pub struct ScriptResult {
     pub index: usize,
@@ -304,6 +318,14 @@ pub struct TableColumn {
     pub primary_key: i64,
     pub hidden: i64,
     pub default_sql: Option<String>,
+}
+impl TableColumn {
+    /// Text bytes this descriptor retains.
+    pub fn bytes(&self) -> usize {
+        self.name.len()
+            + self.declared_type.len()
+            + self.default_sql.as_ref().map_or(0, String::len)
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Table {
@@ -475,6 +497,19 @@ pub struct ForeignKey {
     pub columns: Vec<(String, Option<String>)>,
     pub on_update: String,
     pub on_delete: String,
+}
+impl ForeignKey {
+    /// Text bytes this key retains.
+    pub fn bytes(&self) -> usize {
+        self.target.len()
+            + self.on_update.len()
+            + self.on_delete.len()
+            + self
+                .columns
+                .iter()
+                .map(|(from, to)| from.len() + to.as_ref().map_or(0, String::len))
+                .sum::<usize>()
+    }
 }
 #[derive(Debug, Clone)]
 pub struct Inspection {

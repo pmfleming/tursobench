@@ -84,68 +84,95 @@ async fn read(c: &Connection) -> Result<Option<String>, String> {
         _ => Err("Invalid preferences payload".into()),
     }
 }
+fn runtime() -> Result<tokio::runtime::Runtime, String> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .map_err(error)
+}
+/// Reads a snapshot through a read-only engine; nothing is created or locked for writing.
+async fn read_only(text: &str) -> Result<Option<String>, String> {
+    let db = turso::Builder::new_local(text)
+        .read_only(true)
+        .build()
+        .await
+        .map_err(error)?;
+    let c = db.connect().map_err(error)?;
+    c.query_timeout(Duration::from_secs(5)).map_err(error)?;
+    read(&c).await
+}
+/// Creates an owner-only empty file, or reports that one already exists.
+fn create_new(path: &Path) -> Result<bool, String> {
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(file) => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                    .map_err(error)?;
+            }
+            Ok(true)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(error(e)),
+    }
+}
+async fn initialize(c: &Connection) -> Result<(), String> {
+    for sql in [
+        "BEGIN IMMEDIATE".into(),
+        "CREATE TABLE app_preferences(id INTEGER PRIMARY KEY CHECK(id=1),format_version INTEGER NOT NULL,payload TEXT NOT NULL,previous TEXT)".into(),
+        format!("PRAGMA application_id={APPLICATION_ID}"),
+        format!("PRAGMA user_version={VERSION}"),
+        "COMMIT".into(),
+    ] {
+        c.execute(&sql, ()).await.map_err(error)?;
+    }
+    Ok(())
+}
+async fn open_writer(path: &Path) -> Result<(Database, Connection, Option<String>), String> {
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    std::fs::create_dir_all(parent).map_err(error)?;
+    let text = path
+        .to_str()
+        .ok_or("Non-UTF8 preferences paths are unsupported")?;
+    let created = create_new(path)?;
+    // Reject unrelated/newer/corrupt stores before any writable open.
+    if !created {
+        let metadata = std::fs::metadata(path).map_err(error)?;
+        if !metadata.is_file() || metadata.len() == 0 {
+            return Err("Invalid preferences database; file preserved".into());
+        }
+        read_only(text).await?;
+    }
+    let db = turso::Builder::new_local(text)
+        .build()
+        .await
+        .map_err(error)?;
+    let c = db.connect().map_err(error)?;
+    c.busy_timeout(Duration::from_millis(250)).map_err(error)?;
+    c.query_timeout(Duration::from_secs(5)).map_err(error)?;
+    if created {
+        initialize(&c).await?;
+    }
+    let expected = read(&c).await?;
+    Ok((db, c, expected))
+}
 impl Store {
     /// Inspect a snapshot without acquiring a writer or creating a file.
     pub fn read_file(path: &Path) -> Result<Option<String>, String> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_time()
-            .build()
-            .map_err(error)?;
-        runtime.block_on(async {
-            let db = turso::Builder::new_local(path.to_str().ok_or("Non-UTF8 preferences path")?)
-                .read_only(true)
-                .build()
-                .await
-                .map_err(error)?;
-            let c = db.connect().map_err(error)?;
-            c.query_timeout(Duration::from_secs(5)).map_err(error)?;
-            read(&c).await
-        })
+        let text = path.to_str().ok_or("Non-UTF8 preferences path")?;
+        runtime()?.block_on(read_only(text))
     }
     pub fn open(path: &Path) -> Result<Self, String> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_time()
-            .build()
-            .map_err(error)?;
-        let (database, connection, expected) = runtime.block_on(async {
-            let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
-            std::fs::create_dir_all(parent).map_err(error)?;
-            let text = path.to_str().ok_or("Non-UTF8 preferences paths are unsupported")?;
-            let created = match std::fs::OpenOptions::new().write(true).create_new(true).open(path) {
-                Ok(file) => {
-                    #[cfg(unix)] {
-                        use std::os::unix::fs::PermissionsExt;
-                        file.set_permissions(std::fs::Permissions::from_mode(0o600)).map_err(error)?;
-                    }
-                    true
-                },
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
-                Err(e) => return Err(error(e)),
-            };
-            // Reject unrelated/newer/corrupt stores before any writable open.
-            if !created {
-                if !std::fs::metadata(path).map_err(error)?.is_file() || std::fs::metadata(path).map_err(error)?.len() == 0 {
-                    return Err("Invalid preferences database; file preserved".into());
-                }
-                let db = turso::Builder::new_local(text).read_only(true).build().await.map_err(error)?;
-                let c = db.connect().map_err(error)?;
-                c.query_timeout(Duration::from_secs(5)).map_err(error)?;
-                read(&c).await?;
-            }
-            let db = turso::Builder::new_local(text).build().await.map_err(error)?;
-            let c = db.connect().map_err(error)?;
-            c.busy_timeout(Duration::from_millis(250)).map_err(error)?;
-            c.query_timeout(Duration::from_secs(5)).map_err(error)?;
-            if created {
-                c.execute("BEGIN IMMEDIATE", ()).await.map_err(error)?;
-                c.execute("CREATE TABLE app_preferences(id INTEGER PRIMARY KEY CHECK(id=1),format_version INTEGER NOT NULL,payload TEXT NOT NULL,previous TEXT)", ()).await.map_err(error)?;
-                c.execute(&format!("PRAGMA application_id={APPLICATION_ID}"), ()).await.map_err(error)?;
-                c.execute(&format!("PRAGMA user_version={VERSION}"), ()).await.map_err(error)?;
-                c.execute("COMMIT", ()).await.map_err(error)?;
-            }
-            let expected = read(&c).await?;
-            Ok::<_, String>((db, c, expected))
-        })?;
+        let runtime = runtime()?;
+        let (database, connection, expected) = runtime.block_on(open_writer(path))?;
         Ok(Self {
             connection,
             _database: database,
