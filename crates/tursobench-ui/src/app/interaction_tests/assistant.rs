@@ -35,8 +35,7 @@ fn runtime_dir(_: &tempfile::TempDir) {
     RUNTIME.get_or_init(|| {
         let runtime = tempfile::tempdir().unwrap();
         std::fs::set_permissions(runtime.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        // SAFETY: set once, before any tool endpoint (the only reader) starts.
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
+        tursobench_assistant::relay::set_runtime_root(runtime.path().into());
         runtime
     });
 }

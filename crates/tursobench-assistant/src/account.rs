@@ -19,10 +19,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SignIn {
     SignedIn,
     SignedOut,
+    #[default]
     Unknown,
     Missing,
 }
@@ -47,7 +48,7 @@ pub struct AuthMethod {
     pub id: String,
     pub name: String,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Status {
     pub state: SignIn,
     pub version: Option<String>,
@@ -59,20 +60,6 @@ pub struct Status {
     pub auth_methods: Vec<AuthMethod>,
     pub issue: Option<String>,
 }
-impl Default for Status {
-    fn default() -> Self {
-        Self {
-            state: SignIn::Unknown,
-            version: None,
-            method: None,
-            plan: None,
-            models: vec![],
-            efforts: vec![],
-            auth_methods: vec![],
-            issue: None,
-        }
-    }
-}
 #[derive(Clone)]
 pub struct Target {
     pub provider: Provider,
@@ -80,6 +67,18 @@ pub struct Target {
     pub args: Vec<String>,
     pub env: Vec<(String, String)>,
     pub cwd: PathBuf,
+}
+impl Target {
+    /// `program` in a process group of its own, so [`kill_group`] reaches
+    /// everything it starts, with this target's environment and directory.
+    fn command(&self, program: &std::path::Path) -> Command {
+        let mut command = Command::new(program);
+        command
+            .envs(self.env.iter().cloned())
+            .current_dir(&self.cwd)
+            .process_group(0);
+        command
+    }
 }
 #[derive(Clone)]
 pub enum Operation {
@@ -157,6 +156,33 @@ fn spawn(command: &mut Command) -> std::io::Result<Child> {
     }
 }
 
+/// Kill the process group `child` leads (it was started with `process_group(0)`)
+/// and reap it, so no helper it started keeps running.
+fn kill_group(child: &mut Child) {
+    // SAFETY: kill(2) takes plain integers and touches no memory of this
+    // process. The child is not reaped yet, so its pid still names its group.
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    let _ = child.wait();
+}
+
+/// The next line of agent output, bounded before it is allocated so a
+/// malformed or flooding peer cannot accumulate unbounded output; `None` at
+/// the end of output.
+fn next_line(reader: impl BufRead) -> Option<Result<String, String>> {
+    let mut bytes = Vec::new();
+    match reader
+        .take(LINE_LIMIT as u64 + 1)
+        .read_until(b'\n', &mut bytes)
+    {
+        Err(_) => Some(Err("Could not read agent output".into())),
+        Ok(0) => None,
+        Ok(_) if bytes.len() > LINE_LIMIT => Some(Err("The agent returned too much output".into())),
+        Ok(_) => Some(Ok(String::from_utf8_lossy(&bytes).into_owned())),
+    }
+}
+
 struct Process {
     child: Child,
     stdin: ChildStdin,
@@ -167,16 +193,9 @@ struct Process {
 }
 impl Process {
     fn spawn(target: &Target, args: &[String], duration: Duration) -> Result<Self, String> {
-        let mut command = Command::new(&target.program);
+        let mut command = target.command(&target.program);
         command
             .args(args)
-            .envs(target.env.iter().cloned())
-            .current_dir(&target.cwd);
-        Self::command(command, duration)
-    }
-    fn command(mut command: Command, duration: Duration) -> Result<Self, String> {
-        command
-            .process_group(0)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
@@ -188,49 +207,14 @@ impl Process {
             }
         })?;
         let stdin = child.stdin.take().expect("piped stdin");
-        let stdout = child.stdout.take().expect("piped stdout");
+        let mut stdout = BufReader::new(child.stdout.take().expect("piped stdout"));
         let (tx, lines) = mpsc::sync_channel(16);
         let reader = std::thread::Builder::new()
             .name("account-output".into())
             .spawn(move || {
-                let mut reader = BufReader::new(stdout);
-                loop {
-                    let mut bytes = Vec::new();
-                    // Bound each line before allocating it; malformed/flooding peers cannot
-                    // accumulate unbounded output in either the reader or event queue.
-                    loop {
-                        let chunk = match reader.fill_buf() {
-                            Ok(b) => b,
-                            Err(_) => {
-                                let _ = tx.send(Err("Could not read agent output".into()));
-                                return;
-                            }
-                        };
-                        if chunk.is_empty() {
-                            if !bytes.is_empty() {
-                                let _ = tx.send(Ok(String::from_utf8_lossy(&bytes).into_owned()));
-                            }
-                            return;
-                        }
-                        let n = chunk
-                            .iter()
-                            .position(|b| *b == b'\n')
-                            .map_or(chunk.len(), |i| i + 1);
-                        if bytes.len() + n > LINE_LIMIT {
-                            let _ = tx.send(Err("The agent returned too much output".into()));
-                            return;
-                        }
-                        let done = chunk[n - 1] == b'\n';
-                        bytes.extend_from_slice(&chunk[..n]);
-                        reader.consume(n);
-                        if done {
-                            break;
-                        }
-                    }
-                    if tx
-                        .send(Ok(String::from_utf8_lossy(&bytes).into_owned()))
-                        .is_err()
-                    {
+                while let Some(line) = next_line(&mut stdout) {
+                    let failed = line.is_err();
+                    if tx.send(line).is_err() || failed {
                         return;
                     }
                 }
@@ -249,23 +233,31 @@ impl Process {
             deadline: Instant::now() + duration,
         })
     }
+    /// Stop waiting once cancelled or past the deadline; `late` says what the
+    /// agent did not do in time.
+    fn waiting(&self, cancel: &AtomicBool, late: &str) -> Result<(), String> {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("Cancelled".into());
+        }
+        if Instant::now() >= self.deadline {
+            return Err(format!("The agent did not {late} before the timeout"));
+        }
+        Ok(())
+    }
+    /// Count a line against the output limit.
+    fn count(&mut self, line: Result<String, String>) -> Result<String, String> {
+        let line = line?;
+        self.bytes += line.len();
+        if self.bytes > OUTPUT_LIMIT {
+            return Err("The agent returned too much output".into());
+        }
+        Ok(line)
+    }
     fn line(&mut self, cancel: &AtomicBool) -> Result<String, String> {
         loop {
-            if cancel.load(Ordering::Relaxed) {
-                return Err("Cancelled".into());
-            }
-            if Instant::now() >= self.deadline {
-                return Err("The agent did not respond before the timeout".into());
-            }
+            self.waiting(cancel, "respond")?;
             match self.lines.recv_timeout(Duration::from_millis(50)) {
-                Ok(line) => {
-                    let line = line?;
-                    self.bytes += line.len();
-                    if self.bytes > OUTPUT_LIMIT {
-                        return Err("The agent returned too much output".into());
-                    }
-                    return Ok(line);
-                }
+                Ok(line) => return self.count(line),
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     return Err("The agent closed its output".into());
                 }
@@ -322,18 +314,10 @@ impl Process {
     }
     fn wait(&mut self, cancel: &AtomicBool) -> Result<bool, String> {
         loop {
-            for line in self.lines.try_iter() {
-                self.bytes += line?.len();
-                if self.bytes > OUTPUT_LIMIT {
-                    return Err("The agent returned too much output".into());
-                }
+            while let Ok(line) = self.lines.try_recv() {
+                self.count(line)?;
             }
-            if cancel.load(Ordering::Relaxed) {
-                return Err("Cancelled".into());
-            }
-            if Instant::now() >= self.deadline {
-                return Err("The agent did not finish before the timeout".into());
-            }
+            self.waiting(cancel, "finish")?;
             if let Some(status) = self
                 .child
                 .try_wait()
@@ -349,10 +333,7 @@ impl Drop for Process {
     fn drop(&mut self) {
         // Each helper owns a process group, including browser callback and relay
         // children. Cancelling or closing the app must not leave one running.
-        unsafe {
-            libc::kill(-(self.child.id() as i32), libc::SIGKILL);
-        }
-        let _ = self.child.wait();
+        kill_group(&mut self.child);
     }
 }
 fn field(value: &Json) -> Option<String> {
@@ -360,6 +341,10 @@ fn field(value: &Json) -> Option<String> {
         .as_str()
         .filter(|s| s.len() <= 200 && !s.chars().any(char::is_control))
         .map(str::to_owned)
+}
+/// A display name, or the id when the agent gives none.
+fn name_or(value: &Json, id: &str) -> String {
+    field(value).unwrap_or_else(|| id.to_owned())
 }
 fn auth_error(response: &Json) -> bool {
     let message = response["error"]["message"]
@@ -398,6 +383,25 @@ fn codex_status(value: &Json) -> Status {
         ..Default::default()
     }
 }
+/// One entry of Codex's `model/list`, unless it is hidden.
+fn codex_model(model: &Json) -> Option<Model> {
+    let id = field(&model["model"])
+        .or_else(|| field(&model["id"]))
+        .filter(|_| model["hidden"] != true)?;
+    Some(Model {
+        name: name_or(&model["displayName"], &id),
+        efforts: model["supportedReasoningEfforts"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|e| field(&e["reasoningEffort"]))
+            .take(20)
+            .collect(),
+        default_effort: field(&model["defaultReasoningEffort"]),
+        default: model["isDefault"] == true,
+        id,
+    })
+}
 /// Claude Code's documented aliases, offered before and after a status check.
 pub fn claude_models() -> Vec<Model> {
     crate::claude::MODEL_ALIASES
@@ -421,74 +425,63 @@ pub fn claude_efforts() -> Vec<Effort> {
         })
         .collect()
 }
+/// An ACP session's config option of `category`.
+pub(crate) fn config_option<'a>(result: &'a Json, category: &str) -> Option<&'a Json> {
+    result["configOptions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|o| o["category"] == category)
+}
+/// A config option's values as `(id, name)`, grouped ones flattened; at most `limit`.
+fn option_values(option: &Json, limit: usize) -> Vec<(String, String)> {
+    fn collect(values: &Json, limit: usize, found: &mut Vec<(String, String)>) {
+        for option in values.as_array().into_iter().flatten().take(limit) {
+            if found.len() >= limit {
+                return;
+            }
+            if option["options"].is_array() {
+                collect(&option["options"], limit, found);
+            } else if let Some(id) = field(&option["value"]) {
+                found.push((name_or(&option["name"], &id), id));
+            }
+        }
+    }
+    let mut found = vec![];
+    collect(&option["options"], limit, &mut found);
+    found.into_iter().map(|(name, id)| (id, name)).collect()
+}
 /// The levels of an ACP session's `thought_level` config option.
 pub fn acp_efforts(result: &Json) -> Vec<Effort> {
-    let mut efforts = vec![];
-    fn options(values: &Json, efforts: &mut Vec<Effort>) {
-        for option in values.as_array().into_iter().flatten().take(50) {
-            if option["options"].is_array() {
-                options(&option["options"], efforts);
-            } else if let Some(id) = field(&option["value"]) {
-                efforts.push(Effort {
-                    name: field(&option["name"]).unwrap_or_else(|| id.clone()),
-                    id,
-                });
-            }
-        }
-    }
-    if let Some(option) = result["configOptions"]
-        .as_array()
+    config_option(result, "thought_level")
+        .map_or_else(Vec::new, |option| option_values(option, 50))
         .into_iter()
-        .flatten()
-        .find(|o| o["category"] == "thought_level")
-    {
-        options(&option["options"], &mut efforts);
-    }
-    efforts.truncate(50);
-    efforts
+        .map(|(id, name)| Effort { id, name })
+        .collect()
 }
+/// The models of an ACP session's `model` config option, or else of its model list.
 pub fn acp_models(result: &Json) -> Vec<Model> {
-    let option = result["configOptions"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|o| o["category"] == "model");
-    let mut models = Vec::new();
-    fn options(values: &Json, models: &mut Vec<Model>) {
-        for option in values.as_array().into_iter().flatten().take(200) {
-            if option["options"].is_array() {
-                options(&option["options"], models);
-            } else if let Some(id) = field(&option["value"]) {
-                models.push(Model {
-                    name: field(&option["name"]).unwrap_or_else(|| id.clone()),
-                    id,
-                    ..Default::default()
-                });
-            }
-            if models.len() >= 200 {
-                break;
-            }
-        }
-    }
-    if let Some(option) = option {
-        options(&option["options"], &mut models);
-    } else {
-        for model in result["models"]["availableModels"]
+    let values = match config_option(result, "model") {
+        Some(option) => option_values(option, 200),
+        None => result["models"]["availableModels"]
             .as_array()
             .into_iter()
             .flatten()
             .take(200)
-        {
-            if let Some(id) = field(&model["modelId"]) {
-                models.push(Model {
-                    name: field(&model["name"]).unwrap_or_else(|| id.clone()),
-                    id,
-                    ..Default::default()
-                });
-            }
-        }
-    }
-    models
+            .filter_map(|model| {
+                let id = field(&model["modelId"])?;
+                Some((id.clone(), name_or(&model["name"], &id)))
+            })
+            .collect(),
+    };
+    values
+        .into_iter()
+        .map(|(id, name)| Model {
+            id,
+            name,
+            ..Default::default()
+        })
+        .collect()
 }
 fn protocol_args(target: &Target) -> Vec<String> {
     if target.provider.vendor().protocol != Protocol::CodexAppServer {
@@ -509,9 +502,14 @@ fn protocol_args(target: &Target) -> Vec<String> {
 }
 fn initialize(
     target: &Target,
-    duration: Duration,
+    operation: &Operation,
     cancel: &AtomicBool,
 ) -> Result<(Process, Json), String> {
+    // A browser sign-in waits for the user.
+    let duration = match operation {
+        Operation::Login { .. } => LOGIN,
+        _ => CHECK,
+    };
     let mut process = Process::spawn(target, &protocol_args(target), duration)?;
     let result = process.rpc(1, "initialize", json!({"clientInfo":{"name":"tursobench","version":env!("CARGO_PKG_VERSION")}, "protocolVersion":1, "clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false}}), cancel)?;
     if target.provider == Provider::Codex {
@@ -519,194 +517,224 @@ fn initialize(
     }
     Ok((process, result))
 }
+/// Carry out `operation` with the provider's own account commands, then report
+/// the resulting status.
 fn run(
     target: &Target,
     operation: &Operation,
     cancel: &AtomicBool,
     browser: impl Fn(String),
 ) -> Result<Status, String> {
-    let mut quiet_target = target.clone();
-    if target.provider == Provider::Claude {
-        quiet_target.env.extend(
-            crate::claude::QUIET_ENV
-                .iter()
-                .map(|(k, v)| ((*k).into(), (*v).into())),
-        );
-    }
-    let target = &quiet_target;
+    let target = &quiet(target);
     if !target.program.is_file() {
         return Ok(Status {
             state: SignIn::Missing,
             ..Default::default()
         });
     }
-    if target.provider == Provider::Claude {
-        match operation {
-            Operation::Login { .. } => {
-                let preferred = std::env::var("TERMINAL").ok();
-                let found = terminals(preferred.as_deref(), &crate::vendor::search_dirs());
-                claude_login(target, &found, cancel)?;
-            }
-            Operation::Logout => {
-                let mut p = Process::spawn(target, &["auth".into(), "logout".into()], CHECK)?;
-                if !p.wait(cancel)? {
-                    return Err("Claude Code could not sign out".into());
-                }
-            }
-            Operation::Check => {}
-        }
-        let mut status = claude_check(target, cancel)?;
-        status.models = claude_models();
-        status.version = version(target, cancel);
-        return Ok(status);
-    }
-    let duration = if matches!(operation, Operation::Login { .. }) {
-        LOGIN
-    } else {
-        CHECK
+    let mut status = match target.provider {
+        Provider::Claude => claude_run(target, operation, cancel)?,
+        Provider::Codex => codex_run(target, operation, cancel, browser)?,
+        _ => acp_run(target, operation, cancel)?,
     };
-    let (mut p, initialized) = initialize(target, duration, cancel)?;
-    if target.provider == Provider::Codex {
-        match operation {
-            Operation::Login { .. } => {
-                let result = p.rpc(2, "account/login/start", json!({"type":"chatgpt"}), cancel)?;
-                let url =
-                    field_url(&result["authUrl"]).ok_or("Codex returned no browser sign-in URL")?;
-                browser(url);
-                let login_id = result["loginId"].clone();
-                loop {
-                    let event = match p.notices.pop_front() {
-                        Some(event) => event,
-                        None => match p.message(cancel) {
-                            Ok(event) => event,
-                            Err(error) => {
-                                let _ =
-                                    p.send(3, "account/login/cancel", json!({"loginId":login_id}));
-                                return Err(error);
-                            }
-                        },
-                    };
-                    if event["method"] == "account/login/completed"
-                        && event["params"]["loginId"] == login_id
-                    {
-                        if event["params"]["success"] != true {
-                            return Err("Codex sign-in did not complete. Try again or use codex login in a terminal.".into());
-                        }
-                        break;
-                    }
-                }
-            }
-            Operation::Logout => {
-                p.rpc(2, "account/logout", json!({}), cancel)?;
-            }
-            Operation::Check => {}
-        }
-        let value = p.rpc(4, "account/read", json!({"refreshToken":false}), cancel)?;
-        let mut status = codex_status(&value);
-        let mut cursor = Json::Null;
-        for page in 0..10 {
-            match p.rpc(
-                10 + page,
-                "model/list",
-                json!({"limit":100,"cursor":cursor}),
-                cancel,
-            ) {
-                Ok(result) => {
-                    for model in result["data"].as_array().into_iter().flatten() {
-                        if let Some(id) = field(&model["model"]).or_else(|| field(&model["id"]))
-                            && model["hidden"] != true
-                            && !status.models.iter().any(|m| m.id == id)
-                        {
-                            let efforts = model["supportedReasoningEfforts"]
-                                .as_array()
-                                .into_iter()
-                                .flatten()
-                                .filter_map(|e| field(&e["reasoningEffort"]))
-                                .take(20)
-                                .collect();
-                            status.models.push(Model {
-                                name: field(&model["displayName"]).unwrap_or_else(|| id.clone()),
-                                id,
-                                efforts,
-                                default_effort: field(&model["defaultReasoningEffort"]),
-                                default: model["isDefault"] == true,
-                            });
-                        }
-                    }
-                    cursor = result["nextCursor"].clone();
-                    if cursor.is_null() {
-                        break;
-                    }
-                }
-                Err(error) => {
-                    status.issue = Some(error);
-                    break;
-                }
-            }
-        }
-        status.version = version(target, cancel);
-        return Ok(status);
+    status.version = version(target, cancel);
+    Ok(status)
+}
+/// The target, with Claude Code's non-essential traffic switched off.
+fn quiet(target: &Target) -> Target {
+    let mut target = target.clone();
+    if target.provider == Provider::Claude {
+        target.env.extend(
+            crate::claude::QUIET_ENV
+                .iter()
+                .map(|(k, v)| ((*k).into(), (*v).into())),
+        );
     }
-    let methods: Vec<_> = initialized["authMethods"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|m| {
-            let id = field(&m["id"])?;
-            // Terminal and secret-based methods cannot be served by our ACP client.
-            if id.contains("key") || id.contains("terminal") || id == "agent-platform" {
-                return None;
+    target
+}
+fn claude_run(
+    target: &Target,
+    operation: &Operation,
+    cancel: &AtomicBool,
+) -> Result<Status, String> {
+    match operation {
+        Operation::Login { .. } => {
+            let preferred = std::env::var("TERMINAL").ok();
+            let found = terminals(preferred.as_deref(), &crate::vendor::search_dirs());
+            claude_login(target, &found, cancel)?;
+        }
+        Operation::Logout => {
+            let mut p = Process::spawn(target, &["auth".into(), "logout".into()], CHECK)?;
+            if !p.wait(cancel)? {
+                return Err("Claude Code could not sign out".into());
             }
-            Some(AuthMethod {
-                name: field(&m["name"]).unwrap_or_else(|| id.clone()),
-                id,
-            })
-        })
-        .take(20)
-        .collect();
+        }
+        Operation::Check => {}
+    }
+    Ok(Status {
+        models: claude_models(),
+        ..claude_check(target, cancel)?
+    })
+}
+fn codex_run(
+    target: &Target,
+    operation: &Operation,
+    cancel: &AtomicBool,
+    browser: impl Fn(String),
+) -> Result<Status, String> {
+    let (mut p, _) = initialize(target, operation, cancel)?;
+    match operation {
+        Operation::Login { .. } => codex_login(&mut p, cancel, browser)?,
+        Operation::Logout => {
+            p.rpc(2, "account/logout", json!({}), cancel)?;
+        }
+        Operation::Check => {}
+    }
+    let value = p.rpc(4, "account/read", json!({"refreshToken":false}), cancel)?;
+    let mut status = codex_status(&value);
+    codex_models(&mut p, &mut status, cancel);
+    Ok(status)
+}
+/// Open ChatGPT sign-in in the browser and wait until Codex reports it done.
+fn codex_login(
+    p: &mut Process,
+    cancel: &AtomicBool,
+    browser: impl Fn(String),
+) -> Result<(), String> {
+    let result = p.rpc(2, "account/login/start", json!({"type":"chatgpt"}), cancel)?;
+    browser(field_url(&result["authUrl"]).ok_or("Codex returned no browser sign-in URL")?);
+    let login_id = &result["loginId"];
+    loop {
+        let event = match p.notices.pop_front().map_or_else(|| p.message(cancel), Ok) {
+            Ok(event) => event,
+            Err(error) => {
+                let _ = p.send(3, "account/login/cancel", json!({"loginId":login_id}));
+                return Err(error);
+            }
+        };
+        if event["method"] == "account/login/completed" && event["params"]["loginId"] == *login_id {
+            if event["params"]["success"] != true {
+                return Err(
+                    "Codex sign-in did not complete. Try again or use codex login in a terminal."
+                        .into(),
+                );
+            }
+            return Ok(());
+        }
+    }
+}
+/// Codex's visible models, page by page; a page that fails becomes the issue.
+fn codex_models(p: &mut Process, status: &mut Status, cancel: &AtomicBool) {
+    let mut cursor = Json::Null;
+    for page in 0..10 {
+        let params = json!({"limit":100,"cursor":cursor});
+        let result = match p.rpc(10 + page, "model/list", params, cancel) {
+            Ok(result) => result,
+            Err(error) => {
+                status.issue = Some(error);
+                return;
+            }
+        };
+        for model in result["data"].as_array().into_iter().flatten() {
+            if let Some(model) = codex_model(model)
+                && !status.models.iter().any(|m| m.id == model.id)
+            {
+                status.models.push(model);
+            }
+        }
+        cursor = result["nextCursor"].clone();
+        if cursor.is_null() {
+            return;
+        }
+    }
+}
+fn acp_run(target: &Target, operation: &Operation, cancel: &AtomicBool) -> Result<Status, String> {
+    let (mut p, initialized) = initialize(target, operation, cancel)?;
+    let methods = auth_methods(&initialized);
     match operation {
         Operation::Login { method } => {
-            let method = match method.as_deref() {
-                Some(id) => methods.iter().find(|m| m.id == id),
-                None => methods
-                    .iter()
-                    .find(|m| m.id == "oauth-personal")
-                    .or_else(|| methods.first()),
-            };
-            let Some(method) = method else {
-                return Err("This agent requires sign-in through its terminal command".into());
-            };
+            let method = login_method(&methods, method.as_deref())
+                .ok_or("This agent requires sign-in through its terminal command")?;
             p.rpc(2, "authenticate", json!({"methodId":method.id}), cancel)?;
         }
         Operation::Logout => return Err("Use this agent's own terminal command to sign out".into()),
         Operation::Check => {}
     }
-    p.send(3, "session/new", json!({"cwd":target.cwd,"mcpServers":[]}))?;
-    let result = p.response(3, cancel)?;
-    let mut status = Status {
+    let closes = initialized["agentCapabilities"]["sessionCapabilities"]["close"].is_object();
+    Ok(Status {
         auth_methods: methods,
+        ..acp_session(&mut p, &target.cwd, closes, cancel)?
+    })
+}
+/// Sign-in methods an ACP client can start; terminal and secret-based ones
+/// need the agent's own command.
+fn auth_methods(initialized: &Json) -> Vec<AuthMethod> {
+    initialized["authMethods"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| {
+            let id = field(&m["id"]).filter(|id| {
+                !(id.contains("key") || id.contains("terminal") || id == "agent-platform")
+            })?;
+            Some(AuthMethod {
+                name: name_or(&m["name"], &id),
+                id,
+            })
+        })
+        .take(20)
+        .collect()
+}
+/// The chosen method, or else the personal OAuth one, or else the first.
+fn login_method<'a>(methods: &'a [AuthMethod], chosen: Option<&str>) -> Option<&'a AuthMethod> {
+    match chosen {
+        Some(id) => methods.iter().find(|m| m.id == id),
+        None => methods
+            .iter()
+            .find(|m| m.id == "oauth-personal")
+            .or_else(|| methods.first()),
+    }
+}
+/// Whether an empty session starts, with the models and levels it offers. The
+/// session is closed again when the agent `closes` sessions.
+fn acp_session(
+    p: &mut Process,
+    cwd: &std::path::Path,
+    closes: bool,
+    cancel: &AtomicBool,
+) -> Result<Status, String> {
+    let issue = |issue: &str| Status {
+        issue: Some(issue.into()),
         ..Default::default()
     };
-    if result.get("error").is_some() {
-        if auth_error(&result) {
-            status.state = SignIn::SignedOut;
+    p.send(3, "session/new", json!({"cwd":cwd,"mcpServers":[]}))?;
+    let response = p.response(3, cancel)?;
+    if response.get("error").is_some() {
+        return Ok(if auth_error(&response) {
+            Status {
+                state: SignIn::SignedOut,
+                ..Default::default()
+            }
         } else {
-            status.issue = Some("The agent could not create a status session".into());
-        }
-    } else if let Some(session) = result["result"]["sessionId"].as_str() {
-        status.state = SignIn::SignedIn;
-        status.models = acp_models(&result["result"]);
-        status.efforts = acp_efforts(&result["result"]);
-        if initialized["agentCapabilities"]["sessionCapabilities"]["close"].is_object()
-            && p.rpc(4, "session/close", json!({"sessionId":session}), cancel)
-                .is_err()
-        {
-            status.issue = Some("The empty status session could not be closed".into());
-        }
-    } else {
-        status.issue = Some("The agent returned no status session".into());
+            issue("The agent could not create a status session")
+        });
     }
-    status.version = version(target, cancel);
+    let result = &response["result"];
+    let Some(session) = result["sessionId"].as_str() else {
+        return Ok(issue("The agent returned no status session"));
+    };
+    let mut status = Status {
+        state: SignIn::SignedIn,
+        models: acp_models(result),
+        efforts: acp_efforts(result),
+        ..Default::default()
+    };
+    if closes
+        && p.rpc(4, "session/close", json!({"sessionId":session}), cancel)
+            .is_err()
+    {
+        status.issue = Some("The empty status session could not be closed".into());
+    }
     Ok(status)
 }
 fn field_url(value: &Json) -> Option<String> {
@@ -780,51 +808,47 @@ fn terminal_login(
     cancel: &AtomicBool,
 ) -> Result<bool, String> {
     for (terminal, prefix) in terminals {
-        let started = Instant::now();
         // The window belongs to the user: no pipes, and it is not killed when
         // the terminal process hands it to another instance and exits.
-        let mut command = Command::new(terminal);
+        let mut command = target.command(terminal);
         command
             .args(prefix)
             .arg(&target.program)
             .args(target.provider.vendor().login)
-            .envs(target.env.iter().cloned())
-            .current_dir(&target.cwd)
-            .process_group(0)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        let Ok(mut child) = spawn(&mut command) else {
-            continue;
-        };
-        let stop = |child: &mut Child| {
-            unsafe {
-                libc::kill(-(child.id() as i32), libc::SIGKILL);
-            }
-            let _ = child.wait();
-        };
-        loop {
-            if cancel.load(Ordering::Relaxed) {
-                stop(&mut child);
-                return Err("Cancelled".into());
-            }
-            if started.elapsed() >= LOGIN {
-                stop(&mut child);
-                return Err("Terminal sign-in did not finish before the timeout".into());
-            }
-            match child.try_wait() {
-                Ok(Some(status)) if status.success() => return Ok(started.elapsed() < HANDOFF),
-                Ok(Some(_)) => {
-                    return Err(
-                        "Terminal sign-in did not complete; use the copyable command".into(),
-                    );
-                }
-                Ok(None) => std::thread::sleep(Duration::from_millis(50)),
-                Err(_) => return Err("Could not wait for the terminal".into()),
-            }
+        if let Ok(mut child) = spawn(&mut command) {
+            return await_terminal(&mut child, cancel);
         }
     }
     Err("No supported terminal was found. Set $TERMINAL, or copy the sign-in command and run it in your terminal, then Scan again.".into())
+}
+
+/// Wait for a sign-in terminal; `Ok(true)` when it handed the window off. Its
+/// group is killed if the sign-in is cancelled or takes too long.
+fn await_terminal(child: &mut Child, cancel: &AtomicBool) -> Result<bool, String> {
+    let started = Instant::now();
+    loop {
+        let stop = if cancel.load(Ordering::Relaxed) {
+            Some("Cancelled")
+        } else {
+            (started.elapsed() >= LOGIN)
+                .then_some("Terminal sign-in did not finish before the timeout")
+        };
+        if let Some(reason) = stop {
+            kill_group(child);
+            return Err(reason.into());
+        }
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(started.elapsed() < HANDOFF),
+            Ok(Some(_)) => {
+                return Err("Terminal sign-in did not complete; use the copyable command".into());
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(_) => return Err("Could not wait for the terminal".into()),
+        }
+    }
 }
 
 /// Claude Code signs in only in a terminal; wait for it to report signed in.
@@ -870,13 +894,36 @@ fn claude_check(target: &Target, cancel: &AtomicBool) -> Result<Status, String> 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::os::unix::fs::PermissionsExt;
-    pub(super) fn scripted(provider: Provider, body: &str) -> (tempfile::TempDir, Target) {
+    use super::{
+        CHECK, Effort, Event, Job, Operation, Process, Provider, SignIn, Status, Target,
+        auth_error, claude_login, codex_status, run, terminals,
+    };
+    use serde_json::json;
+    use std::{
+        os::unix::fs::PermissionsExt,
+        path::{Path, PathBuf},
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::{Duration, Instant},
+    };
+
+    fn executable(path: &Path, body: &str) {
+        std::fs::write(path, body).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    /// A Python stand-in for the agent; `send` writes one JSON line.
+    fn scripted(provider: Provider, body: &str) -> (tempfile::TempDir, Target) {
         let dir = tempfile::tempdir().unwrap();
         let program = dir.path().join("agent");
-        std::fs::write(&program, format!("#!/usr/bin/env python3\nimport sys,json\nif '--version' in sys.argv:\n print('test-agent 1.0');sys.exit(0)\n{body}")).unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        executable(
+            &program,
+            &format!(
+                "#!/usr/bin/env python3\nimport sys,json\nif '--version' in sys.argv:\n print('test-agent 1.0');sys.exit(0)\n\
+                 def send(v): print(json.dumps(v),flush=True)\n{body}"
+            ),
+        );
         let target = Target {
             provider,
             program,
@@ -886,31 +933,38 @@ mod tests {
         };
         (dir, target)
     }
+    fn operate(target: &Target, operation: Operation) -> Result<Status, String> {
+        run(target, &operation, &AtomicBool::new(false), |_| panic!())
+    }
+    fn check(target: &Target) -> Status {
+        operate(target, Operation::Check).unwrap()
+    }
+    fn private(status: &Status) -> bool {
+        let text = format!("{status:?}");
+        text.contains("private@example.com") || text.contains("SECRET")
+    }
+
     #[test]
-    fn claude_status_discards_email_and_secrets_and_handles_pretty_json() {
-        let (_dir, target) = scripted(
+    fn claude_status_discards_secrets_handles_pretty_json_and_may_finish_writing() {
+        let (dir, target) = scripted(
             Provider::Claude,
-            "print(json.dumps({'loggedIn':True,'authMethod':'claude.ai','subscriptionType':'pro','email':'private@example.com','accessToken':'SECRET','nested':{'ignored':True}},indent=2))",
+            "import time,pathlib\n\
+             print(json.dumps({'loggedIn':True,'authMethod':'claude.ai','subscriptionType':'pro','email':'private@example.com','accessToken':'SECRET','nested':{'ignored':True}},indent=2),flush=True)\n\
+             time.sleep(0.3)\npathlib.Path('finished').write_text('1')",
         );
-        let status = run(
-            &target,
-            &Operation::Check,
-            &AtomicBool::new(false),
-            |_| panic!(),
-        )
-        .unwrap();
+        let status = check(&target);
         assert_eq!(status.state, SignIn::SignedIn);
         assert_eq!(status.method.as_deref(), Some("claude.ai"));
         assert_eq!(status.version.as_deref(), Some("test-agent 1.0"));
-        assert!(!format!("{status:?}").contains("private@example.com"));
-        assert!(!format!("{status:?}").contains("SECRET"));
+        assert!(!private(&status));
+        // Claude Code may still be saving a refreshed token after it answers.
+        assert!(dir.path().join("finished").exists());
     }
-    #[test]
-    fn codex_status_rejects_token_requests_and_paginates_models_without_starting_threads() {
-        let (_dir, target) = scripted(
-            Provider::Codex,
-            r#"
-def send(v): print(json.dumps(v),flush=True)
+
+    /// A Codex app server that asks for tokens, signs in through the browser,
+    /// signs out and lists its models over two pages.
+    const CODEX: &str = r#"
+logged_out=False
 for line in sys.stdin:
  m=json.loads(line);method=m.get('method');i=m.get('id')
  if method=='initialize':
@@ -918,22 +972,25 @@ for line in sys.stdin:
   reply=json.loads(sys.stdin.readline());assert reply['error']['code']==-32601
   send({'id':i,'result':{}})
  elif method=='initialized': pass
+ elif method=='account/login/start':
+  assert m['params']=={'type':'chatgpt'}
+  send({'id':i,'result':{'loginId':'login-1','type':'chatgpt','authUrl':'https://auth.openai.com/test-login'}})
+  send({'method':'account/login/completed','params':{'loginId':'unrelated','success':False}})
+  send({'method':'account/login/completed','params':{'loginId':'login-1','success':True}})
+ elif method=='account/logout': logged_out=True;send({'id':i,'result':{}})
  elif method=='account/read':
   assert m['params']=={'refreshToken':False}
-  send({'id':i,'result':{'account':{'type':'chatgpt','planType':'pro','email':'private@example.com','token':'SECRET'}}})
+  send({'id':i,'result':{'account':None,'requiresOpenaiAuth':True} if logged_out else {'account':{'type':'chatgpt','planType':'pro','email':'private@example.com','token':'SECRET'}}})
  elif method=='model/list':
   cursor=m['params']['cursor'];model='first' if cursor is None else 'second'
   send({'id':i,'result':{'data':[{'id':model,'model':model,'displayName':model,'isDefault':model=='second','defaultReasoningEffort':'low','supportedReasoningEfforts':[{'reasoningEffort':'low','description':'Fast'},{'reasoningEffort':'high','description':'Deep'}]}], 'nextCursor':'next' if cursor is None else None}})
  else: raise Exception('unexpected method '+str(method))
-"#,
-        );
-        let status = run(
-            &target,
-            &Operation::Check,
-            &AtomicBool::new(false),
-            |_| panic!(),
-        )
-        .unwrap();
+"#;
+
+    #[test]
+    fn codex_refuses_tokens_paginates_models_and_rechecks_after_login_and_logout() {
+        let (_dir, target) = scripted(Provider::Codex, CODEX);
+        let status = check(&target);
         assert_eq!(status.state, SignIn::SignedIn);
         assert_eq!(
             status
@@ -948,20 +1005,68 @@ for line in sys.stdin:
         assert!(second.default && !status.models[0].default);
         assert_eq!(second.efforts, ["low", "high"]);
         assert_eq!(second.default_effort.as_deref(), Some("low"));
-        assert!(!format!("{status:?}").contains("SECRET"));
-        assert!(!format!("{status:?}").contains("private@example.com"));
+        assert!(!private(&status));
+
+        let browser = std::cell::RefCell::new(Vec::new());
+        let status = run(
+            &target,
+            &Operation::Login { method: None },
+            &AtomicBool::new(false),
+            |url| browser.borrow_mut().push(url),
+        )
+        .unwrap();
+        assert_eq!(status.state, SignIn::SignedIn);
+        assert_eq!(*browser.borrow(), ["https://auth.openai.com/test-login"]);
+
+        let status = operate(&target, Operation::Logout).unwrap();
+        assert_eq!(status.state, SignIn::SignedOut);
     }
+
     #[test]
-    fn acp_probe_sends_no_database_or_tools_and_closes_the_empty_session() {
+    fn a_cancelled_codex_login_stops_without_waiting_for_the_browser() {
         let (_dir, target) = scripted(
+            Provider::Codex,
+            r#"
+for line in sys.stdin:
+ m=json.loads(line)
+ if m.get('method')=='initialize': send({'id':m['id'],'result':{}})
+ elif m.get('method')=='account/login/start': send({'id':m['id'],'result':{'loginId':'l','authUrl':'https://auth.openai.com/test-login'}})
+ elif m.get('method')=='account/login/cancel': sys.exit(0)
+"#,
+        );
+        let cancel = AtomicBool::new(false);
+        let result = run(&target, &Operation::Login { method: None }, &cancel, |_| {
+            cancel.store(true, Ordering::Relaxed)
+        });
+        assert_eq!(result.unwrap_err(), "Cancelled");
+
+        // A cancelled job reports that, not a failure.
+        let job = Job::start(target, Operation::Login { method: None }, Arc::new(|| {}));
+        let wait = Duration::from_secs(5);
+        assert!(matches!(
+            job.events.recv_timeout(wait),
+            Ok(Event::Browser(_))
+        ));
+        job.cancel();
+        assert!(matches!(
+            job.events.recv_timeout(wait),
+            Ok(Event::Cancelled)
+        ));
+    }
+
+    #[test]
+    fn acp_probes_without_database_or_tools_and_signs_in_only_with_an_advertised_method() {
+        let (dir, target) = scripted(
             Provider::Antigravity,
             r#"
-def send(v): print(json.dumps(v),flush=True)
 for line in sys.stdin:
  m=json.loads(line);method=m['method'];i=m['id']
  if method=='initialize':
   assert not m['params']['clientCapabilities']['terminal']
-  send({'id':i,'result':{'agentCapabilities':{'sessionCapabilities':{'close':{}}},'authMethods':[{'id':'oauth-personal','name':'Google'},{'id':'gemini-api-key','name':'Key'}]}})
+  send({'id':i,'result':{'agentCapabilities':{'sessionCapabilities':{'close':{}}},'authMethods':[{'id':'oauth-personal','name':'Google'},{'id':'gemini-api-key','name':'Key'},{'id':'oauth-business','name':'Enterprise'}]}})
+ elif method=='authenticate':
+  assert m['params']=={'methodId':'oauth-business'};open('authenticated','w').close()
+  send({'id':i,'result':{}})
  elif method=='session/new':
   assert m['params']['mcpServers']==[]
   send({'id':i,'result':{'sessionId':'empty','configOptions':[{'category':'model','options':[{'value':'m','name':'Model'}]},{'category':'thought_level','options':[{'value':'deep','name':'Deep'}]}]}})
@@ -971,15 +1076,10 @@ for line in sys.stdin:
  else: raise Exception('unexpected method '+method)
 "#,
         );
-        let status = run(
-            &target,
-            &Operation::Check,
-            &AtomicBool::new(false),
-            |_| panic!(),
-        )
-        .unwrap();
+        let status = check(&target);
         assert_eq!(status.state, SignIn::SignedIn);
-        assert_eq!(status.auth_methods.len(), 1);
+        let methods: Vec<_> = status.auth_methods.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(methods, ["oauth-personal", "oauth-business"]);
         assert_eq!(status.models[0].id, "m");
         assert_eq!(
             status.efforts,
@@ -989,7 +1089,21 @@ for line in sys.stdin:
             }]
         );
         assert_eq!(status.issue, None);
+        assert!(!dir.path().join("authenticated").exists());
+
+        let login = |method: &str| {
+            operate(
+                &target,
+                Operation::Login {
+                    method: Some(method.into()),
+                },
+            )
+        };
+        assert_eq!(login("oauth-business").unwrap().state, SignIn::SignedIn);
+        assert!(dir.path().join("authenticated").exists());
+        assert!(login("not-advertised").is_err());
     }
+
     #[test]
     fn authentication_errors_are_distinct_from_unrelated_rpc_errors() {
         assert!(auth_error(
@@ -1006,6 +1120,7 @@ for line in sys.stdin:
             SignIn::Unknown
         );
     }
+
     #[test]
     fn timeouts_and_cancellation_reap_the_process() {
         let (_dir, target) = scripted(Provider::Custom, "import time\ntime.sleep(30)");
@@ -1014,132 +1129,12 @@ for line in sys.stdin:
         let pid = p.child.id();
         assert!(p.line(&stop).unwrap_err().contains("timeout"));
         drop(p);
-        assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
+        assert!(!Path::new(&format!("/proc/{pid}")).exists());
         let mut p = Process::spawn(&target, &[], CHECK).unwrap();
         stop.store(true, Ordering::Relaxed);
         assert_eq!(p.line(&stop).unwrap_err(), "Cancelled");
     }
-}
 
-#[cfg(test)]
-mod login_tests {
-    use super::tests::scripted;
-    use super::*;
-    #[test]
-    fn codex_browser_login_completes_then_rechecks_status() {
-        let (_dir, target) = scripted(
-            Provider::Codex,
-            r#"
-def send(v): print(json.dumps(v),flush=True)
-for line in sys.stdin:
- m=json.loads(line);method=m.get('method');i=m.get('id')
- if method=='initialize': send({'id':i,'result':{}})
- elif method=='initialized': pass
- elif method=='account/login/start':
-  assert m['params']=={'type':'chatgpt'}
-  send({'id':i,'result':{'loginId':'login-1','type':'chatgpt','authUrl':'https://auth.openai.com/test-login'}})
-  send({'method':'account/login/completed','params':{'loginId':'unrelated','success':False}})
-  send({'method':'account/login/completed','params':{'loginId':'login-1','success':True}})
- elif method=='account/read':
-  assert m['params']['refreshToken']==False
-  send({'id':i,'result':{'account':{'type':'chatgpt','planType':'plus'}}})
- elif method=='model/list': send({'id':i,'result':{'data':[],'nextCursor':None}})
- else: raise Exception('unexpected '+str(method))
-"#,
-        );
-        let browser = std::cell::RefCell::new(Vec::new());
-        let status = run(
-            &target,
-            &Operation::Login { method: None },
-            &AtomicBool::new(false),
-            |url| browser.borrow_mut().push(url),
-        )
-        .unwrap();
-        assert_eq!(status.state, SignIn::SignedIn);
-        assert_eq!(*browser.borrow(), ["https://auth.openai.com/test-login"]);
-    }
-    #[test]
-    fn codex_login_can_be_cancelled_without_waiting_for_the_browser() {
-        let (_dir, target) = scripted(
-            Provider::Codex,
-            r#"
-for line in sys.stdin:
- m=json.loads(line)
- if m.get('method')=='initialize': print(json.dumps({'id':m['id'],'result':{}}),flush=True)
- elif m.get('method')=='account/login/start': print(json.dumps({'id':m['id'],'result':{'loginId':'l','authUrl':'https://auth.openai.com/test-login'}}),flush=True)
- elif m.get('method')=='account/login/cancel': sys.exit(0)
-"#,
-        );
-        let cancel = AtomicBool::new(false);
-        let result = run(&target, &Operation::Login { method: None }, &cancel, |_| {
-            cancel.store(true, Ordering::Relaxed)
-        });
-        assert_eq!(result.unwrap_err(), "Cancelled");
-    }
-    #[test]
-    fn acp_login_uses_only_the_selected_advertised_method() {
-        let (_dir, target) = scripted(
-            Provider::Antigravity,
-            r#"
-authed=False
-for line in sys.stdin:
- m=json.loads(line);method=m['method'];i=m['id'];result={}
- if method=='initialize': result={'authMethods':[{'id':'oauth-personal','name':'Personal'},{'id':'oauth-business','name':'Enterprise'}]}
- elif method=='authenticate':
-  assert m['params']=={'methodId':'oauth-business'};authed=True
- elif method=='session/new':
-  assert authed;assert m['params']['mcpServers']==[];result={'sessionId':'new'}
- else: raise Exception('unexpected '+method)
- print(json.dumps({'id':i,'result':result}),flush=True)
-"#,
-        );
-        let status = run(
-            &target,
-            &Operation::Login {
-                method: Some("oauth-business".into()),
-            },
-            &AtomicBool::new(false),
-            |_| panic!(),
-        )
-        .unwrap();
-        assert_eq!(status.state, SignIn::SignedIn);
-        assert!(
-            run(
-                &target,
-                &Operation::Login {
-                    method: Some("not-advertised".into())
-                },
-                &AtomicBool::new(false),
-                |_| panic!()
-            )
-            .is_err()
-        );
-    }
-    fn executable(path: &std::path::Path, body: &str) {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::write(path, body).unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    /// A Claude Code stand-in whose status follows a marker that login writes.
-    fn terminal_claude() -> (tempfile::TempDir, Target) {
-        let dir = tempfile::tempdir().unwrap();
-        let program = dir.path().join("claude");
-        executable(
-            &program,
-            "#!/usr/bin/env bash\nmarker=\"$(dirname \"$0\")/signed-in\"\ncase \"$1 $2\" in\n\
-             'auth login') touch \"$marker\";;\n\
-             'auth status') if [[ -e $marker ]]; then echo '{\"loggedIn\":true}'; else echo '{\"loggedIn\":false}'; fi;;\n\
-             esac\n",
-        );
-        let target = Target {
-            provider: Provider::Claude,
-            program,
-            args: vec![],
-            env: vec![],
-            cwd: dir.path().into(),
-        };
-        (dir, target)
-    }
     #[test]
     fn terminal_preference_comes_first_and_keeps_known_arguments() {
         let dir = tempfile::tempdir().unwrap();
@@ -1167,122 +1162,62 @@ for line in sys.stdin:
         assert_eq!(preferred.len(), 2);
         assert_eq!(names(terminals(Some("missing"), &dirs)).len(), 2);
     }
+
+    /// Sign in to a Claude Code stand-in, whose status follows a marker that
+    /// login writes, through a terminal running `terminal`; whether it did.
+    fn terminal_sign_in(terminal: &str) -> (Result<(), String>, bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("claude");
+        executable(
+            &program,
+            "#!/usr/bin/env bash\nmarker=\"$(dirname \"$0\")/signed-in\"\ncase \"$1 $2\" in\n\
+             'auth login') touch \"$marker\";;\n\
+             'auth status') if [[ -e $marker ]]; then echo '{\"loggedIn\":true}'; else echo '{\"loggedIn\":false}'; fi;;\n\
+             esac\n",
+        );
+        let target = Target {
+            provider: Provider::Claude,
+            program,
+            args: vec![],
+            env: vec![],
+            cwd: dir.path().into(),
+        };
+        let script = dir.path().join("term");
+        executable(&script, terminal);
+        let result = claude_login(
+            &target,
+            &[(script, vec!["-e".into()])],
+            &AtomicBool::new(false),
+        );
+        (result, dir.path().join("signed-in").exists())
+    }
+
     #[test]
     fn a_waiting_terminal_runs_the_sign_in_command() {
-        let (dir, target) = terminal_claude();
-        let terminal = dir.path().join("term");
-        executable(&terminal, "#!/usr/bin/env bash\nshift\nexec \"$@\"\n");
-        claude_login(
-            &target,
-            &[(terminal, vec!["-e".into()])],
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-        assert!(dir.path().join("signed-in").exists());
+        let signed_in = terminal_sign_in("#!/usr/bin/env bash\nshift\nexec \"$@\"\n");
+        assert_eq!(signed_in, (Ok(()), true));
     }
+
     #[test]
     fn a_terminal_that_hands_off_is_polled_and_its_window_survives() {
-        let (dir, target) = terminal_claude();
-        let terminal = dir.path().join("term");
+        let started = Instant::now();
         // Exit at once and finish the sign-in later, as a single-instance terminal does.
-        executable(
-            &terminal,
+        let signed_in = terminal_sign_in(
             "#!/usr/bin/env bash\nshift\n( sleep 0.5; \"$@\" ) >/dev/null 2>&1 &\nexit 0\n",
         );
-        let started = Instant::now();
-        claude_login(
-            &target,
-            &[(terminal, vec!["-e".into()])],
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-        assert!(dir.path().join("signed-in").exists());
+        assert_eq!(signed_in, (Ok(()), true));
         assert!(started.elapsed() >= Duration::from_millis(500));
     }
+
     #[test]
     fn a_failed_terminal_is_reported_and_none_found_explains_terminal() {
-        let (dir, target) = terminal_claude();
-        let terminal = dir.path().join("term");
-        executable(&terminal, "#!/bin/sh\nexit 1\n");
-        let cancel = AtomicBool::new(false);
+        let (result, _) = terminal_sign_in("#!/bin/sh\nexit 1\n");
+        assert!(result.unwrap_err().contains("did not complete"));
+        let (_dir, target) = scripted(Provider::Claude, "");
         assert!(
-            claude_login(&target, &[(terminal, vec![])], &cancel)
-                .unwrap_err()
-                .contains("did not complete")
-        );
-        assert!(
-            claude_login(&target, &[], &cancel)
+            claude_login(&target, &[], &AtomicBool::new(false))
                 .unwrap_err()
                 .contains("$TERMINAL")
-        );
-    }
-    #[test]
-    fn claude_status_may_finish_writing_after_it_answers() {
-        let (dir, target) = scripted(
-            Provider::Claude,
-            "import time,pathlib\nprint(json.dumps({'loggedIn':True}),flush=True)\n\
-             time.sleep(0.3)\npathlib.Path('finished').write_text('1')",
-        );
-        let status = run(
-            &target,
-            &Operation::Check,
-            &AtomicBool::new(false),
-            |_| panic!(),
-        )
-        .unwrap();
-        assert_eq!(status.state, SignIn::SignedIn);
-        assert!(dir.path().join("finished").exists());
-    }
-    #[test]
-    fn a_cancelled_job_reports_cancelled_not_a_failure() {
-        let (_dir, target) = scripted(
-            Provider::Codex,
-            r#"
-for line in sys.stdin:
- m=json.loads(line)
- if m.get('method')=='initialize': print(json.dumps({'id':m['id'],'result':{}}),flush=True)
- elif m.get('method')=='account/login/start': print(json.dumps({'id':m['id'],'result':{'loginId':'l','authUrl':'https://auth.openai.com/test-login'}}),flush=True)
-"#,
-        );
-        let job = Job::start(target, Operation::Login { method: None }, Arc::new(|| {}));
-        let wait = Duration::from_secs(5);
-        assert!(matches!(
-            job.events.recv_timeout(wait),
-            Ok(Event::Browser(_))
-        ));
-        job.cancel();
-        assert!(matches!(
-            job.events.recv_timeout(wait),
-            Ok(Event::Cancelled)
-        ));
-    }
-    #[test]
-    fn codex_logout_rechecks_the_signed_out_state() {
-        let (_dir, target) = scripted(
-            Provider::Codex,
-            r#"
-logged_out=False
-for line in sys.stdin:
- m=json.loads(line);method=m.get('method');i=m.get('id');result={}
- if method=='initialized': continue
- elif method=='account/logout': logged_out=True
- elif method=='account/read':
-  assert logged_out;result={'account':None,'requiresOpenaiAuth':True}
- elif method=='model/list': result={'data':[],'nextCursor':None}
- elif method!='initialize': raise Exception('unexpected '+str(method))
- print(json.dumps({'id':i,'result':result}),flush=True)
-"#,
-        );
-        assert_eq!(
-            run(
-                &target,
-                &Operation::Logout,
-                &AtomicBool::new(false),
-                |_| panic!()
-            )
-            .unwrap()
-            .state,
-            SignIn::SignedOut
         );
     }
 }

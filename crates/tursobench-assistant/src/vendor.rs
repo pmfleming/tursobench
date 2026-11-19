@@ -184,39 +184,31 @@ pub fn forget_locations() {
 /// Split a user-entered command, supporting quoted paths without executing it.
 pub fn command_words(command: &str) -> Result<Vec<String>, String> {
     let mut words = Vec::new();
-    let mut word = String::new();
+    // The word being read, once it has begun (an empty quoted word counts).
+    let mut word: Option<String> = None;
     let mut quote = None;
     let mut escape = false;
-    let mut started = false;
     for ch in command.chars() {
-        if escape {
-            word.push(ch);
-            escape = false;
-            started = true;
-        } else if ch == '\\' && quote != Some('\'') {
-            escape = true;
-            started = true;
-        } else if quote == Some(ch) {
-            quote = None;
-        } else if quote.is_none() && (ch == '\'' || ch == '"') {
-            quote = Some(ch);
-            started = true;
-        } else if quote.is_none() && ch.is_whitespace() {
-            if started {
-                words.push(std::mem::take(&mut word));
-                started = false;
+        let escaped = std::mem::take(&mut escape);
+        match ch {
+            _ if escaped => word.get_or_insert_default().push(ch),
+            '\\' if quote != Some('\'') => {
+                escape = true;
+                word.get_or_insert_default();
             }
-        } else {
-            word.push(ch);
-            started = true;
+            _ if quote == Some(ch) => quote = None,
+            '\'' | '"' if quote.is_none() => {
+                quote = Some(ch);
+                word.get_or_insert_default();
+            }
+            _ if quote.is_none() && ch.is_whitespace() => words.extend(word.take()),
+            _ => word.get_or_insert_default().push(ch),
         }
     }
     if quote.is_some() || escape {
         return Err("Finish the quoted agent command".into());
     }
-    if started {
-        words.push(word);
-    }
+    words.extend(word);
     if words.first().is_none_or(String::is_empty) {
         return Err(
             "Enter the agent's command in Settings → Assistant, for example `opencode acp`.".into(),
@@ -227,7 +219,7 @@ pub fn command_words(command: &str) -> Result<Vec<String>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Path, PermissionsExt, command_words, forget_locations, locate, resolve};
     #[test]
     fn discovery_checks_executability_and_preserves_launcher_paths() {
         let dir = tempfile::tempdir().unwrap();
@@ -264,5 +256,11 @@ mod tests {
             "$(touch"
         );
         assert!(command_words("'unfinished").is_err());
+        // Escapes, empty quoted words and literal backslashes in single quotes.
+        assert_eq!(
+            command_words(r#"my\ agent "" 'a\b'"#).unwrap(),
+            ["my agent", "", "a\\b"]
+        );
+        assert!(command_words("  ").is_err());
     }
 }
