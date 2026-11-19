@@ -56,6 +56,14 @@ impl<'a> Graph<'a> {
             limited: data.limited,
         }
     }
+    /// Each table's position, by its name in lower case.
+    fn positions(&self) -> BTreeMap<String, usize> {
+        self.tables
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (t.name.to_ascii_lowercase(), i))
+            .collect()
+    }
     /// Counts, and warnings that the map is partial or may be stale.
     fn notices(&self, ui: &mut egui::Ui, stale: bool) {
         let relationships: usize = self
@@ -266,12 +274,7 @@ fn cards(graph: &Graph<'_>, all: bool, pack_width: f32) -> Vec<(egui::Rect, Vec<
 /// of it. Self references are left out.
 fn neighbours(graph: &Graph<'_>) -> (Vec<BTreeSet<usize>>, Vec<usize>, Vec<usize>) {
     let count = graph.tables.len();
-    let names: BTreeMap<_, _> = graph
-        .tables
-        .iter()
-        .enumerate()
-        .map(|(i, t)| (t.name.to_ascii_lowercase(), i))
-        .collect();
+    let names = graph.positions();
     let mut edges = vec![BTreeSet::new(); count];
     let mut incoming = vec![0usize; count];
     let mut outgoing = vec![0usize; count];
@@ -356,6 +359,15 @@ fn key_row_text(info: &Inspection, col: &tursobench_core::TableColumn) -> (Strin
         short(&col.declared_type, 12)
     );
     (text, col.primary_key > 0 || fk)
+}
+/// Text scaled with the map, kept legible down to 35% zoom; below that it
+/// shrinks freely as the cards do.
+fn scaled_text(size: f32, floor: f32, zoom: f32) -> f32 {
+    if zoom >= 0.35 {
+        (size * zoom).max(floor)
+    } else {
+        size * zoom
+    }
 }
 fn short(text: &str, limit: usize) -> String {
     let mut s: String = text.chars().take(limit).collect();
@@ -601,14 +613,7 @@ impl DiagramDrawing<'_> {
             self.point(world.min + egui::vec2(10.0, 17.0)),
             egui::Align2::LEFT_CENTER,
             short(&node.name, 36),
-            crate::appearance::proportional(
-                ui.ctx(),
-                if zoom >= 0.35 {
-                    (15.0 * zoom).max(11.0)
-                } else {
-                    15.0 * zoom
-                },
-            ),
+            crate::appearance::proportional(ui.ctx(), scaled_text(15.0, 11.0, zoom)),
             ui.visuals().text_color(),
         );
         let response = ui.interact(
@@ -677,11 +682,7 @@ impl DiagramDrawing<'_> {
                 info.indexes.len()
             )
         };
-        let size = if zoom >= 0.35 {
-            (12.0 * zoom).max(9.0)
-        } else {
-            12.0 * zoom
-        };
+        let size = scaled_text(12.0, 9.0, zoom);
         painter.text(
             self.point(egui::pos2(world.left() + 10.0, world.bottom() - 16.0)),
             egui::Align2::LEFT_CENTER,
@@ -699,12 +700,7 @@ impl DiagramDrawing<'_> {
             ..
         } = *self;
         let accent = crate::appearance::Tokens::of(ui.ctx()).relationship;
-        let index: BTreeMap<_, _> = graph
-            .tables
-            .iter()
-            .enumerate()
-            .map(|(i, t)| (t.name.to_ascii_lowercase(), i))
-            .collect();
+        let index = graph.positions();
         let mut unresolved = 0;
         for (source, node) in graph.tables.iter().enumerate() {
             let Some(info) = &node.inspection else {
