@@ -582,6 +582,21 @@ mod tests {
         time::{Duration, Instant},
     };
 
+    /// The pointer moved to `pos` and the wheel scrolled down a long way.
+    pub(super) fn scroll_down_at(pos: eframe::egui::Pos2) -> Vec<eframe::egui::Event> {
+        use eframe::egui;
+        vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -1000.0),
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Unknown,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]
+    }
+
     #[test]
     fn search_roots_merge_policies_and_respect_saved_removals_and_exclusions() {
         let mut prefs = DiscoveryPreferences::default();

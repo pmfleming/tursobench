@@ -46,93 +46,158 @@ impl Default for State {
         }
     }
 }
+/// A button that reports a click only while `enabled`.
+fn action(ui: &mut egui::Ui, enabled: bool, label: &str) -> bool {
+    ui.add_enabled(enabled, egui::Button::new(label)).clicked()
+}
 impl State {
+    /// Exports of the source table or statement to a new JSONL file.
+    fn export_ui(&self, ui: &mut egui::Ui, enabled: bool) -> Option<Operation> {
+        ui.strong("Complete source export · typed JSONL");
+        let enabled = enabled && !self.output.is_empty();
+        let path = || self.output.clone().into();
+        let mut operation = None;
+        if let Some(spec) = &self.source {
+            ui.label(format!(
+                "Table: {} · current filters and sort · all matching rows",
+                spec.table
+            ));
+            if action(ui, enabled, "Export complete table to JSONL") {
+                operation = Some(Operation::ExportTable {
+                    path: path(),
+                    spec: spec.clone(),
+                });
+            }
+        }
+        if let Some((text, parameters)) = &self.query {
+            ui.label(format!(
+                "Statement: {}",
+                text.chars().take(160).collect::<String>()
+            ));
+            if action(ui, enabled, "Execute statement once and export JSONL") {
+                operation = Some(Operation::ExportQuery {
+                    path: path(),
+                    sql: text.clone(),
+                    parameters: parameters.clone(),
+                });
+            }
+        }
+        operation
+    }
+    /// The import source, its format and NULL marker, and the preview that
+    /// maps it onto the selected table.
+    fn import_ui(&mut self, ui: &mut egui::Ui, enabled: bool, writable: bool) -> Option<Operation> {
+        ui.strong("Import into the selected table");
+        ui.label(
+            self.table
+                .as_ref()
+                .map_or("Select a table before opening this panel", |t| {
+                    t.name.as_str()
+                }),
+        );
+        let mut changed = ui.text_edit_singleline(&mut self.input).changed();
+        egui::ComboBox::from_id_salt("import-format")
+            .selected_text(format!("{:?}", self.format))
+            .show_ui(ui, |ui| {
+                for format in [
+                    ImportFormat::JsonLines,
+                    ImportFormat::Json,
+                    ImportFormat::Csv,
+                    ImportFormat::Tsv,
+                ] {
+                    changed |= ui
+                        .selectable_value(&mut self.format, format, format!("{format:?}"))
+                        .changed();
+                }
+            });
+        if self.delimited() {
+            ui.label("Unquoted NULL marker");
+            changed |= ui.text_edit_singleline(&mut self.null_marker).changed();
+        }
+        if changed {
+            self.preview_current = false;
+        }
+        let preview = action(
+            ui,
+            enabled && !self.input.is_empty(),
+            "Preview first 10 rows",
+        )
+        .then(|| Operation::PreviewImport {
+            path: self.input.clone().into(),
+            format: self.format,
+            kinds: self.kinds.clone(),
+            null_marker: self.null_marker.clone(),
+        });
+        self.import_preview_ui(ui, enabled, writable).or(preview)
+    }
+    fn delimited(&self) -> bool {
+        matches!(self.format, ImportFormat::Csv | ImportFormat::Tsv)
+    }
     fn import_preview_ui(
         &mut self,
         ui: &mut egui::Ui,
         enabled: bool,
         writable: bool,
     ) -> Option<Operation> {
-        let mut operation = None;
-        let state = self;
-        if let Some(preview) = &state.preview {
-            ui.label(format!("Input scope: {}", preview.scope));
-            if let Some(table) = &state.table {
-                for (i, name) in preview.columns.iter().enumerate() {
-                    ui.horizontal(|ui| {
-                        ui.label(name);
-                        egui::ComboBox::from_id_salt(("import-map", i))
-                            .selected_text(if state.mapping[i].is_empty() {
-                                "Skip"
-                            } else {
-                                &state.mapping[i]
-                            })
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut state.mapping[i], String::new(), "Skip");
-                                for c in table.columns.iter().filter(|c| c.hidden == 0) {
-                                    ui.selectable_value(
-                                        &mut state.mapping[i],
-                                        c.name.clone(),
-                                        &c.name,
-                                    );
-                                }
-                            });
-                        if matches!(state.format, ImportFormat::Csv | ImportFormat::Tsv) {
-                            egui::ComboBox::from_id_salt(("import-kind", i))
-                                .selected_text(format!("{:?}", state.kinds[i]))
-                                .show_ui(ui, |ui| {
-                                    for kind in [
-                                        InputKind::Text,
-                                        InputKind::Integer,
-                                        InputKind::Real,
-                                        InputKind::Blob,
-                                    ] {
-                                        if ui
-                                            .selectable_value(
-                                                &mut state.kinds[i],
-                                                kind,
-                                                format!("{kind:?}"),
-                                            )
-                                            .changed()
-                                        {
-                                            state.preview_current = false;
-                                        }
-                                    }
-                                });
-                        }
-                    });
-                }
-            }
-            for row in &preview.rows {
-                ui.monospace(
-                    row.iter()
-                        .map(tursobench_core::Value::preview)
-                        .collect::<Vec<_>>()
-                        .join(" | "),
-                );
-            }
-            crate::app::presentation::checkbox(ui, &mut state.atomic,"Import all rows atomically").on_hover_text("When disabled, batches commit every 1000 rows or 8 MiB. A later error keeps earlier commits.");
-            if ui
-                .add_enabled(
-                    enabled && writable && state.preview_current && state.table.is_some(),
-                    egui::Button::new("Import mapped rows"),
-                )
-                .clicked()
-                && let Some(table) = &state.table
-            {
-                operation = Some(Operation::Import(ImportSpec {
-                    path: state.input.clone().into(),
-                    table: table.name.clone(),
-                    format: state.format,
-                    source_columns: preview.columns.clone(),
-                    mapping: state.mapping.clone(),
-                    kinds: state.kinds.clone(),
-                    null_marker: state.null_marker.clone(),
-                    atomic: state.atomic,
-                }));
+        let preview = self.preview.as_ref()?;
+        ui.label(format!("Input scope: {}", preview.scope));
+        if let Some(table) = &self.table {
+            let delimited = self.delimited();
+            for (i, name) in preview.columns.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.label(name);
+                    mapping_ui(ui, ("import-map", i), table, &mut self.mapping[i]);
+                    if delimited && kind_ui(ui, ("import-kind", i), &mut self.kinds[i]) {
+                        self.preview_current = false;
+                    }
+                });
             }
         }
-        operation
+        for row in &preview.rows {
+            ui.monospace(
+                row.iter()
+                    .map(tursobench_core::Value::preview)
+                    .collect::<Vec<_>>()
+                    .join(" | "),
+            );
+        }
+        crate::app::presentation::checkbox(ui, &mut self.atomic, "Import all rows atomically")
+            .on_hover_text(
+                "When disabled, batches commit every 1000 rows or 8 MiB. A later error keeps earlier commits.",
+            );
+        let table = self.table.as_ref();
+        let ready = enabled && writable && self.preview_current && table.is_some();
+        if !action(ui, ready, "Import mapped rows") {
+            return None;
+        }
+        Some(Operation::Import(ImportSpec {
+            path: self.input.clone().into(),
+            table: table?.name.clone(),
+            format: self.format,
+            source_columns: preview.columns.clone(),
+            mapping: self.mapping.clone(),
+            kinds: self.kinds.clone(),
+            null_marker: self.null_marker.clone(),
+            atomic: self.atomic,
+        }))
+    }
+    fn maintenance_ui(
+        &self,
+        ui: &mut egui::Ui,
+        enabled: bool,
+        writable: bool,
+    ) -> Option<Operation> {
+        ui.strong("Maintenance · write access and autocommit required");
+        ui.small("Checkpoints can be busy while another transaction is active. Close other shared connections before backup; a refused capture may leave this session closed.");
+        let enabled = enabled && writable;
+        let checkpoint = action(ui, enabled, "Checkpoint WAL").then_some(Operation::Checkpoint);
+        let backup = action(
+            ui,
+            enabled && !self.output.is_empty(),
+            "Checkpoint, close session and save verified backup",
+        )
+        .then(|| Operation::BackupAndClose(self.output.clone().into()));
+        backup.or(checkpoint)
     }
 
     pub(super) fn disconnected(&mut self) {
@@ -140,6 +205,40 @@ impl State {
             self.message = "Source session closed; pending transfer did not complete".into();
         }
     }
+}
+/// A source column's destination: a visible table column, or Skip (empty).
+fn mapping_ui(ui: &mut egui::Ui, id: impl egui::AsIdSalt, table: &Table, mapping: &mut String) {
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(if mapping.is_empty() {
+            "Skip"
+        } else {
+            mapping.as_str()
+        })
+        .show_ui(ui, |ui| {
+            ui.selectable_value(mapping, String::new(), "Skip");
+            for c in table.columns.iter().filter(|c| c.hidden == 0) {
+                ui.selectable_value(mapping, c.name.clone(), &c.name);
+            }
+        });
+}
+/// A delimited column's input type; returns whether it changed.
+fn kind_ui(ui: &mut egui::Ui, id: impl egui::AsIdSalt, kind: &mut InputKind) -> bool {
+    let mut changed = false;
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(format!("{kind:?}"))
+        .show_ui(ui, |ui| {
+            for option in [
+                InputKind::Text,
+                InputKind::Integer,
+                InputKind::Real,
+                InputKind::Blob,
+            ] {
+                changed |= ui
+                    .selectable_value(kind, option, format!("{option:?}"))
+                    .changed();
+            }
+        });
+    changed
 }
 impl App {
     pub(super) fn open_transfers(&mut self) {
@@ -250,33 +349,28 @@ impl App {
         let mut operation = None;
         let mut cancel = false;
         let state = &mut self.database.tools.transfers;
-        egui::Window::new("Data transfer and maintenance").id(egui::Id::unique("data-transfers")).open(&mut open).default_width(680.0).max_height(ctx.content_rect().height()*0.85).vscroll(true).show(ctx,|ui|{
-            ui.strong("Complete source export · typed JSONL");
-            ui.label("New output file");ui.text_edit_singleline(&mut state.output);
-            if let Some(spec)=&state.source {
-                ui.label(format!("Table: {} · current filters and sort · all matching rows",spec.table));
-                if ui.add_enabled(enabled&&!state.output.is_empty(),egui::Button::new("Export complete table to JSONL")).clicked(){operation=Some(Operation::ExportTable{path:state.output.clone().into(),spec:spec.clone()});}
-            }
-            if let Some((text,parameters))=&state.query {
-                ui.label(format!("Statement: {}",text.chars().take(160).collect::<String>()));
-                if ui.add_enabled(enabled&&!state.output.is_empty(),egui::Button::new("Execute statement once and export JSONL")).clicked(){operation=Some(Operation::ExportQuery{path:state.output.clone().into(),sql:text.clone(),parameters:parameters.clone()});}
-            }
-            ui.separator();ui.strong("Import into the selected table");
-            ui.label(state.table.as_ref().map_or("Select a table before opening this panel",|t|t.name.as_str()));
-            if ui.text_edit_singleline(&mut state.input).changed(){state.preview_current=false;}
-            egui::ComboBox::from_id_salt("import-format").selected_text(format!("{:?}",state.format)).show_ui(ui,|ui|{
-                for format in [ImportFormat::JsonLines,ImportFormat::Json,ImportFormat::Csv,ImportFormat::Tsv]{if ui.selectable_value(&mut state.format,format,format!("{format:?}")).changed(){state.preview_current=false;}}
+        egui::Window::new("Data transfer and maintenance")
+            .id(egui::Id::unique("data-transfers"))
+            .open(&mut open)
+            .default_width(680.0)
+            .max_height(ctx.content_rect().height() * 0.85)
+            .vscroll(true)
+            .show(ctx, |ui| {
+                let export = state.export_ui(ui, enabled);
+                ui.separator();
+                let import = state.import_ui(ui, enabled, writable);
+                ui.separator();
+                let maintenance = state.maintenance_ui(ui, enabled, writable);
+                // Later sections win, as only one button is clicked per frame.
+                operation = maintenance.or(import).or(export);
+                if state.ticket.is_some() {
+                    ui.spinner();
+                    cancel = ui
+                        .button("Cancel transfer after the current write")
+                        .clicked();
+                }
+                ui.label(&state.message);
             });
-            if matches!(state.format,ImportFormat::Csv|ImportFormat::Tsv){ui.label("Unquoted NULL marker");if ui.text_edit_singleline(&mut state.null_marker).changed(){state.preview_current=false;}}
-            if ui.add_enabled(enabled&&!state.input.is_empty(),egui::Button::new("Preview first 10 rows")).clicked(){operation=Some(Operation::PreviewImport{path:state.input.clone().into(),format:state.format,kinds:state.kinds.clone(),null_marker:state.null_marker.clone()});}
-            if let Some(next)=state.import_preview_ui(ui,enabled,writable){operation=Some(next);}
-            ui.separator();ui.strong("Maintenance · write access and autocommit required");
-            ui.small("Checkpoints can be busy while another transaction is active. Close other shared connections before backup; a refused capture may leave this session closed.");
-            if ui.add_enabled(enabled&&writable,egui::Button::new("Checkpoint WAL")).clicked(){operation=Some(Operation::Checkpoint);}
-            if ui.add_enabled(enabled&&writable&&!state.output.is_empty(),egui::Button::new("Checkpoint, close session and save verified backup")).clicked(){operation=Some(Operation::BackupAndClose(state.output.clone().into()));}
-            if state.ticket.is_some(){ui.spinner();cancel=ui.button("Cancel transfer after the current write").clicked();}
-            ui.label(&state.message);
-        });
         self.database.tools.transfers.open = open;
         if cancel
             && let Some(ticket) = self.database.tools.transfers.ticket
