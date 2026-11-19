@@ -1,4 +1,4 @@
-use crate::common::{self, Client, snapshot};
+use crate::common::{self, Client};
 use std::collections::BTreeMap;
 use tursobench_core::{
     Access, Bindings, Browse, Budget, Delivery, ErrorKind, Filter, FilterExpr, FilterOp, Value,
@@ -15,6 +15,17 @@ fn fixture(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
             "INSERT INTO parent VALUES(7,'001','original')",
             "INSERT INTO child VALUES(1,7,'001','needle'),(2,NULL,NULL,NULL)",
         ],
+    )
+}
+
+/// `t(id, value)` holding rows 1..=151, with `value` computed from row number `x`.
+fn numbered(name: &str, value: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    let fill = format!(
+        "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<151) INSERT INTO t SELECT x,{value} FROM n"
+    );
+    common::database(
+        name,
+        &["CREATE TABLE t(id INTEGER PRIMARY KEY,value TEXT)", &fill],
     )
 }
 
@@ -48,7 +59,7 @@ fn catalog_preserves_large_definitions_and_more_than_one_thousand_indexes() {
 #[test]
 fn readonly_vacuum_into_and_attach_do_not_create_files() {
     let (dir, path) = common::database("source.db", &["CREATE TABLE t(id INTEGER PRIMARY KEY)"]);
-    let before = snapshot(dir.path());
+    let files = common::Files::record(dir.path());
     let mut client = Client::open(&path, Access::ReadOnly);
     for sql in [
         format!("VACUUM INTO '{}'", dir.path().join("copy.db").display()),
@@ -64,7 +75,7 @@ fn readonly_vacuum_into_and_attach_do_not_create_files() {
         );
     }
     client.close();
-    assert_eq!(snapshot(dir.path()), before);
+    assert!(files.unchanged());
 }
 
 #[test]
@@ -152,12 +163,9 @@ fn seek_paging_grouped_filters_counts_and_reference_pages_are_complete() {
 
 #[test]
 fn large_values_keep_rows_and_save_exact_original_bytes() {
-    let (dir, path) = common::database(
+    let (dir, path) = numbered(
         "large.db",
-        &[
-            "CREATE TABLE t(id INTEGER PRIMARY KEY,value TEXT)",
-            "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<151) INSERT INTO t SELECT x,CASE WHEN x=50 THEN hex(zeroblob(50000)) ELSE 'small' END FROM n",
-        ],
+        "CASE WHEN x=50 THEN hex(zeroblob(50000)) ELSE 'small' END",
     );
     let mut c = Client::open(&path, Access::ReadOnly);
     let first = c.browse("t", 0).1;
@@ -203,13 +211,7 @@ fn large_values_keep_rows_and_save_exact_original_bytes() {
 
 #[test]
 fn wide_rows_signal_page_continuation_instead_of_stalling() {
-    let (_dir, path) = common::database(
-        "wide.db",
-        &[
-            "CREATE TABLE t(id INTEGER PRIMARY KEY,value TEXT)",
-            "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<151) INSERT INTO t SELECT x,hex(zeroblob(25000)) FROM n",
-        ],
-    );
+    let (_dir, path) = numbered("wide.db", "hex(zeroblob(25000))");
     let mut c = Client::open(&path, Access::ReadOnly);
     let first = c.browse("t", 0).1;
     let n = first.rows.len();
@@ -244,20 +246,13 @@ fn scripts_report_partial_success_and_atomic_rollback() {
         assert_eq!(reply.rolled_back, atomic);
         assert_eq!(c.count("t"), i64::from(!atomic));
     }
-    let reply = c.run(Operation::Script {
-        sql: "INSERT INTO t VALUES(7); SELECT id FROM t".into(),
-        parameters: vec![].into(),
-        atomic: true,
-        budget: Budget::default(),
-    });
+    let reply = c.run(common::script(
+        "INSERT INTO t VALUES(7); SELECT id FROM t",
+        true,
+    ));
     assert!(reply.result.completion.unwrap().error.is_none());
     assert_eq!(reply.script[1].rows, vec![vec![Value::Integer(7)]]);
-    let rejected = c.run(Operation::Script {
-        sql: "BEGIN; INSERT INTO t VALUES(8)".into(),
-        parameters: vec![].into(),
-        atomic: true,
-        budget: Budget::default(),
-    });
+    let rejected = c.run(common::script("BEGIN; INSERT INTO t VALUES(8)", true));
     assert!(rejected.failure.is_some());
     c.close();
 }
@@ -265,7 +260,7 @@ fn scripts_report_partial_success_and_atomic_rollback() {
 #[test]
 fn native_metadata_related_lookup_and_diagnostics_preserve_readonly_bytes() {
     let (dir, path) = fixture("workbench.db");
-    let before = snapshot(dir.path());
+    let files = common::Files::record(dir.path());
     let mut client = Client::open(&path, Access::ReadOnly);
     let reply = client.run(Operation::Inspect("child".into()));
     assert!(reply.failure.is_none(), "{:?}", reply.failure);
@@ -333,7 +328,7 @@ fn native_metadata_related_lookup_and_diagnostics_preserve_readonly_bytes() {
         }
     }
     client.close();
-    assert_eq!(snapshot(dir.path()), before);
+    assert!(files.unchanged());
 }
 #[test]
 fn diagram_includes_isolated_quoted_cyclic_and_composite_tables_without_writes() {
@@ -354,7 +349,7 @@ fn diagram_includes_isolated_quoted_cyclic_and_composite_tables_without_writes()
         client.sql(sql);
     }
     client.close();
-    let before = snapshot(dir.path());
+    let files = common::Files::record(dir.path());
     let mut client = Client::open(&path, Access::ReadOnly);
     let graph = client.diagram();
     assert!(!graph.limited);
@@ -411,7 +406,7 @@ fn diagram_includes_isolated_quoted_cyclic_and_composite_tables_without_writes()
         vec![("absent".into(), None)]
     );
     client.close();
-    assert_eq!(snapshot(dir.path()), before);
+    assert!(files.unchanged());
 }
 #[test]
 fn diagram_reads_committed_schema_within_its_discovery_budget() {
@@ -549,7 +544,7 @@ fn typed_filter_chips_bind_values_escape_contains_and_combine_null_predicates() 
             r#"INSERT INTO "filter rows" VALUES(1,'100%_\literal',1,X'00FF'),(2,'x'' OR 1=1 --',3,X'01'),(3,NULL,9223372036854775807,NULL)"#,
         ],
     );
-    let before = snapshot(dir.path());
+    let files = common::Files::record(dir.path());
     let mut c = Client::open(&path, Access::ReadOnly);
     let mut run = |filters: Vec<Filter>| {
         c.run(Operation::Browse(Browse {
@@ -602,12 +597,7 @@ fn typed_filter_chips_bind_values_escape_contains_and_combine_null_predicates() 
         ),
     ] {
         let reply = run(filters);
-        assert!(reply.failure.is_none(), "{:?}", reply.failure);
-        assert!(
-            reply.result.completion.as_ref().unwrap().error.is_none(),
-            "{:?}",
-            reply.result.completion
-        );
+        reply.assert_succeeded();
         assert_eq!(
             reply
                 .result
@@ -634,7 +624,7 @@ fn typed_filter_chips_bind_values_escape_contains_and_combine_null_predicates() 
             .is_some()
     );
     c.close();
-    assert_eq!(snapshot(dir.path()), before);
+    assert!(files.unchanged());
 }
 
 #[test]
@@ -648,12 +638,11 @@ fn foreign_keys_use_parent_affinity_and_collation_in_checks_and_references() {
             "INSERT INTO child VALUES(1,'007','alpha'),(2,'7','ALPHA'),(3,NULL,NULL),(4,'8','orphan'),(5,NULL,'exempt')",
         ],
     );
-    let before = snapshot(dir.path());
+    let files = common::Files::record(dir.path());
     let mut c = Client::open(&path, Access::ReadOnly);
     // Only the orphan violates; NULL keys are exempt and affinity/collation match.
     let check = c.run(Operation::Diagnostic(Diagnostic::ForeignKeys));
-    assert!(check.failure.is_none(), "{:?}", check.failure);
-    assert!(check.result.completion.as_ref().unwrap().error.is_none());
+    check.assert_succeeded();
     let violations = Value::Integer(1);
     let checked_tables = Value::Integer(2);
     assert_eq!(check.result.rows.len(), 1);
@@ -666,12 +655,7 @@ fn foreign_keys_use_parent_affinity_and_collation_in_checks_and_references() {
         key: key.clone(),
         values: values.clone(),
     });
-    assert!(reply.failure.is_none(), "{:?}", reply.failure);
-    assert!(
-        reply.result.completion.as_ref().unwrap().error.is_none(),
-        "{:?}",
-        reply.result.completion
-    );
+    reply.assert_succeeded();
     assert_eq!(reply.result.rows.len(), 2);
     assert_eq!(reply.table.unwrap().name, "child");
     let count = c.run(Operation::ReferenceCount {
@@ -701,7 +685,7 @@ fn foreign_keys_use_parent_affinity_and_collation_in_checks_and_references() {
         .is_some()
     );
     c.close();
-    assert_eq!(snapshot(dir.path()), before);
+    assert!(files.unchanged());
 }
 
 #[test]
@@ -746,7 +730,7 @@ fn profiles_exact_sampled_and_keyless_values_without_writing() {
             "CREATE TABLE empty(value TEXT)",
         ],
     );
-    let before = snapshot(dir.path());
+    let files = common::Files::record(dir.path());
     let mut client = Client::open(&path, Access::ReadOnly);
     for (table, sample, rows, nulls) in [
         ("items", None, 4, 1),
@@ -758,12 +742,7 @@ fn profiles_exact_sampled_and_keyless_values_without_writing() {
             column: None,
             sample_rows: sample,
         }));
-        assert!(reply.failure.is_none(), "{:?}", reply.failure);
-        assert!(
-            reply.result.completion.as_ref().unwrap().error.is_none(),
-            "{:?}",
-            reply.result.completion
-        );
+        reply.assert_succeeded();
         for (metric, expected) in [("rows", rows), ("nulls", nulls)] {
             let row = reply
                 .result
@@ -785,14 +764,14 @@ fn profiles_exact_sampled_and_keyless_values_without_writing() {
             .is_some()
     );
     client.close();
-    assert_eq!(before, snapshot(dir.path()));
+    assert!(files.unchanged());
 }
 
 #[test]
 fn admin_settings_readback_is_scoped_and_readonly_changes_are_rejected() {
     use tursobench_db::admin::Change;
     let (dir, path) = common::database("admin.db", &["CREATE TABLE t(id INTEGER)"]);
-    let before = snapshot(dir.path());
+    let files = common::Files::record(dir.path());
     let mut client = Client::open(&path, Access::ReadOnly);
     let dashboard = client.run(Operation::Admin(None));
     assert!(dashboard.failure.is_none());
@@ -810,7 +789,7 @@ fn admin_settings_readback_is_scoped_and_readonly_changes_are_rejected() {
             .is_some()
     );
     client.close();
-    assert_eq!(before, snapshot(dir.path()));
+    assert!(files.unchanged());
     let mut client = Client::open(&path, Access::ReadWrite);
     let dashboard = client.run(Operation::Admin(Some(Change::EditorBusyTimeout(123))));
     assert!(dashboard.failure.is_none(), "{:?}", dashboard.failure);

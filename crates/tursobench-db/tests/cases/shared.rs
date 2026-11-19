@@ -73,11 +73,7 @@ fn peer() {
         return;
     };
     let mode = std::env::var("TURSOBENCH_PEER_MODE").unwrap();
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
-    rt.block_on(async {
+    common::block_on(async {
         let result = turso::Builder::new_local(path.to_str().unwrap())
             .experimental_index_method(true)
             .experimental_multiprocess_wal(mode != "legacy")
@@ -127,6 +123,22 @@ fn peer() {
     });
 }
 
+/// The one `items.value`, as the app reads it.
+fn item(app: &mut common::Client) -> String {
+    let rows = app.sql("SELECT value FROM items").rows;
+    let [row] = &rows[..] else {
+        panic!("one item expected: {rows:?}")
+    };
+    let [tursobench_core::Value::Text(value)] = &row[..] else {
+        panic!("a text value expected: {row:?}")
+    };
+    value.clone()
+}
+/// Whether the app's next event announces an external commit with this `schema` flag.
+fn external_change(app: &common::Client, schema: bool) -> bool {
+    let kind = common::event(&app.session).kind;
+    matches!(kind, tursobench_core::EventKind::Invalidated { schema: s, source_request: 0 } if s == schema)
+}
 fn fixture() -> (tempfile::TempDir, std::path::PathBuf) {
     common::database(
         "shared.db",
@@ -192,10 +204,10 @@ fn readonly_flag_is_not_proof_of_coordination() {
 fn access_preflight_reports_locks_without_writing_or_interfering_with_shared_writers() {
     use tursobench_core::{Access, ErrorKind};
     let (dir, path) = fixture();
-    let before = common::snapshot(dir.path());
+    let files = common::Files::record(dir.path());
     assert!(tursobench_db::check_access(&path).is_ok());
     assert!(!dir.path().join("shared.db-tshm").exists());
-    assert_eq!(common::snapshot(dir.path()), before);
+    assert!(files.unchanged());
     {
         let (legacy, _) = Peer::start(&path, "legacy");
         let error = tursobench_db::check_access(&path).unwrap_err();
@@ -224,13 +236,7 @@ fn access_preflight_reports_locks_without_writing_or_interfering_with_shared_wri
 #[test]
 fn preflight_preserves_existing_process_owned_posix_locks() {
     let (_dir, path) = fixture();
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
-    let db = rt
-        .block_on(turso::Builder::new_local(path.to_str().unwrap()).build())
-        .unwrap();
+    let db = common::block_on(turso::Builder::new_local(path.to_str().unwrap()).build()).unwrap();
     assert_eq!(
         tursobench_db::check_access(&path).unwrap_err().kind,
         tursobench_core::ErrorKind::Busy
@@ -249,7 +255,7 @@ fn close_ack_releases_all_admission_locks_and_protected_reads_preserve_content()
     use tursobench_core::{Access, Coordination, EventKind};
     let (dir, path) = fixture();
     for _ in 0..8 {
-        let before = common::snapshot(dir.path());
+        let files = common::Files::record(dir.path());
         let (s, opened) = common::start(&path, Access::ReadOnly);
         assert!(matches!(
             opened,
@@ -257,7 +263,7 @@ fn close_ack_releases_all_admission_locks_and_protected_reads_preserve_content()
         ));
         common::run(&s, 1, tursobench_db::Operation::Schema);
         common::close(&s);
-        assert_eq!(common::snapshot(dir.path()), before);
+        assert!(files.unchanged());
         // No delay: Closed promises every lock has already been released.
         let (_legacy, reply) = Peer::start(&path, "legacy");
         assert_eq!(reply, "READY|false");
@@ -270,14 +276,14 @@ fn hard_link_aliases_are_rejected_before_creating_coordination_sidecars() {
     let (dir, path) = fixture();
     let alias = dir.path().join("alias.db");
     std::fs::hard_link(&path, &alias).unwrap();
-    let before = common::snapshot(dir.path());
+    let files = common::Files::record(dir.path());
     for p in [&path, &alias] {
         let (_session, opened) = common::start(p, Access::ReadOnly);
         assert!(matches!(opened, EventKind::Failed(e) if e.message.contains("Hard-linked")));
     }
     assert!(!dir.path().join("shared.db-tshm").exists());
     assert!(!dir.path().join("alias.db-tshm").exists());
-    assert_eq!(common::snapshot(dir.path()), before);
+    assert!(files.unchanged());
 }
 
 #[test]
@@ -342,40 +348,19 @@ fn engine_mixed_mode_open_probe() {
 
 #[test]
 fn external_commits_notify_data_and_schema_without_changing_manual_snapshots() {
-    use tursobench_core::{Access, EventKind, Value};
+    use tursobench_core::{Access, Value};
     let (_dir, path) = fixture();
     let (mut writer, _) = Peer::start(&path, "writer");
     let mut app = common::Client::open(&path, Access::ReadWrite);
     app.sql("BEGIN");
-    assert_eq!(
-        app.sql("SELECT value FROM items").rows,
-        vec![vec![Value::Text("initial".into())]]
-    );
+    assert_eq!(item(&mut app), "initial");
     writer.ok("UPDATE items SET value='external'");
-    assert!(matches!(
-        common::event(&app.session).kind,
-        EventKind::Invalidated {
-            schema: false,
-            source_request: 0
-        }
-    ));
-    assert_eq!(
-        app.sql("SELECT value FROM items").rows,
-        vec![vec![Value::Text("initial".into())]]
-    );
+    assert!(external_change(&app, false));
+    assert_eq!(item(&mut app), "initial");
     app.sql("ROLLBACK");
-    assert_eq!(
-        app.sql("SELECT value FROM items").rows,
-        vec![vec![Value::Text("external".into())]]
-    );
+    assert_eq!(item(&mut app), "external");
     writer.ok("ALTER TABLE items ADD COLUMN added INTEGER");
-    assert!(matches!(
-        common::event(&app.session).kind,
-        EventKind::Invalidated {
-            schema: true,
-            source_request: 0
-        }
-    ));
+    assert!(external_change(&app, true));
     assert_eq!(
         app.sql("SELECT added FROM items").rows,
         vec![vec![Value::Null]]
@@ -411,9 +396,7 @@ fn coordinated_native_fts_reads_follow_external_commits() {
 
 #[test]
 fn shared_edits_report_busy_conflicts_and_refuse_live_peer_backup() {
-    use tursobench_core::{
-        Access, Bindings, Budget, CommitOutcome, Edit, ErrorKind, EventKind, Value,
-    };
+    use tursobench_core::{Access, CommitOutcome, Edit, ErrorKind, EventKind, Value};
     use tursobench_db::Operation;
     let (dir, path) = fixture();
     let (mut writer, _) = Peer::start(&path, "writer");
@@ -422,11 +405,8 @@ fn shared_edits_report_busy_conflicts_and_refuse_live_peer_backup() {
     let original = result.rows[0].clone();
     writer.ok("BEGIN IMMEDIATE");
     writer.ok("UPDATE items SET value='pending'");
-    let busy = app.query("UPDATE items SET value='must not replay'", vec![]);
-    assert_eq!(
-        busy.completion.unwrap().error.unwrap().kind,
-        ErrorKind::Busy
-    );
+    let busy = app.failure("UPDATE items SET value='must not replay'");
+    assert_eq!(busy.unwrap().kind, ErrorKind::Busy);
     let edit = Edit::Update {
         original: original.clone(),
         changes: vec![(1, Value::Text("draft".into()))],
@@ -434,12 +414,7 @@ fn shared_edits_report_busy_conflicts_and_refuse_live_peer_backup() {
     assert!(
         matches!(app.commit(table.clone(), vec![edit.clone()]), CommitOutcome::Rejected(e) if e.kind == ErrorKind::Busy)
     );
-    let reply = app.run(Operation::Script {
-        sql: "UPDATE items SET value='atomic'".into(),
-        parameters: Bindings::Positional(vec![]),
-        atomic: true,
-        budget: Budget::default(),
-    });
+    let reply = app.run(common::script("UPDATE items SET value='atomic'", true));
     assert_eq!(reply.failure.unwrap().kind, ErrorKind::Busy);
     let input = dir.path().join("contended.csv");
     std::fs::write(&input, "id,value\n2,imported\n").unwrap();
@@ -458,25 +433,13 @@ fn shared_edits_report_busy_conflicts_and_refuse_live_peer_backup() {
     }));
     assert_eq!(reply.failure.unwrap().kind, ErrorKind::Busy);
     writer.ok("ROLLBACK");
-    assert_eq!(
-        app.sql("SELECT value FROM items").rows,
-        vec![vec![Value::Text("initial".into())]]
-    );
+    assert_eq!(item(&mut app), "initial");
     writer.ok("UPDATE items SET value='external'");
     assert!(
         matches!(app.commit(table, vec![edit]), CommitOutcome::Rejected(e) if e.kind == ErrorKind::Conflict)
     );
-    let (table, rows) = app.browse("items", 0);
-    assert!(matches!(
-        app.commit(
-            table,
-            vec![Edit::Update {
-                original: rows.rows[0].clone(),
-                changes: vec![(1, Value::Text("committed".into()))]
-            }]
-        ),
-        CommitOutcome::Committed { .. }
-    ));
+    let committed = app.update_first("items", vec![(1, Value::Text("committed".into()))]);
+    assert!(matches!(committed, CommitOutcome::Committed { .. }));
     assert!(writer.ok("SELECT value FROM items").contains("committed"));
     writer.ok("BEGIN");
     writer.ok("SELECT * FROM items");
@@ -560,7 +523,7 @@ fn simultaneous_shared_writes_have_no_lost_or_replayed_updates_and_keep_fts_cons
 
 #[test]
 fn coordinated_policy_covers_single_script_and_export_before_execution() {
-    use tursobench_core::{Access, Bindings, Budget};
+    use tursobench_core::{Access, Bindings};
     use tursobench_db::Operation;
     let (dir, path) = fixture();
     let mut app = common::Client::open(&path, Access::ReadWrite);
@@ -569,13 +532,11 @@ fn coordinated_policy_covers_single_script_and_export_before_execution() {
         "PRAGMA main.\"locking_mode\"(EXCLUSIVE)",
         "BEGIN CONCURRENT",
     ] {
-        assert!(app.query(sql, vec![]).completion.unwrap().error.is_some());
-        let reply = app.run(Operation::Script {
-            sql: format!("UPDATE items SET value='denied'; {sql}"),
-            parameters: Bindings::Positional(vec![]),
-            atomic: false,
-            budget: Budget::default(),
-        });
+        assert!(app.failure(sql).is_some());
+        let reply = app.run(common::script(
+            &format!("UPDATE items SET value='denied'; {sql}"),
+            false,
+        ));
         assert!(reply.failure.is_some());
         let destination = dir.path().join("denied.jsonl");
         assert!(
@@ -589,9 +550,6 @@ fn coordinated_policy_covers_single_script_and_export_before_execution() {
         );
         assert!(!destination.exists());
     }
-    assert_eq!(
-        app.sql("SELECT value FROM items").rows,
-        vec![vec![tursobench_core::Value::Text("initial".into())]]
-    );
+    assert_eq!(item(&mut app), "initial");
     app.close();
 }

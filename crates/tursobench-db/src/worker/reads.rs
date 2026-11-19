@@ -4,10 +4,9 @@ use super::{
     Worker,
     execute::{Query, elapsed_ms},
 };
-use crate::{Diagnostic, browse, connection::state, inspection};
+use crate::{browse, inspection};
 use tursobench_core::{
     Browse, Budget, Column, Completion, EventKind, Failure, ForeignKey, Ticket, Value,
-    quote_identifier,
 };
 
 const SCHEMA_SQL: &str = "SELECT type, name, tbl_name, CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END AS sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'view' THEN 1 ELSE 2 END, name";
@@ -129,24 +128,6 @@ impl<'a> Worker<'a> {
         let sql = crate::profile::query(&table, request, stddev)?;
         Ok(Query::read(self.browse, sql, vec![].into()))
     }
-    pub(super) async fn diagnostic(&self, kind: Diagnostic) -> Result<Query<'a>, Failure> {
-        let sql = match kind {
-            Diagnostic::ForeignKeys => crate::validation::foreign_keys(self.browse).await?,
-            kind => kind.sql().into(),
-        };
-        Ok(Query::read(self.browse, sql, vec![].into()))
-    }
-    pub(super) fn count(&self, name: &str) -> Query<'a> {
-        let sql = format!(
-            "SELECT count(*) AS row_count FROM {}",
-            quote_identifier(name)
-        );
-        Query::read(self.browse, sql, vec![].into())
-    }
-    pub(super) fn definition(&self, name: String) -> Query<'a> {
-        let sql = "SELECT sql FROM sqlite_schema WHERE name=?1".into();
-        Query::read(self.browse, sql, vec![Value::Text(name)].into())
-    }
     pub(super) fn catalog(&self) -> Query<'a> {
         let budget = Budget {
             rows: 10_000,
@@ -177,7 +158,7 @@ impl<'a> Worker<'a> {
         Ok(EventKind::Finished(Completion {
             elapsed_ms: elapsed_ms(started),
             rows_seen,
-            ..Completion::new(state(self.editor))
+            ..Completion::new(self.transaction())
         }))
     }
 }

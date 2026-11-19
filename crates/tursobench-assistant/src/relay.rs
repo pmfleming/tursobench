@@ -195,9 +195,10 @@ fn random_token() -> io::Result<String> {
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// Keep this process's private files under `root` instead of
-/// `$XDG_RUNTIME_DIR`, as tests that run the whole app do. Only the first call
-/// has an effect.
+/// Test seam: keep this process's private files under `root` instead of
+/// `$XDG_RUNTIME_DIR`. Tests that run the whole app call it rather than
+/// mutating the environment, which is unsafe while other test threads run; the
+/// app itself never does. Only the first call has an effect.
 pub fn set_runtime_root(root: PathBuf) {
     let _ = RUNTIME_ROOT.set(root);
 }

@@ -1,5 +1,6 @@
+//! Draft edit commits and the persistent editor transaction they sit beside.
 use crate::common::{self, Client};
-use tursobench_core::{Access, CommitOutcome, Edit, ErrorKind, Failure, Value};
+use tursobench_core::{Access, CommitOutcome, Edit, ErrorKind, Failure, TransactionState, Value};
 use tursobench_db::Operation;
 fn fixture() -> (tempfile::TempDir, Client) {
     let (dir, path) = common::database(
@@ -174,4 +175,38 @@ fn rejected_batches_preserve_rows_across_conflicts_constraints_and_transactions(
             h.sql("ROLLBACK");
         }
     }
+}
+
+#[test]
+fn persistent_editor_isolated_browse_foreign_keys_and_close_rollback() {
+    let (_dir, path) = common::database("tx.db", &["CREATE TABLE parent(id INTEGER PRIMARY KEY)"]);
+    let mut client = Client::open(&path, Access::ReadWrite);
+    assert_eq!(
+        client.sql("BEGIN").completion.unwrap().transaction,
+        TransactionState::Active
+    );
+    client.sql("CREATE TABLE child(id INTEGER PRIMARY KEY, p INTEGER REFERENCES parent(id))");
+    assert_eq!(
+        client
+            .failure("INSERT INTO child VALUES(1,99)")
+            .unwrap()
+            .kind,
+        ErrorKind::Constraint
+    );
+    client.sql("INSERT INTO parent VALUES (1)");
+    let r = client.run(Operation::Browse(common::browse("parent")));
+    let r = r.result;
+    assert!(r.rows.is_empty());
+    assert_eq!(r.completion.unwrap().transaction, TransactionState::Active);
+    assert_eq!(client.sql("SELECT * FROM parent").rows.len(), 1);
+    client.sql("COMMIT");
+    assert!(client.failure("COMMIT").is_some());
+    client.sql("BEGIN");
+    client.sql("INSERT INTO parent VALUES (2)");
+    client.close();
+    let mut client = Client::open(&path, Access::ReadOnly);
+    assert_eq!(
+        client.sql("SELECT * FROM parent").rows,
+        vec![vec![Value::Integer(1)]]
+    );
 }

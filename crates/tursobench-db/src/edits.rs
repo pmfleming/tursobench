@@ -83,24 +83,26 @@ async fn finish(
     }
 }
 
-#[derive(Default)]
-pub(super) struct CommitState {
-    uncertain: bool,
-}
-impl CommitState {
-    pub async fn run(&mut self, operation: impl Future<Output = CommitOutcome>) -> CommitOutcome {
-        if self.uncertain {
-            return CommitOutcome::Unknown(Failure { kind: ErrorKind::Unknown, message: "A previous edit commit has an uncertain outcome; close and inspect before retrying".into() });
-        }
-        let outcome = operation.await;
-        self.uncertain = matches!(outcome, CommitOutcome::Unknown(_));
-        outcome
+/// Runs `commit` only while every earlier outcome is confirmed; an unknown
+/// outcome sets `uncertain`, refusing later commits until reopen.
+pub(crate) async fn guarded(
+    uncertain: &mut bool,
+    commit: impl Future<Output = CommitOutcome>,
+) -> CommitOutcome {
+    if *uncertain {
+        return CommitOutcome::Unknown(Failure {
+            kind: ErrorKind::Unknown,
+            message: "Prior outcome UNKNOWN; reopen before committing".into(),
+        });
     }
+    let outcome = commit.await;
+    *uncertain |= matches!(outcome, CommitOutcome::Unknown(_));
+    outcome
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CommitState, finish};
+    use super::{finish, guarded};
     use crate::connection::{failure, rollback};
     use std::cell::Cell;
     use tursobench_core::{CommitOutcome, ErrorKind, Failure};
@@ -134,9 +136,10 @@ mod tests {
             c.execute("INSERT INTO items VALUES(1)", ()).await.unwrap();
             let commit_called = Cell::new(false);
             let rollback_called = Cell::new(false);
-            let mut state = CommitState::default();
-            let outcome = state
-                .run(finish(
+            let mut unconfirmed = false;
+            let outcome = guarded(
+                &mut unconfirmed,
+                finish(
                     if statement_failed {
                         Err(Failure::input("statement failed"))
                     } else {
@@ -159,9 +162,11 @@ mod tests {
                             rollback(&c).await
                         }
                     },
-                ))
-                .await;
+                ),
+            )
+            .await;
             let uncertain = rollback_failed || commit_point != 0;
+            assert_eq!(unconfirmed, uncertain);
             assert_eq!(commit_called.get(), !statement_failed);
             assert_eq!(rollback_called.get(), statement_failed || commit_point != 0);
             match outcome {
@@ -180,12 +185,11 @@ mod tests {
                 }
             }
             let retry_called = Cell::new(false);
-            let retry = state
-                .run(async {
-                    retry_called.set(true);
-                    CommitOutcome::Committed { operations: 0 }
-                })
-                .await;
+            let retry = guarded(&mut unconfirmed, async {
+                retry_called.set(true);
+                CommitOutcome::Committed { operations: 0 }
+            })
+            .await;
             assert_eq!(retry_called.get(), !uncertain);
             assert_eq!(matches!(retry, CommitOutcome::Unknown(_)), uncertain);
             rollback(&c).await.unwrap();

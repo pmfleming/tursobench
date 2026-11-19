@@ -7,7 +7,7 @@
 //! the separate account module starts vendor-owned sign-in flows.
 use crate::{
     account::config_option,
-    agent::{Input, Link, Queue, Spec, Update, content_text, tool_name},
+    agent::{Input, Link, Queue, Spec, Update, content_text, initialize, tool_name},
 };
 use serde_json::{Value as Json, json};
 use std::sync::mpsc::Receiver;
@@ -45,20 +45,14 @@ pub(crate) fn drive(spec: &Spec, input: &Receiver<Input>, link: &mut Link) {
         effort: spec.effort.clone(),
         ..Default::default()
     };
-    let initialize = json!({
-        "jsonrpc": "2.0",
-        "id": INITIALIZE,
-        "method": "initialize",
-        "params": {
-            "protocolVersion": PROTOCOL_VERSION,
-            "clientCapabilities": {
-                "fs": {"readTextFile": false, "writeTextFile": false},
-                "terminal": false,
-            },
-            "clientInfo": {"name": "tursobench", "title": "TursoBench", "version": env!("CARGO_PKG_VERSION")},
+    let params = json!({
+        "protocolVersion": PROTOCOL_VERSION,
+        "clientCapabilities": {
+            "fs": {"readTextFile": false, "writeTextFile": false},
+            "terminal": false,
         },
     });
-    if !link.write_or_end_turn(&initialize, "the agent") {
+    if !link.write_or_end_turn(&initialize(INITIALIZE, params), "the agent") {
         return;
     }
     while let Ok(message) = input.recv() {

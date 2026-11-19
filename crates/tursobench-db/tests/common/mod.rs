@@ -8,7 +8,20 @@ use tursobench_db::{Operation, Request, Session};
 pub mod local_fixtures;
 
 mod fixture;
-pub use fixture::{create, snapshot};
+pub use fixture::{create, run as block_on};
+/// Every file under a directory, to prove an operation left them byte-identical.
+pub struct Files(
+    std::path::PathBuf,
+    std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
+);
+impl Files {
+    pub fn record(root: &Path) -> Self {
+        Self(root.into(), fixture::snapshot(root))
+    }
+    pub fn unchanged(&self) -> bool {
+        fixture::snapshot(&self.0) == self.1
+    }
+}
 pub fn event(session: &Session) -> Event {
     session
         .events
@@ -45,6 +58,14 @@ pub struct Reply {
     pub graph: Option<SchemaDiagram>,
     pub outcome: Option<CommitOutcome>,
     pub failure: Option<Failure>,
+}
+impl Reply {
+    /// Panics unless the request and its statement both succeeded.
+    pub fn assert_succeeded(&self) {
+        assert!(self.failure.is_none(), "{:?}", self.failure);
+        let completion = self.result.completion.as_ref().unwrap();
+        assert!(completion.error.is_none(), "{completion:?}");
+    }
 }
 /// The first page of `table`, unfiltered and in key order.
 pub fn browse(table: &str) -> Browse {
@@ -128,6 +149,10 @@ impl Client {
         assert!(reply.failure.is_none(), "{:?}", reply.failure);
         reply.result
     }
+    /// The error `sql` ended with, if any.
+    pub fn failure(&mut self, sql: &str) -> Option<Failure> {
+        self.query(sql, vec![]).completion.unwrap().error
+    }
     pub fn sql(&mut self, sql: &str) -> ResultSet {
         let result = self.query(sql, vec![]);
         assert!(
@@ -165,6 +190,16 @@ impl Client {
             .outcome
             .unwrap()
     }
+    /// Commits `changes` to the first row of `table`'s first page.
+    pub fn update_first(
+        &mut self,
+        table: &str,
+        changes: Vec<(usize, tursobench_core::Value)>,
+    ) -> CommitOutcome {
+        let (table, page) = self.browse(table, 0);
+        let original = page.rows[0].clone();
+        self.commit(table, vec![Edit::Update { original, changes }])
+    }
     pub fn diagram(&mut self) -> SchemaDiagram {
         self.run(Operation::Diagram).graph.unwrap()
     }
@@ -181,6 +216,15 @@ pub fn close(session: &Session) {
             EventKind::Closed { rollback: Ok(()) } => break,
             other => panic!("Unexpected close response: {other:?}"),
         }
+    }
+}
+/// An unbound script under the default budget.
+pub fn script(sql: &str, atomic: bool) -> Operation {
+    Operation::Script {
+        sql: sql.into(),
+        parameters: vec![].into(),
+        atomic,
+        budget: Budget::default(),
     }
 }
 /// Unbound SQL under `budget`.

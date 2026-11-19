@@ -7,7 +7,9 @@
 //! shell, web search, apps, plugins, browser and computer use are switched off;
 //! its MCP servers are replaced by TursoBench's alone. TursoBench never calls
 //! the login, logout, account or token methods.
-use crate::agent::{Input, Link, Privacy, Protocol, Queue, Spec, Update, content_text, tool_name};
+use crate::agent::{
+    Input, Link, Privacy, Protocol, Queue, Spec, Update, content_text, initialize, tool_name,
+};
 use serde_json::{Value as Json, json};
 use std::{path::PathBuf, sync::mpsc::Receiver};
 
@@ -116,15 +118,7 @@ pub(crate) fn drive(spec: &Spec, input: &Receiver<Input>, link: &mut Link) {
         effort: spec.effort.clone(),
         ..Default::default()
     };
-    let initialize = json!({
-        "jsonrpc": "2.0",
-        "id": INITIALIZE,
-        "method": "initialize",
-        "params": {
-            "clientInfo": {"name": "tursobench", "title": "TursoBench", "version": env!("CARGO_PKG_VERSION")},
-        },
-    });
-    if !link.write_or_end_turn(&initialize, "Codex") {
+    if !link.write_or_end_turn(&initialize(INITIALIZE, json!({})), "Codex") {
         return;
     }
     while let Ok(message) = input.recv() {

@@ -1,11 +1,12 @@
-//! Multi-statement scripts and guarded migrations share one retained budget
-//! and, when atomic, one editor transaction.
+//! Multi-statement scripts and guarded migrations, which run an additive script
+//! only while the schema still matches the one captured for review. Both share
+//! one retained budget and, when atomic, one editor transaction.
 use super::{
     Output, Worker,
     execute::{ExecutionContext, MAX_BYTES, MAX_ROWS, Query, elapsed_ms, execute},
 };
 use crate::{
-    connection::{failure, metadata_bytes, rollback, state},
+    connection::{failure, metadata_bytes, rollback},
     schema_compare, sql,
 };
 use std::sync::{Arc, Mutex};
@@ -92,26 +93,11 @@ fn unknown(summary: &mut Completion, message: String) {
 }
 
 impl Worker<'_> {
-    pub(super) async fn migrate(
-        &mut self,
-        ticket: Ticket,
-        sql: String,
-        expected: &SchemaSnapshot,
-    ) -> Result<EventKind, Failure> {
-        if self.access != Access::ReadWrite {
-            return Err(Failure::input(
-                "Migration requires explicit read/write access",
-            ));
-        }
-        self.script(
-            ticket,
-            sql,
-            vec![].into(),
-            true,
-            Budget::default(),
-            Some(expected),
-        )
-        .await
+    /// The schema a later guarded migration must still match.
+    pub(super) async fn capture_schema(&self) -> Result<EventKind, Failure> {
+        schema_compare::capture(self.browse)
+            .await
+            .map(EventKind::SchemaSnapshot)
     }
     pub(super) async fn script(
         &mut self,
@@ -124,7 +110,7 @@ impl Worker<'_> {
     ) -> Result<EventKind, Failure> {
         let statements = self.statements(&text, &parameters, atomic, guard.is_some())?;
         let started = std::time::Instant::now();
-        let mut summary = Completion::new(state(self.editor));
+        let mut summary = Completion::new(self.transaction());
         if self.output.discarded(ticket) {
             summary.delivery = Delivery::Discarded;
             return Ok(EventKind::Finished(summary));
@@ -175,6 +161,11 @@ impl Worker<'_> {
         atomic: bool,
         guarded: bool,
     ) -> Result<Vec<String>, Failure> {
+        if guarded && self.access != Access::ReadWrite {
+            return Err(Failure::input(
+                "Migration requires explicit read/write access",
+            ));
+        }
         let statements = sql::script_statements(text)?;
         for statement in &statements {
             sql::validate_coordinated(statement)?;
@@ -188,7 +179,7 @@ impl Worker<'_> {
             self.settled("reopen and inspect before further writes")?;
         }
         if atomic
-            && (state(self.editor) != TransactionState::Autocommit
+            && (self.transaction() != TransactionState::Autocommit
                 || statements.iter().any(|s| sql::transaction_control(s)))
         {
             return Err(Failure::input(
@@ -267,7 +258,7 @@ impl Worker<'_> {
                     summary.changed = 0;
                     self.dirty_data = false;
                     self.dirty_schema = false;
-                    summary.transaction = state(self.editor);
+                    summary.transaction = self.transaction();
                     return true;
                 }
                 Err(e) => unknown(summary, format!("Atomic rollback outcome UNKNOWN: {e}")),
@@ -278,7 +269,7 @@ impl Worker<'_> {
                 format!("Atomic COMMIT outcome UNKNOWN; reopen and inspect before retry: {e}"),
             );
         } else {
-            summary.transaction = state(self.editor);
+            summary.transaction = self.transaction();
             self.note_completion(ticket, sql::Effect::Read, summary);
         }
         false

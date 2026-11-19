@@ -200,8 +200,8 @@ file. Reopening the same database keeps the conversation.
   entries are shown.
 - Copilot CLI and custom ACP agents are covered by scripted protocol tests only.
   Claude Code, Codex and Antigravity have opt-in live relay tests:
-  `cargo test -p tursobench-ui --test live_claude -- --ignored`,
-  `--test live_codex` and `--test live_antigravity`. Status-only live checks use
+  `cargo test -p tursobench-ui --test relay -- --ignored` (add `claude`,
+  `codex` or `antigravity` to run one). Status-only live checks use
   `cargo test -p tursobench-assistant --test live_accounts -- --ignored`.
   Browser/terminal sign-in completion is covered by scripted peers; completing
   a real vendor sign-in still requires a person.

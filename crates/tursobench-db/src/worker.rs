@@ -11,7 +11,7 @@ mod transfer;
 use crate::{
     Operation, Request,
     connection::{self, Engine, rollback, state},
-    diagram, edits, inspection,
+    edits, inspection,
     observe::Watch,
     sql,
 };
@@ -27,7 +27,8 @@ use std::{
 };
 use turso::Connection;
 use tursobench_core::{
-    Access, ConnectionSettings, Event, EventKind, Failure, Ticket, TransactionState,
+    Access, Budget, CommitOutcome, ConnectionSettings, Event, EventKind, Failure, Ticket,
+    TransactionState, Value, quote_identifier,
 };
 #[derive(Clone)]
 pub(super) struct Output {
@@ -91,15 +92,6 @@ impl Output {
         self.send(ticket, kind);
     }
 }
-fn with_usage(mut failure: Failure, path: &Path) -> Failure {
-    let usage = crate::processes_using(path);
-    if !usage.applications.is_empty() {
-        failure
-            .message
-            .push_str(&format!(" Also open in {}.", usage.applications.join(", ")));
-    }
-    failure
-}
 pub(super) async fn worker(
     id: u64,
     path: PathBuf,
@@ -114,11 +106,11 @@ pub(super) async fn worker(
         request: 0,
         generation: 0,
     };
-    let source_path = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-    let engine = match connection::open(path, access, settings).await {
+    let source_path = std::fs::canonicalize(&path).unwrap_or(path);
+    let engine = match connection::open(&source_path, access, settings).await {
         Ok(engine) => engine,
         Err(e) => {
-            output.send(ticket, EventKind::Failed(with_usage(e, &source_path)));
+            output.send(ticket, EventKind::Failed(e));
             return;
         }
     };
@@ -132,7 +124,20 @@ pub(super) async fn worker(
     if !output.send(ticket, EventKind::Opened(engine.coordination)) {
         return;
     }
-    let mut worker = Worker::new(&source_path, &engine, access, settings, &output);
+    let mut worker = Worker {
+        path: &source_path,
+        db: &engine.db,
+        editor: &engine.editor,
+        browse: &engine.browse,
+        access,
+        settings,
+        output: &output,
+        uncertain: false,
+        depot: Default::default(),
+        dirty_data: false,
+        dirty_schema: false,
+        assistant: None,
+    };
     let backup = worker.serve(ticket, &rx, &mut watch).await;
     drop(worker);
     let Engine {
@@ -166,7 +171,6 @@ struct Worker<'a> {
     access: Access,
     settings: ConnectionSettings,
     output: &'a Output,
-    commits: edits::CommitState,
     uncertain: bool,
     depot: crate::values::Depot,
     dirty_data: bool,
@@ -174,29 +178,6 @@ struct Worker<'a> {
     assistant: Option<Connection>,
 }
 impl<'a> Worker<'a> {
-    fn new(
-        path: &'a Path,
-        engine: &'a Engine,
-        access: Access,
-        settings: ConnectionSettings,
-        output: &'a Output,
-    ) -> Self {
-        Self {
-            path,
-            db: &engine.db,
-            editor: &engine.editor,
-            browse: &engine.browse,
-            access,
-            settings,
-            output,
-            commits: edits::CommitState::default(),
-            uncertain: false,
-            depot: crate::values::Depot::default(),
-            dirty_data: false,
-            dirty_schema: false,
-            assistant: None,
-        }
-    }
     /// Answers requests until close, returning a prepared backup to publish
     /// once the engine has closed.
     async fn serve(
@@ -260,6 +241,10 @@ impl<'a> Worker<'a> {
         let connection = self.assistant.as_ref().expect("connected above");
         crate::assistant::run(connection, tool, ticket.request, &self.output.discard).await
     }
+    /// The persistent editor's state, which every result reports, browse reads included.
+    fn transaction(&self) -> TransactionState {
+        state(self.editor)
+    }
     /// Refuses further work after an outcome the session could not confirm.
     fn settled(&self, action: &str) -> Result<(), Failure> {
         if self.uncertain {
@@ -293,28 +278,6 @@ impl<'a> Worker<'a> {
             self.dirty_data = false;
             self.dirty_schema = false;
         }
-    }
-    async fn commit_edits(
-        &mut self,
-        ticket: Ticket,
-        batch: tursobench_core::DraftBatch,
-    ) -> EventKind {
-        use tursobench_core::CommitOutcome;
-        if self.uncertain {
-            return EventKind::EditsCommitted(CommitOutcome::Unknown(Failure {
-                kind: tursobench_core::ErrorKind::Unknown,
-                message: "Prior outcome UNKNOWN; reopen before committing".into(),
-            }));
-        }
-        let outcome = self
-            .commits
-            .run(edits::commit(self.db, self.access, self.settings, batch))
-            .await;
-        self.uncertain |= matches!(&outcome, CommitOutcome::Unknown(_));
-        if matches!(outcome, CommitOutcome::Committed { .. }) {
-            self.output.invalidated(ticket, false);
-        }
-        EventKind::EditsCommitted(outcome)
     }
     /// Streams query-shaped requests through `execute`; `answer` handles the rest.
     async fn dispatch(
@@ -350,9 +313,21 @@ impl<'a> Worker<'a> {
                     .await?
             }
             Operation::Profile(request) => self.profile(&request).await?,
-            Operation::Diagnostic(kind) => self.diagnostic(kind).await?,
-            Operation::Count(name) => self.count(&name),
-            Operation::Definition(name) => self.definition(name),
+            Operation::Diagnostic(kind) => {
+                let sql = inspection::diagnostic(self.browse, kind).await?;
+                Query::read(self.browse, sql, vec![].into())
+            }
+            Operation::Count(name) => {
+                let sql = format!(
+                    "SELECT count(*) AS row_count FROM {}",
+                    quote_identifier(&name)
+                );
+                Query::read(self.browse, sql, vec![].into())
+            }
+            Operation::Definition(name) => {
+                let sql = "SELECT sql FROM sqlite_schema WHERE name=?1".into();
+                Query::read(self.browse, sql, vec![Value::Text(name)].into())
+            }
             Operation::Schema => self.catalog(),
             Operation::Explain {
                 sql,
@@ -382,18 +357,19 @@ impl<'a> Worker<'a> {
             },
         )
         .await;
-        // Every result reports the persistent editor's state, including browse/diagnostics.
-        completion.transaction = state(self.editor);
+        completion.transaction = self.transaction();
         self.note_completion(ticket, effect, &completion);
         Ok(Some(EventKind::Finished(completion)))
     }
     /// Requests answered by one event rather than a streamed result.
     async fn answer(&mut self, ticket: Ticket, operation: Operation) -> Result<EventKind, Failure> {
         match operation {
-            Operation::CaptureSchema => crate::schema_compare::capture(self.browse)
-                .await
-                .map(EventKind::SchemaSnapshot),
-            Operation::Migration { sql, expected } => self.migrate(ticket, sql, &expected).await,
+            Operation::CaptureSchema => self.capture_schema().await,
+            Operation::Migration { sql, expected } => {
+                let guard = Some(expected.as_ref());
+                self.script(ticket, sql, vec![].into(), true, Budget::default(), guard)
+                    .await
+            }
             Operation::Script {
                 sql,
                 parameters,
@@ -404,28 +380,26 @@ impl<'a> Worker<'a> {
                     .await
             }
             Operation::Admin(change) => self.admin(ticket, change).await,
-            Operation::Diagram => diagram::load(self.browse).await.map(EventKind::Diagram),
+            Operation::Diagram => inspection::diagram(self.browse)
+                .await
+                .map(EventKind::Diagram),
             Operation::Inspect(name) => inspection::inspect(self.browse, &name)
                 .await
                 .map(EventKind::Inspection),
-            Operation::CommitEdits(batch) => Ok(self.commit_edits(ticket, batch).await),
+            Operation::CommitEdits(batch) => {
+                let commit = edits::commit(self.db, self.access, self.settings, batch);
+                let outcome = edits::guarded(&mut self.uncertain, commit).await;
+                if matches!(outcome, CommitOutcome::Committed { .. }) {
+                    self.output.invalidated(ticket, false);
+                }
+                Ok(EventKind::EditsCommitted(outcome))
+            }
             Operation::ReadValue {
                 handle,
                 offset,
                 bytes,
-            } => {
-                let (bytes, total) = self.depot.read(handle, offset, bytes)?;
-                Ok(EventKind::ValueChunk {
-                    handle,
-                    offset,
-                    bytes,
-                    total,
-                })
-            }
-            Operation::SaveValue { handle, path } => {
-                self.depot.save(handle, &path)?;
-                Ok(EventKind::ValueSaved(path.display().to_string()))
-            }
+            } => self.depot.read(handle, offset, bytes),
+            Operation::SaveValue { handle, path } => self.depot.save(handle, &path),
             Operation::PreviewImport {
                 path,
                 format,

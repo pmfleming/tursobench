@@ -19,9 +19,13 @@ fn fixture() -> (tempfile::TempDir, PathBuf) {
 fn run(s: &Session, n: u64, sql: &str, budget: Budget) -> ResultSet {
     common::run(s, n, execute(sql, budget)).result
 }
+/// `sql` under the default budget.
+fn query(s: &Session, n: u64, sql: &str) -> ResultSet {
+    run(s, n, sql, Budget::default())
+}
 fn count_items(s: &Session, n: u64, filter: &str) -> Vec<Vec<Value>> {
     let sql = format!("SELECT count(*) FROM items{filter}");
-    run(s, n, &sql, Budget::default()).rows
+    query(s, n, &sql).rows
 }
 /// The next terminal completion, skipping streamed rows and metadata.
 fn finished(s: &Session) -> tursobench_core::Completion {
@@ -47,32 +51,26 @@ fn deadlines_interrupt_cpu_queries_and_writes_and_connections_recover() {
     .unwrap();
     assert!(matches!(common::event(&s).kind, EventKind::Opened(_)));
     let started = std::time::Instant::now();
-    let result = run(&s, 1, BILLION_SUM, Budget::default());
+    let result = query(&s, 1, BILLION_SUM);
     assert_eq!(
         result.completion.unwrap().error.unwrap().kind,
         ErrorKind::Interrupted
     );
     assert!(started.elapsed() < Duration::from_secs(3));
     assert_eq!(
-        run(&s, 2, "SELECT 42", Budget::default()).rows,
+        query(&s, 2, "SELECT 42").rows,
         vec![vec![Value::Integer(42)]]
     );
-    run(&s, 3, "BEGIN", Budget::default());
-    run(
-        &s,
-        4,
-        "INSERT INTO items VALUES(3,'pending')",
-        Budget::default(),
-    );
-    let result = run(&s, 5, BILLION_SUM, Budget::default());
+    query(&s, 3, "BEGIN");
+    query(&s, 4, "INSERT INTO items VALUES(3,'pending')");
+    let result = query(&s, 5, BILLION_SUM);
     assert!(result.completion.unwrap().error.is_some());
-    run(&s, 6, "ROLLBACK", Budget::default());
+    query(&s, 6, "ROLLBACK");
     assert_eq!(count_items(&s, 7, ""), vec![vec![Value::Integer(2)]]);
-    let result = run(
+    let result = query(
         &s,
         8,
         "WITH RECURSIVE n(x) AS (VALUES(10) UNION ALL SELECT x+1 FROM n WHERE x<100000000) INSERT INTO items SELECT x,'large' FROM n",
-        Budget::default(),
     );
     assert_eq!(
         result.completion.unwrap().error.unwrap().kind,
@@ -182,11 +180,10 @@ fn parser_not_semicolon_splitting() {
 fn mid_result_engine_error_keeps_the_unsent_successful_rows() {
     let (_dir, path) = fixture();
     let s = common::opened(&path, Access::ReadOnly);
-    let result = run(
+    let result = query(
         &s,
         1,
         "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<100) SELECT x,json_extract(CASE WHEN x=70 THEN 'bad' ELSE '{}' END,'$') FROM n",
-        Budget::default(),
     );
     assert!(result.completion.unwrap().error.is_some());
     assert_eq!(result.rows.len(), 69);
@@ -275,22 +272,22 @@ fn assert_page_budgets(s: &Session) {
 fn real_readonly_bounded_results_and_cleanup() {
     let (_dir, path) = fixture();
     let s = common::opened(&path, Access::ReadOnly);
-    let r = run(&s, 1, "SELECT * FROM items ORDER BY id", Budget::default());
+    let r = query(&s, 1, "SELECT * FROM items ORDER BY id");
     assert_eq!(r.rows.len(), 2);
     assert_eq!(r.rows[1][1], Value::Null);
     assert_eq!(r.completion.unwrap().delivery, Delivery::Complete);
-    let r = run(&s, 2, "DELETE FROM items", Budget::default());
+    let r = query(&s, 2, "DELETE FROM items");
     assert_eq!(
         r.completion.unwrap().error.unwrap().kind,
         ErrorKind::ReadOnly
     );
     assert_row_limits(&s);
-    let r = run(&s, 4, "SELECT zeroblob(100000)", Budget::default());
+    let r = query(&s, 4, "SELECT zeroblob(100000)");
     assert!(
         matches!(&r.rows[0][0],Value::Deferred(cell) if cell.bytes==100000 && cell.handle.is_some())
     );
     assert_eq!(r.completion.unwrap().delivery, Delivery::Complete);
-    let r = run(&s, 5, "SELECT * FROM items WHERE 0", Budget::default());
+    let r = query(&s, 5, "SELECT * FROM items WHERE 0");
     assert_eq!(r.columns.len(), 2);
     assert!(r.rows.is_empty());
     assert_page_budgets(&s);
@@ -355,7 +352,7 @@ fn request_ids_are_reusable_once_their_terminal_event_is_visible() {
     // Hold the worker inside the wake callback after its terminal event is visible.
     // Reusing the ID must succeed even before that callback returns.
     armed.store(true, Ordering::Release);
-    let failed = run(&s, 30, "?", Budget::default());
+    let failed = query(&s, 30, "?");
     assert!(failed.completion.unwrap().error.is_some());
     let reused = s.submit(Request {
         ticket: s.ticket(30, 0),
