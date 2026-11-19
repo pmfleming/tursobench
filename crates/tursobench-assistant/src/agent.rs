@@ -2,6 +2,7 @@
 //! the UI sends prompts and receives protocol-neutral updates.
 use serde_json::Value as Json;
 use std::{
+    collections::VecDeque,
     io::{self, BufRead, BufReader, Read, Write},
     path::PathBuf,
     process::{Child, ChildStdin, Command, Stdio},
@@ -122,6 +123,57 @@ impl Link {
         line.push('\n');
         stdin.write_all(line.as_bytes())?;
         stdin.flush()
+    }
+    /// Write `message`, or end the turn saying `agent` cannot be reached.
+    pub fn write_or_end_turn(&mut self, message: &Json, agent: &str) -> bool {
+        let written = self.write(message);
+        if let Err(e) = &written {
+            self.emit(Update::TurnEnded {
+                error: Some(format!("Could not reach {agent}: {e}")),
+            });
+        }
+        written.is_ok()
+    }
+}
+
+/// Prompts that wait for a conversation to start, which it may never do.
+#[derive(Default)]
+pub(crate) struct Queue {
+    prompts: VecDeque<String>,
+    failed: bool,
+}
+impl Queue {
+    pub fn push(&mut self, prompt: String) {
+        self.prompts.push_back(prompt);
+    }
+    pub fn pop(&mut self) -> Option<String> {
+        self.prompts.pop_front()
+    }
+    /// The conversation will not start: end the turn with `error`, and every
+    /// later prompt with [`Queue::refuse`].
+    pub fn fail(&mut self, link: &Link, error: String) {
+        self.failed = true;
+        self.prompts.clear();
+        link.emit(Update::TurnEnded { error: Some(error) });
+    }
+    /// Once the conversation failed, end each waiting turn with `error`;
+    /// whether it failed.
+    pub fn refuse(&mut self, link: &Link, error: &str) -> bool {
+        if self.failed {
+            for _ in self.prompts.drain(..) {
+                link.emit(Update::TurnEnded {
+                    error: Some(error.into()),
+                });
+            }
+        }
+        self.failed
+    }
+    /// Drop the waiting prompts, ending their turn.
+    pub fn cancel(&mut self, link: &Link) {
+        if !self.prompts.is_empty() {
+            self.prompts.clear();
+            link.emit(Update::TurnEnded { error: None });
+        }
     }
 }
 

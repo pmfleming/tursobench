@@ -7,9 +7,9 @@
 //! shell, web search, apps, plugins, browser and computer use are switched off;
 //! its MCP servers are replaced by TursoBench's alone. TursoBench never calls
 //! the login, logout, account or token methods.
-use crate::agent::{Input, Link, Privacy, Protocol, Spec, Update, content_text, tool_name};
+use crate::agent::{Input, Link, Privacy, Protocol, Queue, Spec, Update, content_text, tool_name};
 use serde_json::{Value as Json, json};
-use std::{collections::VecDeque, path::PathBuf, sync::mpsc::Receiver};
+use std::{path::PathBuf, sync::mpsc::Receiver};
 
 const INITIALIZE: u64 = 1;
 const START_THREAD: u64 = 2;
@@ -100,9 +100,8 @@ struct State {
     starting: Option<u64>,
     turn: Option<String>,
     cancel_requested: bool,
-    queued: VecDeque<String>,
+    queued: Queue,
     next_id: u64,
-    failed: bool,
     /// Text was shown since the last tool, so a new message needs a break.
     spoke: bool,
     /// Messages whose text arrived as deltas.
@@ -125,15 +124,12 @@ pub(crate) fn drive(spec: &Spec, input: &Receiver<Input>, link: &mut Link) {
             "clientInfo": {"name": "tursobench", "title": "TursoBench", "version": env!("CARGO_PKG_VERSION")},
         },
     });
-    if let Err(e) = link.write(&initialize) {
-        link.emit(Update::TurnEnded {
-            error: Some(format!("Could not reach Codex: {e}")),
-        });
+    if !link.write_or_end_turn(&initialize, "Codex") {
         return;
     }
     while let Ok(message) = input.recv() {
         match message {
-            Input::Prompt(text) => state.queued.push_back(text),
+            Input::Prompt(text) => state.queued.push(text),
             Input::Cancel => cancel(&mut state, link),
             Input::Effort(level) => state.effort = level,
             Input::Line(line) => {
@@ -161,22 +157,16 @@ fn cancel(state: &mut State, link: &mut Link) {
         }
         // The turn id is not known yet; interrupt as soon as it is.
         _ if state.starting.is_some() => state.cancel_requested = true,
-        _ if !state.queued.is_empty() => {
-            state.queued.clear();
-            link.emit(Update::TurnEnded { error: None });
-        }
-        _ => {}
+        _ => state.queued.cancel(link),
     }
 }
 
 /// Start the next queued prompt once a thread exists and no turn is running.
 fn flush(state: &mut State, link: &mut Link) {
-    if state.failed {
-        while state.queued.pop_front().is_some() {
-            link.emit(Update::TurnEnded {
-                error: Some("Codex could not start a conversation".into()),
-            });
-        }
+    if state
+        .queued
+        .refuse(link, "Codex could not start a conversation")
+    {
         return;
     }
     let Some(thread) = state.thread.clone() else {
@@ -185,7 +175,7 @@ fn flush(state: &mut State, link: &mut Link) {
     if state.starting.is_some() || state.turn.is_some() {
         return;
     }
-    let Some(text) = state.queued.pop_front() else {
+    let Some(text) = state.queued.pop() else {
         return;
     };
     state.next_id += 1;
@@ -205,11 +195,8 @@ fn flush(state: &mut State, link: &mut Link) {
         "method": "turn/start",
         "params": params,
     });
-    if let Err(e) = link.write(&request) {
+    if !link.write_or_end_turn(&request, "Codex") {
         state.starting = None;
-        link.emit(Update::TurnEnded {
-            error: Some(format!("Could not reach Codex: {e}")),
-        });
     }
 }
 
@@ -243,7 +230,7 @@ fn response(spec: &Spec, state: &mut State, link: &mut Link, id: Option<u64>, me
     match id {
         Some(INITIALIZE) => {
             if let Some(error) = error {
-                return fail(state, link, error);
+                return state.queued.fail(link, error);
             }
             let _ = link.write(&json!({"jsonrpc": "2.0", "method": "initialized"}));
             let _ = link.write(&json!({
@@ -255,10 +242,12 @@ fn response(spec: &Spec, state: &mut State, link: &mut Link, id: Option<u64>, me
         }
         Some(START_THREAD) => {
             if let Some(error) = error {
-                return fail(state, link, error);
+                return state.queued.fail(link, error);
             }
             let Some(thread) = result["thread"]["id"].as_str() else {
-                return fail(state, link, "Codex returned no conversation".into());
+                return state
+                    .queued
+                    .fail(link, "Codex returned no conversation".into());
             };
             state.thread = Some(thread.to_owned());
             state.original = result["reasoningEffort"].as_str().map(str::to_owned);
@@ -314,34 +303,16 @@ fn thread_params(spec: &Spec) -> Json {
     params
 }
 
-fn fail(state: &mut State, link: &mut Link, error: String) {
-    state.failed = true;
-    state.queued.clear();
-    link.emit(Update::TurnEnded { error: Some(error) });
-}
-
 fn notification(state: &mut State, method: &str, params: &Json) -> Vec<Update> {
     match method {
         "turn/started" => {
             state.turn = params["turn"]["id"].as_str().map(str::to_owned);
             vec![]
         }
-        "item/agentMessage/delta" => {
-            let Some(delta) = params["delta"].as_str().filter(|d| !d.is_empty()) else {
-                return vec![];
-            };
-            let item = params["itemId"].as_str().unwrap_or_default().to_owned();
-            let mut updates = vec![];
-            if !state.streamed.contains(&item) {
-                if state.spoke {
-                    updates.push(Update::Text("\n\n".into()));
-                }
-                state.streamed.push(item);
-            }
-            state.spoke = true;
-            updates.push(Update::Text(delta.to_owned()));
-            updates
-        }
+        "item/agentMessage/delta" => match params["delta"].as_str().filter(|d| !d.is_empty()) {
+            Some(delta) => say(state, params["itemId"].as_str().unwrap_or_default(), delta),
+            None => vec![],
+        },
         "item/reasoning/summaryTextDelta" => params["delta"]
             .as_str()
             .filter(|d| !d.is_empty())
@@ -350,59 +321,75 @@ fn notification(state: &mut State, method: &str, params: &Json) -> Vec<Update> {
             .collect(),
         "item/started" => item_started(state, &params["item"]),
         "item/completed" => item_completed(state, &params["item"]),
-        "error" => {
-            let message = params["error"]["message"]
-                .as_str()
-                .unwrap_or("Codex reported an error")
-                .to_owned();
-            if params["willRetry"].as_bool().unwrap_or(false) {
-                vec![Update::Notice(format!("{message} (Codex is retrying)"))]
-            } else {
-                state.error = Some(message);
-                vec![]
-            }
-        }
-        "turn/completed" => {
-            let turn = &params["turn"];
-            state.turn = None;
-            state.starting = None;
-            state.cancel_requested = false;
-            let error = match turn["status"].as_str() {
-                Some("failed") => Some(
-                    turn["error"]["message"]
-                        .as_str()
-                        .map(str::to_owned)
-                        .or_else(|| state.error.take())
-                        .unwrap_or_else(|| "The turn failed".into()),
-                ),
-                _ => None,
-            };
-            vec![Update::TurnEnded { error }]
-        }
-        "mcpServer/startupStatus/updated"
-            if params["name"] == crate::relay::SERVER_NAME
-                && !matches!(params["status"].as_str(), Some("starting" | "ready")) =>
-        {
-            let reason = params["error"]
-                .as_str()
-                .or(params["failureReason"].as_str())
-                .unwrap_or("no reason given");
-            vec![Update::Notice(format!(
-                "TursoBench's tools did not start in Codex ({}): {reason}",
-                params["status"].as_str().unwrap_or("unknown")
-            ))]
-        }
-        "account/rateLimits/updated" => {
-            let used = params["rateLimits"]["primary"]["usedPercent"].as_f64();
-            match used {
-                Some(used) if used >= 90.0 => vec![Update::Notice(format!(
-                    "Your plan's Codex usage is at {used:.0}%"
-                ))],
-                _ => vec![],
-            }
-        }
+        "error" => reported_error(state, params).into_iter().collect(),
+        "turn/completed" => vec![turn_completed(state, &params["turn"])],
+        "mcpServer/startupStatus/updated" => tools_failed(params).into_iter().collect(),
+        "account/rateLimits/updated" => params["rateLimits"]["primary"]["usedPercent"]
+            .as_f64()
+            .filter(|used| *used >= 90.0)
+            .map(|used| Update::Notice(format!("Your plan's Codex usage is at {used:.0}%")))
+            .into_iter()
+            .collect(),
         _ => vec![],
     }
+}
+
+/// Message text, after a paragraph break when it follows other text.
+fn say(state: &mut State, item: &str, text: &str) -> Vec<Update> {
+    let mut updates = vec![];
+    if !state.streamed.iter().any(|s| s == item) {
+        if state.spoke {
+            updates.push(Update::Text("\n\n".into()));
+        }
+        state.streamed.push(item.to_owned());
+    }
+    state.spoke = true;
+    updates.push(Update::Text(text.to_owned()));
+    updates
+}
+
+/// A retried error is shown at once; another one ends the turn if it fails.
+fn reported_error(state: &mut State, params: &Json) -> Option<Update> {
+    let message = params["error"]["message"]
+        .as_str()
+        .unwrap_or("Codex reported an error")
+        .to_owned();
+    if params["willRetry"].as_bool().unwrap_or(false) {
+        return Some(Update::Notice(format!("{message} (Codex is retrying)")));
+    }
+    state.error = Some(message);
+    None
+}
+
+fn turn_completed(state: &mut State, turn: &Json) -> Update {
+    state.turn = None;
+    state.starting = None;
+    state.cancel_requested = false;
+    let error = (turn["status"] == "failed").then(|| {
+        turn["error"]["message"]
+            .as_str()
+            .map(str::to_owned)
+            .or_else(|| state.error.take())
+            .unwrap_or_else(|| "The turn failed".into())
+    });
+    Update::TurnEnded { error }
+}
+
+/// TursoBench's relay did not start in Codex.
+fn tools_failed(params: &Json) -> Option<Update> {
+    if params["name"] != crate::relay::SERVER_NAME
+        || matches!(params["status"].as_str(), Some("starting" | "ready"))
+    {
+        return None;
+    }
+    let reason = params["error"]
+        .as_str()
+        .or(params["failureReason"].as_str())
+        .unwrap_or("no reason given");
+    Some(Update::Notice(format!(
+        "TursoBench's tools did not start in Codex ({}): {reason}",
+        params["status"].as_str().unwrap_or("unknown")
+    )))
 }
 
 fn item_started(state: &mut State, item: &Json) -> Vec<Update> {
@@ -463,18 +450,10 @@ fn item_completed(state: &mut State, item: &Json) -> Vec<Update> {
         }
         // Text that did not arrive as deltas still reaches the panel.
         Some("agentMessage") if !state.streamed.iter().any(|s| s == id) => {
-            let text = item["text"].as_str().unwrap_or_default();
-            if text.is_empty() {
-                return vec![];
+            match item["text"].as_str().filter(|t| !t.is_empty()) {
+                Some(text) => say(state, id, text),
+                None => vec![],
             }
-            let mut updates = vec![];
-            if state.spoke {
-                updates.push(Update::Text("\n\n".into()));
-            }
-            state.spoke = true;
-            state.streamed.push(id.to_owned());
-            updates.push(Update::Text(text.to_owned()));
-            updates
         }
         _ => vec![],
     }
@@ -536,7 +515,7 @@ fn request(link: &mut Link, method: &str, id: Json, params: &Json) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Json, Privacy, State, Update, json, notification, spec, thread_params};
 
     #[test]
     fn deltas_tools_and_turns_become_updates() {

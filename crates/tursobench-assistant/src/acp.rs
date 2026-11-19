@@ -5,9 +5,12 @@
 //! agent requests for them with "method not found", grants permission only for
 //! its own tools and declines everything else. It never calls `authenticate`:
 //! the separate account module starts vendor-owned sign-in flows.
-use crate::agent::{Input, Link, Spec, Update, content_text, tool_name};
+use crate::{
+    account::config_option,
+    agent::{Input, Link, Queue, Spec, Update, content_text, tool_name},
+};
 use serde_json::{Value as Json, json};
-use std::{collections::VecDeque, sync::mpsc::Receiver};
+use std::sync::mpsc::Receiver;
 
 const PROTOCOL_VERSION: u64 = 1;
 const INITIALIZE: u64 = 1;
@@ -21,10 +24,9 @@ struct State {
     session: Option<String>,
     next_id: u64,
     prompt: Option<u64>,
-    queued: VecDeque<String>,
+    queued: Queue,
     /// The standing instructions travel with the first prompt.
     instructed: bool,
-    failed: bool,
     mode_pending: bool,
     model_pending: bool,
     original_model: Option<String>,
@@ -56,16 +58,13 @@ pub(crate) fn drive(spec: &Spec, input: &Receiver<Input>, link: &mut Link) {
             "clientInfo": {"name": "tursobench", "title": "TursoBench", "version": env!("CARGO_PKG_VERSION")},
         },
     });
-    if let Err(e) = link.write(&initialize) {
-        link.emit(Update::TurnEnded {
-            error: Some(format!("Could not reach the agent: {e}")),
-        });
+    if !link.write_or_end_turn(&initialize, "the agent") {
         return;
     }
     while let Ok(message) = input.recv() {
         match message {
             Input::Prompt(text) => {
-                state.queued.push_back(text);
+                state.queued.push(text);
                 flush(spec, &mut state, link);
             }
             Input::Effort(level) => {
@@ -81,9 +80,8 @@ pub(crate) fn drive(spec: &Spec, input: &Receiver<Input>, link: &mut Link) {
                         "method": "session/cancel",
                         "params": {"sessionId": session},
                     }));
-                } else if !state.queued.is_empty() {
-                    state.queued.clear();
-                    link.emit(Update::TurnEnded { error: None });
+                } else {
+                    state.queued.cancel(link);
                 }
             }
             Input::Line(line) => {
@@ -100,12 +98,10 @@ pub(crate) fn drive(spec: &Spec, input: &Receiver<Input>, link: &mut Link) {
 
 /// Send the next queued prompt once a session exists and no turn is running.
 fn flush(spec: &Spec, state: &mut State, link: &mut Link) {
-    if state.failed {
-        while state.queued.pop_front().is_some() {
-            link.emit(Update::TurnEnded {
-                error: Some("The agent could not start a session".into()),
-            });
-        }
+    if state
+        .queued
+        .refuse(link, "The agent could not start a session")
+    {
         return;
     }
     let Some(session) = state.session.clone() else {
@@ -114,7 +110,7 @@ fn flush(spec: &Spec, state: &mut State, link: &mut Link) {
     if state.prompt.is_some() || state.mode_pending || state.model_pending || state.effort_pending {
         return;
     }
-    let Some(mut text) = state.queued.pop_front() else {
+    let Some(mut text) = state.queued.pop() else {
         return;
     };
     if !state.instructed && !spec.system_prompt.is_empty() {
@@ -133,11 +129,8 @@ fn flush(spec: &Spec, state: &mut State, link: &mut Link) {
         "method": "session/prompt",
         "params": {"sessionId": session, "prompt": [{"type": "text", "text": text}]},
     });
-    if let Err(e) = link.write(&request) {
+    if !link.write_or_end_turn(&request, "the agent") {
         state.prompt = None;
-        link.emit(Update::TurnEnded {
-            error: Some(format!("Could not reach the agent: {e}")),
-        });
     }
 }
 
@@ -157,8 +150,9 @@ fn handle(spec: &Spec, state: &mut State, link: &mut Link, message: &Json) {
     }
 }
 
-fn response(spec: &Spec, state: &mut State, link: &mut Link, id: Option<u64>, message: &Json) {
-    let error = message.get("error").map(|e| {
+/// An error reply's message, with the agent's detail when it gives one.
+fn error_text(message: &Json) -> Option<String> {
+    message.get("error").map(|e| {
         let text = e["message"]
             .as_str()
             .unwrap_or("The agent reported an error");
@@ -170,139 +164,169 @@ fn response(spec: &Spec, state: &mut State, link: &mut Link, id: Option<u64>, me
             Some(detail) if !detail.is_empty() => format!("{text}: {detail}"),
             _ => text.to_owned(),
         }
-    });
-    let result = &message["result"];
+    })
+}
+
+/// Why a turn that ended without an error reply still did not answer.
+const STOP_REASONS: &[(&str, &str)] = &[
+    ("refusal", "The agent declined to answer"),
+    ("max_tokens", "The reply reached the agent's length limit"),
+    (
+        "max_turn_requests",
+        "The agent reached its limit of steps for one turn",
+    ),
+];
+
+fn response(spec: &Spec, state: &mut State, link: &mut Link, id: Option<u64>, message: &Json) {
     match id {
-        Some(INITIALIZE) => {
-            if let Some(error) = error {
-                return fail(state, link, error);
-            }
-            let mut servers = vec![];
-            if let Some(mcp) = &spec.mcp {
-                servers.push(json!({
-                    "name": crate::relay::SERVER_NAME,
-                    "command": mcp.command,
-                    "args": mcp.args,
-                    "env": mcp.env.iter().map(|(name, value)| json!({"name": name, "value": value})).collect::<Vec<_>>(),
-                }));
-            }
-            let _ = link.write(&json!({
-                "jsonrpc": "2.0",
-                "id": NEW_SESSION,
-                "method": "session/new",
-                "params": {"cwd": spec.cwd, "mcpServers": servers},
-            }));
+        Some(SET_MODEL) => state.model_pending = false,
+        Some(SET_EFFORT) => state.effort_pending = false,
+        Some(SET_MODE) => state.mode_pending = false,
+        _ => {}
+    }
+    let result = &message["result"];
+    match (id, error_text(message)) {
+        (Some(INITIALIZE), None) => new_session(spec, link),
+        (Some(INITIALIZE), Some(error)) => state.queued.fail(link, error),
+        (Some(NEW_SESSION), None) => session_started(spec, state, link, result),
+        (Some(NEW_SESSION), Some(error)) => state.queued.fail(link, sign_in_hint(message, error)),
+        (Some(SET_MODEL), Some(error)) => {
+            link.emit(Update::Ready {
+                model: state.original_model.clone(),
+            });
+            link.emit(Update::Notice(format!(
+                "The agent kept its default model: {error}"
+            )));
         }
-        Some(NEW_SESSION) => {
-            if let Some(error) = error {
-                let hint = if message["error"]["code"] == -32000
-                    || error.to_lowercase().contains("auth")
-                {
-                    format!(
-                        "{error}. Sign in with the agent's own CLI in a terminal, then try again."
-                    )
-                } else {
-                    error
-                };
-                return fail(state, link, hint);
-            }
-            let Some(session) = result["sessionId"].as_str() else {
-                return fail(state, link, "The agent returned no session".into());
-            };
-            state.session = Some(session.to_owned());
-            // Never inherit Auto when the agent offers the normal approval mode.
-            let mode_option = result["configOptions"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .find(|o| {
-                    o["category"] == "mode"
-                        && o["options"]
-                            .as_array()
-                            .is_some_and(|options| options.iter().any(|v| v["value"] == "default"))
-                });
-            if let Some(config) = mode_option.and_then(|o| o["id"].as_str()) {
-                state.mode_pending = true;
-                if link.write(&json!({"jsonrpc":"2.0","id":SET_MODE,"method":"session/set_config_option","params":{"sessionId":session,"configId":config,"value":"default"}})).is_err() {
-                    return fail(state, link, "Could not select the agent's default permission mode".into());
-                }
-            } else if result["modes"]["availableModes"]
-                .as_array()
-                .is_some_and(|modes| modes.iter().any(|m| m["id"] == "default"))
-            {
-                state.mode_pending = true;
-                let _ = link.write(&json!({"jsonrpc": "2.0", "id": SET_MODE, "method": "session/set_mode", "params": {"sessionId": session, "modeId": "default"}}));
-            }
-            state.original_model = result["configOptions"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .find(|o| o["category"] == "model")
-                .and_then(|o| o["currentValue"].as_str())
-                .or_else(|| result["models"]["currentModelId"].as_str())
-                .map(str::to_owned);
-            let thought = result["configOptions"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .find(|o| o["category"] == "thought_level");
-            state.effort_option = thought.and_then(|o| o["id"].as_str()).map(str::to_owned);
-            state.original_effort = thought
-                .and_then(|o| o["currentValue"].as_str())
-                .map(str::to_owned);
-            state.effort_values = crate::account::acp_efforts(result)
-                .into_iter()
-                .map(|e| e.id)
-                .collect();
-            if state.effort.is_some() {
-                apply_effort(state, link);
-            }
-            let model = choose_model(spec, state, link, result);
-            link.emit(Update::Ready { model });
+        (Some(SET_EFFORT), Some(error)) => link.emit(Update::Notice(format!(
+            "The agent kept its reasoning level: {error}"
+        ))),
+        (Some(SET_MODE), Some(error)) => {
+            let error = format!("Could not select the agent's default permission mode: {error}");
+            state.queued.fail(link, error);
         }
-        Some(SET_MODEL) => {
-            state.model_pending = false;
-            if let Some(error) = error {
-                link.emit(Update::Ready {
-                    model: state.original_model.clone(),
-                });
-                link.emit(Update::Notice(format!(
-                    "The agent kept its default model: {error}"
-                )));
-            }
-        }
-        Some(SET_EFFORT) => {
-            state.effort_pending = false;
-            if let Some(error) = error {
-                link.emit(Update::Notice(format!(
-                    "The agent kept its reasoning level: {error}"
-                )));
-            }
-        }
-        Some(SET_MODE) => {
-            state.mode_pending = false;
-            if let Some(error) = error {
-                fail(
-                    state,
-                    link,
-                    format!("Could not select the agent's default permission mode: {error}"),
-                );
-            }
-        }
-        Some(other) if Some(other) == state.prompt => {
+        (Some(other), error) if Some(other) == state.prompt => {
             state.prompt = None;
-            let error = error.or_else(|| match result["stopReason"].as_str() {
-                Some("refusal") => Some("The agent declined to answer".into()),
-                Some("max_tokens") => Some("The reply reached the agent's length limit".into()),
-                Some("max_turn_requests") => {
-                    Some("The agent reached its limit of steps for one turn".into())
-                }
-                _ => None,
+            let error = error.or_else(|| {
+                let reason = result["stopReason"].as_str()?;
+                let (_, text) = STOP_REASONS.iter().find(|(r, _)| *r == reason)?;
+                Some((*text).to_owned())
             });
             link.emit(Update::TurnEnded { error });
         }
         _ => {}
     }
+}
+
+/// A session the agent refused, most often for want of a sign-in.
+fn sign_in_hint(message: &Json, error: String) -> String {
+    if message["error"]["code"] == -32000 || error.to_lowercase().contains("auth") {
+        format!("{error}. Sign in with the agent's own CLI in a terminal, then try again.")
+    } else {
+        error
+    }
+}
+
+/// A session whose only MCP server is TursoBench's relay.
+fn new_session(spec: &Spec, link: &mut Link) {
+    let servers: Vec<_> = spec
+        .mcp
+        .iter()
+        .map(|mcp| {
+            json!({
+                "name": crate::relay::SERVER_NAME,
+                "command": mcp.command,
+                "args": mcp.args,
+                "env": mcp.env.iter().map(|(name, value)| json!({"name": name, "value": value})).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    let _ = link.write(&json!({
+        "jsonrpc": "2.0",
+        "id": NEW_SESSION,
+        "method": "session/new",
+        "params": {"cwd": spec.cwd, "mcpServers": servers},
+    }));
+}
+
+/// Adopt the new session: keep the normal approval mode, then apply the
+/// chosen reasoning level and model.
+fn session_started(spec: &Spec, state: &mut State, link: &mut Link, result: &Json) {
+    let Some(session) = result["sessionId"].as_str() else {
+        return state
+            .queued
+            .fail(link, "The agent returned no session".into());
+    };
+    state.session = Some(session.to_owned());
+    if let Err(error) = default_mode(state, link, session, result) {
+        return state.queued.fail(link, error);
+    }
+    let model = config_option(result, "model");
+    state.original_model = model
+        .and_then(|o| o["currentValue"].as_str())
+        .or_else(|| result["models"]["currentModelId"].as_str())
+        .map(str::to_owned);
+    let thought = config_option(result, "thought_level");
+    state.effort_option = thought.and_then(|o| o["id"].as_str()).map(str::to_owned);
+    state.original_effort = thought
+        .and_then(|o| o["currentValue"].as_str())
+        .map(str::to_owned);
+    state.effort_values = crate::account::acp_efforts(result)
+        .into_iter()
+        .map(|e| e.id)
+        .collect();
+    if state.effort.is_some() {
+        apply_effort(state, link);
+    }
+    let model = choose_model(spec, state, link, result);
+    link.emit(Update::Ready { model });
+}
+
+/// Never inherit Auto when the agent offers the normal approval mode.
+fn default_mode(
+    state: &mut State,
+    link: &mut Link,
+    session: &str,
+    result: &Json,
+) -> Result<(), String> {
+    let mode_option = result["configOptions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|o| {
+            o["category"] == "mode"
+                && o["options"]
+                    .as_array()
+                    .is_some_and(|options| options.iter().any(|v| v["value"] == "default"))
+        });
+    if let Some(config) = mode_option.and_then(|o| o["id"].as_str()) {
+        state.mode_pending = true;
+        return set_config(link, SET_MODE, session, config, "default")
+            .map_err(|_| "Could not select the agent's default permission mode".into());
+    }
+    if result["modes"]["availableModes"]
+        .as_array()
+        .is_some_and(|modes| modes.iter().any(|m| m["id"] == "default"))
+    {
+        state.mode_pending = true;
+        let _ = link.write(&json!({"jsonrpc": "2.0", "id": SET_MODE, "method": "session/set_mode", "params": {"sessionId": session, "modeId": "default"}}));
+    }
+    Ok(())
+}
+
+fn set_config(
+    link: &mut Link,
+    id: u64,
+    session: &str,
+    config: &str,
+    value: &str,
+) -> std::io::Result<()> {
+    link.write(&json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "session/set_config_option",
+        "params": {"sessionId": session, "configId": config, "value": value},
+    }))
 }
 
 /// Set the session's `thought_level` to the chosen level, or back to the one
@@ -333,84 +357,57 @@ fn apply_effort(state: &mut State, link: &mut Link) {
         return;
     }
     state.effort_pending = true;
-    let _ = link.write(&json!({
-        "jsonrpc": "2.0",
-        "id": SET_EFFORT,
-        "method": "session/set_config_option",
-        "params": {"sessionId": session, "configId": config, "value": value},
-    }));
-}
-
-fn fail(state: &mut State, link: &mut Link, error: String) {
-    state.failed = true;
-    state.queued.clear();
-    link.emit(Update::TurnEnded { error: Some(error) });
+    let _ = set_config(link, SET_EFFORT, &session, &config, &value);
 }
 
 /// Apply the preferred model through config options or the model list; return
 /// the name of the model in use when the agent says.
 fn choose_model(spec: &Spec, state: &mut State, link: &mut Link, result: &Json) -> Option<String> {
     let session = state.session.clone()?;
-    let wanted = spec
+    let option = config_option(result, "model");
+    let current = option
+        .map_or(&result["models"]["currentModelId"], |o| &o["currentValue"])
+        .as_str()
+        .map(str::to_owned);
+    let Some(wanted) = spec
         .model
         .as_deref()
         .map(str::trim)
-        .filter(|m| !m.is_empty());
-    let option = result["configOptions"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|o| o["category"] == "model");
-    if let Some(option) = option {
-        let current = option["currentValue"].as_str().map(str::to_owned);
-        let Some(wanted) = wanted else { return current };
-        let available = crate::account::acp_models(result);
-        let value = available
-            .iter()
-            .map(|m| m.id.as_str())
-            .find(|v| v.eq_ignore_ascii_case(wanted) || v.contains(wanted));
-        if let (Some(value), Some(config)) = (value, option["id"].as_str()) {
-            state.model_pending = true;
-            let _ = link.write(&json!({
-                "jsonrpc": "2.0",
-                "id": SET_MODEL,
-                "method": "session/set_config_option",
-                "params": {"sessionId": session, "configId": config, "value": value},
-            }));
-            return Some(value.to_owned());
+        .filter(|m| !m.is_empty())
+    else {
+        return current;
+    };
+    let offered = |id: &&str| id.eq_ignore_ascii_case(wanted) || id.contains(wanted);
+    let change = match option {
+        Some(option) => {
+            let models = crate::account::acp_models(result);
+            let value = models.iter().map(|m| m.id.as_str()).find(offered);
+            value.zip(option["id"].as_str()).map(|(value, config)| {
+                let params = json!({"sessionId": session, "configId": config, "value": value});
+                (value.to_owned(), "session/set_config_option", params)
+            })
         }
+        None => result["models"]["availableModels"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|m| m["modelId"].as_str())
+            .find(offered)
+            .map(|model| {
+                let params = json!({"sessionId": session, "modelId": model});
+                (model.to_owned(), "session/set_model", params)
+            }),
+    };
+    let Some((model, method, params)) = change else {
         link.emit(Update::Notice(format!(
             "The agent does not offer the model {wanted}"
         )));
         return current;
-    }
-    let models = &result["models"];
-    let current = models["currentModelId"].as_str().map(str::to_owned);
-    let Some(wanted) = wanted else { return current };
-    let found = models["availableModels"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|m| m["modelId"].as_str())
-        .find(|m| m.eq_ignore_ascii_case(wanted) || m.contains(wanted));
-    match found {
-        Some(model) => {
-            state.model_pending = true;
-            let _ = link.write(&json!({
-                "jsonrpc": "2.0",
-                "id": SET_MODEL,
-                "method": "session/set_model",
-                "params": {"sessionId": session, "modelId": model},
-            }));
-            Some(model.to_owned())
-        }
-        None => {
-            link.emit(Update::Notice(format!(
-                "The agent does not offer the model {wanted}"
-            )));
-            current
-        }
-    }
+    };
+    state.model_pending = true;
+    let _ =
+        link.write(&json!({"jsonrpc": "2.0", "id": SET_MODEL, "method": method, "params": params}));
+    Some(model)
 }
 
 fn request(link: &mut Link, method: &str, id: Json, params: &Json) {
@@ -569,7 +566,7 @@ fn finished(id: &str, update: &Json) -> Option<Update> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Update, is_ours, json, session_update, short_title, tool_name};
     #[test]
     fn updates_and_titles_map_to_tursobench_tools() {
         let updates = session_update(&json!({
@@ -587,49 +584,59 @@ mod tests {
                 input: json!({"sql": "SELECT 1"})
             }]
         );
-        let done = session_update(&json!({
-            "sessionUpdate": "tool_call_update",
-            "toolCallId": "c1",
-            "status": "completed",
-            "content": [{"type": "content", "content": {"type": "text", "text": "{\"rows\":[]}"}}],
-        }));
-        assert_eq!(
-            done,
-            [Update::ToolResult {
+        // A finished call's output comes from its content, its raw output or neither.
+        for (fields, ok, text) in [
+            (
+                json!({"status": "completed", "content": [{"type": "content", "content": {"type": "text", "text": "{\"rows\":[]}"}}]}),
+                true,
+                "{\"rows\":[]}",
+            ),
+            (
+                json!({"status": "completed", "content": [{"type": "text", "text": "result"}]}),
+                true,
+                "result",
+            ),
+            (
+                json!({"status": "completed", "rawOutput": {"rows": []}}),
+                true,
+                "{\"rows\":[]}",
+            ),
+            (
+                json!({"status": "completed", "rawOutput": {"content": [{"type": "text", "text": " ok "}]}}),
+                true,
+                "ok",
+            ),
+            (
+                json!({"status": "failed", "rawOutput": "denied"}),
+                false,
+                "denied",
+            ),
+            (
+                json!({"status": "completed"}),
+                true,
+                "Completed; the agent did not include tool output",
+            ),
+            (
+                json!({"status": "failed"}),
+                false,
+                "Failed; the agent did not include tool output",
+            ),
+        ] {
+            let mut update = json!({"sessionUpdate": "tool_call_update", "toolCallId": "c1"});
+            let fields = fields.as_object().unwrap().clone();
+            update.as_object_mut().unwrap().extend(fields);
+            let result = Update::ToolResult {
                 id: "c1".into(),
-                ok: true,
-                text: "{\"rows\":[]}".into()
-            }]
-        );
-        assert_eq!(
+                ok,
+                text: text.into(),
+            };
+            assert_eq!(session_update(&update), [result], "{update}");
+        }
+        assert!(
             session_update(
-                &json!({"sessionUpdate":"tool_call_update","toolCallId":"agy","status":"completed"})
-            ),
-            [Update::ToolResult {
-                id: "agy".into(),
-                ok: true,
-                text: "Completed; the agent did not include tool output".into()
-            }]
-        );
-        assert_eq!(
-            session_update(
-                &json!({"sessionUpdate":"tool_call_update","toolCallId":"direct","status":"completed","content":[{"type":"text","text":"result"}]})
-            ),
-            [Update::ToolResult {
-                id: "direct".into(),
-                ok: true,
-                text: "result".into()
-            }]
-        );
-        assert_eq!(
-            session_update(
-                &json!({"sessionUpdate":"tool_call_update","toolCallId":"raw","status":"completed","rawOutput":{"rows":[]}})
-            ),
-            [Update::ToolResult {
-                id: "raw".into(),
-                ok: true,
-                text: "{\"rows\":[]}".into()
-            }]
+                &json!({"sessionUpdate": "tool_call_update", "toolCallId": "c1", "status": "in_progress"})
+            )
+            .is_empty()
         );
         assert_eq!(
             session_update(

@@ -110,11 +110,7 @@ pub(crate) fn drive(spec: &Spec, input: &Receiver<Input>, link: &mut Link) {
                     "type": "user",
                     "message": {"role": "user", "content": [{"type": "text", "text": text}]},
                 });
-                if let Err(e) = link.write(&message) {
-                    link.emit(Update::TurnEnded {
-                        error: Some(format!("Could not reach the agent: {e}")),
-                    });
-                }
+                link.write_or_end_turn(&message, "the agent");
             }
             Input::Cancel => {
                 interrupts += 1;
@@ -133,21 +129,7 @@ pub(crate) fn drive(spec: &Spec, input: &Receiver<Input>, link: &mut Link) {
                     continue;
                 };
                 if message["type"] == "control_response" {
-                    let response = &message["response"];
-                    let id = response["request_id"].as_str().unwrap_or_default();
-                    if id == SETTINGS_REQUEST {
-                        original = response["response"]["applied"]["effort"]
-                            .as_str()
-                            .map(str::to_owned);
-                    } else if id.starts_with("tursobench-effort") && response["subtype"] == "error"
-                    {
-                        link.emit(Update::Notice(format!(
-                            "Claude Code kept its reasoning level: {}",
-                            response["error"]
-                                .as_str()
-                                .unwrap_or("it refused the change")
-                        )));
-                    }
+                    control_response(link, &message["response"], &mut original);
                 }
                 for update in parse(&message) {
                     link.emit(update);
@@ -155,6 +137,23 @@ pub(crate) fn drive(spec: &Spec, input: &Receiver<Input>, link: &mut Link) {
             }
             Input::Eof => return,
         }
+    }
+}
+
+/// Note the level read at start, and report a refused level change.
+fn control_response(link: &mut Link, response: &Json, original: &mut Option<String>) {
+    let id = response["request_id"].as_str().unwrap_or_default();
+    if id == SETTINGS_REQUEST {
+        *original = response["response"]["applied"]["effort"]
+            .as_str()
+            .map(str::to_owned);
+    } else if id.starts_with("tursobench-effort") && response["subtype"] == "error" {
+        link.emit(Update::Notice(format!(
+            "Claude Code kept its reasoning level: {}",
+            response["error"]
+                .as_str()
+                .unwrap_or("it refused the change")
+        )));
     }
 }
 
@@ -259,7 +258,7 @@ fn set_effort(link: &mut Link, changes: &mut u64, level: Option<&str>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Privacy, Update, json, parse, spec};
     fn parsed(line: &str) -> Vec<Update> {
         parse(&serde_json::from_str(line).unwrap())
     }

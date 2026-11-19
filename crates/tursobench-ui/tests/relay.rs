@@ -3,12 +3,12 @@
 use serde_json::{Value, json};
 use std::{
     io::{BufRead, BufReader, Write},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     sync::Arc,
 };
 use tursobench_assistant::{
     mcp::{ToolHost, ToolOutput, ToolSpec},
-    relay::Endpoint,
+    relay::{Endpoint, Launch},
 };
 
 struct Upper;
@@ -30,27 +30,38 @@ impl ToolHost for Upper {
     }
 }
 
-#[test]
-fn relay_process_carries_mcp_to_the_app_socket() {
+/// An endpoint in a private temporary directory.
+fn endpoint() -> (tempfile::TempDir, Endpoint) {
     let runtime = tempfile::tempdir().unwrap();
-    // SAFETY: set before this test starts any thread that reads the environment.
-    unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
-    let exe = std::path::PathBuf::from(env!("CARGO_BIN_EXE_tursobench"));
-    let endpoint = Endpoint::start(Arc::new(Upper), exe).unwrap();
-    let launch = endpoint.launch().clone();
-    let mut child = Command::new(&launch.command)
-        .args(&launch.args)
-        .envs(launch.env.iter().map(|(k, v)| (k, v)))
+    let exe = env!("CARGO_BIN_EXE_tursobench").into();
+    let endpoint = Endpoint::start_in(runtime.path(), Arc::new(Upper), exe).unwrap();
+    (runtime, endpoint)
+}
+
+/// The relay process for `launch`, with piped stdio and the environment `env` sets.
+fn relay(launch: &Launch, env: impl FnOnce(&mut Command)) -> Child {
+    let mut command = Command::new(&launch.command);
+    command.args(&launch.args);
+    env(&mut command);
+    command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .unwrap();
+        .unwrap()
+}
+
+const INITIALIZE: &str =
+    r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#;
+
+#[test]
+fn relay_process_carries_mcp_to_the_app_socket() {
+    let (_runtime, endpoint) = endpoint();
+    let launch = endpoint.launch().clone();
+    let mut child = relay(&launch, |c| {
+        c.envs(launch.env.iter().cloned());
+    });
     let mut stdin = child.stdin.take().unwrap();
-    writeln!(
-        stdin,
-        r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"protocolVersion":"2025-06-18"}}}}"#
-    )
-    .unwrap();
+    writeln!(stdin, "{INITIALIZE}").unwrap();
     writeln!(
         stdin,
         r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"upper","arguments":{{"text":"turso"}}}}}}"#
@@ -66,13 +77,9 @@ fn relay_process_carries_mcp_to_the_app_socket() {
     assert_eq!(lines[1]["result"]["content"][0]["text"], "TURSO");
 
     // Without the token the relay is refused and gets nothing back.
-    let mut refused = Command::new(&launch.command)
-        .args(&launch.args)
-        .env("TURSOBENCH_MCP_TOKEN", "wrong")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut refused = relay(&launch, |c| {
+        c.env("TURSOBENCH_MCP_TOKEN", "wrong");
+    });
     writeln!(
         refused.stdin.take().unwrap(),
         r#"{{"jsonrpc":"2.0","id":1,"method":"ping"}}"#
@@ -90,21 +97,13 @@ fn relay_process_carries_mcp_to_the_app_socket() {
 /// servers with a bare environment.
 #[test]
 fn relay_answers_each_request_while_the_agent_waits() {
-    let runtime = tempfile::tempdir().unwrap();
-    // SAFETY: set before this test starts any thread that reads the environment.
-    unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
-    let exe = std::path::PathBuf::from(env!("CARGO_BIN_EXE_tursobench"));
-    let endpoint = Endpoint::start(Arc::new(Upper), exe).unwrap();
+    let (_runtime, endpoint) = endpoint();
     let launch = endpoint.launch().clone();
-    let mut child = Command::new(&launch.command)
-        .args(&launch.args)
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .envs(launch.env.iter().map(|(k, v)| (k, v)))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut child = relay(&launch, |c| {
+        c.env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .envs(launch.env.iter().cloned());
+    });
     let mut stdin = child.stdin.take().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     let stdout = child.stdout.take().unwrap();
@@ -124,11 +123,7 @@ fn relay_answers_each_request_while_the_agent_waits() {
         assert_eq!(value["id"], id);
         value
     };
-    writeln!(
-        stdin,
-        r#"{{"jsonrpc":"2.0","id":0,"method":"initialize","params":{{"protocolVersion":"2025-06-18"}}}}"#
-    )
-    .unwrap();
+    writeln!(stdin, "{INITIALIZE}").unwrap();
     assert_eq!(reply(0)["result"]["serverInfo"]["name"], "tursobench");
     writeln!(
         stdin,

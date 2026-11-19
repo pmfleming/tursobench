@@ -148,7 +148,7 @@ fn error(id: Json, code: i64, message: &str) -> Json {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::*;
+    use super::{Json, ToolHost, ToolOutput, ToolSpec, json, serve};
     pub(crate) struct Echo;
     impl ToolHost for Echo {
         fn tools(&self) -> Vec<ToolSpec> {

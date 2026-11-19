@@ -10,7 +10,7 @@ use std::{
     },
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
@@ -20,6 +20,7 @@ pub const TOKEN_ENV: &str = "TURSOBENCH_MCP_TOKEN";
 pub const RELAY_FLAG: &str = "--mcp-relay";
 pub const SERVER_NAME: &str = "tursobench";
 static NEXT: AtomicU64 = AtomicU64::new(1);
+static RUNTIME_ROOT: OnceLock<PathBuf> = OnceLock::new();
 
 /// How an agent should launch the relay for one endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,8 +40,12 @@ pub struct Endpoint {
     launch: Launch,
 }
 impl Endpoint {
+    /// Serve `host` from this user's [`private_dir`].
     pub fn start(host: Arc<dyn ToolHost>, relay: PathBuf) -> io::Result<Self> {
-        let dir = private_dir()?;
+        Self::start_in(&private_dir()?, host, relay)
+    }
+    /// Serve `host` from `dir`, which must be private to this user.
+    pub fn start_in(dir: &Path, host: Arc<dyn ToolHost>, relay: PathBuf) -> io::Result<Self> {
         let name = format!(
             "assistant-{}-{}",
             std::process::id(),
@@ -190,26 +195,49 @@ fn random_token() -> io::Result<String> {
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// `$XDG_RUNTIME_DIR/tursobench`, or a per-user temporary directory, mode 0700.
+/// Keep this process's private files under `root` instead of
+/// `$XDG_RUNTIME_DIR`, as tests that run the whole app do. Only the first call
+/// has an effect.
+pub fn set_runtime_root(root: PathBuf) {
+    let _ = RUNTIME_ROOT.set(root);
+}
+
+/// `$XDG_RUNTIME_DIR/tursobench` (or under [`set_runtime_root`]'s root), or a
+/// per-user temporary directory, mode 0700.
 pub fn private_dir() -> io::Result<PathBuf> {
-    let uid = unsafe { libc::getuid() };
-    let dir = match std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty()) {
-        Some(runtime) => PathBuf::from(runtime).join("tursobench"),
-        None => std::env::temp_dir().join(format!("tursobench-{uid}")),
-    };
+    let root = RUNTIME_ROOT.get().cloned().or_else(|| {
+        std::env::var_os("XDG_RUNTIME_DIR")
+            .filter(|d| !d.is_empty())
+            .map(PathBuf::from)
+    });
+    private(match root {
+        Some(root) => root.join("tursobench"),
+        None => std::env::temp_dir().join(format!("tursobench-{}", uid())),
+    })
+}
+
+/// Create `dir` for this user alone, or check that it already is.
+fn private(dir: PathBuf) -> io::Result<PathBuf> {
     match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
         Ok(()) => {}
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
         Err(e) => return Err(e),
     }
     let meta = std::fs::symlink_metadata(&dir)?;
-    if !meta.is_dir() || meta.uid() != uid || meta.mode() & 0o077 != 0 {
+    if !meta.is_dir() || meta.uid() != uid() || meta.mode() & 0o077 != 0 {
         return Err(io::Error::other(format!(
             "{} must be a private directory owned by this user",
             dir.display()
         )));
     }
     Ok(dir)
+}
+
+/// The real user id. (`/proc/self` is owned by the effective user, or by root
+/// when the process is not dumpable, and may not be mounted; it is no substitute.)
+fn uid() -> u32 {
+    // SAFETY: getuid(2) takes no arguments, cannot fail and touches no memory.
+    unsafe { libc::getuid() }
 }
 
 /// The `--mcp-relay` process: stdin to the socket, the socket to stdout.
@@ -245,16 +273,15 @@ fn forward(from: &mut impl Read, to: &mut impl Write) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{BufRead, BufReader, Endpoint, Path, RELAY_FLAG, SERVER_NAME, TOKEN_ENV, private};
     use crate::mcp::tests::Echo;
-
-    fn endpoint() -> (tempfile::TempDir, Endpoint) {
-        let runtime = tempfile::tempdir().unwrap();
-        // SAFETY: tests in this module set the variable before any thread reads it.
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
-        let endpoint = Endpoint::start(Arc::new(Echo), "/usr/bin/tursobench".into()).unwrap();
-        (runtime, endpoint)
-    }
+    use std::{
+        io::Write,
+        os::unix::fs::{MetadataExt, PermissionsExt},
+        os::unix::net::UnixStream,
+        sync::Arc,
+        time::Duration,
+    };
 
     fn exchange(endpoint: &Endpoint, token: &str, request: &str) -> String {
         let mut stream = UnixStream::connect(&endpoint.socket).unwrap();
@@ -271,7 +298,10 @@ mod tests {
 
     #[test]
     fn tools_answer_only_with_the_token_and_files_are_private_and_removed() {
-        let (_runtime, endpoint) = endpoint();
+        let runtime = tempfile::tempdir().unwrap();
+        let dir = private(runtime.path().join("tursobench")).unwrap();
+        let endpoint =
+            Endpoint::start_in(&dir, Arc::new(Echo), "/usr/bin/tursobench".into()).unwrap();
         let call = r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"echo","arguments":{"text":"ok"}}}"#;
         let token = endpoint.launch().env[0].1.clone();
         let reply: serde_json::Value =
@@ -292,5 +322,9 @@ mod tests {
         let (socket, config) = (endpoint.socket.clone(), endpoint.config.clone());
         drop(endpoint);
         assert!(!socket.exists() && !config.exists());
+
+        // A directory other users can read is refused.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(private(dir).is_err());
     }
 }
