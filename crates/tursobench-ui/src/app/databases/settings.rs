@@ -10,6 +10,39 @@ pub(in crate::app) enum FolderList {
     Excluded,
 }
 
+/// The accessible names of one folder list's controls.
+struct FolderNames {
+    tab: &'static str,
+    input: &'static str,
+    add: &'static str,
+    browse: &'static str,
+    remove: &'static str,
+    empty: &'static str,
+}
+
+impl FolderList {
+    fn names(self) -> FolderNames {
+        match self {
+            FolderList::Search => FolderNames {
+                tab: "Search folders",
+                input: "Search folder path",
+                add: "Add and search folder",
+                browse: "Browse search folder",
+                remove: "Remove search folder",
+                empty: "No search folders",
+            },
+            FolderList::Excluded => FolderNames {
+                tab: "Excluded",
+                input: "Excluded folder path",
+                add: "Exclude folder",
+                browse: "Browse excluded folder",
+                remove: "Remove exclusion",
+                empty: "No excluded folders",
+            },
+        }
+    }
+}
+
 impl App {
     /// Shared by Available and Settings; neither action changes search policy.
     pub(in crate::app) fn discovery_actions(&mut self, ui: &mut egui::Ui) -> egui::Response {
@@ -42,22 +75,7 @@ impl App {
     }
 
     pub(in crate::app) fn discovery_settings_ui(&mut self, ui: &mut egui::Ui) {
-        let bottom = ui.available_rect_before_wrap().bottom();
-        let footer = egui::Panel::bottom("discovery-results")
-            .resizable(false)
-            .frame(egui::Frame::NONE)
-            .show(ui, |ui| {
-                if let Some(summary) = &self.databases.summary {
-                    discovery_summary(ui, summary);
-                }
-                if let Some(message) = &self.databases.message {
-                    ui.add(egui::Label::new(message).truncate())
-                        .on_hover_text(message);
-                }
-            });
-        if (footer.response.rect.bottom() - bottom).abs() > 1.0 {
-            ui.ctx().request_discard("Discovery results changed size");
-        }
+        self.discovery_results_ui(ui);
         ui.horizontal(|ui| {
             if crate::app::presentation::checkbox(
                 ui,
@@ -77,51 +95,13 @@ impl App {
             });
         });
         let mut roots = super::search_roots(&self.preferences.discovery);
-        ui.horizontal_wrapped(|ui| {
-            for (list, title, count) in [
-                (FolderList::Search, "Search folders", roots.len()),
-                (
-                    FolderList::Excluded,
-                    "Excluded",
-                    self.preferences.discovery.excluded.len(),
-                ),
-            ] {
-                let response = ui.selectable_label(
-                    self.databases.folder_list == list,
-                    format!("{title} · {count}"),
-                );
-                response.widget_info(|| {
-                    egui::WidgetInfo::selected(
-                        egui::Role::Tab,
-                        true,
-                        self.databases.folder_list == list,
-                        title,
-                    )
-                });
-                if response.clicked() {
-                    self.databases.folder_list = list;
-                }
-            }
-        });
-        let excluded = self.databases.folder_list == FolderList::Excluded;
+        self.folder_tabs_ui(ui, roots.len());
+        let list = self.databases.folder_list;
+        let names = list.names();
         let (add, browse) = folder_input(
             ui,
             &mut self.databases.folder_input,
-            if excluded {
-                "Excluded folder path"
-            } else {
-                "Search folder path"
-            },
-            if excluded {
-                "Exclude folder"
-            } else {
-                "Add and search folder"
-            },
-            if excluded {
-                "Browse excluded folder"
-            } else {
-                "Browse search folder"
-            },
+            &names,
             self.picker.is_none(),
         );
         if browse {
@@ -129,61 +109,89 @@ impl App {
         }
         if add {
             let path = PathBuf::from(&self.databases.folder_input);
-            if excluded {
-                self.add_exclusion(path);
-            } else {
-                self.add_search_folder(path);
+            match list {
+                FolderList::Excluded => self.add_exclusion(path),
+                FolderList::Search => self.add_search_folder(path),
             }
         }
         ui.add_space(4.0);
+        let paths: Vec<&Path> = match list {
+            FolderList::Excluded => self
+                .preferences
+                .discovery
+                .excluded
+                .iter()
+                .map(PathBuf::as_path)
+                .collect(),
+            FolderList::Search => roots.iter().map(|r| r.path.as_path()).collect(),
+        };
         let remove = egui::ScrollArea::vertical()
-            .id_salt(("discovery-folders", excluded))
+            .id_salt(("discovery-folders", list == FolderList::Excluded))
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                if excluded {
-                    if self.preferences.discovery.excluded.is_empty() {
-                        ui.weak("No excluded folders");
-                    }
-                    folder_rows(
-                        ui,
-                        self.preferences
-                            .discovery
-                            .excluded
-                            .iter()
-                            .map(PathBuf::as_path),
-                        "Remove exclusion",
-                    )
-                } else {
-                    if roots.is_empty() {
-                        ui.weak("No search folders");
-                    }
-                    folder_rows(
-                        ui,
-                        roots.iter().map(|r| r.path.as_path()),
-                        "Remove search folder",
-                    )
+                if paths.is_empty() {
+                    ui.weak(names.empty);
                 }
+                folder_rows(ui, paths, names.remove)
             })
             .inner;
-        if let Some(index) = remove {
-            if excluded {
+        match (remove, list) {
+            (Some(index), FolderList::Excluded) => {
                 self.preferences.discovery.excluded.remove(index);
                 self.store.save(&self.preferences);
                 self.databases.message = Some("Exclusion removed.".into());
-            } else {
+            }
+            (Some(index), FolderList::Search) => {
                 self.remove_search_folder(roots.remove(index).path);
             }
+            (None, _) => {}
         }
+    }
+
+    /// The last search's summary and message, pinned below the folder list.
+    fn discovery_results_ui(&self, ui: &mut egui::Ui) {
+        let bottom = ui.available_rect_before_wrap().bottom();
+        let footer = egui::Panel::bottom("discovery-results")
+            .resizable(false)
+            .frame(egui::Frame::NONE)
+            .show(ui, |ui| {
+                if let Some(summary) = &self.databases.summary {
+                    discovery_summary(ui, summary);
+                }
+                if let Some(message) = &self.databases.message {
+                    ui.add(egui::Label::new(message).truncate())
+                        .on_hover_text(message);
+                }
+            });
+        if (footer.response.rect.bottom() - bottom).abs() > 1.0 {
+            ui.ctx().request_discard("Discovery results changed size");
+        }
+    }
+
+    fn folder_tabs_ui(&mut self, ui: &mut egui::Ui, roots: usize) {
+        ui.horizontal_wrapped(|ui| {
+            let excluded = self.preferences.discovery.excluded.len();
+            for (list, count) in [
+                (FolderList::Search, roots),
+                (FolderList::Excluded, excluded),
+            ] {
+                let title = list.names().tab;
+                let selected = self.databases.folder_list == list;
+                let response = ui.selectable_label(selected, format!("{title} · {count}"));
+                response.widget_info(|| {
+                    egui::WidgetInfo::selected(egui::Role::Tab, true, selected, title)
+                });
+                if response.clicked() {
+                    self.databases.folder_list = list;
+                }
+            }
+        });
     }
 }
 
-fn folder_rows<'a>(
-    ui: &mut egui::Ui,
-    paths: impl Iterator<Item = &'a Path>,
-    action: &str,
-) -> Option<usize> {
+fn folder_rows(ui: &mut egui::Ui, paths: Vec<&Path>, action: &str) -> Option<usize> {
     let mut remove = None;
-    for (index, path) in paths.enumerate() {
+    for (index, path) in paths.into_iter().enumerate() {
         if ui.push_id(path, |ui| folder_row(ui, path, action)).inner {
             remove = Some(index);
         }
@@ -224,9 +232,7 @@ fn discovery_summary(ui: &mut egui::Ui, summary: &crate::discovery::Summary) {
 fn folder_input(
     ui: &mut egui::Ui,
     value: &mut String,
-    name: &str,
-    action: &str,
-    browse_name: &str,
+    names: &FolderNames,
     browse_enabled: bool,
 ) -> (bool, bool) {
     ui.horizontal(|ui| {
@@ -239,18 +245,18 @@ fn folder_input(
                 .char_limit(4096),
         );
         input.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::Role::TextInput, ui.is_enabled(), name)
+            egui::WidgetInfo::labeled(egui::Role::TextInput, ui.is_enabled(), names.input)
         });
         let enter = input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         let browse = ui
             .add_enabled_ui(browse_enabled, |ui| {
-                icons::button(ui, Icon::Folder, browse_name, "")
+                icons::button(ui, Icon::Folder, names.browse, "")
             })
             .inner
             .clicked();
         let add = ui
             .add_enabled_ui(!value.trim().is_empty(), |ui| {
-                icons::button(ui, Icon::Plus, action, "Enter")
+                icons::button(ui, Icon::Plus, names.add, "Enter")
             })
             .inner
             .clicked();
@@ -539,40 +545,28 @@ mod tests {
         let mut draw = |events| {
             crate::app::test_ui::render(&ctx, size, events, |ui| app.discovery_settings_ui(ui))
         };
+        let metric = |output: &egui::FullOutput| {
+            output
+                .shapes
+                .iter()
+                .find_map(|s| match &s.shape {
+                    egui::Shape::Text(t) if t.galley.job.text == "300" => Some(t.pos),
+                    _ => None,
+                })
+                .expect("metric is painted")
+        };
         draw(vec![]);
         let before = draw(vec![]);
-        let footer = before
-            .shapes
-            .iter()
-            .find_map(|s| match &s.shape {
-                egui::Shape::Text(t) if t.galley.job.text == "300" => Some(t.pos),
-                _ => None,
-            })
-            .expect("metric is painted");
+        let footer = metric(&before);
         let input = control(&before, "Search folder path");
-        draw(vec![
-            egui::Event::PointerMoved(egui::pos2(200.0, 240.0)),
-            egui::Event::MouseWheel {
-                unit: egui::MouseWheelUnit::Point,
-                delta: egui::vec2(0.0, -1000.0),
-                phase: egui::TouchPhase::Move,
-                source: egui::MouseWheelSource::Unknown,
-                modifiers: egui::Modifiers::NONE,
-            },
-        ]);
+        draw(super::super::tests::scroll_down_at(egui::pos2(
+            200.0, 240.0,
+        )));
         for _ in 0..20 {
             draw(vec![]);
         }
         let after = draw(vec![]);
-        let after_footer = after
-            .shapes
-            .iter()
-            .find_map(|s| match &s.shape {
-                egui::Shape::Text(t) if t.galley.job.text == "300" => Some(t.pos),
-                _ => None,
-            })
-            .expect("metric stays painted");
-        assert_eq!(after_footer, footer);
+        assert_eq!(metric(&after), footer, "metric stays painted in place");
         assert_eq!(control(&after, "Search folder path"), input);
         assert!(footer.y <= size.y);
         assert!(after.shapes.iter().any(

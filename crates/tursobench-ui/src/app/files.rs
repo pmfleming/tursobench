@@ -99,50 +99,44 @@ impl App {
         };
         self.picker = None;
         if let Some(list) = self.databases.picking_folder.take() {
-            match result {
-                Ok(Some(path)) => {
-                    if let Some(path) = path.to_str() {
-                        self.databases.folder_list = list;
-                        self.databases.folder_input = path.into();
-                        self.databases.message = None;
-                    } else {
-                        self.databases.message = Some(
-                            "Only UTF-8 folder paths are supported; enter a folder path manually."
-                                .into(),
-                        );
-                    }
-                }
-                Ok(None) => {
-                    self.databases.message = None;
-                }
-                Err(error) => {
-                    self.databases.message = Some(format!("Could not choose a folder: {error}"))
-                }
-            }
-            return;
+            self.folder_picked(list, result);
+        } else {
+            self.sidebar_search.focus = true;
+            self.database_picked(result);
         }
-        self.sidebar_search.focus = true;
+    }
+
+    /// A chosen folder fills the input of the list it was chosen for.
+    fn folder_picked(&mut self, list: FolderList, result: PickResult) {
+        self.databases.message = match result {
+            Ok(Some(path)) => match path.to_str() {
+                Some(path) => {
+                    self.databases.folder_list = list;
+                    self.databases.folder_input = path.into();
+                    None
+                }
+                None => Some(
+                    "Only UTF-8 folder paths are supported; enter a folder path manually.".into(),
+                ),
+            },
+            Ok(None) => None,
+            Err(error) => Some(format!("Could not choose a folder: {error}")),
+        };
+    }
+
+    /// A chosen database file is reviewed before opening, or its existing
+    /// workspace is selected; a cancelled choice ends the review it began.
+    fn database_picked(&mut self, result: PickResult) {
         match result {
             Ok(Some(path)) if self.database.session.is_none() => {
                 self.databases.editing_path = false;
-                if let Some(path) = path.to_str() {
-                    if let Some(id) = self.duplicate_workspace(std::path::Path::new(path)) {
-                        let abandoned = self.database.id;
-                        self.select_workspace(id);
-                        if abandoned != id
-                            && self.parked.get(&abandoned).is_some_and(|d| !d.retained())
-                        {
-                            self.parked.remove(&abandoned);
-                        }
-                        return;
+                match path.to_str() {
+                    Some(path) => self.review_picked_database(path),
+                    None => {
+                        self.database.status =
+                            "Only UTF-8 database paths are supported; no lossy path substitution"
+                                .into();
                     }
-                    self.set_database_path(path.into());
-                    self.database.document.ui.nav = shell::Nav::Databases;
-                    self.database.status = "File selected. Review access before opening.".into();
-                } else {
-                    self.database.status =
-                        "Only UTF-8 database paths are supported; no lossy path substitution"
-                            .into();
                 }
             }
             Ok(Some(_)) => {
@@ -165,6 +159,20 @@ impl App {
                 );
             }
         }
+    }
+
+    fn review_picked_database(&mut self, path: &str) {
+        if let Some(id) = self.duplicate_workspace(std::path::Path::new(path)) {
+            let abandoned = self.database.id;
+            self.select_workspace(id);
+            if abandoned != id && self.parked.get(&abandoned).is_some_and(|d| !d.retained()) {
+                self.parked.remove(&abandoned);
+            }
+            return;
+        }
+        self.set_database_path(path.into());
+        self.database.document.ui.nav = shell::Nav::Databases;
+        self.database.status = "File selected. Review access before opening.".into();
     }
 }
 

@@ -70,16 +70,7 @@ impl App {
         let previous_page = self.settings.page;
         let scale = f32::from(self.preferences.font_size) / 14.0;
         if ui.available_width() < 480.0 {
-            ui.horizontal(|ui| {
-                for (page, icon, label, name) in pages() {
-                    if icons::control(ui, icon, name, "", self.settings.page == page, false)
-                        .on_hover_text(label)
-                        .clicked()
-                    {
-                        self.settings.page = page;
-                    }
-                }
-            });
+            ui.horizontal(|ui| page_buttons(ui, &mut self.settings.page));
             ui.separator();
             self.settings_page(ui);
         } else {
@@ -89,16 +80,7 @@ impl App {
                 ui.allocate_ui_with_layout(
                     egui::vec2(36.0 * scale, height),
                     egui::Layout::top_down(egui::Align::Center),
-                    |ui| {
-                        for (page, icon, label, name) in pages() {
-                            if icons::control(ui, icon, name, "", self.settings.page == page, false)
-                                .on_hover_text(label)
-                                .clicked()
-                            {
-                                self.settings.page = page;
-                            }
-                        }
-                    },
+                    |ui| page_buttons(ui, &mut self.settings.page),
                 );
                 ui.separator();
                 ui.allocate_ui_with_layout(
@@ -154,27 +136,7 @@ impl App {
                 ui.label("Theme");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.weak("Aa").on_hover_text(&self.database.ui.font_label);
-                    for (mode, icon, name) in [
-                        (Mode::Dark, Icon::Moon, "Dark theme"),
-                        (Mode::Light, Icon::Sun, "Light theme"),
-                        (Mode::System, Icon::Desktop, "Follow system"),
-                    ] {
-                        if icons::control(
-                            ui,
-                            icon,
-                            name,
-                            "",
-                            self.preferences.appearance.unwrap_or_default() == mode,
-                            false,
-                        )
-                        .clicked()
-                        {
-                            self.preferences.appearance = Some(mode);
-                            self.apply_theme(ui.ctx());
-                            self.settings.dirty = true;
-                            self.save_settings();
-                        }
-                    }
+                    self.theme_buttons(ui);
                 });
             });
             let before = self.preferences.font_size;
@@ -183,54 +145,11 @@ impl App {
                 "Font size",
                 "Type or drag to change text size",
                 false,
-                |ui| {
-                    let increase = ui
-                        .add_enabled_ui(self.preferences.font_size < 20, |ui| {
-                            icons::button(ui, Icon::Plus, "Increase font size", "")
-                        })
-                        .inner
-                        .clicked();
-                    let size = ui.add(
-                        egui::DragValue::new(&mut self.preferences.font_size)
-                            .range(10..=20)
-                            .suffix(" pt"),
-                    );
-                    size.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::Role::SpinButton, true, "Font size")
-                    });
-                    let decrease = ui
-                        .add_enabled_ui(self.preferences.font_size > 10, |ui| {
-                            icons::button(ui, Icon::Minimize, "Decrease font size", "")
-                        })
-                        .inner
-                        .clicked();
-                    let reset = icons::button(ui, Icon::Undo, "Reset font size", "").clicked();
-                    if increase {
-                        self.preferences.font_size += 1;
-                    }
-                    if decrease {
-                        self.preferences.font_size -= 1;
-                    }
-                    if reset {
-                        self.preferences.font_size = 14;
-                    }
-                    size
-                },
+                |ui| font_size_controls(ui, &mut self.preferences.font_size),
             );
             if before != self.preferences.font_size {
                 self.apply_theme(ui.ctx());
-                // Font size is global; refit columns in every retained workspace.
-                for database in std::iter::once(&mut self.database).chain(self.parked.values_mut())
-                {
-                    for document in std::iter::once(&mut database.document)
-                        .chain(database.documents.values_mut())
-                    {
-                        document.tools.columns.refit = true;
-                        for columns in document.tools.column_layouts.values_mut() {
-                            columns.refit = true;
-                        }
-                    }
-                }
+                self.refit_all_columns();
                 self.settings.dirty = true;
                 if !response.changed() {
                     self.save_settings();
@@ -256,6 +175,36 @@ impl App {
             );
             self.setting_response(response);
         });
+    }
+
+    fn theme_buttons(&mut self, ui: &mut egui::Ui) {
+        for (mode, icon, name) in [
+            (Mode::Dark, Icon::Moon, "Dark theme"),
+            (Mode::Light, Icon::Sun, "Light theme"),
+            (Mode::System, Icon::Desktop, "Follow system"),
+        ] {
+            let chosen = self.preferences.appearance.unwrap_or_default() == mode;
+            if icons::control(ui, icon, name, "", chosen, false).clicked() {
+                self.preferences.appearance = Some(mode);
+                self.apply_theme(ui.ctx());
+                self.settings.dirty = true;
+                self.save_settings();
+            }
+        }
+    }
+
+    /// Font size is global; refit columns in every retained workspace.
+    fn refit_all_columns(&mut self) {
+        for database in std::iter::once(&mut self.database).chain(self.parked.values_mut()) {
+            for document in
+                std::iter::once(&mut database.document).chain(database.documents.values_mut())
+            {
+                document.tools.columns.refit = true;
+                for columns in document.tools.column_layouts.values_mut() {
+                    columns.refit = true;
+                }
+            }
+        }
     }
 
     fn resource_settings(&mut self, ui: &mut egui::Ui) {
@@ -504,6 +453,47 @@ fn pages() -> [(Page, Icon, &'static str, &'static str); 5] {
     ]
 }
 
+/// One icon per settings page; the chosen page reads as selected.
+fn page_buttons(ui: &mut egui::Ui, current: &mut Page) {
+    for (page, icon, label, name) in pages() {
+        if icons::control(ui, icon, name, "", *current == page, false)
+            .on_hover_text(label)
+            .clicked()
+        {
+            *current = page;
+        }
+    }
+}
+
+/// The font size field between its step buttons, with a reset to 14 pt.
+fn font_size_controls(ui: &mut egui::Ui, font_size: &mut u16) -> egui::Response {
+    let increase = ui
+        .add_enabled_ui(*font_size < 20, |ui| {
+            icons::button(ui, Icon::Plus, "Increase font size", "")
+        })
+        .inner
+        .clicked();
+    let size = ui.add(egui::DragValue::new(font_size).range(10..=20).suffix(" pt"));
+    size.widget_info(|| egui::WidgetInfo::labeled(egui::Role::SpinButton, true, "Font size"));
+    let decrease = ui
+        .add_enabled_ui(*font_size > 10, |ui| {
+            icons::button(ui, Icon::Minimize, "Decrease font size", "")
+        })
+        .inner
+        .clicked();
+    let reset = icons::button(ui, Icon::Undo, "Reset font size", "").clicked();
+    if increase {
+        *font_size += 1;
+    }
+    if decrease {
+        *font_size -= 1;
+    }
+    if reset {
+        *font_size = 14;
+    }
+    size
+}
+
 fn preference_row(
     ui: &mut egui::Ui,
     label: &str,
@@ -649,9 +639,30 @@ fn reopen_mark(ui: &mut egui::Ui, tooltip: &str) {
     response.on_hover_text(tooltip);
 }
 
+/// Every button, text field, slider and spin button lies inside `width`.
+#[cfg(test)]
+pub(super) fn assert_controls_fit(output: &egui::FullOutput, width: f32, case: &str) {
+    for (_, node) in super::test_ui::nodes(output) {
+        if matches!(
+            node.role(),
+            egui::Role::Button
+                | egui::Role::TextInput
+                | egui::Role::Slider
+                | egui::Role::SpinButton
+        ) && let Some(bounds) = node.bounds()
+        {
+            assert!(
+                bounds.x0 >= 0.0 && bounds.x1 <= f64::from(width) + 1.0,
+                "{case}, {:?}: {bounds:?}",
+                node.label()
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Mode, Page, assert_controls_fit, egui, format_ms, round_limit};
     use crate::app::test_ui::{control, pointer, render};
 
     #[test]
@@ -676,22 +687,11 @@ mod tests {
                             let output = render(&ctx, egui::vec2(width, 600.0), vec![], |ui| {
                                 app.settings_ui(ui)
                             });
-                            for (_, node) in crate::app::test_ui::nodes(&output) {
-                                if matches!(
-                                    node.role(),
-                                    egui::Role::Button
-                                        | egui::Role::TextInput
-                                        | egui::Role::Slider
-                                        | egui::Role::SpinButton
-                                ) && let Some(bounds) = node.bounds()
-                                {
-                                    assert!(
-                                        bounds.x0 >= 0.0 && bounds.x1 <= f64::from(width) + 1.0,
-                                        "{page:?}, {width}, {font}, {:?}: {bounds:?}",
-                                        node.label()
-                                    );
-                                }
-                            }
+                            assert_controls_fit(
+                                &output,
+                                width,
+                                &format!("{page:?}, {width}, {font}"),
+                            );
                         }
                     }
                 }

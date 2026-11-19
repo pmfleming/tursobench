@@ -228,24 +228,13 @@ impl App {
         }
     }
     pub(super) fn shortcuts(&mut self, ctx: &egui::Context) {
+        use super::tiling::Direction;
         use egui::{Key, Modifiers};
         self.database_navigation_keys(ctx);
         self.grid_keys(ctx);
         let consumed = |mods, key| ctx.input_mut(|i| i.consume_key(mods, key));
         if consumed(Modifiers::NONE, Key::Escape) {
-            // A tile being dragged goes back where it was before anything closes.
-            if let Some(drag) = &mut self.database.workspace.drag {
-                drag.cancelled = true;
-                return;
-            }
-            let search = egui::Id::unique("sidebar-search");
-            if ctx.memory(|m| m.has_focus(search)) && !self.sidebar_search.query.is_empty() {
-                self.sidebar_search.query.clear();
-                self.sidebar_search.index = 0;
-                self.sidebar_search.navigating = false;
-            } else {
-                self.dismiss_surface(ctx);
-            }
+            self.escape(ctx);
             return;
         }
         if consumed(Modifiers::CTRL, Key::K) {
@@ -253,56 +242,17 @@ impl App {
             self.toggle_palette();
             return;
         }
-        if self.database.ui.palette_open {
-            return;
-        }
-        if self.model_menu_keys(ctx) {
+        if self.database.ui.palette_open || self.model_menu_keys(ctx) {
             return;
         }
         if self.database.workspace.enabled && self.database.workspace.active == Kind::Sql
             || !self.database.workspace.enabled && self.database.document.ui.sql_open
         {
-            if consumed(Modifiers::CTRL | Modifiers::SHIFT, Key::Enter) {
-                if self.database.workspace.enabled {
-                    self.focus_pane(Kind::Sql);
-                }
-                self.run_current(None);
-            } else if consumed(Modifiers::CTRL, Key::Enter) {
-                if self.database.workspace.enabled {
-                    self.focus_pane(Kind::Sql);
-                }
-                self.run_sql();
-            }
-            if consumed(Modifiers::CTRL, Key::Space) {
-                if self.database.workspace.enabled {
-                    self.focus_pane(Kind::Sql);
-                }
-                self.database.document.tools.complete = true;
-            }
-            if consumed(Modifiers::CTRL, Key::S) {
-                if self.database.workspace.enabled {
-                    self.focus_pane(Kind::Sql);
-                }
-                self.database.ui.sidebar = ToolPanel::Saved;
-            }
+            self.sql_editor_keys(ctx);
         }
         if consumed(Modifiers::NONE, Key::F5) {
-            if self.database.document.ui.sql_open
-                && self.database.document.tools.sql_focus.is_some()
-                && ctx.memory(|m| m.focused()) == self.database.document.tools.sql_focus
-            {
-                self.run_sql();
-            } else if self.database.tools.tree_focus.is_some()
-                && ctx.memory(|m| m.focused()) == self.database.tools.tree_focus
-                || self.database.document.ui.nav == Nav::Overview
-            {
-                self.refresh_catalog();
-                self.load_diagram();
-            } else if self.database.document.view == View::Browse {
-                self.refresh_table();
-            }
+            self.refresh_focused(ctx);
         }
-        use super::tiling::Direction;
         const MOVE: Modifiers = Modifiers::ALT.plus(Modifiers::SHIFT);
         for (modifiers, key, command) in [
             (Modifiers::CTRL, Key::J, Command::Sql),
@@ -328,18 +278,8 @@ impl App {
             (MOVE, Key::ArrowDown, Command::MoveTile(Direction::Down)),
             (Modifiers::ALT, Key::ArrowLeft, Command::Back),
         ] {
-            if !consumed(modifiers, key) {
-                continue;
-            }
             // Earlier shortcuts in this frame may have changed the active document.
-            let enabled = match command {
-                Command::Filter => self.database.document.ui.nav == Nav::Table,
-                Command::CopyResults => {
-                    matches!(self.database.document.ui.nav, Nav::Table | Nav::Result)
-                }
-                _ => true,
-            };
-            if enabled {
+            if consumed(modifiers, key) && self.shortcut_applies(&command) {
                 self.execute_command(ctx, command);
             }
         }
@@ -350,19 +290,92 @@ impl App {
             && self.requests_enabled()
             && self.database.document.ui.nav == Nav::Table
         {
-            let delta = if consumed(Modifiers::NONE, Key::PageDown) {
-                100
-            } else if consumed(Modifiers::NONE, Key::PageUp) {
-                -100
-            } else {
-                0
-            };
-            if delta != 0
-                && let Some(b) = self.database.document.browse.as_mut()
-            {
-                b.offset = b.offset.saturating_add_signed(delta).min(1_000_000);
-                self.reload();
+            self.page_keys(ctx);
+        }
+    }
+    /// A dragged tile goes back where it was before anything closes; a
+    /// filtered sidebar search clears before the topmost surface closes.
+    fn escape(&mut self, ctx: &egui::Context) {
+        if let Some(drag) = &mut self.database.workspace.drag {
+            drag.cancelled = true;
+            return;
+        }
+        let search = egui::Id::unique("sidebar-search");
+        if ctx.memory(|m| m.has_focus(search)) && !self.sidebar_search.query.is_empty() {
+            self.sidebar_search.query.clear();
+            self.sidebar_search.index = 0;
+            self.sidebar_search.navigating = false;
+        } else {
+            self.dismiss_surface(ctx);
+        }
+    }
+    /// The SQL editor's keys while it is the active surface; each brings its
+    /// tile forward first.
+    fn sql_editor_keys(&mut self, ctx: &egui::Context) {
+        use egui::{Key, Modifiers};
+        let consumed = |mods, key| ctx.input_mut(|i| i.consume_key(mods, key));
+        let run_current = consumed(Modifiers::CTRL | Modifiers::SHIFT, Key::Enter);
+        let run = !run_current && consumed(Modifiers::CTRL, Key::Enter);
+        let complete = consumed(Modifiers::CTRL, Key::Space);
+        let saved = consumed(Modifiers::CTRL, Key::S);
+        if self.database.workspace.enabled && (run_current || run || complete || saved) {
+            self.focus_pane(Kind::Sql);
+        }
+        if run_current {
+            self.run_current(None);
+        } else if run {
+            self.run_sql();
+        }
+        if complete {
+            self.database.document.tools.complete = true;
+        }
+        if saved {
+            self.database.ui.sidebar = ToolPanel::Saved;
+        }
+    }
+    /// F5 runs the focused SQL, refreshes the schema from the tree or the
+    /// map, and otherwise reloads the open table.
+    fn refresh_focused(&mut self, ctx: &egui::Context) {
+        let focused = ctx.memory(|m| m.focused());
+        let tools = &self.database.document.tools;
+        if self.database.document.ui.sql_open
+            && tools.sql_focus.is_some()
+            && focused == tools.sql_focus
+        {
+            self.run_sql();
+        } else if self.database.tools.tree_focus.is_some()
+            && focused == self.database.tools.tree_focus
+            || self.database.document.ui.nav == Nav::Overview
+        {
+            self.refresh_catalog();
+            self.load_diagram();
+        } else if self.database.document.view == View::Browse {
+            self.refresh_table();
+        }
+    }
+    fn shortcut_applies(&self, command: &Command) -> bool {
+        match command {
+            Command::Filter => self.database.document.ui.nav == Nav::Table,
+            Command::CopyResults => {
+                matches!(self.database.document.ui.nav, Nav::Table | Nav::Result)
             }
+            _ => true,
+        }
+    }
+    /// Page Up and Page Down move the table's window by 100 rows.
+    fn page_keys(&mut self, ctx: &egui::Context) {
+        use egui::{Key, Modifiers};
+        let consumed = |key| ctx.input_mut(|i| i.consume_key(Modifiers::NONE, key));
+        let delta = if consumed(Key::PageDown) {
+            100
+        } else if consumed(Key::PageUp) {
+            -100
+        } else {
+            return;
+        };
+        if let Some(b) = self.database.document.browse.as_mut() {
+            b.offset = b.offset.saturating_add_signed(delta).min(1_000_000);
+            self.reload();
         }
     }
     pub(super) fn access_dialog(&mut self, ctx: &egui::Context) {
@@ -422,89 +435,7 @@ impl App {
             .resizable(false)
             .anchor(egui::Align2::CENTER_TOP, [0.0, 70.0])
             .default_width(580.0)
-            .show(ctx, |ui| {
-                let search = ui.add(
-                    egui::TextEdit::singleline(&mut self.database.ui.palette_query)
-                        .id_salt("command-search")
-                        .hint_text("Find an action…")
-                        .desired_width(ui.available_width()),
-                );
-                if self.database.ui.palette_focus {
-                    search.request_focus();
-                    self.database.ui.palette_focus = false;
-                }
-                if search.changed() {
-                    self.database.ui.palette_index = 0;
-                }
-                let mut items = self.palette_items();
-                let mut chosen_index = None;
-                self.database.ui.palette_index = self
-                    .database
-                    .ui
-                    .palette_index
-                    .min(items.len().saturating_sub(1));
-                if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)) {
-                    self.database.ui.palette_index =
-                        (self.database.ui.palette_index + 1).min(items.len().saturating_sub(1));
-                }
-                if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)) {
-                    self.database.ui.palette_index =
-                        self.database.ui.palette_index.saturating_sub(1);
-                }
-                if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
-                    chosen_index = Some(self.database.ui.palette_index);
-                }
-                egui::ScrollArea::vertical()
-                    .max_height((ctx.content_rect().height() - 240.0).max(100.0))
-                    .show(ui, |ui| {
-                        for (index, item) in items.iter().enumerate() {
-                            let selected = index == self.database.ui.palette_index;
-                            // Names read down the left edge; shortcuts line up on the right.
-                            let mut button = egui::Button::new(item.label)
-                                .selected(selected)
-                                // The keyboard choice needs its fill even without hover.
-                                .frame_when_inactive(selected)
-                                .min_size(egui::vec2(ui.available_width(), 32.0));
-                            // An empty shortcut would still add a space to the accessible name.
-                            if !item.shortcut.is_empty() {
-                                button = button.shortcut_text(
-                                    egui::RichText::new(item.shortcut)
-                                        .monospace()
-                                        .size(crate::appearance::text_size(ui.ctx(), 11.0)),
-                                );
-                            }
-                            let response = ui
-                                .add_enabled(item.reason.is_none(), button)
-                                .on_disabled_hover_text(item.reason.unwrap_or_default());
-                            if selected {
-                                response.scroll_to_me(Some(egui::Align::Center));
-                            }
-                            if response.clicked() {
-                                chosen_index = Some(index);
-                            }
-                        }
-                        if items.is_empty() {
-                            ui.weak("No matching commands. Ctrl P searches tables and columns.");
-                        }
-                    });
-                // An unavailable command stays put and explains itself instead.
-                let reason = items
-                    .get(self.database.ui.palette_index)
-                    .and_then(|item| item.reason);
-                chosen = chosen_index
-                    .filter(|&i| items.get(i).is_some_and(|item| item.reason.is_none()))
-                    .map(|i| items.swap_remove(i).command);
-                presentation::footer(ui, |ui| match reason {
-                    Some(reason) => {
-                        ui.colored_label(ui.visuals().warn_fg_color, reason);
-                    }
-                    None => {
-                        ui.small(
-                            "Up/Down choose · Enter run · Esc close. Ctrl+P searches database objects.",
-                        );
-                    }
-                });
-            });
+            .show(ctx, |ui| chosen = self.palette_ui(ui));
         // A click elsewhere dismisses the palette, as it would a menu. The
         // frame that opened it is skipped, since that click was outside it.
         if !just_opened
@@ -520,6 +451,62 @@ impl App {
             self.database.ui.palette_open = false;
             self.execute_command(ctx, action);
         }
+    }
+    /// The palette's search, matching commands and footer; returns the
+    /// command chosen with Enter or a click.
+    fn palette_ui(&mut self, ui: &mut egui::Ui) -> Option<Command> {
+        let search = ui.add(
+            egui::TextEdit::singleline(&mut self.database.ui.palette_query)
+                .id_salt("command-search")
+                .hint_text("Find an action…")
+                .desired_width(ui.available_width()),
+        );
+        if std::mem::take(&mut self.database.ui.palette_focus) {
+            search.request_focus();
+        }
+        if search.changed() {
+            self.database.ui.palette_index = 0;
+        }
+        let mut items = self.palette_items();
+        let last = items.len().saturating_sub(1);
+        let index = &mut self.database.ui.palette_index;
+        *index = (*index).min(last);
+        let key = |key| ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key));
+        if key(egui::Key::ArrowDown) {
+            *index = (*index + 1).min(last);
+        }
+        if key(egui::Key::ArrowUp) {
+            *index = index.saturating_sub(1);
+        }
+        let index = *index;
+        let mut chosen = key(egui::Key::Enter).then_some(index);
+        egui::ScrollArea::vertical()
+            .max_height((ui.ctx().content_rect().height() - 240.0).max(100.0))
+            .show(ui, |ui| {
+                for (row, item) in items.iter().enumerate() {
+                    if palette_row(ui, item, row == index).clicked() {
+                        chosen = Some(row);
+                    }
+                }
+                if items.is_empty() {
+                    ui.weak("No matching commands. Ctrl P searches tables and columns.");
+                }
+            });
+        // An unavailable command stays put and explains itself instead.
+        let reason = items.get(index).and_then(|item| item.reason);
+        presentation::footer(ui, |ui| match reason {
+            Some(reason) => {
+                ui.colored_label(ui.visuals().warn_fg_color, reason);
+            }
+            None => {
+                ui.small(
+                    "Up/Down choose · Enter run · Esc close. Ctrl+P searches database objects.",
+                );
+            }
+        });
+        chosen
+            .filter(|&i| items.get(i).is_some_and(|item| item.reason.is_none()))
+            .map(|i| items.swap_remove(i).command)
     }
     fn palette_items(&self) -> Vec<PaletteItem> {
         // Labels use the names shown elsewhere in the app; keywords keep the
@@ -785,54 +772,12 @@ impl App {
     }
     pub(super) fn execute_command(&mut self, ctx: &egui::Context, action: Command) {
         match action {
-            Command::Definition(name) => {
-                if let Some(object) = self
-                    .database
-                    .schema
-                    .iter()
-                    .find(|o| o.name == name)
-                    .cloned()
-                {
-                    if self.database.workspace.enabled
-                        && self
-                            .create_window(Kind::Structure, Some(object.name.clone()), None, false)
-                            .is_none()
-                    {
-                        return;
-                    }
-                    self.database.ui.diagram.selected = Some(object.table.clone());
-                    self.database.document.tools.ddl = Some(object);
-                    self.database.document.ui.nav = Nav::Table;
-                    self.database.document.ui.table_view = TableView::Structure;
-                }
-            }
-            Command::Table(name, column) => {
-                let before = self.database.document.result.current;
-                self.activate_table(name.clone());
-                if self.database.document.result.current != before
-                    || self.database.document.view == super::View::Browse
-                        && self
-                            .database
-                            .document
-                            .table
-                            .as_ref()
-                            .is_some_and(|t| t.name == name)
-                {
-                    self.database.document.ui.nav = Nav::Table;
-                    self.database.document.ui.table_view = TableView::Data;
-                    self.database.document.tools.highlight_column =
-                        column.map(|column| (name, column));
-                    self.database.document.tools.scroll_to_column =
-                        self.database.document.tools.highlight_column.is_some();
-                }
-            }
-            Command::List => {
-                self.select_tool(ToolPanel::Schema);
-            }
+            Command::Definition(name) => self.show_definition(&name),
+            Command::Table(name, column) => self.show_table(name, column),
+            Command::List => self.select_tool(ToolPanel::Schema),
             Command::Map => {
                 self.overview();
                 self.database.ui.sidebar = ToolPanel::Schema;
-
                 if self.database.ui.diagram.data.is_none() {
                     self.load_diagram();
                 }
@@ -856,13 +801,8 @@ impl App {
                 }
                 self.database.document.ui.table_view = TableView::Structure;
             }
-            Command::Back => {
-                if self.database.document.view == super::View::Browse {
-                    self.navigate_back();
-                } else {
-                    self.return_to_table();
-                }
-            }
+            Command::Back if self.database.document.view == View::Browse => self.navigate_back(),
+            Command::Back => self.return_to_table(),
             Command::CopyResults => self.copy_results(ctx, crate::export::Format::Tsv),
             Command::Sql => self.toggle_sql(),
             Command::Open => self.begin_database_browse(ctx),
@@ -908,6 +848,68 @@ impl App {
             }
         }
     }
+    /// A schema object's definition, in a Structure tile when tiles are on.
+    fn show_definition(&mut self, name: &str) {
+        let Some(object) = self
+            .database
+            .schema
+            .iter()
+            .find(|o| o.name == name)
+            .cloned()
+        else {
+            return;
+        };
+        if self.database.workspace.enabled
+            && self
+                .create_window(Kind::Structure, Some(object.name.clone()), None, false)
+                .is_none()
+        {
+            return;
+        }
+        self.database.ui.diagram.selected = Some(object.table.clone());
+        self.database.document.tools.ddl = Some(object);
+        self.database.document.ui.nav = Nav::Table;
+        self.database.document.ui.table_view = TableView::Structure;
+    }
+    /// A table's rows, scrolled to and highlighting `column` when given.
+    fn show_table(&mut self, name: String, column: Option<String>) {
+        let before = self.database.document.result.current;
+        self.activate_table(name.clone());
+        let document = &mut self.database.document;
+        let shown = document.view == View::Browse
+            && document.table.as_ref().is_some_and(|t| t.name == name);
+        if document.result.current != before || shown {
+            document.ui.nav = Nav::Table;
+            document.ui.table_view = TableView::Data;
+            document.tools.highlight_column = column.map(|column| (name, column));
+            document.tools.scroll_to_column = document.tools.highlight_column.is_some();
+        }
+    }
+}
+
+/// One palette command: its name down the left edge and its shortcut lined
+/// up on the right; an unavailable one is greyed out with its reason.
+fn palette_row(ui: &mut egui::Ui, item: &PaletteItem, selected: bool) -> egui::Response {
+    let mut button = egui::Button::new(item.label)
+        .selected(selected)
+        // The keyboard choice needs its fill even without hover.
+        .frame_when_inactive(selected)
+        .min_size(egui::vec2(ui.available_width(), 32.0));
+    // An empty shortcut would still add a space to the accessible name.
+    if !item.shortcut.is_empty() {
+        button = button.shortcut_text(
+            egui::RichText::new(item.shortcut)
+                .monospace()
+                .size(crate::appearance::text_size(ui.ctx(), 11.0)),
+        );
+    }
+    let response = ui
+        .add_enabled(item.reason.is_none(), button)
+        .on_disabled_hover_text(item.reason.unwrap_or_default());
+    if selected {
+        response.scroll_to_me(Some(egui::Align::Center));
+    }
+    response
 }
 
 #[cfg(test)]

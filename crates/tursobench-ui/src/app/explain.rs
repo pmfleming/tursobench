@@ -41,6 +41,34 @@ fn nodes(result: &ResultSet) -> Option<Vec<Node>> {
         })
         .collect()
 }
+/// Hints for plan steps, most specific first; a highlighted step does extra work.
+const HINTS: [(&[&str], &str, bool); 3] = [
+    (
+        &["TEMP B-TREE"],
+        "Temporary sorting/grouping work; compare ordering and available indexes.",
+        true,
+    ),
+    (
+        &["SCAN "],
+        "Scan: can be appropriate for small tables or broad selections.",
+        true,
+    ),
+    (
+        &["INDEX", "SEARCH"],
+        "Indexed lookup; inspect the predicate and selectivity.",
+        false,
+    ),
+];
+/// The hint for a plan step's detail, and whether it is highlighted.
+fn hint(detail: &str) -> (&'static str, bool) {
+    let upper = detail.to_uppercase();
+    HINTS
+        .iter()
+        .find(|(words, _, _)| words.iter().any(|word| upper.contains(word)))
+        .map_or(("Engine plan operation.", false), |&(_, hint, warn)| {
+            (hint, warn)
+        })
+}
 fn draw(
     ui: &mut egui::Ui,
     node: &Node,
@@ -52,8 +80,8 @@ fn draw(
         ui.weak("Unresolved/cyclic plan edge; inspect raw rows.");
         return;
     }
-    let upper = node.detail.to_uppercase();
-    let color = if upper.contains("SCAN ") || upper.contains("TEMP B-TREE") {
+    let (hint, warn) = hint(&node.detail);
+    let color = if warn {
         ui.visuals().warn_fg_color
     } else {
         ui.visuals().text_color()
@@ -62,15 +90,7 @@ fn draw(
         .id_salt(("plan-node", node.id))
         .default_open(true)
         .show(ui, |ui| {
-            ui.weak(if upper.contains("TEMP B-TREE") {
-                "Temporary sorting/grouping work; compare ordering and available indexes."
-            } else if upper.contains("SCAN ") {
-                "Scan: can be appropriate for small tables or broad selections."
-            } else if upper.contains("INDEX") || upper.contains("SEARCH") {
-                "Indexed lookup; inspect the predicate and selectivity."
-            } else {
-                "Engine plan operation."
-            });
+            ui.weak(hint);
             for child in all
                 .values()
                 .filter(|n| n.parent == node.id && n.id != node.id)
@@ -85,26 +105,26 @@ impl App {
         if self.database.document.view != View::Explain {
             return false;
         }
+        let explain = &mut self.database.document.explain;
         let mut rerun = None;
         ui.horizontal_wrapped(|ui| {
-            ui.selectable_value(&mut self.database.document.explain.raw, false, "Plan tree");
-            ui.selectable_value(&mut self.database.document.explain.raw, true, "Raw rows");
-            if ui
-                .button(if self.database.document.explain.bytecode {
-                    "Load query plan"
-                } else {
-                    "Load bytecode"
-                })
-                .clicked()
-            {
-                rerun = Some(!self.database.document.explain.bytecode);
+            ui.selectable_value(&mut explain.raw, false, "Plan tree");
+            ui.selectable_value(&mut explain.raw, true, "Raw rows");
+            let other = if explain.bytecode {
+                "Load query plan"
+            } else {
+                "Load bytecode"
+            };
+            if ui.button(other).clicked() {
+                rerun = Some(!explain.bytecode);
             }
         });
         if let Some(bytecode) = rerun {
-            self.run_text(self.database.document.explain.sql.clone(), Some(bytecode));
+            let sql = explain.sql.clone();
+            self.run_text(sql, Some(bytecode));
             return true;
         }
-        if self.database.document.explain.raw || self.database.document.explain.bytecode {
+        if explain.raw || explain.bytecode {
             return false;
         }
         let Some(nodes) = nodes(&self.database.document.result) else {
@@ -114,34 +134,63 @@ impl App {
         if nodes.is_empty() {
             return false;
         }
-        let all: BTreeMap<_, _> = nodes.iter().map(|n| (n.id, n)).collect();
-        let mut seen = BTreeSet::new();
         let mut draft = None;
-        egui::ScrollArea::both().id_salt("explain-tree").show(ui, |ui| {
-            ui.small("Planner diagnostics, not execution measurements. Suggestions require review.");
-            for node in &nodes {
-                if node.id == node.parent || !all.contains_key(&node.parent) { draw(ui,node,&all,&mut seen,0); }
-            }
-            if seen.len() < nodes.len() { ui.weak("Some plan edges are cyclic or disconnected; use Raw rows for the complete retained plan."); }
-            if nodes.iter().any(|n| n.detail.to_uppercase().contains("SCAN ")) && let Some(graph) = &self.database.ui.diagram.data {
-                for table in &graph.tables {
-                    if let Some(info) = &table.inspection && let Some(sql) = tursobench_db::advice::index_draft(&self.database.document.explain.sql,info) {
-                        ui.separator(); ui.monospace(&sql);
-                        ui.small("Existing ordinary indexes were checked. This does not establish that a new index will improve runtime.");
-                        if ui.button("Open index draft in SQL editor").clicked() { draft = Some(sql); }
-                    }
+        egui::ScrollArea::both()
+            .id_salt("explain-tree")
+            .show(ui, |ui| {
+                ui.small(
+                    "Planner diagnostics, not execution measurements. Suggestions require review.",
+                );
+                plan_tree(ui, &nodes);
+                if nodes
+                    .iter()
+                    .any(|n| n.detail.to_uppercase().contains("SCAN "))
+                {
+                    draft = self.index_drafts_ui(ui);
                 }
-            }
-        });
+            });
         if let Some(sql) = draft {
             self.load_sql_window(sql);
         }
         true
     }
+    /// Index drafts for scanned tables of the map; returns one to open.
+    fn index_drafts_ui(&self, ui: &mut egui::Ui) -> Option<String> {
+        let graph = self.database.ui.diagram.data.as_ref()?;
+        let mut draft = None;
+        for info in graph.tables.iter().filter_map(|t| t.inspection.as_ref()) {
+            let Some(sql) =
+                tursobench_db::advice::index_draft(&self.database.document.explain.sql, info)
+            else {
+                continue;
+            };
+            ui.separator();
+            ui.monospace(&sql);
+            ui.small("Existing ordinary indexes were checked. This does not establish that a new index will improve runtime.");
+            if ui.button("Open index draft in SQL editor").clicked() {
+                draft = Some(sql);
+            }
+        }
+        draft
+    }
+}
+/// The plan from its roots: steps that are their own parent or whose parent
+/// is missing.
+fn plan_tree(ui: &mut egui::Ui, nodes: &[Node]) {
+    let all: BTreeMap<_, _> = nodes.iter().map(|n| (n.id, n)).collect();
+    let mut seen = BTreeSet::new();
+    for node in nodes {
+        if node.id == node.parent || !all.contains_key(&node.parent) {
+            draw(ui, node, &all, &mut seen, 0);
+        }
+    }
+    if seen.len() < nodes.len() {
+        ui.weak("Some plan edges are cyclic or disconnected; use Raw rows for the complete retained plan.");
+    }
 }
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{ResultSet, Value, hint, nodes};
     #[test]
     fn plan_shapes_are_validated_instead_of_guessing() {
         let mut result = ResultSet::default();
@@ -161,5 +210,10 @@ mod tests {
         assert_eq!(nodes(&result).unwrap()[0].id, 2);
         result.rows.push(result.rows[0].clone());
         assert!(nodes(&result).is_none());
+        // Scans and temporary B-trees are highlighted; the most specific hint wins.
+        assert!(hint("SCAN users USING INDEX x").0.starts_with("Scan"));
+        assert!(hint("use temp b-tree for order by").1);
+        assert!(!hint("SEARCH users USING INTEGER PRIMARY KEY").1);
+        assert_eq!(hint("CO-ROUTINE x"), ("Engine plan operation.", false));
     }
 }

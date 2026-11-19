@@ -196,7 +196,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Duration, Instant, Kind};
     #[test]
     fn idle_cursor_and_focus_changes_do_not_schedule_sql_snapshots() {
         let (ctx, mut app) = crate::app::test_ui::app();

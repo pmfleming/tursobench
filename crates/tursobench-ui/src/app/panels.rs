@@ -33,34 +33,7 @@ impl App {
                 .retain(|q| q.database != self.database.tools.database_scope);
             self.store.save(&self.preferences);
         }
-        ui.horizontal(|ui| {
-            let width = (ui.available_width() - 28.0 - ui.spacing().item_spacing.x).max(40.0);
-            ui.add_sized(
-                [width, 28.0],
-                egui::TextEdit::singleline(&mut self.database.tools.bookmark_name)
-                    .hint_text("Query name…")
-                    .char_limit(64),
-            )
-            .on_hover_text("Name for the current editor SQL");
-            let save = ui
-                .add_enabled_ui(!self.database.document.sql.trim().is_empty(), |ui| {
-                    icons::button(ui, Icon::Plus, "Save current SQL", "")
-                })
-                .inner;
-            if save.clicked() {
-                let name = if self.database.tools.bookmark_name.trim().is_empty() {
-                    self.database.document.sql.chars().take(60).collect()
-                } else {
-                    self.database.tools.bookmark_name.clone()
-                };
-                self.preferences.bookmark(
-                    &self.database.tools.database_scope,
-                    &name,
-                    &self.database.document.sql,
-                );
-                self.store.save(&self.preferences);
-            }
-        });
+        ui.horizontal(|ui| self.save_query_ui(ui));
         search(
             ui,
             &mut self.database.tools.bookmark_search,
@@ -83,47 +56,15 @@ impl App {
                 continue;
             }
             visible += 1;
-            ui.push_id(("saved-query", index), |ui| {
-                list_row(ui, None, |ui, active| {
-                    let name = ui.add(
-                        egui::TextEdit::singleline(&mut bookmark.name)
-                            .char_limit(64)
-                            .desired_width(ui.available_width())
-                            .margin(egui::Margin::ZERO)
-                            .frame(egui::Frame::NONE),
-                    );
-                    name.widget_info(|| {
-                        egui::WidgetInfo::labeled(
-                            egui::Role::TextInput,
-                            ui.is_enabled(),
-                            "Rename saved query",
-                        )
-                    });
-                    renamed |= name.changed();
-                    let action =
-                        query_actions(ui, active, "Load saved query", "Delete saved query", |ui| {
-                            if bookmark.database.is_empty() {
-                                ui.small("Legacy")
-                                    .on_hover_text("Saved before database-scoped queries");
-                            }
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(sql_preview(&bookmark.sql))
-                                        .monospace()
-                                        .small()
-                                        .weak(),
-                                )
-                                .truncate(),
-                            )
-                            .on_hover_text(&bookmark.sql);
-                        });
-                    match action {
-                        Some(QueryAction::Load) => load = Some(bookmark.sql.clone()),
-                        Some(QueryAction::Delete) => remove = Some(index),
-                        None => {}
-                    }
-                });
-            });
+            let (changed, action) = ui
+                .push_id(("saved-query", index), |ui| saved_query_row(ui, bookmark))
+                .inner;
+            renamed |= changed;
+            match action {
+                Some(QueryAction::Load) => load = Some(bookmark.sql.clone()),
+                Some(QueryAction::Delete) => remove = Some(index),
+                None => {}
+            }
         }
         ui.spacing_mut().item_spacing.y = spacing;
         if visible == 0 {
@@ -138,6 +79,37 @@ impl App {
         }
         if let Some(sql) = load {
             self.load_sql_window(sql);
+        }
+    }
+
+    /// A name field and the button that saves the editor's SQL under it,
+    /// or under the SQL's opening when unnamed.
+    fn save_query_ui(&mut self, ui: &mut egui::Ui) {
+        let width = (ui.available_width() - 28.0 - ui.spacing().item_spacing.x).max(40.0);
+        ui.add_sized(
+            [width, 28.0],
+            egui::TextEdit::singleline(&mut self.database.tools.bookmark_name)
+                .hint_text("Query name…")
+                .char_limit(64),
+        )
+        .on_hover_text("Name for the current editor SQL");
+        let save = ui
+            .add_enabled_ui(!self.database.document.sql.trim().is_empty(), |ui| {
+                icons::button(ui, Icon::Plus, "Save current SQL", "")
+            })
+            .inner;
+        if save.clicked() {
+            let name = if self.database.tools.bookmark_name.trim().is_empty() {
+                self.database.document.sql.chars().take(60).collect()
+            } else {
+                self.database.tools.bookmark_name.clone()
+            };
+            self.preferences.bookmark(
+                &self.database.tools.database_scope,
+                &name,
+                &self.database.document.sql,
+            );
+            self.store.save(&self.preferences);
         }
     }
 
@@ -489,6 +461,43 @@ fn action_row(
 
 /// A flat two-line entry. The closure learns whether the pointer is over the
 /// row so per-row actions can recede until they are within reach.
+/// One saved query: its editable name over a SQL preview, with load and
+/// delete actions. Returns whether the name changed and any action.
+fn saved_query_row(
+    ui: &mut egui::Ui,
+    bookmark: &mut crate::storage::Bookmark,
+) -> (bool, Option<QueryAction>) {
+    list_row(ui, None, |ui, active| {
+        let name = ui.add(
+            egui::TextEdit::singleline(&mut bookmark.name)
+                .char_limit(64)
+                .desired_width(ui.available_width())
+                .margin(egui::Margin::ZERO)
+                .frame(egui::Frame::NONE),
+        );
+        name.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::Role::TextInput, ui.is_enabled(), "Rename saved query")
+        });
+        let action = query_actions(ui, active, "Load saved query", "Delete saved query", |ui| {
+            if bookmark.database.is_empty() {
+                ui.small("Legacy")
+                    .on_hover_text("Saved before database-scoped queries");
+            }
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(sql_preview(&bookmark.sql))
+                        .monospace()
+                        .small()
+                        .weak(),
+                )
+                .truncate(),
+            )
+            .on_hover_text(&bookmark.sql);
+        });
+        (name.changed(), action)
+    })
+}
+
 fn list_row<R>(
     ui: &mut egui::Ui,
     edge: Option<egui::Color32>,
@@ -818,23 +827,11 @@ mod tests {
                 for panel in [TestPanel::History, TestPanel::Saved, TestPanel::Diagnostics] {
                     frame(&mut app, &ctx, panel, width, vec![]);
                     let output = frame(&mut app, &ctx, panel, width, vec![]);
-                    let tree = output.platform_output.accesskit_update.as_ref().unwrap();
-                    for (_, node) in &tree.nodes {
-                        if matches!(
-                            node.role(),
-                            egui::Role::Button
-                                | egui::Role::TextInput
-                                | egui::Role::Slider
-                                | egui::Role::SpinButton
-                        ) && let Some(bounds) = node.bounds()
-                        {
-                            assert!(
-                                bounds.x0 >= 0.0 && bounds.x1 <= f64::from(width) + 1.0,
-                                "{panel:?}, width {width}, {:?}: {bounds:?}",
-                                node.label()
-                            );
-                        }
-                    }
+                    crate::app::settings::assert_controls_fit(
+                        &output,
+                        width,
+                        &format!("{panel:?}, width {width}"),
+                    );
                     if panel == TestPanel::Diagnostics {
                         for diagnostic in Diagnostic::ALL {
                             crate::app::test_ui::control(&output, diagnostic.label());

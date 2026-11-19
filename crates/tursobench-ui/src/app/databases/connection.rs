@@ -81,93 +81,167 @@ impl App {
             .inner_margin(8.0)
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                let path = Path::new(&self.database.path);
-                let name = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy().into_owned();
-                let writable = self.database.writable;
-                ui.horizontal(|ui| {
-                    let name_width = (ui.available_width() - 56.0 - 2.0 * ui.spacing().item_spacing.x).max(1.0);
-                    ui.allocate_ui_with_layout(egui::vec2(name_width, 28.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        ui.set_min_size(egui::vec2(name_width, 28.0));
-                        ui.add(egui::Label::new(egui::RichText::new(name).strong()).truncate())
-                    }).inner
-                        .on_hover_text(&self.database.path);
-                    for mode in [false, true] {
-                        if crate::app::icons::access_button(ui, mode, Some(self.database.writable == mode)).clicked() {
-                            self.database.writable = mode;
-                        }
-                    }
-                });
-                if self.database.writable != writable { self.databases.open_failure = None; }
+                self.access_mode_ui(ui);
                 ui.add(egui::Label::new(&self.database.path).truncate())
                     .on_hover_text(&self.database.path);
-                let inspection = &mut self.databases.inspection;
-                #[cfg(test)]
-                { self.databases.override_rect = None; }
-                if inspection.ready(&self.database.path) && inspection.kind(&self.database.path) == crate::discovery::DatabaseKind::LikelySqlite {
-                    ui.horizontal_wrapped(|ui| {
-                            ui.weak("Likely SQLite");
-                            let response = crate::app::presentation::checkbox(ui, &mut inspection.override_sqlite, "Open with Turso anyway");
-                            #[cfg(test)]
-                            { self.databases.override_rect = Some(response.rect); }
-                            response.on_hover_text("Override the engine guess for this selected file. Turso still validates compatibility; this does not convert the file.");
-                    });
-                }
+                self.sqlite_override_ui(ui);
                 ui.add_space(8.0);
                 if self.database.writable {
-                    ui.small(egui::RichText::new("Opening for writes may change the file. Back up first.").color(ui.visuals().warn_fg_color));
+                    ui.small(
+                        egui::RichText::new(
+                            "Opening for writes may change the file. Back up first.",
+                        )
+                        .color(ui.visuals().warn_fg_color),
+                    );
                 }
-                let enabled = !self.database.path.is_empty()
-                    && self.picker.is_none()
-                    && self.database_admission_available()
-                    && self.databases.inspection.allows_open(&self.database.path)
-                    && !self.has_drafts();
-                let response = ui.horizontal_wrapped(|ui| {
-                    let response = ui.add_enabled(enabled, crate::app::presentation::action(ui,
-                        if self.databases.open_failure.is_some() { "Retry" } else { "Open" },
-                        crate::app::presentation::Intent::Primary).min_size(egui::vec2(70.0,30.0)));
-                    if ui.button("Cancel").clicked() {
-                        self.cancel_database_review();
-                    }
-                    response
-                }).inner;
-                #[cfg(test)]
-                {
-                    self.databases.open_rect = Some(response.rect);
-                    self.databases.open_enabled = response.enabled();
-                }
-                if response.clicked() {
-                    self.open(ui.ctx());
-                }
-                let blocked = self.databases.inspection.blocked(&self.database.path).is_some();
-                let mut recheck = false;
-                let issue = self.databases.open_failure.as_ref()
-                    .or_else(|| self.databases.inspection.blocked(&self.database.path));
-                if let Some(error) = issue {
-                    let title = if self.databases.open_failure.is_some() { "Couldn’t open database" }
-                        else if error.kind == tursobench_core::ErrorKind::Busy { "Database in use" }
-                        else { "Cannot open database" };
-                    let color = ui.visuals().error_fg_color;
-                    egui::Frame::new().fill(color.gamma_multiply(0.09))
-                        .stroke(egui::Stroke::new(1.0,color.gamma_multiply(0.4)))
-                        .corner_radius(6).inner_margin(10.0).show(ui, |ui| {
-                            ui.colored_label(color, egui::RichText::new(title).strong());
-                            ui.add(egui::Label::new(&error.message).wrap());
-                            if blocked {
-                                recheck = ui.button("Check again")
-                                    .on_hover_text("Recheck this file’s availability and locks")
-                                    .clicked();
-                            }
-                        });
-                } else if !self.databases.inspection.ready(&self.database.path) {
-                    ui.horizontal(|ui| { ui.spinner(); ui.weak("Checking file…"); });
-                }
-                if recheck {
+                self.open_buttons_ui(ui);
+                if self.open_issue_ui(ui) {
                     self.databases.open_failure = None;
                     self.databases.inspection.recheck();
                 }
                 ui.add_space(8.0);
-
             });
+    }
+
+    /// The file name beside the read-only and read/write choice; changing
+    /// the mode clears an earlier open failure.
+    fn access_mode_ui(&mut self, ui: &mut egui::Ui) {
+        let path = Path::new(&self.database.path);
+        let name = path
+            .file_name()
+            .unwrap_or(path.as_os_str())
+            .to_string_lossy();
+        let writable = self.database.writable;
+        ui.horizontal(|ui| {
+            let name_width =
+                (ui.available_width() - 56.0 - 2.0 * ui.spacing().item_spacing.x).max(1.0);
+            ui.allocate_ui_with_layout(
+                egui::vec2(name_width, 28.0),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.set_min_size(egui::vec2(name_width, 28.0));
+                    ui.add(egui::Label::new(egui::RichText::new(name).strong()).truncate())
+                },
+            )
+            .inner
+            .on_hover_text(&self.database.path);
+            for mode in [false, true] {
+                if crate::app::icons::access_button(ui, mode, Some(self.database.writable == mode))
+                    .clicked()
+                {
+                    self.database.writable = mode;
+                }
+            }
+        });
+        if self.database.writable != writable {
+            self.databases.open_failure = None;
+        }
+    }
+
+    /// A file that looks like SQLite opens only after the user overrides the guess.
+    fn sqlite_override_ui(&mut self, ui: &mut egui::Ui) {
+        let inspection = &mut self.databases.inspection;
+        #[cfg(test)]
+        {
+            self.databases.override_rect = None;
+        }
+        if !inspection.ready(&self.database.path)
+            || inspection.kind(&self.database.path) != crate::discovery::DatabaseKind::LikelySqlite
+        {
+            return;
+        }
+        ui.horizontal_wrapped(|ui| {
+            ui.weak("Likely SQLite");
+            let response = crate::app::presentation::checkbox(
+                ui,
+                &mut inspection.override_sqlite,
+                "Open with Turso anyway",
+            );
+            #[cfg(test)]
+            {
+                self.databases.override_rect = Some(response.rect);
+            }
+            response.on_hover_text("Override the engine guess for this selected file. Turso still validates compatibility; this does not convert the file.");
+        });
+    }
+
+    fn open_buttons_ui(&mut self, ui: &mut egui::Ui) {
+        let enabled = !self.database.path.is_empty()
+            && self.picker.is_none()
+            && self.database_admission_available()
+            && self.databases.inspection.allows_open(&self.database.path)
+            && !self.has_drafts();
+        let label = if self.databases.open_failure.is_some() {
+            "Retry"
+        } else {
+            "Open"
+        };
+        let response = ui
+            .horizontal_wrapped(|ui| {
+                let response = ui.add_enabled(
+                    enabled,
+                    crate::app::presentation::action(
+                        ui,
+                        label,
+                        crate::app::presentation::Intent::Primary,
+                    )
+                    .min_size(egui::vec2(70.0, 30.0)),
+                );
+                if ui.button("Cancel").clicked() {
+                    self.cancel_database_review();
+                }
+                response
+            })
+            .inner;
+        #[cfg(test)]
+        {
+            self.databases.open_rect = Some(response.rect);
+            self.databases.open_enabled = response.enabled();
+        }
+        if response.clicked() {
+            self.open(ui.ctx());
+        }
+    }
+
+    /// Why the file cannot open, or a spinner while it is checked; returns
+    /// whether the user asked to check a blocked file again.
+    fn open_issue_ui(&self, ui: &mut egui::Ui) -> bool {
+        let path = &self.database.path;
+        let blocked = self.databases.inspection.blocked(path);
+        let Some(error) = self.databases.open_failure.as_ref().or(blocked) else {
+            if !self.databases.inspection.ready(path) {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.weak("Checking file…");
+                });
+            }
+            return false;
+        };
+        let title = if self.databases.open_failure.is_some() {
+            "Couldn’t open database"
+        } else if error.kind == tursobench_core::ErrorKind::Busy {
+            "Database in use"
+        } else {
+            "Cannot open database"
+        };
+        let color = ui.visuals().error_fg_color;
+        let mut recheck = false;
+        egui::Frame::new()
+            .fill(color.gamma_multiply(0.09))
+            .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.4)))
+            .corner_radius(6)
+            .inner_margin(10.0)
+            .show(ui, |ui| {
+                ui.colored_label(color, egui::RichText::new(title).strong());
+                ui.add(egui::Label::new(&error.message).wrap());
+                if blocked.is_some() {
+                    recheck = ui
+                        .button("Check again")
+                        .on_hover_text("Recheck this file’s availability and locks")
+                        .clicked();
+                }
+            });
+        recheck
     }
 
     fn database_path_ui(&mut self, ui: &mut egui::Ui, focus: bool) {
@@ -398,19 +472,10 @@ mod tests {
         frame(
             &mut app,
             &ctx,
-            vec![
-                egui::Event::PointerMoved(egui::pos2(
-                    settings_rect.center().x,
-                    settings_rect.bottom() - 20.0,
-                )),
-                egui::Event::MouseWheel {
-                    unit: egui::MouseWheelUnit::Point,
-                    delta: egui::vec2(0.0, -1000.0),
-                    phase: egui::TouchPhase::Move,
-                    source: egui::MouseWheelSource::Unknown,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ],
+            super::super::tests::scroll_down_at(egui::pos2(
+                settings_rect.center().x,
+                settings_rect.bottom() - 20.0,
+            )),
             egui::vec2(1280.0, 720.0),
         );
         for _ in 0..10 {

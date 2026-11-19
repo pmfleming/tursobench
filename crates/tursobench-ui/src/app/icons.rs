@@ -134,13 +134,14 @@ pub(super) fn access_indicator(ui: &mut egui::Ui, rect: egui::Rect, writable: bo
             mode.color.gamma_multiply(0.5)
         },
     );
-    let response = ui.interact(
-        rect,
-        ui.scope_id().with("database-access"),
-        egui::Sense::hover(),
-    );
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, enabled, mode.name));
-    response.on_hover_text(mode.name);
+    named_image(ui, rect, "database-access", enabled, mode.name);
+}
+
+/// A painted glyph that names itself on hover and to assistive technology.
+fn named_image(ui: &egui::Ui, rect: egui::Rect, salt: &str, enabled: bool, name: &str) {
+    let response = ui.interact(rect, ui.scope_id().with(salt), egui::Sense::hover());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, enabled, name));
+    response.on_hover_text(name);
 }
 
 pub(super) const RIBBON_BUTTON_SIZE: f32 = 30.0;
@@ -180,13 +181,7 @@ pub(super) fn empty_state_at(ui: &mut egui::Ui, rect: egui::Rect, icon: Icon, de
         galley,
         tokens.muted,
     );
-    let response = ui.interact(
-        glyph,
-        ui.scope_id().with("empty-state"),
-        egui::Sense::hover(),
-    );
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, description));
-    response.on_hover_text(description);
+    named_image(ui, glyph, "empty-state", true, description);
 }
 
 /// Compact tile actions keep the same native focus and accessibility behavior.
@@ -281,442 +276,326 @@ fn widget(
         format!("{name} · {shortcut}")
     })
 }
-
 pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color: egui::Color32) {
-    let p =
-        |x: f32, y: f32| rect.min + egui::vec2(x * rect.width() / 24.0, y * rect.height() / 24.0);
-    let stroke = Stroke::new(1.4 * (rect.width() / 16.0).max(1.0), color);
-    let line = |points: &[(f32, f32)]| {
-        painter.add(egui::Shape::line(
-            points.iter().map(|&(x, y)| p(x, y)).collect::<Vec<Pos2>>(),
-            stroke,
-        ));
+    let pen = Pen {
+        painter,
+        rect,
+        stroke: Stroke::new(1.4 * (rect.width() / 16.0).max(1.0), color),
     };
-    let circle = |x, y, r| {
-        painter.circle_stroke(p(x, y), r * rect.width() / 24.0, stroke);
-    };
-    let box_ = |x, y, w, h| {
-        painter.rect_stroke(
-            egui::Rect::from_min_max(p(x, y), p(x + w, y + h)),
-            2.0,
-            stroke,
-            egui::StrokeKind::Inside,
-        );
-    };
-    use Icon::*;
+    for mark in marks(icon) {
+        pen.draw(mark);
+    }
+}
+
+/// One stroke of an icon, in a 24-unit square scaled to the icon's rect.
+enum Mark {
+    /// An open polyline in SVG `points` syntax: `"x,y x,y …"`.
+    Line(&'static str),
+    Circle(f32, f32, f32),
+    /// A rounded outline from its top-left corner, width and height.
+    Rect(f32, f32, f32, f32),
+    /// Every polyline of a bundled SVG asset.
+    Svg(&'static str),
+    /// Geometry that is computed rather than listed.
+    Drawn(fn(&Pen)),
+}
+
+use Mark::{Circle, Drawn, Line, Rect, Svg};
+
+fn marks(icon: Icon) -> &'static [Mark] {
     match icon {
-        Trigger => {
-            line(&[
-                (13.0, 2.0),
-                (5.0, 14.0),
-                (12.0, 14.0),
-                (11.0, 22.0),
-                (19.0, 10.0),
-                (12.0, 10.0),
-                (13.0, 2.0),
-            ]);
-        }
-        Next => {
-            line(&[(5., 12.), (19., 12.)]);
-            line(&[(13., 6.), (19., 12.), (13., 18.)]);
-        }
-        Up => line(&[(6., 15.), (12., 9.), (18., 15.)]),
-        Minimize => line(&[(5., 12.), (19., 12.)]),
-        Down => line(&[(6., 9.), (12., 15.), (18., 9.)]),
-        Search => {
-            circle(10., 10., 7.);
-            line(&[(15., 15.), (21., 21.)]);
-        }
-        Database => {
-            box_(4., 4., 16., 17.);
-            line(&[(4., 9.), (20., 9.)]);
-            line(&[(4., 15.), (20., 15.)]);
-        }
-        Folder => line(&[
-            (3., 20.),
-            (3., 5.),
-            (10., 5.),
-            (13., 8.),
-            (21., 8.),
-            (21., 20.),
-            (3., 20.),
-        ]),
-        Map => {
-            box_(2., 3., 8., 6.);
-            box_(15., 3., 7., 6.);
-            box_(8., 16., 8., 6.);
-            line(&[(6., 9.), (6., 12.), (19., 12.), (19., 9.)]);
-            line(&[(12., 12.), (12., 16.)]);
-        }
-        Data => {
-            box_(3., 3., 18., 18.);
-            line(&[(3., 9.), (21., 9.)]);
-            line(&[(3., 15.), (21., 15.)]);
-            line(&[(9., 3.), (9., 21.)]);
-        }
-        Structure => {
-            for y in [6., 12., 18.] {
-                circle(4., y, 1.);
-                line(&[(9., y), (21., y)]);
+        Icon::Next => &[Line("5,12 19,12"), Line("13,6 19,12 13,18")],
+        Icon::Trigger => &[Line("13,2 5,14 12,14 11,22 19,10 12,10 13,2")],
+        Icon::Search => &[Circle(10., 10., 7.), Line("15,15 21,21")],
+        Icon::Database => &[Rect(4., 4., 16., 17.), Line("4,9 20,9"), Line("4,15 20,15")],
+        Icon::Folder => &[Line("3,20 3,5 10,5 13,8 21,8 21,20 3,20")],
+        Icon::Map => &[
+            Rect(2., 3., 8., 6.),
+            Rect(15., 3., 7., 6.),
+            Rect(8., 16., 8., 6.),
+            Line("6,9 6,12 19,12 19,9"),
+            Line("12,12 12,16"),
+        ],
+        Icon::Data => &[
+            Rect(3., 3., 18., 18.),
+            Line("3,9 21,9"),
+            Line("3,15 21,15"),
+            Line("9,3 9,21"),
+        ],
+        Icon::Structure => &[
+            Circle(4., 6., 1.),
+            Line("9,6 21,6"),
+            Circle(4., 12., 1.),
+            Line("9,12 21,12"),
+            Circle(4., 18., 1.),
+            Line("9,18 21,18"),
+        ],
+        Icon::Filter => &[Line("3,4 21,4 14,12 14,19 10,21 10,12 3,4")],
+        Icon::Refresh => &[
+            Line("21,4 21,10 15,10"),
+            Line("21,10 17,5 9,4 4,9 4,16 10,21 17,20 21,16"),
+        ],
+        Icon::Count => &[Line("19,7 19,4 5,4 12,12 5,20 19,20 19,17")],
+        Icon::Export => &[
+            Line("12,3 12,16"),
+            Line("6,10 12,16 18,10"),
+            Line("3,16 3,21 21,21 21,16"),
+        ],
+        Icon::Copy => &[Rect(9., 9., 12., 12.), Line("5,16 3,16 3,3 16,3 16,5")],
+        Icon::CopyAll => &[
+            Rect(9., 9., 12., 12.),
+            Line("5,16 3,16 3,3 16,3 16,5"),
+            Line("12,13 18,13"),
+            Line("12,17 16,17"),
+        ],
+        Icon::Sql => &[
+            Rect(2., 4., 20., 16.),
+            Line("6,9 10,12 6,15"),
+            Line("13,16 18,16"),
+        ],
+        Icon::History => &[Circle(12., 12., 9.), Line("12,6 12,12 17,15")],
+        Icon::Saved => &[Line("6,21 6,3 18,3 18,21 12,16 6,21")],
+        Icon::Checks => &[Line("2,12 6,12 9,4 15,20 18,12 22,12")],
+        Icon::Settings => &[
+            Line("4,3 4,21"),
+            Circle(4., 14., 2.5),
+            Line("12,3 12,21"),
+            Circle(12., 8., 2.5),
+            Line("20,3 20,21"),
+            Circle(20., 16., 2.5),
+        ],
+        Icon::Desktop => &[
+            Rect(3., 4., 18., 13.),
+            Line("12,17 12,21"),
+            Line("8,21 16,21"),
+        ],
+        Icon::Sun => &[Circle(12., 12., 4.), Drawn(sun_rays)],
+        Icon::Moon => &[Drawn(moon)],
+        Icon::Close => &[Line("6,6 18,18"), Line("6,18 18,6")],
+        Icon::Lock => &[
+            Rect(4., 11., 16., 11.),
+            Line("8,11 8,5 10,3 14,3 16,5 16,11"),
+        ],
+        Icon::Edit => &[Line("4,20 5,15 17,3 21,7 9,19 4,20"), Line("15,5 19,9")],
+        // Four corner brackets.
+        Icon::Fit => &[
+            Line("3,8 3,3 8,3"),
+            Line("21,8 21,3 16,3"),
+            Line("3,16 3,21 8,21"),
+            Line("21,16 21,21 16,21"),
+        ],
+        Icon::Arrange => &[
+            Rect(3., 3., 7., 7.),
+            Rect(14., 3., 7., 7.),
+            Rect(3., 14., 7., 7.),
+            Rect(14., 14., 7., 7.),
+        ],
+        Icon::RestoreTiles => &[
+            Rect(3., 3., 18., 18.),
+            Line("12,3 12,21"),
+            Line("3,10 12,10"),
+            Line("12,9 21,9"),
+            Line("12,15 21,15"),
+        ],
+        Icon::Columns => &[Rect(3., 3., 18., 18.), Line("12,3 12,21")],
+        Icon::System => &[Line("12,2 21,6 20,15 16,20 12,23 8,20 4,15 3,6 12,2")],
+        Icon::Plus => &[Line("4,12 20,12"), Line("12,4 12,20")],
+        Icon::Selection => &[
+            Line("2,6 8,6"),
+            Line("2,12 8,12"),
+            Line("2,18 8,18"),
+            Line("13,6 21,12 13,18 13,6"),
+        ],
+        Icon::Explain => &[
+            Rect(2., 3., 7., 7.),
+            Rect(15., 15., 7., 7.),
+            Line("6,10 6,18 15,18"),
+        ],
+        Icon::Parameters => &[
+            Line("8,3 5,3 5,10 2,12 5,14 5,21 8,21"),
+            Line("16,3 19,3 19,10 22,12 19,14 19,21 16,21"),
+        ],
+        Icon::Complete => &[Line("3,6 21,6"), Line("3,12 16,12"), Line("3,18 12,18")],
+        Icon::Undo => &[
+            Line("9,4 4,9 9,14"),
+            Line("4,9 17,9 21,13 21,17 17,21 12,21"),
+        ],
+        Icon::Trash => &[
+            Line("3,6 21,6"),
+            Line("8,6 8,3 16,3 16,6"),
+            Line("5,6 6,21 18,21 19,6"),
+        ],
+        Icon::Key => &[Circle(7., 16., 5.), Line("11,12 21,2"), Line("16,7 20,11")],
+        Icon::Link => &[
+            Line("10,15 6,19 2,15 2,12 8,6 12,6 16,10"),
+            Line("8,14 14,8 18,5 22,9 22,12 16,18 12,18"),
+        ],
+        Icon::Up => &[Line("6,15 12,9 18,15")],
+        Icon::Down => &[Line("6,9 12,15 18,9")],
+        Icon::Minimize => &[Line("5,12 19,12")],
+        Icon::Run => &[Svg(include_str!("../../assets/icons/run.svg"))],
+        Icon::RunAll => &[Svg(include_str!("../../assets/icons/run-all.svg"))],
+        Icon::CloneRecord => &[Svg(include_str!("../../assets/icons/clone-record.svg"))],
+        Icon::BeginTransaction => &[Svg(include_str!(
+            "../../assets/icons/begin-transaction.svg"
+        ))],
+        Icon::CommitTransaction => &[Svg(include_str!(
+            "../../assets/icons/commit-transaction.svg"
+        ))],
+        Icon::Bytecode => &[Svg(include_str!("../../assets/icons/bytecode.svg"))],
+        Icon::ReviewEdits => &[Svg(include_str!("../../assets/icons/review-edits.svg"))],
+        Icon::CopyValue => &[Svg(include_str!("../../assets/icons/copy-value.svg"))],
+        Icon::FitColumns => &[Svg(include_str!("../../assets/icons/fit-columns.svg"))],
+        Icon::Help => &[
+            Circle(12., 12., 9.),
+            Line("9,9.5 9.6,7.8 11,7 13,7 14.4,7.8 15,9.5 14.2,11.2 12,12.6 12,14"),
+            Line("12,16.6 12,17.2"),
+        ],
+        // The looped-square command sign: four corner loops joined by two bars each way.
+        Icon::Command => &[
+            Circle(6., 6., 3.),
+            Circle(18., 6., 3.),
+            Circle(6., 18., 3.),
+            Circle(18., 18., 3.),
+            Line("9,6 9,18"),
+            Line("15,6 15,18"),
+            Line("6,9 18,9"),
+            Line("6,15 18,15"),
+        ],
+        // A cell holding a text cursor.
+        Icon::EditCells => &[
+            Rect(3., 6., 18., 12.),
+            Line("9,9.5 9,14.5"),
+            Line("7.5,9.5 10.5,9.5"),
+            Line("7.5,14.5 10.5,14.5"),
+        ],
+        Icon::Compare => &[
+            Line("4,4 4,20"),
+            Line("20,4 20,20"),
+            Line("8,9 16,9"),
+            Line("14,7 16,9 14,11"),
+            Line("16,15 8,15"),
+            Line("10,13 8,15 10,17"),
+        ],
+        Icon::Gauge => &[
+            Line("3,17 4.2,12.5 7.5,9.2 12,8 16.5,9.2 19.8,12.5 21,17"),
+            Line("12,17 16,12"),
+            Line("3,20 21,20"),
+        ],
+        Icon::Profile => &[
+            Line("3,20 21,20"),
+            Line("6,20 6,13"),
+            Line("12,20 12,4"),
+            Line("18,20 18,9"),
+        ],
+        Icon::Transfer => &[
+            Line("8,20 8,4"),
+            Line("4,8 8,4 12,8"),
+            Line("16,4 16,20"),
+            Line("12,16 16,20 20,16"),
+        ],
+        Icon::Sidebar => &[
+            Rect(3., 4., 18., 16.),
+            Line("9,4 9,20"),
+            Line("5,8 7,8"),
+            Line("5,11 7,11"),
+        ],
+        // A speech bubble holding a spark: a conversation with an agent.
+        Icon::Assistant => &[
+            Line("4,5 20,5 20,16 11,16 6,20 7,16 4,16 4,5"),
+            Line("12,7.5 12,13.5"),
+            Line("9,10.5 15,10.5"),
+        ],
+        Icon::Send => &[Line("3,12 21,4 14,21 11,13 3,12"), Line("11,13 21,4")],
+        Icon::Stop => &[Rect(6., 6., 12., 12.)],
+        Icon::Check => &[Line("4,12.5 9.5,18 20,6.5")],
+        Icon::Star => &[Drawn(|pen| pen.line(star_points(12., 12.6, 9.5)))],
+    }
+}
+
+/// Strokes in 24-unit icon space, scaled to one icon's rect.
+struct Pen<'a> {
+    painter: &'a egui::Painter,
+    rect: egui::Rect,
+    stroke: Stroke,
+}
+
+impl Pen<'_> {
+    fn at(&self, x: f32, y: f32) -> Pos2 {
+        icon_point(self.rect, x, y)
+    }
+
+    fn line(&self, points: impl IntoIterator<Item = (f32, f32)>) {
+        let points = points.into_iter().map(|(x, y)| self.at(x, y)).collect();
+        self.painter.add(egui::Shape::line(points, self.stroke));
+    }
+
+    fn draw(&self, mark: &Mark) {
+        match *mark {
+            Line(points) => self.line(polyline(points)),
+            Circle(x, y, r) => {
+                self.painter.circle_stroke(
+                    self.at(x, y),
+                    r * self.rect.width() / 24.0,
+                    self.stroke,
+                );
             }
-        }
-        Filter => line(&[
-            (3., 4.),
-            (21., 4.),
-            (14., 12.),
-            (14., 19.),
-            (10., 21.),
-            (10., 12.),
-            (3., 4.),
-        ]),
-        Refresh => {
-            line(&[(21., 4.), (21., 10.), (15., 10.)]);
-            line(&[
-                (21., 10.),
-                (17., 5.),
-                (9., 4.),
-                (4., 9.),
-                (4., 16.),
-                (10., 21.),
-                (17., 20.),
-                (21., 16.),
-            ]);
-        }
-        Count => line(&[
-            (19., 7.),
-            (19., 4.),
-            (5., 4.),
-            (12., 12.),
-            (5., 20.),
-            (19., 20.),
-            (19., 17.),
-        ]),
-        Export => {
-            line(&[(12., 3.), (12., 16.)]);
-            line(&[(6., 10.), (12., 16.), (18., 10.)]);
-            line(&[(3., 16.), (3., 21.), (21., 21.), (21., 16.)]);
-        }
-        Copy => {
-            box_(9., 9., 12., 12.);
-            line(&[(5., 16.), (3., 16.), (3., 3.), (16., 3.), (16., 5.)]);
-        }
-        CopyAll => {
-            box_(9., 9., 12., 12.);
-            line(&[(5., 16.), (3., 16.), (3., 3.), (16., 3.), (16., 5.)]);
-            line(&[(12., 13.), (18., 13.)]);
-            line(&[(12., 17.), (16., 17.)]);
-        }
-        Sql => {
-            box_(2., 4., 20., 16.);
-            line(&[(6., 9.), (10., 12.), (6., 15.)]);
-            line(&[(13., 16.), (18., 16.)]);
-        }
-        History => {
-            circle(12., 12., 9.);
-            line(&[(12., 6.), (12., 12.), (17., 15.)]);
-        }
-        Command => {
-            // The looped-square command sign: four corner loops joined by two bars each way.
-            for (x, y) in [(6., 6.), (18., 6.), (6., 18.), (18., 18.)] {
-                circle(x, y, 3.);
+            Rect(x, y, w, h) => {
+                self.painter.rect_stroke(
+                    egui::Rect::from_min_max(self.at(x, y), self.at(x + w, y + h)),
+                    2.0,
+                    self.stroke,
+                    egui::StrokeKind::Inside,
+                );
             }
-            line(&[(9., 6.), (9., 18.)]);
-            line(&[(15., 6.), (15., 18.)]);
-            line(&[(6., 9.), (18., 9.)]);
-            line(&[(6., 15.), (18., 15.)]);
-        }
-        Compare => {
-            line(&[(4., 4.), (4., 20.)]);
-            line(&[(20., 4.), (20., 20.)]);
-            line(&[(8., 9.), (16., 9.)]);
-            line(&[(14., 7.), (16., 9.), (14., 11.)]);
-            line(&[(16., 15.), (8., 15.)]);
-            line(&[(10., 13.), (8., 15.), (10., 17.)]);
-        }
-        Check => line(&[(4., 12.5), (9.5, 18.), (20., 6.5)]),
-        Star => line(&star_points(12., 12.6, 9.5)),
-        Gauge => {
-            line(&[
-                (3., 17.),
-                (4.2, 12.5),
-                (7.5, 9.2),
-                (12., 8.),
-                (16.5, 9.2),
-                (19.8, 12.5),
-                (21., 17.),
-            ]);
-            line(&[(12., 17.), (16., 12.)]);
-            line(&[(3., 20.), (21., 20.)]);
-        }
-        Profile => {
-            line(&[(3., 20.), (21., 20.)]);
-            line(&[(6., 20.), (6., 13.)]);
-            line(&[(12., 20.), (12., 4.)]);
-            line(&[(18., 20.), (18., 9.)]);
-        }
-        Transfer => {
-            line(&[(8., 20.), (8., 4.)]);
-            line(&[(4., 8.), (8., 4.), (12., 8.)]);
-            line(&[(16., 4.), (16., 20.)]);
-            line(&[(12., 16.), (16., 20.), (20., 16.)]);
-        }
-        EditCells => {
-            // A cell holding a text cursor.
-            box_(3., 6., 18., 12.);
-            line(&[(9., 9.5), (9., 14.5)]);
-            line(&[(7.5, 9.5), (10.5, 9.5)]);
-            line(&[(7.5, 14.5), (10.5, 14.5)]);
-        }
-        Help => {
-            circle(12., 12., 9.);
-            line(&[
-                (9., 9.5),
-                (9.6, 7.8),
-                (11., 7.),
-                (13., 7.),
-                (14.4, 7.8),
-                (15., 9.5),
-                (14.2, 11.2),
-                (12., 12.6),
-                (12., 14.),
-            ]);
-            line(&[(12., 16.6), (12., 17.2)]);
-        }
-        Saved => line(&[
-            (6., 21.),
-            (6., 3.),
-            (18., 3.),
-            (18., 21.),
-            (12., 16.),
-            (6., 21.),
-        ]),
-        Checks => line(&[
-            (2., 12.),
-            (6., 12.),
-            (9., 4.),
-            (15., 20.),
-            (18., 12.),
-            (22., 12.),
-        ]),
-        Settings => {
-            for (x, y) in [(4., 14.), (12., 8.), (20., 16.)] {
-                line(&[(x, 3.), (x, 21.)]);
-                circle(x, y, 2.5);
+            // These bundled vector images deliberately use only polylines.
+            // Render the asset geometry directly so currentColor follows the
+            // desktop theme at any scale, without rasterisation or a second
+            // set of icon drawings.
+            Svg(svg) => {
+                for part in svg.split("points=\"").skip(1) {
+                    self.line(polyline(part.split('"').next().unwrap_or_default()));
+                }
             }
+            Drawn(draw) => draw(self),
         }
-        Desktop => {
-            box_(3., 4., 18., 13.);
-            line(&[(12., 17.), (12., 21.)]);
-            line(&[(8., 21.), (16., 21.)]);
-        }
-        RestoreTiles => {
-            box_(3., 3., 18., 18.);
-            line(&[(12., 3.), (12., 21.)]);
-            line(&[(3., 10.), (12., 10.)]);
-            line(&[(12., 9.), (21., 9.)]);
-            line(&[(12., 15.), (21., 15.)]);
-        }
-        Sun => {
-            circle(12., 12., 4.);
-            for index in 0..8 {
-                let angle = index as f32 * std::f32::consts::FRAC_PI_4;
-                line(&[
-                    (12. + 7. * angle.cos(), 12. + 7. * angle.sin()),
-                    (12. + 10. * angle.cos(), 12. + 10. * angle.sin()),
-                ]);
-            }
-        }
-        Moon => {
-            for points in [
-                [p(17., 3.), p(-1., 3.), p(-1., 21.), p(17., 21.)],
-                [p(17., 21.), p(5., 17.), p(5., 7.), p(17., 3.)],
-            ] {
-                painter.add(egui::epaint::CubicBezierShape::from_points_stroke(
-                    points,
-                    false,
-                    egui::Color32::TRANSPARENT,
-                    stroke,
-                ));
-            }
-        }
-        Close => {
-            line(&[(6., 6.), (18., 18.)]);
-            line(&[(6., 18.), (18., 6.)]);
-        }
-        Edit => {
-            line(&[
-                (4., 20.),
-                (5., 15.),
-                (17., 3.),
-                (21., 7.),
-                (9., 19.),
-                (4., 20.),
-            ]);
-            line(&[(15., 5.), (19., 9.)]);
-        }
-        Lock => {
-            box_(4., 11., 16., 11.);
-            line(&[
-                (8., 11.),
-                (8., 5.),
-                (10., 3.),
-                (14., 3.),
-                (16., 5.),
-                (16., 11.),
-            ]);
-        }
-        Fit => {
-            for (x, y, dx, dy) in [
-                (3., 3., 5., 5.),
-                (21., 3., -5., 5.),
-                (3., 21., 5., -5.),
-                (21., 21., -5., -5.),
-            ] {
-                line(&[(x, y + dy), (x, y), (x + dx, y)]);
-            }
-        }
-        Arrange => {
-            for (x, y) in [(3., 3.), (14., 3.), (3., 14.), (14., 14.)] {
-                box_(x, y, 7., 7.);
-            }
-        }
-        Columns => {
-            box_(3., 3., 18., 18.);
-            line(&[(12., 3.), (12., 21.)]);
-        }
-        System => line(&[
-            (12., 2.),
-            (21., 6.),
-            (20., 15.),
-            (16., 20.),
-            (12., 23.),
-            (8., 20.),
-            (4., 15.),
-            (3., 6.),
-            (12., 2.),
-        ]),
-        Plus => {
-            line(&[(4., 12.), (20., 12.)]);
-            line(&[(12., 4.), (12., 20.)]);
-        }
-        Selection => {
-            for y in [6., 12., 18.] {
-                line(&[(2., y), (8., y)]);
-            }
-            line(&[(13., 6.), (21., 12.), (13., 18.), (13., 6.)]);
-        }
-        Explain => {
-            box_(2., 3., 7., 7.);
-            box_(15., 15., 7., 7.);
-            line(&[(6., 10.), (6., 18.), (15., 18.)]);
-        }
-        Parameters => {
-            line(&[
-                (8., 3.),
-                (5., 3.),
-                (5., 10.),
-                (2., 12.),
-                (5., 14.),
-                (5., 21.),
-                (8., 21.),
-            ]);
-            line(&[
-                (16., 3.),
-                (19., 3.),
-                (19., 10.),
-                (22., 12.),
-                (19., 14.),
-                (19., 21.),
-                (16., 21.),
-            ]);
-        }
-        Complete => {
-            line(&[(3., 6.), (21., 6.)]);
-            line(&[(3., 12.), (16., 12.)]);
-            line(&[(3., 18.), (12., 18.)]);
-        }
-        Undo => {
-            line(&[(9., 4.), (4., 9.), (9., 14.)]);
-            line(&[
-                (4., 9.),
-                (17., 9.),
-                (21., 13.),
-                (21., 17.),
-                (17., 21.),
-                (12., 21.),
-            ]);
-        }
-        Trash => {
-            line(&[(3., 6.), (21., 6.)]);
-            line(&[(8., 6.), (8., 3.), (16., 3.), (16., 6.)]);
-            line(&[(5., 6.), (6., 21.), (18., 21.), (19., 6.)]);
-        }
-        Key => {
-            circle(7., 16., 5.);
-            line(&[(11., 12.), (21., 2.)]);
-            line(&[(16., 7.), (20., 11.)]);
-        }
-        Run => svg_lines(include_str!("../../assets/icons/run.svg"), line),
-        RunAll => svg_lines(include_str!("../../assets/icons/run-all.svg"), line),
-        CloneRecord => svg_lines(include_str!("../../assets/icons/clone-record.svg"), line),
-        BeginTransaction => svg_lines(
-            include_str!("../../assets/icons/begin-transaction.svg"),
-            line,
-        ),
-        CommitTransaction => svg_lines(
-            include_str!("../../assets/icons/commit-transaction.svg"),
-            line,
-        ),
-        Bytecode => svg_lines(include_str!("../../assets/icons/bytecode.svg"), line),
-        ReviewEdits => svg_lines(include_str!("../../assets/icons/review-edits.svg"), line),
-        CopyValue => svg_lines(include_str!("../../assets/icons/copy-value.svg"), line),
-        FitColumns => svg_lines(include_str!("../../assets/icons/fit-columns.svg"), line),
-        Sidebar => {
-            box_(3., 4., 18., 16.);
-            line(&[(9., 4.), (9., 20.)]);
-            line(&[(5., 8.), (7., 8.)]);
-            line(&[(5., 11.), (7., 11.)]);
-        }
-        Assistant => {
-            // A speech bubble holding a spark: a conversation with an agent.
-            line(&[
-                (4., 5.),
-                (20., 5.),
-                (20., 16.),
-                (11., 16.),
-                (6., 20.),
-                (7., 16.),
-                (4., 16.),
-                (4., 5.),
-            ]);
-            line(&[(12., 7.5), (12., 13.5)]);
-            line(&[(9., 10.5), (15., 10.5)]);
-        }
-        Send => {
-            line(&[(3., 12.), (21., 4.), (14., 21.), (11., 13.), (3., 12.)]);
-            line(&[(11., 13.), (21., 4.)]);
-        }
-        Stop => box_(6., 6., 12., 12.),
-        Link => {
-            line(&[
-                (10., 15.),
-                (6., 19.),
-                (2., 15.),
-                (2., 12.),
-                (8., 6.),
-                (12., 6.),
-                (16., 10.),
-            ]);
-            line(&[
-                (8., 14.),
-                (14., 8.),
-                (18., 5.),
-                (22., 9.),
-                (22., 12.),
-                (16., 18.),
-                (12., 18.),
-            ]);
-        }
+    }
+}
+
+fn icon_point(rect: egui::Rect, x: f32, y: f32) -> Pos2 {
+    rect.min + egui::vec2(x * rect.width() / 24.0, y * rect.height() / 24.0)
+}
+
+/// Points in SVG `points` syntax; malformed pairs are skipped.
+fn polyline(points: &str) -> impl Iterator<Item = (f32, f32)> + '_ {
+    points.split_whitespace().filter_map(|pair| {
+        let (x, y) = pair.split_once(',')?;
+        Some((x.parse().ok()?, y.parse().ok()?))
+    })
+}
+
+fn sun_rays(pen: &Pen) {
+    for index in 0..8 {
+        let angle = index as f32 * std::f32::consts::FRAC_PI_4;
+        pen.line([
+            (12. + 7. * angle.cos(), 12. + 7. * angle.sin()),
+            (12. + 10. * angle.cos(), 12. + 10. * angle.sin()),
+        ]);
+    }
+}
+
+fn moon(pen: &Pen) {
+    for points in [
+        [(17., 3.), (-1., 3.), (-1., 21.), (17., 21.)],
+        [(17., 21.), (5., 17.), (5., 7.), (17., 3.)],
+    ] {
+        pen.painter
+            .add(egui::epaint::CubicBezierShape::from_points_stroke(
+                points.map(|(x, y)| pen.at(x, y)),
+                false,
+                egui::Color32::TRANSPARENT,
+                pen.stroke,
+            ));
     }
 }
 
@@ -733,9 +612,7 @@ fn star_points(cx: f32, cy: f32, outer: f32) -> Vec<(f32, f32)> {
 
 /// A filled star: a chosen favourite.
 pub(super) fn paint_filled_star(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
-    let p = |(x, y): (f32, f32)| {
-        rect.min + egui::vec2(x * rect.width() / 24.0, y * rect.height() / 24.0)
-    };
+    let p = |(x, y)| icon_point(rect, x, y);
     let points = star_points(12., 12.6, 9.5);
     let centre = p((12., 12.6));
     // The star is not convex: fill it as triangles around its centre.
@@ -745,25 +622,6 @@ pub(super) fn paint_filled_star(painter: &egui::Painter, rect: egui::Rect, color
             color,
             Stroke::NONE,
         ));
-    }
-}
-
-fn svg_lines(svg: &str, line: impl Fn(&[(f32, f32)])) {
-    // These bundled vector images deliberately use only polylines. Render
-    // the asset geometry directly so currentColor follows the desktop theme
-    // at any scale, without rasterisation or a second set of icon drawings.
-    for part in svg.split("points=\"").skip(1) {
-        let points: Vec<_> = part
-            .split('"')
-            .next()
-            .unwrap_or_default()
-            .split_whitespace()
-            .filter_map(|pair| {
-                let (x, y) = pair.split_once(',')?;
-                Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?))
-            })
-            .collect();
-        line(&points);
     }
 }
 

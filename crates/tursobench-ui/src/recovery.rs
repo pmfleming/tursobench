@@ -92,6 +92,48 @@ enum Command {
     Save(BTreeMap<String, Vec<Document>>),
     Clear,
 }
+/// Hold an OS lock so simultaneous application instances cannot replace each other's recovery.
+fn lock(path: &Path) -> Result<std::fs::File, String> {
+    let parent = path.parent().ok_or("Missing recovery directory")?;
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path.with_extension("lock"))
+        .map_err(|e| e.to_string())?;
+    f.try_lock()
+        .map_err(|e| format!("SQL recovery is in use: {e}"))?;
+    Ok(f)
+}
+/// The snapshot after `command`, saved to `path` when it changed; without
+/// a path it is only validated.
+fn apply(
+    s: &Arc<Snapshot>,
+    command: Command,
+    path: Option<&Path>,
+) -> Result<Arc<Snapshot>, String> {
+    let unchanged = match &command {
+        Command::Save(batch) => batch
+            .iter()
+            .all(|(key, docs)| s.databases.get(key) == Some(docs)),
+        Command::Clear => s.databases.is_empty(),
+    };
+    if unchanged {
+        return Ok(s.clone());
+    }
+    let mut next = (**s).clone();
+    match command {
+        Command::Save(batch) => next.databases.extend(batch),
+        Command::Clear => next.databases.clear(),
+    }
+    match path {
+        Some(path) => write(path, &next)?,
+        None => validate(&next)?,
+    }
+    Ok(Arc::new(next))
+}
 pub struct Store {
     tx: Option<SyncSender<Command>>,
     results: Receiver<Result<Arc<Snapshot>, String>>,
@@ -117,25 +159,9 @@ impl Store {
         let (done, results) = mpsc::channel();
         let (initial, loaded) = mpsc::sync_channel(1);
         let thread = std::thread::spawn(move || {
-            // Hold an OS lock so simultaneous application instances cannot replace each other's recovery.
-            let lock = path
-                .as_ref()
-                .map(|p| -> Result<std::fs::File, String> {
-                    let parent = p.parent().ok_or("Missing recovery directory")?;
-                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-                    let f = std::fs::OpenOptions::new()
-                        .create(true)
-                        .truncate(false)
-                        .read(true)
-                        .write(true)
-                        .open(p.with_extension("lock"))
-                        .map_err(|e| e.to_string())?;
-                    f.try_lock()
-                        .map_err(|e| format!("SQL recovery is in use: {e}"))?;
-                    Ok(f)
-                })
-                .transpose();
-            let mut state = lock
+            // Held for the worker's lifetime.
+            let held = path.as_deref().map(lock).transpose();
+            let mut state = held
                 .as_ref()
                 .map_err(Clone::clone)
                 .and_then(|_| {
@@ -145,28 +171,10 @@ impl Store {
                 .map(Arc::new);
             let _ = initial.send(state.clone());
             while let Ok(command) = rx.recv() {
-                let result = state.as_ref().map_err(Clone::clone).and_then(|s| {
-                    let unchanged = match &command {
-                        Command::Save(batch) => batch
-                            .iter()
-                            .all(|(key, docs)| s.databases.get(key) == Some(docs)),
-                        Command::Clear => s.databases.is_empty(),
-                    };
-                    if unchanged {
-                        return Ok(s.clone());
-                    }
-                    let mut next = (**s).clone();
-                    match command {
-                        Command::Save(batch) => next.databases.extend(batch),
-                        Command::Clear => next.databases.clear(),
-                    }
-                    if let Some(path) = &path {
-                        write(path, &next)?;
-                    } else {
-                        validate(&next)?;
-                    }
-                    Ok(Arc::new(next))
-                });
+                let result = state
+                    .as_ref()
+                    .map_err(Clone::clone)
+                    .and_then(|s| apply(s, command, path.as_deref()));
                 if let Ok(next) = &result {
                     state = Ok(next.clone());
                 }
@@ -254,7 +262,7 @@ impl Drop for Store {
 }
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Arc, Document, Store, mpsc, read, write};
     #[test]
     fn pending_databases_share_a_write_and_unchanged_saves_reuse_the_snapshot() {
         let dir = tempfile::tempdir().unwrap();

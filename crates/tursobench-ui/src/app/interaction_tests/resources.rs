@@ -1,4 +1,14 @@
-use super::*;
+use super::{
+    App, close_and_wait, egui, fixture, frame_at, inspect_selected, wait, wait_closed, wait_until,
+};
+
+/// Sessions open in the active workspace and every parked one.
+fn open_sessions(app: &App) -> usize {
+    std::iter::once(&app.database)
+        .chain(app.parked.values())
+        .filter(|d| d.session.is_some())
+        .count()
+}
 
 #[test]
 fn count_and_memory_limits_admit_more_than_four_and_preserve_existing_work() {
@@ -14,10 +24,7 @@ fn count_and_memory_limits_admit_more_than_four_and_preserve_existing_work() {
         app.open(&ctx);
         wait(&mut app, &ctx);
     }
-    assert_eq!(
-        app.parked.values().filter(|d| d.session.is_some()).count() + 1,
-        6
-    );
+    assert_eq!(open_sessions(&app), 6);
     let recent = app.database.id;
     assert!(app.new_workspace(&ctx));
     app.preferences.memory_budget_mib = Some(6 * crate::resources::DATABASE_RESERVATION_MIB);
@@ -28,13 +35,7 @@ fn count_and_memory_limits_admit_more_than_four_and_preserve_existing_work() {
     app.preferences.database_limit = Some(2);
     assert!(!app.new_workspace(&ctx));
     assert!(app.database.status.contains("Database limit 2"));
-    assert_eq!(
-        std::iter::once(&app.database)
-            .chain(app.parked.values())
-            .filter(|d| d.session.is_some())
-            .count(),
-        6
-    );
+    assert_eq!(open_sessions(&app), 6);
     // Changing access reuses an existing slot even after reducing the limit.
     app.select_workspace(recent);
     assert!(app.databases.inspection.ready(&app.database.path));
@@ -42,13 +43,7 @@ fn count_and_memory_limits_admit_more_than_four_and_preserve_existing_work() {
     app.close();
     wait(&mut app, &ctx);
     assert!(app.database.writable && app.database.ready);
-    assert_eq!(
-        std::iter::once(&app.database)
-            .chain(app.parked.values())
-            .filter(|d| d.session.is_some())
-            .count(),
-        6
-    );
+    assert_eq!(open_sessions(&app), 6);
     app.select_workspace(first);
     assert_eq!(app.database.id, first);
     app.quit = true;

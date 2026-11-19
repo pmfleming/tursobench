@@ -7,6 +7,8 @@ use super::{
 use eframe::egui;
 use tursobench_core::TransactionState;
 
+const DISCARD_HINT: &str = "Suppress incoming results only. SQL execution and writes continue; this does not roll back changes.";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Action {
     NewSql,
@@ -52,29 +54,36 @@ impl App {
             || self.database.documents.values().any(|d| d.active.is_some())
     }
     pub(super) fn action_enabled(&self, action: Action) -> bool {
-        use Action::*;
         match action {
-            ZoomOut => self.database.ui.diagram.camera.zoom() > super::diagram::MIN_ZOOM,
-            ZoomIn => self.database.ui.diagram.camera.zoom() < super::diagram::MAX_ZOOM,
-            Run | RunAll | Explain | Bytecode | Begin | Commit | Rollback => {
+            Action::ZoomOut => self.database.ui.diagram.camera.zoom() > super::diagram::MIN_ZOOM,
+            Action::ZoomIn => self.database.ui.diagram.camera.zoom() < super::diagram::MAX_ZOOM,
+            Action::Run
+            | Action::RunAll
+            | Action::Explain
+            | Action::Bytecode
+            | Action::Begin
+            | Action::Commit
+            | Action::Rollback => {
                 self.requests_enabled()
                     && !self.executing()
-                    && (!matches!(action, Commit)
+                    && (!matches!(action, Action::Commit)
                         || self.database.transaction == TransactionState::Active)
             }
-            Count => {
+            Action::Count => {
                 self.requests_enabled()
                     && self.database.document.kind == Kind::Data
                     && self.database.document.object.is_some()
             }
-            Refresh => self.requests_enabled(),
-            Insert => self.can_edit(),
-            CloneRecord | DeleteRecord => {
+            Action::Refresh => self.requests_enabled(),
+            Action::Insert => self.can_edit(),
+            Action::CloneRecord | Action::DeleteRecord => {
                 self.can_edit() && self.database.document.inspect.is_some()
             }
-            CopyRecord | Inspect | CopyValue => self.database.document.inspect.is_some(),
-            CopyRows | Export => !self.database.document.result.columns.is_empty(),
-            Discard => {
+            Action::CopyRecord | Action::Inspect | Action::CopyValue => {
+                self.database.document.inspect.is_some()
+            }
+            Action::CopyRows | Action::Export => !self.database.document.result.columns.is_empty(),
+            Action::Discard => {
                 self.database.document.active.is_some()
                     || self
                         .database
@@ -89,149 +98,151 @@ impl App {
         if !self.action_enabled(action) {
             return;
         }
-        use Action::*;
+        let document = &mut self.database.document;
+        let diagram = &mut self.database.ui.diagram;
         match action {
-            NewSql => self.open_sql_window(true),
-            Refresh => match if self.database.workspace.active == Kind::Structure {
-                Kind::Structure
-            } else {
-                self.database.document.kind
-            } {
-                Kind::Map => {
-                    self.refresh_catalog();
-                    self.load_diagram();
-                }
-                Kind::Structure => {
-                    if let Some(name) = self.database.document.object.clone() {
-                        self.request_inspection(name);
-                    }
-                    self.refresh_catalog();
-                }
-                _ => self.reload(),
-            },
-            Filter => {
-                self.database.document.ui.filter_open = !self.database.document.ui.filter_open;
-                self.database.document.tools.filter_focus = self.database.document.ui.filter_open;
+            Action::NewSql => self.open_sql_window(true),
+            Action::Refresh => self.refresh_pane(),
+            Action::Filter => {
+                document.ui.filter_open = !document.ui.filter_open;
+                document.tools.filter_focus = document.ui.filter_open;
             }
-            FitColumns => {
-                self.database.document.tools.columns.manual.clear();
-                self.database.document.tools.columns.refit = true;
+            Action::FitColumns => {
+                document.tools.columns.manual.clear();
+                document.tools.columns.refit = true;
             }
-            ShowColumns => self.database.document.tools.columns.hidden.clear(),
-            Export => self.database.ui.export_open = true,
-            CopyRows => self.copy_results(ctx, crate::export::Format::Tsv),
-            Count => {
-                if let Some(name) = self.database.document.object.clone() {
+            Action::ShowColumns => document.tools.columns.hidden.clear(),
+            Action::Export => self.database.ui.export_open = true,
+            Action::CopyRows => self.copy_results(ctx, crate::export::Format::Tsv),
+            Action::Count => {
+                if let Some(name) = document.object.clone() {
                     self.count_table(name);
                 }
             }
-            Inspect => {
-                if let Some((row, col)) = self.database.document.inspect {
+            Action::Inspect => {
+                if let Some((row, col)) = document.inspect {
                     self.open_record_window(row, col);
                 }
             }
-            FitMap => self.database.ui.diagram.camera.fit = true,
-            ArrangeMap => self.database.ui.diagram.arrange_nodes(),
-            MapColumns => self.database.ui.diagram.toggle_columns(),
-            SystemTables => self.database.ui.diagram.toggle_system(),
-            Find => {
+            Action::FitMap => diagram.camera.fit = true,
+            Action::ArrangeMap => diagram.arrange_nodes(),
+            Action::MapColumns => diagram.toggle_columns(),
+            Action::SystemTables => diagram.toggle_system(),
+            Action::Find => {
                 self.sidebar_search.focus = true;
-                self.database.ui.sidebar = super::shell::ToolPanel::Schema;
+                self.database.ui.sidebar = ToolPanel::Schema;
             }
-            Zoom100 => self.database.ui.diagram.camera.reset_zoom(),
-            ZoomOut => self.database.ui.diagram.camera.step_zoom(1.0 / 1.25),
-            ZoomIn => self.database.ui.diagram.camera.step_zoom(1.25),
-            Run => self.run_sql(),
-            RunAll => self.run_all(false),
-            Explain => self.run_current(Some(false)),
-            Bytecode => self.run_current(Some(true)),
-            Parameters => {
-                self.database.document.ui.params_open = !self.database.document.ui.params_open
-            }
-            Completion => {
-                self.database.document.tools.complete = !self.database.document.tools.complete
-            }
-            SaveSql => self.database.ui.sidebar = ToolPanel::Saved,
-            CopyDdl => {
-                let name = self
-                    .database
-                    .document
-                    .tools
-                    .ddl
-                    .as_ref()
-                    .map(|o| o.name.as_str())
-                    .or(self.database.document.object.as_deref());
-                if let Some(ddl) = self
-                    .database
-                    .schema
-                    .iter()
-                    .find(|o| Some(o.name.as_str()) == name)
-                    .and_then(|o| o.ddl.clone())
-                {
+            Action::Zoom100 => diagram.camera.reset_zoom(),
+            Action::ZoomOut => diagram.camera.step_zoom(1.0 / 1.25),
+            Action::ZoomIn => diagram.camera.step_zoom(1.25),
+            Action::Run => self.run_sql(),
+            Action::RunAll => self.run_all(false),
+            Action::Explain => self.run_current(Some(false)),
+            Action::Bytecode => self.run_current(Some(true)),
+            Action::Parameters => document.ui.params_open = !document.ui.params_open,
+            Action::Completion => document.tools.complete = !document.tools.complete,
+            Action::SaveSql => self.database.ui.sidebar = ToolPanel::Saved,
+            Action::CopyDdl => {
+                if let Some(ddl) = self.shown_ddl() {
                     ctx.copy_text(ddl);
                 }
             }
-            CopyRecord | CloneRecord | DeleteRecord => {
-                if let Some((row, _)) = self.database.document.inspect {
-                    match action {
-                        CopyRecord => self.copy_row(ctx, row),
-                        CloneRecord => self.clone_row(row),
-                        _ => self.stage_delete(row),
-                    }
-                }
+            Action::CopyRecord | Action::CloneRecord | Action::DeleteRecord => {
+                self.record_action(action, ctx);
             }
-            CopyValue => {
-                if let Some((r, c)) = self.database.document.inspect
-                    && let Some(value) = self
-                        .database
-                        .document
-                        .result
-                        .rows
-                        .get(r)
-                        .and_then(|row| row.get(c))
+            Action::CopyValue => {
+                if let Some((r, c)) = document.inspect
+                    && let Some(value) = document.result.rows.get(r).and_then(|row| row.get(c))
                 {
                     ctx.copy_text(crate::export::cell_text(value));
                 }
             }
-            Retile => self.retile(),
-            Insert => self.begin_insert(),
-            Review => {
+            Action::Retile => self.retile(),
+            Action::Insert => self.begin_insert(),
+            Action::Review => {
                 self.focus_drafts();
                 self.database.document.show_preview = true;
             }
-            Begin | Commit | Rollback => {
-                let sql = match action {
-                    Begin => "BEGIN",
-                    Commit => "COMMIT",
-                    _ => "ROLLBACK",
-                };
-                self.run_transaction(sql);
-            }
-            Discard => {
-                let focus = self.database.workspace.focused;
-                let target = if self.database.document.active.is_some() {
-                    Some(self.database.document.id)
-                } else {
-                    self.database
-                        .documents
-                        .values()
-                        .find(|d| d.source == Some(self.database.document.id) && d.active.is_some())
-                        .map(|d| d.id)
-                };
-                if let Some(id) = target {
-                    self.switch_document(id);
-                    if let (Some(session), Some(ticket)) =
-                        (&self.database.session, self.database.document.active)
-                    {
-                        session.discard_results(ticket.request);
-                        self.database.document.discard_ticket = Some(ticket);
-                        self.database.document.result.rows.clear();
-                        self.database.status="Result delivery suppressed; SQL execution continues. This does not roll back writes.".into();
-                    }
-                    self.switch_document(focus);
-                }
-            }
+            Action::Begin => self.run_transaction("BEGIN"),
+            Action::Commit => self.run_transaction("COMMIT"),
+            Action::Rollback => self.run_transaction("ROLLBACK"),
+            Action::Discard => self.discard_results(),
         }
+    }
+    /// Refresh what the active pane shows: the schema for the map, the
+    /// inspected object for Structure, and otherwise the rows.
+    fn refresh_pane(&mut self) {
+        let kind = if self.database.workspace.active == Kind::Structure {
+            Kind::Structure
+        } else {
+            self.database.document.kind
+        };
+        match kind {
+            Kind::Map => {
+                self.refresh_catalog();
+                self.load_diagram();
+            }
+            Kind::Structure => {
+                if let Some(name) = self.database.document.object.clone() {
+                    self.request_inspection(name);
+                }
+                self.refresh_catalog();
+            }
+            _ => self.reload(),
+        }
+    }
+    /// The DDL of the object whose definition is shown, else of the open object.
+    fn shown_ddl(&self) -> Option<String> {
+        let document = &self.database.document;
+        let name = document
+            .tools
+            .ddl
+            .as_ref()
+            .map(|o| o.name.as_str())
+            .or(document.object.as_deref())?;
+        self.database
+            .schema
+            .iter()
+            .find(|o| o.name == name)
+            .and_then(|o| o.ddl.clone())
+    }
+    fn record_action(&mut self, action: Action, ctx: &egui::Context) {
+        let Some((row, _)) = self.database.document.inspect else {
+            return;
+        };
+        match action {
+            Action::CopyRecord => self.copy_row(ctx, row),
+            Action::CloneRecord => self.clone_row(row),
+            _ => self.stage_delete(row),
+        }
+    }
+    /// Stop delivering the running result of this document, or of a result
+    /// tile it feeds; the statement itself keeps running.
+    fn discard_results(&mut self) {
+        let focus = self.database.workspace.focused;
+        let current = self.database.document.id;
+        let target = if self.database.document.active.is_some() {
+            Some(current)
+        } else {
+            self.database
+                .documents
+                .values()
+                .find(|d| d.source == Some(current) && d.active.is_some())
+                .map(|d| d.id)
+        };
+        let Some(id) = target else {
+            return;
+        };
+        self.switch_document(id);
+        if let (Some(session), Some(ticket)) =
+            (&self.database.session, self.database.document.active)
+        {
+            session.discard_results(ticket.request);
+            self.database.document.discard_ticket = Some(ticket);
+            self.database.document.result.rows.clear();
+            self.database.status = "Result delivery suppressed; SQL execution continues. This does not roll back writes.".into();
+        }
+        self.switch_document(focus);
     }
     pub(super) fn focus_drafts(&mut self) {
         let id = if self.database.document.has_drafts() {
@@ -257,38 +268,12 @@ impl App {
             _ => None,
         };
         let response = ui
-            .add_enabled_ui(self.action_enabled(action), |ui| {
-                if action == Action::RunAll {
-                    self.run_all_menu(ui, true)
-                } else if action == Action::Zoom100 {
-                    let percent = self.database.ui.diagram.camera.zoom() * 100.0;
-                    let text = if percent < 1.0 {
-                        format!("{percent:.2}%")
-                    } else {
-                        format!("{percent:.0}%")
-                    };
-                    let response = ui.add(
-                        egui::Button::new(egui::RichText::new(text).size(
-                            crate::appearance::text_size(ui.ctx(), icons::RIBBON_TEXT_SIZE),
-                        ))
-                        .min_size(egui::vec2(
-                            icons::RIBBON_BUTTON_SIZE,
-                            icons::RIBBON_BUTTON_SIZE,
-                        )),
-                    );
-                    response.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label)
-                    });
-                    response.on_hover_text("Current zoom · click to reset to 100%")
-                } else {
-                    let response =
-                        icons::ribbon_button(ui, icon, label, action.shortcut(), selected);
-                    if action == Action::Run {
-                        response.on_hover_text("Selection or current statement · Ctrl Shift Enter")
-                    } else {
-                        response
-                    }
-                }
+            .add_enabled_ui(self.action_enabled(action), |ui| match action {
+                Action::RunAll => self.run_all_menu(ui, true),
+                Action::Zoom100 => zoom_button(ui, self.database.ui.diagram.camera.zoom(), label),
+                Action::Run => icons::ribbon_button(ui, icon, label, action.shortcut(), selected)
+                    .on_hover_text("Selection or current statement · Ctrl Shift Enter"),
+                _ => icons::ribbon_button(ui, icon, label, action.shortcut(), selected),
             })
             .inner;
         #[cfg(test)]
@@ -506,17 +491,18 @@ impl App {
         {
             self.ribbon_action(ui, Action::Review, Icon::ReviewEdits, "Review staged edits");
         }
-        if available && self.action_enabled(Action::Discard)
-                                    && ui
-                                        .add(
-                                            egui::Button::new("Discard results")
-                                                .min_size(egui::vec2(0.0, icons::RIBBON_BUTTON_SIZE)),
-                                        )
-                                        .on_hover_text("Suppress incoming results only. SQL execution and writes continue; this does not roll back changes.")
-                                        .clicked()
-                                    {
-                                        self.dispatch_action(Action::Discard, ui.ctx());
-                                }
+        if available
+            && self.action_enabled(Action::Discard)
+            && ui
+                .add(
+                    egui::Button::new("Discard results")
+                        .min_size(egui::vec2(0.0, icons::RIBBON_BUTTON_SIZE)),
+                )
+                .on_hover_text(DISCARD_HINT)
+                .clicked()
+        {
+            self.dispatch_action(Action::Discard, ui.ctx());
+        }
     }
 
     fn pane_window_controls(&mut self, ui: &mut egui::Ui, kind: Kind, show_restore: bool) {
@@ -687,28 +673,46 @@ impl App {
 
 impl Action {
     fn group(self) -> u8 {
-        use Action::*;
         match self {
-            Refresh | Count | FitMap | ArrangeMap | Run | RunAll | Explain | Bytecode => 0,
-            Filter | FitColumns | ShowColumns | Inspect | MapColumns | SystemTables | Find
-            | Parameters | Completion => 1,
-            Export | CopyRows | CopyDdl | CopyValue | CopyRecord | SaveSql | NewSql => 2,
-            ZoomOut | Zoom100 | ZoomIn => 4,
+            Action::Refresh
+            | Action::Count
+            | Action::FitMap
+            | Action::ArrangeMap
+            | Action::Run
+            | Action::RunAll
+            | Action::Explain
+            | Action::Bytecode => 0,
+            Action::Filter
+            | Action::FitColumns
+            | Action::ShowColumns
+            | Action::Inspect
+            | Action::MapColumns
+            | Action::SystemTables
+            | Action::Find
+            | Action::Parameters
+            | Action::Completion => 1,
+            Action::Export
+            | Action::CopyRows
+            | Action::CopyDdl
+            | Action::CopyValue
+            | Action::CopyRecord
+            | Action::SaveSql
+            | Action::NewSql => 2,
+            Action::ZoomOut | Action::Zoom100 | Action::ZoomIn => 4,
             _ => 3,
         }
     }
     fn shortcut(self) -> &'static str {
-        use Action::*;
         match self {
-            Refresh => "F5",
-            Filter => "Ctrl F",
-            Export => "Ctrl E",
-            CopyRows => "Ctrl Shift C",
-            Inspect => "Space",
-            Find => "Ctrl P",
-            Run => "Ctrl Enter",
-            Completion => "Ctrl Space",
-            SaveSql => "Ctrl S",
+            Action::Refresh => "F5",
+            Action::Filter => "Ctrl F",
+            Action::Export => "Ctrl E",
+            Action::CopyRows => "Ctrl Shift C",
+            Action::Inspect => "Space",
+            Action::Find => "Ctrl P",
+            Action::Run => "Ctrl Enter",
+            Action::Completion => "Ctrl Space",
+            Action::SaveSql => "Ctrl S",
             _ => "",
         }
     }
@@ -716,63 +720,97 @@ impl Action {
 
 impl Kind {
     fn ribbon_actions(self) -> &'static [(Action, Icon, &'static str)] {
-        use Action::*;
         match self {
             Kind::Chat => &[],
             Kind::Data => &[
-                (Refresh, Icon::Refresh, "Refresh"),
-                (Count, Icon::Count, "Count table rows (full scan)"),
-                (Filter, Icon::Filter, "Filter"),
-                (FitColumns, Icon::FitColumns, "Fit columns"),
-                (Inspect, Icon::Selection, "Inspect selected record"),
-                (ShowColumns, Icon::Complete, "Show all columns"),
-                (Export, Icon::Export, "Export"),
-                (CopyRows, Icon::Copy, "Copy retained rows"),
-                (Insert, Icon::Plus, "New row (staged)"),
+                (Action::Refresh, Icon::Refresh, "Refresh"),
+                (Action::Count, Icon::Count, "Count table rows (full scan)"),
+                (Action::Filter, Icon::Filter, "Filter"),
+                (Action::FitColumns, Icon::FitColumns, "Fit columns"),
+                (Action::Inspect, Icon::Selection, "Inspect selected record"),
+                (Action::ShowColumns, Icon::Complete, "Show all columns"),
+                (Action::Export, Icon::Export, "Export"),
+                (Action::CopyRows, Icon::Copy, "Copy retained rows"),
+                (Action::Insert, Icon::Plus, "New row (staged)"),
             ],
             Kind::Result => &[
-                (Export, Icon::Export, "Export query results"),
-                (CopyRows, Icon::Copy, "Copy query results"),
-                (FitColumns, Icon::FitColumns, "Fit result columns"),
-                (Inspect, Icon::Selection, "Inspect selected result record"),
-                (ShowColumns, Icon::Complete, "Show all result columns"),
+                (Action::Export, Icon::Export, "Export query results"),
+                (Action::CopyRows, Icon::Copy, "Copy query results"),
+                (Action::FitColumns, Icon::FitColumns, "Fit result columns"),
+                (
+                    Action::Inspect,
+                    Icon::Selection,
+                    "Inspect selected result record",
+                ),
+                (
+                    Action::ShowColumns,
+                    Icon::Complete,
+                    "Show all result columns",
+                ),
             ],
             Kind::Structure => &[
-                (CopyDdl, Icon::Copy, "Copy DDL"),
-                (Refresh, Icon::Refresh, "Refresh"),
+                (Action::CopyDdl, Icon::Copy, "Copy DDL"),
+                (Action::Refresh, Icon::Refresh, "Refresh"),
             ],
             Kind::Map => &[
-                (FitMap, Icon::Map, "Fit relationships"),
-                (ArrangeMap, Icon::Arrange, "Arrange nodes"),
-                (MapColumns, Icon::Columns, "Columns"),
-                (Find, Icon::Search, "Find"),
-                (Refresh, Icon::Refresh, "Refresh schema"),
-                (SystemTables, Icon::System, "Toggle system tables"),
-                (ZoomOut, Icon::Minimize, "Zoom out"),
-                (Zoom100, Icon::Fit, "Reset zoom to 100%"),
-                (ZoomIn, Icon::Plus, "Zoom in"),
+                (Action::FitMap, Icon::Map, "Fit relationships"),
+                (Action::ArrangeMap, Icon::Arrange, "Arrange nodes"),
+                (Action::MapColumns, Icon::Columns, "Columns"),
+                (Action::Find, Icon::Search, "Find"),
+                (Action::Refresh, Icon::Refresh, "Refresh schema"),
+                (Action::SystemTables, Icon::System, "Toggle system tables"),
+                (Action::ZoomOut, Icon::Minimize, "Zoom out"),
+                (Action::Zoom100, Icon::Fit, "Reset zoom to 100%"),
+                (Action::ZoomIn, Icon::Plus, "Zoom in"),
             ],
             Kind::Sql => &[
-                (Run, Icon::Run, "Run"),
-                (RunAll, Icon::RunAll, "Run all"),
-                (Explain, Icon::Explain, "Explain query plan"),
-                (Bytecode, Icon::Bytecode, "Explain bytecode"),
-                (Parameters, Icon::Parameters, "Typed parameters"),
-                (Completion, Icon::Complete, "Completions"),
-                (SaveSql, Icon::Saved, "Save query"),
-                (NewSql, Icon::Plus, "New SQL editor"),
-                (Begin, Icon::BeginTransaction, "Begin editor transaction"),
-                (Commit, Icon::CommitTransaction, "Commit transaction"),
-                (Rollback, Icon::Undo, "Roll back transaction"),
+                (Action::Run, Icon::Run, "Run"),
+                (Action::RunAll, Icon::RunAll, "Run all"),
+                (Action::Explain, Icon::Explain, "Explain query plan"),
+                (Action::Bytecode, Icon::Bytecode, "Explain bytecode"),
+                (Action::Parameters, Icon::Parameters, "Typed parameters"),
+                (Action::Completion, Icon::Complete, "Completions"),
+                (Action::SaveSql, Icon::Saved, "Save query"),
+                (Action::NewSql, Icon::Plus, "New SQL editor"),
+                (
+                    Action::Begin,
+                    Icon::BeginTransaction,
+                    "Begin editor transaction",
+                ),
+                (
+                    Action::Commit,
+                    Icon::CommitTransaction,
+                    "Commit transaction",
+                ),
+                (Action::Rollback, Icon::Undo, "Roll back transaction"),
             ],
             Kind::Record => &[
-                (CopyRecord, Icon::Copy, "Copy record"),
-                (CloneRecord, Icon::CloneRecord, "Clone record"),
-                (DeleteRecord, Icon::Trash, "Stage deletion"),
-                (CopyValue, Icon::CopyValue, "Copy selected value"),
+                (Action::CopyRecord, Icon::Copy, "Copy record"),
+                (Action::CloneRecord, Icon::CloneRecord, "Clone record"),
+                (Action::DeleteRecord, Icon::Trash, "Stage deletion"),
+                (Action::CopyValue, Icon::CopyValue, "Copy selected value"),
             ],
         }
     }
+}
+
+/// The map's zoom as a percentage; clicking it resets to 100%.
+fn zoom_button(ui: &mut egui::Ui, zoom: f32, label: &str) -> egui::Response {
+    let percent = zoom * 100.0;
+    let text = if percent < 1.0 {
+        format!("{percent:.2}%")
+    } else {
+        format!("{percent:.0}%")
+    };
+    let response = ui.add(
+        egui::Button::new(egui::RichText::new(text).size(crate::appearance::text_size(
+            ui.ctx(),
+            icons::RIBBON_TEXT_SIZE,
+        )))
+        .min_size(egui::Vec2::splat(icons::RIBBON_BUTTON_SIZE)),
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
+    response.on_hover_text("Current zoom · click to reset to 100%")
 }
 
 #[cfg(test)]

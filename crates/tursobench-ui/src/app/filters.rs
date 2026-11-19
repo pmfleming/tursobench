@@ -335,6 +335,26 @@ fn filter_chips(
         });
     action
 }
+/// Enter adds the typed filter; Backspace in an empty input removes the last
+/// one and keeps the input focused.
+fn filter_input_keys(
+    ui: &egui::Ui,
+    text: &str,
+    table: &Table,
+    filters: usize,
+    refocus: &mut bool,
+) -> Option<Result<FilterChange, String>> {
+    let key = |key| ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key));
+    let mut action = None;
+    if key(egui::Key::Enter) {
+        action = Some(parse_filter(text, table).map(FilterChange::Add));
+    }
+    if text.is_empty() && filters > 0 && key(egui::Key::Backspace) {
+        action = Some(Ok(FilterChange::Remove(filters - 1)));
+        *refocus = true;
+    }
+    action
+}
 impl App {
     fn change_filters(&mut self, change: FilterChange) -> bool {
         let Some(browse) = &self.database.document.browse else {
@@ -391,23 +411,16 @@ impl App {
                         response.request_focus();
                         self.database.document.ui.filter_open = self.database.workspace.enabled;
                     }
-                    if response.has_focus() || response.lost_focus() {
-                        if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
-                        {
-                            action = Some(
-                                parse_filter(&self.database.document.filter, table)
-                                    .map(FilterChange::Add),
-                            );
-                        }
-                        if self.database.document.filter.is_empty()
-                            && !browse.filters.is_empty()
-                            && ui.input_mut(|i| {
-                                i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)
-                            })
-                        {
-                            action = Some(Ok(FilterChange::Remove(browse.filters.len() - 1)));
-                            self.database.document.tools.filter_focus = true;
-                        }
+                    if (response.has_focus() || response.lost_focus())
+                        && let Some(change) = filter_input_keys(
+                            ui,
+                            &self.database.document.filter,
+                            table,
+                            browse.filters.len(),
+                            &mut self.database.document.tools.filter_focus,
+                        )
+                    {
+                        action = Some(change);
                     }
                     if !self.database.document.tools.filter_error.is_empty() {
                         ui.colored_label(ui.visuals().error_fg_color, "!")
@@ -419,21 +432,25 @@ impl App {
             })
             .inner;
         match action {
-            Some(Ok(change)) => {
-                let add = matches!(change, FilterChange::Add(_));
-                let replace = matches!(change, FilterChange::Replace(..));
-                if self.change_filters(change) {
-                    if add {
-                        self.database.document.filter.clear();
-                        self.database.document.tools.filter_focus = true;
-                    }
-                    if replace {
-                        egui::Popup::close_all(ui.ctx());
-                    }
-                }
-            }
+            Some(Ok(change)) => self.finish_filter_change(ui, change),
             Some(Err(error)) => self.database.document.tools.filter_error = error,
             None => {}
+        }
+    }
+    /// Apply a chip or input change; an added filter clears and refocuses
+    /// the input, and a replaced one closes its editor.
+    fn finish_filter_change(&mut self, ui: &egui::Ui, change: FilterChange) {
+        let add = matches!(change, FilterChange::Add(_));
+        let replace = matches!(change, FilterChange::Replace(..));
+        if !self.change_filters(change) {
+            return;
+        }
+        if add {
+            self.database.document.filter.clear();
+            self.database.document.tools.filter_focus = true;
+        }
+        if replace {
+            egui::Popup::close_all(ui.ctx());
         }
     }
     fn expression_controls(&mut self, ui: &mut egui::Ui) {

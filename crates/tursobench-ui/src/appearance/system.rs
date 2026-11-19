@@ -197,7 +197,7 @@ fn named_colors(css: &str) -> BTreeMap<String, egui::Color32> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Palette, egui, mpsc, named_colors, publish_palette};
     #[test]
     fn unchanged_palettes_sleep_and_changes_survive_a_full_mailbox() {
         let (tx, rx) = mpsc::sync_channel(1);

@@ -155,43 +155,47 @@ fn readable(
         .unwrap_or(text)
 }
 
+/// Desktop palette colours looked up for one scheme.
+struct Roles<'a> {
+    palette: &'a Palette,
+    dark: bool,
+}
+impl Roles<'_> {
+    fn find(&self, names: &[&str]) -> Option<egui::Color32> {
+        names
+            .iter()
+            .find_map(|name| self.palette.colors.get(*name).copied())
+    }
+    /// A surface or text colour. Forced schemes never combine light text with
+    /// a desktop's dark surfaces: an explicit opposite scheme keeps the
+    /// desktop's neutral hue, adapting its brightness rather than importing a
+    /// fixed palette.
+    fn neutral(&self, names: &[&str], fallback: egui::Color32) -> egui::Color32 {
+        let (Some(scheme), Some(source)) = (self.palette.dark, self.find(names)) else {
+            return fallback;
+        };
+        if scheme == self.dark {
+            return source;
+        }
+        let gray =
+            ((u16::from(source.r()) + u16::from(source.g()) + u16::from(source.b())) / 3) as u8;
+        mix(egui::Color32::from_gray(255 - gray), source, 0.04)
+    }
+    /// Accent and semantic hues remain desktop-derived even with an explicit
+    /// opposite scheme; only incompatible surface/text colours are excluded.
+    fn semantic(&self, names: &[&str], fallback: egui::Color32) -> egui::Color32 {
+        self.find(names).unwrap_or(fallback)
+    }
+}
+
 fn apply(ctx: &egui::Context, dark: bool, palette: &Palette) {
+    let roles = Roles { palette, dark };
     let mut visuals = if dark {
         egui::Visuals::dark()
     } else {
         egui::Visuals::light()
     };
-    // Forced schemes never combine light text with a desktop's dark surfaces.
-    let colors = if palette.dark == Some(dark) {
-        palette.colors.clone()
-    } else {
-        Default::default()
-    };
-    let color = |names: &[&str], fallback| {
-        names
-            .iter()
-            .find_map(|name| colors.get(*name).copied())
-            .or_else(|| {
-                // An explicit opposite scheme keeps the desktop's neutral hue,
-                // adapting its brightness rather than importing a fixed palette.
-                (palette.dark.is_some() && palette.dark != Some(dark))
-                    .then(|| {
-                        names
-                            .iter()
-                            .find_map(|name| palette.colors.get(*name).copied())
-                            .map(|source| {
-                                let gray = ((u16::from(source.r())
-                                    + u16::from(source.g())
-                                    + u16::from(source.b()))
-                                    / 3) as u8;
-                                mix(egui::Color32::from_gray(255 - gray), source, 0.04)
-                            })
-                    })
-                    .flatten()
-            })
-            .unwrap_or(fallback)
-    };
-    visuals.panel_fill = color(
+    visuals.panel_fill = roles.neutral(
         &["window_bg_color", "theme_bg_color"],
         if dark {
             egui::Color32::from_rgb(20, 27, 24)
@@ -200,7 +204,7 @@ fn apply(ctx: &egui::Context, dark: bool, palette: &Palette) {
         },
     );
     visuals.window_fill = visuals.panel_fill;
-    visuals.extreme_bg_color = color(
+    visuals.extreme_bg_color = roles.neutral(
         &["view_bg_color", "theme_base_color"],
         if dark {
             egui::Color32::from_rgb(12, 18, 16)
@@ -208,7 +212,7 @@ fn apply(ctx: &egui::Context, dark: bool, palette: &Palette) {
             egui::Color32::WHITE
         },
     );
-    let text = color(
+    let text = roles.neutral(
         &["window_fg_color", "theme_fg_color"],
         if dark {
             egui::Color32::from_rgb(226, 236, 230)
@@ -217,15 +221,7 @@ fn apply(ctx: &egui::Context, dark: bool, palette: &Palette) {
         },
     );
     visuals.override_text_color = Some(text);
-    // Accent and semantic hues remain desktop-derived even with an explicit
-    // opposite scheme; only incompatible surface/text colours are excluded.
-    let semantic = |names: &[&str], fallback| {
-        names
-            .iter()
-            .find_map(|name| palette.colors.get(*name).copied())
-            .unwrap_or(fallback)
-    };
-    visuals.hyperlink_color = semantic(
+    visuals.hyperlink_color = roles.semantic(
         &["accent_color", "theme_selected_bg_color"],
         if dark {
             egui::Color32::from_rgb(135, 211, 173)
@@ -233,38 +229,47 @@ fn apply(ctx: &egui::Context, dark: bool, palette: &Palette) {
             egui::Color32::from_rgb(28, 121, 82)
         },
     );
-    let mut tokens = Tokens::from_visuals(&visuals);
-    tokens.raised = color(&["card_bg_color", "insensitive_bg_color"], tokens.raised);
+    let tokens = resolve_tokens(&roles, &mut visuals, text);
+    widget_visuals(&mut visuals, &tokens, text);
+    let theme = if dark {
+        egui::Theme::Dark
+    } else {
+        egui::Theme::Light
+    };
+    ctx.set_theme(theme);
+    ctx.set_visuals(visuals);
+    ctx.data_mut(|data| data.insert_temp(egui::Id::unique("interface-tokens"), tokens));
+    ctx.style_mut_of(theme, interface_style);
+}
+
+/// The interface roles, each readable on every surface; settles the link,
+/// warning, error, weak-text and selection colours of `visuals` to match.
+fn resolve_tokens(roles: &Roles, visuals: &mut egui::Visuals, text: egui::Color32) -> Tokens {
+    let mut tokens = Tokens::from_visuals(visuals);
+    tokens.raised = roles.neutral(&["card_bg_color", "insensitive_bg_color"], tokens.raised);
     tokens.raised_hover = mix(tokens.raised, text, 0.055);
-    tokens.line = color(&["borders"], tokens.line);
+    tokens.line = roles.neutral(&["borders"], tokens.line);
     tokens.line_strong = mix(tokens.line, text, 0.16);
     tokens.line_soft = mix(visuals.extreme_bg_color, tokens.line, 0.55);
     let surfaces = [visuals.panel_fill, visuals.extreme_bg_color, tokens.raised];
-    tokens.primary_text = readable(tokens.primary, &surfaces, text);
+    let readable = |color| readable(color, &surfaces, text);
+    tokens.primary_text = readable(tokens.primary);
     visuals.hyperlink_color = tokens.primary_text;
-    tokens.pending = readable(
-        semantic(
-            &["warning_color", "warning_bg_color"],
-            visuals.warn_fg_color,
-        ),
-        &surfaces,
-        text,
-    );
+    tokens.pending = readable(roles.semantic(
+        &["warning_color", "warning_bg_color"],
+        visuals.warn_fg_color,
+    ));
     // Home Manager exports success_color; themes may instead export a link/info
     // role. Without either, derive a distinct hue from the current accent.
     let mut alternative = egui::ecolor::Hsva::from(tokens.primary);
     alternative.h = (alternative.h + 0.22) % 1.0;
-    tokens.relationship = readable(
-        semantic(
-            &["link_color", "info_color", "success_color"],
-            alternative.into(),
-        ),
-        &surfaces,
-        text,
-    );
-    tokens.muted = readable(tokens.muted, &surfaces, text);
-    tokens.faint = readable(tokens.faint, &surfaces, text);
-    tokens.primary_ink = semantic(
+    tokens.relationship = readable(roles.semantic(
+        &["link_color", "info_color", "success_color"],
+        alternative.into(),
+    ));
+    tokens.muted = readable(tokens.muted);
+    tokens.faint = readable(tokens.faint);
+    tokens.primary_ink = roles.semantic(
         &["accent_fg_color", "theme_selected_fg_color"],
         tokens.primary_ink,
     );
@@ -272,21 +277,17 @@ fn apply(ctx: &egui::Context, dark: bool, palette: &Palette) {
         tokens.primary_ink = contrasting_ink(tokens.primary);
     }
     visuals.warn_fg_color = tokens.pending;
-    visuals.error_fg_color = readable(
-        semantic(
-            &["error_color", "destructive_color"],
-            visuals.error_fg_color,
-        ),
-        &surfaces,
-        text,
-    );
+    visuals.error_fg_color = readable(roles.semantic(
+        &["error_color", "destructive_color"],
+        visuals.error_fg_color,
+    ));
     visuals.weak_text_color = Some(tokens.muted);
     visuals.faint_bg_color = tokens.raised;
     visuals.selection.bg_fill = tokens
         .primary
-        .gamma_multiply(if dark { 0.13 } else { 0.10 });
+        .gamma_multiply(if roles.dark { 0.13 } else { 0.10 });
     visuals.selection.stroke = egui::Stroke::new(1.0, tokens.primary);
-    if palette.contrast {
+    if roles.palette.contrast {
         tokens.line = text;
         tokens.line_soft = text;
         tokens.line_strong = text;
@@ -294,6 +295,12 @@ fn apply(ctx: &egui::Context, dark: bool, palette: &Palette) {
         tokens.faint = text;
         visuals.weak_text_color = Some(text);
     }
+    tokens
+}
+
+/// Rounded widgets outlined in the line colours, raised when idle or hovered
+/// and filled with the selection when active.
+fn widget_visuals(visuals: &mut egui::Visuals, tokens: &Tokens, text: egui::Color32) {
     for widget in [
         &mut visuals.widgets.noninteractive,
         &mut visuals.widgets.inactive,
@@ -318,33 +325,27 @@ fn apply(ctx: &egui::Context, dark: bool, palette: &Palette) {
     visuals.window_stroke = egui::Stroke::new(1.0, tokens.line_strong);
     visuals.window_corner_radius = egui::CornerRadius::same(12);
     visuals.menu_corner_radius = egui::CornerRadius::same(10);
-    let theme = if dark {
-        egui::Theme::Dark
-    } else {
-        egui::Theme::Light
-    };
-    ctx.set_theme(theme);
-    ctx.set_visuals(visuals);
-    ctx.data_mut(|data| data.insert_temp(egui::Id::unique("interface-tokens"), tokens));
-    ctx.style_mut_of(theme, |s| {
-        s.text_styles = egui::Style::default().text_styles;
-        s.spacing.item_spacing = egui::vec2(7.0, 6.0);
-        s.spacing.button_padding = egui::vec2(11.0, 6.0);
-        s.spacing.interact_size.y = 30.0;
-        s.spacing.menu_margin = egui::Margin::same(5);
-        s.spacing.window_margin = egui::Margin::same(16);
+}
+
+fn interface_style(s: &mut egui::Style) {
+    s.text_styles = egui::Style::default().text_styles;
+    s.spacing.item_spacing = egui::vec2(7.0, 6.0);
+    s.spacing.button_padding = egui::vec2(11.0, 6.0);
+    s.spacing.interact_size.y = 30.0;
+    s.spacing.menu_margin = egui::Margin::same(5);
+    s.spacing.window_margin = egui::Margin::same(16);
+    // egui draws window titles in the heading style. Nothing else uses it,
+    // so it matches the tile ribbons and panel headings instead of
+    // towering over them.
+    for (style, size) in [
+        (egui::TextStyle::Body, 14.0),
+        (egui::TextStyle::Button, 13.0),
+        (egui::TextStyle::Small, 11.5),
+        (egui::TextStyle::Heading, 14.0),
+    ] {
         s.text_styles
-            .insert(egui::TextStyle::Body, egui::FontId::proportional(14.0));
-        s.text_styles
-            .insert(egui::TextStyle::Button, egui::FontId::proportional(13.0));
-        s.text_styles
-            .insert(egui::TextStyle::Small, egui::FontId::proportional(11.5));
-        // egui draws window titles in the heading style. Nothing else uses it,
-        // so it matches the tile ribbons and panel headings instead of
-        // towering over them.
-        s.text_styles
-            .insert(egui::TextStyle::Heading, egui::FontId::proportional(14.0));
-    });
+            .insert(style, egui::FontId::proportional(size));
+    }
 }
 
 /// Custom-painted text follows the same size preference as native egui widgets.
@@ -424,7 +425,7 @@ pub fn system_fonts(ctx: egui::Context) -> Receiver<(egui::FontDefinitions, Stri
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Palette, Tokens, apply, contrast, egui};
 
     #[test]
     fn desktop_roles_follow_palette_changes_and_remain_readable_in_both_schemes() {
