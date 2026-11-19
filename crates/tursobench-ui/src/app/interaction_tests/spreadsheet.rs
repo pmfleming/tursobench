@@ -1,7 +1,11 @@
-use super::*;
+use super::{
+    App, Value, assert_retained, assert_staged, browse_and_wait, click, close_and_wait, control,
+    egui, execute_and_wait, fixture, frame, frame_at, pointer_button, press_key, visible_result,
+    wait,
+};
 use crate::app::{
     results::CellKind,
-    spreadsheet::{Mapping, Sheet},
+    spreadsheet::{Dialog, Mapping, Sheet},
 };
 
 fn select(app: &mut App, a: (usize, usize), b: (usize, usize)) {
@@ -15,18 +19,26 @@ fn edits(app: &App) -> Vec<tursobench_core::Edit> {
         .as_ref()
         .map_or_else(Vec::new, |d| d.edits.clone())
 }
+/// A writable fixture browsing table `t`, drawn once.
+fn table(statements: &[&str]) -> (tempfile::TempDir, egui::Context, App) {
+    let (dir, ctx, mut app) = fixture(statements, true);
+    browse_and_wait(&mut app, &ctx, "t");
+    frame(&mut app, &ctx, vec![]);
+    (dir, ctx, app)
+}
+/// Let a dialog settle for a frame, then click its named control.
+fn settle_and_click(app: &mut App, ctx: &egui::Context, name: &str) {
+    frame(app, ctx, vec![]);
+    let output = frame(app, ctx, vec![]);
+    click(app, ctx, control(&output, name).center());
+}
 
 #[test]
 fn spreadsheet_paste_respects_visible_order_types_and_atomic_undo() {
-    let (_dir, ctx, mut app) = fixture(
-        &[
-            "CREATE TABLE t(id INTEGER PRIMARY KEY, label TEXT, n INTEGER, hidden TEXT)",
-            "INSERT INTO t VALUES(1,'one',10,'secret'),(2,'two',20,'secret2')",
-        ],
-        true,
-    );
-    browse_and_wait(&mut app, &ctx, "t");
-    frame(&mut app, &ctx, vec![]);
+    let (_dir, ctx, mut app) = table(&[
+        "CREATE TABLE t(id INTEGER PRIMARY KEY, label TEXT, n INTEGER, hidden TEXT)",
+        "INSERT INTO t VALUES(1,'one',10,'secret'),(2,'two',20,'secret2')",
+    ]);
     app.database.document.tools.columns.order = vec![0, 2, 3, 1];
     app.database.document.tools.columns.hidden.insert(3);
     select(&mut app, (0, 2), (0, 2));
@@ -48,15 +60,10 @@ fn spreadsheet_paste_respects_visible_order_types_and_atomic_undo() {
 
 #[test]
 fn spreadsheet_invalid_pastes_and_fill_leave_all_drafts_untouched() {
-    let (_dir, ctx, mut app) = fixture(
-        &[
-            "CREATE TABLE t(id INTEGER PRIMARY KEY, n INTEGER, label TEXT)",
-            "INSERT INTO t VALUES(1,10,'one'),(2,20,'two')",
-        ],
-        true,
-    );
-    browse_and_wait(&mut app, &ctx, "t");
-    frame(&mut app, &ctx, vec![]);
+    let (_dir, ctx, mut app) = table(&[
+        "CREATE TABLE t(id INTEGER PRIMARY KEY, n INTEGER, label TEXT)",
+        "INSERT INTO t VALUES(1,10,'one'),(2,20,'two')",
+    ]);
     app.stage_cell(0, 2, Value::Text("previous".into()));
     select(&mut app, (0, 1), (0, 1));
     let before = edits(&app);
@@ -87,12 +94,9 @@ fn spreadsheet_invalid_pastes_and_fill_leave_all_drafts_untouched() {
 
 #[test]
 fn spreadsheet_mapped_inserts_defaults_nulls_and_atomic_database_commit() {
-    let (_dir, ctx, mut app) = fixture(
-        &["CREATE TABLE t(id INTEGER PRIMARY KEY, label TEXT, n INTEGER DEFAULT 7, payload BLOB)"],
-        true,
-    );
-    browse_and_wait(&mut app, &ctx, "t");
-    frame(&mut app, &ctx, vec![]);
+    let (_dir, ctx, mut app) = table(&[
+        "CREATE TABLE t(id INTEGER PRIMARY KEY, label TEXT, n INTEGER DEFAULT 7, payload BLOB)",
+    ]);
     assert!(app.can_edit(), "{}", app.database.status);
     let sheet = Sheet::parse("alpha\t00ff\n\\N\t\n\"\\N\"\t0102").unwrap();
     let mapping = [
@@ -131,15 +135,10 @@ fn spreadsheet_mapped_inserts_defaults_nulls_and_atomic_database_commit() {
 
 #[test]
 fn spreadsheet_copy_paste_roundtrip_preserves_empty_null_blob_and_literal_marker() {
-    let (_dir, ctx, mut app) = fixture(
-        &[
-            "CREATE TABLE t(id INTEGER PRIMARY KEY, a TEXT, b TEXT, c BLOB, d TEXT)",
-            "INSERT INTO t VALUES(1,'',NULL,X'00ff','\\N'),(2,'other','other',X'01','other')",
-        ],
-        true,
-    );
-    browse_and_wait(&mut app, &ctx, "t");
-    frame(&mut app, &ctx, vec![]);
+    let (_dir, ctx, mut app) = table(&[
+        "CREATE TABLE t(id INTEGER PRIMARY KEY, a TEXT, b TEXT, c BLOB, d TEXT)",
+        "INSERT INTO t VALUES(1,'',NULL,X'00ff','\\N'),(2,'other','other',X'01','other')",
+    ]);
     select(&mut app, (0, 1), (0, 4));
     let text = app.selection_tsv().unwrap();
     assert_eq!(text, "\"\"\t\\N\t00ff\t\"\\N\"");
@@ -159,15 +158,10 @@ fn spreadsheet_copy_paste_roundtrip_preserves_empty_null_blob_and_literal_marker
 
 #[test]
 fn spreadsheet_native_clipboard_fill_and_undo_are_grid_scoped() {
-    let (_dir, ctx, mut app) = fixture(
-        &[
-            "CREATE TABLE t(id INTEGER PRIMARY KEY, label TEXT)",
-            "INSERT INTO t VALUES(1,'one'),(2,'two')",
-        ],
-        true,
-    );
-    browse_and_wait(&mut app, &ctx, "t");
-    frame(&mut app, &ctx, vec![]);
+    let (_dir, ctx, mut app) = table(&[
+        "CREATE TABLE t(id INTEGER PRIMARY KEY, label TEXT)",
+        "INSERT INTO t VALUES(1,'one'),(2,'two')",
+    ]);
     frame(&mut app, &ctx, vec![]);
     let pos = app.first_cell_rect.unwrap().center();
     click(&mut app, &ctx, pos);
@@ -204,26 +198,13 @@ fn spreadsheet_native_clipboard_fill_and_undo_are_grid_scoped() {
 
 #[test]
 fn spreadsheet_dialogs_stage_mapped_rows_and_typed_fill_without_writing() {
-    let (_dir, ctx, mut app) = fixture(
-        &[
-            "CREATE TABLE t(id INTEGER PRIMARY KEY, label TEXT, n INTEGER DEFAULT 7)",
-            "INSERT INTO t VALUES(1,'one',10),(2,'two',20)",
-        ],
-        true,
-    );
-    browse_and_wait(&mut app, &ctx, "t");
-    frame(&mut app, &ctx, vec![]);
+    let (_dir, ctx, mut app) = table(&[
+        "CREATE TABLE t(id INTEGER PRIMARY KEY, label TEXT, n INTEGER DEFAULT 7)",
+        "INSERT INTO t VALUES(1,'one',10),(2,'two',20)",
+    ]);
     app.open_paste(true, "three\n\\N".into());
-    frame(&mut app, &ctx, vec![]);
-    let output = frame(&mut app, &ctx, vec![]);
-    click(
-        &mut app,
-        &ctx,
-        control(&output, "Preview clipboard").center(),
-    );
-    let Some(crate::app::spreadsheet::Dialog::Paste(paste)) =
-        &mut app.database.document.tools.spreadsheet.dialog
-    else {
+    settle_and_click(&mut app, &ctx, "Preview clipboard");
+    let Some(Dialog::Paste(paste)) = &mut app.database.document.tools.spreadsheet.dialog else {
         panic!("paste dialog")
     };
     paste.mapping[0] = Mapping {
@@ -232,13 +213,7 @@ fn spreadsheet_dialogs_stage_mapped_rows_and_typed_fill_without_writing() {
     };
     // Let the window settle after the preview expands its contents.
     frame(&mut app, &ctx, vec![]);
-    frame(&mut app, &ctx, vec![]);
-    let output = frame(&mut app, &ctx, vec![]);
-    click(
-        &mut app,
-        &ctx,
-        control(&output, "Stage entire paste").center(),
-    );
+    settle_and_click(&mut app, &ctx, "Stage entire paste");
     assert!(
         app.database.document.tools.spreadsheet.dialog.is_none(),
         "{}; document {:?}",
@@ -255,16 +230,12 @@ fn spreadsheet_dialogs_stage_mapped_rows_and_typed_fill_without_writing() {
     assert!(!app.has_drafts());
     select(&mut app, (0, 1), (1, 1));
     app.open_fill();
-    let Some(crate::app::spreadsheet::Dialog::Fill(editor)) =
-        &mut app.database.document.tools.spreadsheet.dialog
-    else {
+    let Some(Dialog::Fill(editor)) = &mut app.database.document.tools.spreadsheet.dialog else {
         panic!("fill dialog")
     };
     editor.kind = CellKind::Text;
     editor.input = "all filled".into();
-    frame(&mut app, &ctx, vec![]);
-    let output = frame(&mut app, &ctx, vec![]);
-    click(&mut app, &ctx, control(&output, "Stage fill").center());
+    settle_and_click(&mut app, &ctx, "Stage fill");
     assert_staged(&app, 0, 1, Value::Text("all filled".into()));
     assert_staged(&app, 1, 1, Value::Text("all filled".into()));
     app.revert_grid_draft(0, Some(1));
@@ -277,17 +248,12 @@ fn spreadsheet_dialogs_stage_mapped_rows_and_typed_fill_without_writing() {
 
 #[test]
 fn spreadsheet_guards_batch_limits_result_identity_and_database_rollback() {
-    let (_dir, ctx, mut app) = fixture(
-        &[
-            "CREATE TABLE t(id INTEGER PRIMARY KEY, label TEXT UNIQUE)",
-            "INSERT INTO t VALUES(1,'one'),(2,'two')",
-            "CREATE TABLE keyless(label TEXT)",
-            "INSERT INTO keyless VALUES('x')",
-        ],
-        true,
-    );
-    browse_and_wait(&mut app, &ctx, "t");
-    frame(&mut app, &ctx, vec![]);
+    let (_dir, ctx, mut app) = table(&[
+        "CREATE TABLE t(id INTEGER PRIMARY KEY, label TEXT UNIQUE)",
+        "INSERT INTO t VALUES(1,'one'),(2,'two')",
+        "CREATE TABLE keyless(label TEXT)",
+        "INSERT INTO keyless VALUES('x')",
+    ]);
     select(&mut app, (0, 1), (0, 1));
     assert!(app.paste_cells("same\nsame"));
     let before = edits(&app);
@@ -327,24 +293,17 @@ fn spreadsheet_guards_batch_limits_result_identity_and_database_rollback() {
 
 #[test]
 fn spreadsheet_dialog_keeps_stage_action_visible_with_long_preview_on_small_window() {
-    let (_dir, ctx, mut app) = fixture(
-        &[
-            "CREATE TABLE t(id INTEGER PRIMARY KEY, label TEXT, n INTEGER)",
-            "INSERT INTO t VALUES(1,'one',10)",
-        ],
-        true,
-    );
-    browse_and_wait(&mut app, &ctx, "t");
-    frame(&mut app, &ctx, vec![]);
+    let (_dir, ctx, mut app) = table(&[
+        "CREATE TABLE t(id INTEGER PRIMARY KEY, label TEXT, n INTEGER)",
+        "INSERT INTO t VALUES(1,'one',10)",
+    ]);
     app.open_paste(true, "3\tthree\t30\n4\tfour\t40\n5\tfive\t50".into());
-    let Some(crate::app::spreadsheet::Dialog::Paste(mut paste)) =
-        app.database.document.tools.spreadsheet.dialog.take()
+    let Some(Dialog::Paste(mut paste)) = app.database.document.tools.spreadsheet.dialog.take()
     else {
         panic!("paste dialog")
     };
     app.preview_clipboard(&mut paste);
-    app.database.document.tools.spreadsheet.dialog =
-        Some(crate::app::spreadsheet::Dialog::Paste(paste));
+    app.database.document.tools.spreadsheet.dialog = Some(Dialog::Paste(paste));
     let size = egui::vec2(720.0, 480.0);
     frame_at(&mut app, &ctx, size, vec![]);
     frame_at(&mut app, &ctx, size, vec![]);

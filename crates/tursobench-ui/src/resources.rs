@@ -129,7 +129,7 @@ pub fn format_mib(mib: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{MIB, MemorySnapshot, Preferences};
 
     #[test]
     fn available_memory_sets_budget_and_includes_parent_process_limits() {

@@ -134,13 +134,14 @@ pub(super) fn access_indicator(ui: &mut egui::Ui, rect: egui::Rect, writable: bo
             mode.color.gamma_multiply(0.5)
         },
     );
-    let response = ui.interact(
-        rect,
-        ui.scope_id().with("database-access"),
-        egui::Sense::hover(),
-    );
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, enabled, mode.name));
-    response.on_hover_text(mode.name);
+    named_image(ui, rect, "database-access", enabled, mode.name);
+}
+
+/// A painted glyph that names itself on hover and to assistive technology.
+fn named_image(ui: &egui::Ui, rect: egui::Rect, salt: &str, enabled: bool, name: &str) {
+    let response = ui.interact(rect, ui.scope_id().with(salt), egui::Sense::hover());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, enabled, name));
+    response.on_hover_text(name);
 }
 
 pub(super) const RIBBON_BUTTON_SIZE: f32 = 30.0;
@@ -180,13 +181,7 @@ pub(super) fn empty_state_at(ui: &mut egui::Ui, rect: egui::Rect, icon: Icon, de
         galley,
         tokens.muted,
     );
-    let response = ui.interact(
-        glyph,
-        ui.scope_id().with("empty-state"),
-        egui::Sense::hover(),
-    );
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, description));
-    response.on_hover_text(description);
+    named_image(ui, glyph, "empty-state", true, description);
 }
 
 /// Compact tile actions keep the same native focus and accessibility behavior.

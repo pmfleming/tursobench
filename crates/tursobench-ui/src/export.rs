@@ -330,7 +330,7 @@ fn encode(value: &Value) -> Json {
 }
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Column, Format, Json, Value, clipboard, json, write_result_as};
     fn columns(n: usize) -> Vec<Column> {
         (0..n)
             .map(|i| Column {

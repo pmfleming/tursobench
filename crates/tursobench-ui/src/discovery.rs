@@ -849,7 +849,10 @@ fn scan(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        AtomicBool, Availability, DatabaseKind, Duration, Event, Job, Mounts, Path, PathBuf,
+        Request, Root, Summary, default_roots, fs, mpsc, scan, unescape_mount,
+    };
     fn database(path: &Path) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         let mut bytes = [0; 100];

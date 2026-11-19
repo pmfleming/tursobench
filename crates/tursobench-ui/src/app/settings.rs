@@ -639,30 +639,31 @@ fn reopen_mark(ui: &mut egui::Ui, tooltip: &str) {
     response.on_hover_text(tooltip);
 }
 
+/// Every button, text field, slider and spin button lies inside `width`.
 #[cfg(test)]
-mod tests {
-    use super::{Mode, Page, egui, format_ms, round_limit};
-    use crate::app::test_ui::{control, pointer, render};
-
-    /// Every button, text field, slider and spin button lies inside `width`.
-    fn assert_controls_fit(output: &egui::FullOutput, width: f32, case: &str) {
-        for (_, node) in crate::app::test_ui::nodes(output) {
-            if matches!(
-                node.role(),
-                egui::Role::Button
-                    | egui::Role::TextInput
-                    | egui::Role::Slider
-                    | egui::Role::SpinButton
-            ) && let Some(bounds) = node.bounds()
-            {
-                assert!(
-                    bounds.x0 >= 0.0 && bounds.x1 <= f64::from(width) + 1.0,
-                    "{case}, {:?}: {bounds:?}",
-                    node.label()
-                );
-            }
+pub(super) fn assert_controls_fit(output: &egui::FullOutput, width: f32, case: &str) {
+    for (_, node) in super::test_ui::nodes(output) {
+        if matches!(
+            node.role(),
+            egui::Role::Button
+                | egui::Role::TextInput
+                | egui::Role::Slider
+                | egui::Role::SpinButton
+        ) && let Some(bounds) = node.bounds()
+        {
+            assert!(
+                bounds.x0 >= 0.0 && bounds.x1 <= f64::from(width) + 1.0,
+                "{case}, {:?}: {bounds:?}",
+                node.label()
+            );
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Mode, Page, assert_controls_fit, egui, format_ms, round_limit};
+    use crate::app::test_ui::{control, pointer, render};
 
     #[test]
     fn settings_pages_fit_narrow_and_wide_windows_with_scaled_text() {

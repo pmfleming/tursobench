@@ -1,4 +1,22 @@
-use super::*;
+use super::{
+    App, browse_and_wait, click, close_and_wait, control, egui, fixture, frame, inspect_selected,
+    press_key, shell, wait,
+};
+
+/// Type `query` into the palette and let its results settle.
+fn search_palette(app: &mut App, ctx: &egui::Context, query: &str) -> egui::FullOutput {
+    app.database.ui.palette_query = query.into();
+    frame(app, ctx, vec![]);
+    frame(app, ctx, vec![])
+}
+
+/// Open the palette, type `query` and press Enter on the best match.
+fn choose(app: &mut App, ctx: &egui::Context, query: &str) {
+    app.open_palette();
+    app.database.ui.palette_query = query.into();
+    frame(app, ctx, vec![]);
+    press_key(app, ctx, egui::Key::Enter, egui::Modifiers::NONE);
+}
 
 #[test]
 fn sidebar_foot_opens_help_and_commands_without_a_database() {
@@ -89,10 +107,7 @@ fn palette_runs_the_best_match_not_the_first_listed() {
         ("set", (|a: &App| a.settings.open) as fn(&App) -> bool),
         ("help", |a: &App| a.database.tools.help),
     ] {
-        app.open_palette();
-        app.database.ui.palette_query = query.into();
-        frame(&mut app, &ctx, vec![]);
-        press_key(&mut app, &ctx, egui::Key::Enter, egui::Modifiers::NONE);
+        choose(&mut app, &ctx, query);
         assert!(opened(&app), "{query}");
         assert!(
             !app.database.document.ui.sql_open,
@@ -123,17 +138,14 @@ fn palette_copy_with_nothing_selected_leaves_the_clipboard_alone() {
 fn palette_ends_the_transaction_it_began() {
     use tursobench_core::TransactionState;
     let (_dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
-    let choose = |app: &mut App, query: &str| {
-        app.open_palette();
-        app.database.ui.palette_query = query.into();
-        frame(app, &ctx, vec![]);
-        press_key(app, &ctx, egui::Key::Enter, egui::Modifiers::NONE);
+    let choose_and_wait = |app: &mut App, query: &str| {
+        choose(app, &ctx, query);
         wait(app, &ctx);
     };
     for (end, sql) in [("commit", "COMMIT"), ("rollback", "ROLLBACK")] {
-        choose(&mut app, "begin");
+        choose_and_wait(&mut app, "begin");
         assert_eq!(app.database.transaction, TransactionState::Active);
-        choose(&mut app, end);
+        choose_and_wait(&mut app, end);
         assert_eq!(
             app.database.transaction,
             TransactionState::Autocommit,
@@ -142,11 +154,7 @@ fn palette_ends_the_transaction_it_began() {
     }
     // Outside a transaction ROLLBACK is listed but cannot run.
     let history = app.preferences.query_history.len();
-    app.open_palette();
-    app.database.ui.palette_query = "rollback".into();
-    frame(&mut app, &ctx, vec![]);
-    press_key(&mut app, &ctx, egui::Key::Enter, egui::Modifiers::NONE);
-    wait(&mut app, &ctx);
+    choose_and_wait(&mut app, "rollback");
     assert!(app.database.ui.palette_open);
     assert_eq!(app.preferences.query_history.len(), history);
     app.database.ui.palette_open = false;
@@ -159,10 +167,7 @@ fn palette_greys_out_commands_that_cannot_run_and_explains_why() {
     frame(&mut app, &ctx, vec![]);
     app.open_palette();
     let mut disabled = |name: &str| {
-        app.database.ui.palette_query = name.into();
-        frame(&mut app, &ctx, vec![]);
-        let output = frame(&mut app, &ctx, vec![]);
-        crate::app::test_ui::nodes(&output)
+        crate::app::test_ui::nodes(&search_palette(&mut app, &ctx, name))
             .iter()
             // Rows with a shortcut are named "<label> <shortcut>".
             .find(|(_, n)| n.label().is_some_and(|l| l.starts_with(name)))
@@ -177,9 +182,7 @@ fn palette_greys_out_commands_that_cannot_run_and_explains_why() {
         assert!(!disabled(name), "{name}");
     }
     // Runnable commands come first, so Enter on an empty query runs one.
-    app.database.ui.palette_query.clear();
-    frame(&mut app, &ctx, vec![]);
-    let output = frame(&mut app, &ctx, vec![]);
+    let output = search_palette(&mut app, &ctx, "");
     // Palette rows are the buttons right of the sidebar, below the search field
     // and above the 34 px status bar of the 900 px frame.
     let rows: Vec<_> = crate::app::test_ui::nodes(&output)
@@ -202,9 +205,7 @@ fn palette_greys_out_commands_that_cannot_run_and_explains_why() {
     assert!(rows.iter().any(|r| !r.1) && rows.iter().any(|r| r.1));
     assert!(lowest_enabled < highest_disabled);
     // Selecting an unavailable command explains it and Enter leaves it alone.
-    app.database.ui.palette_query = "close".into();
-    frame(&mut app, &ctx, vec![]);
-    let output = frame(&mut app, &ctx, vec![]);
+    let output = search_palette(&mut app, &ctx, "close");
     assert!(output.shapes.iter().any(|s| matches!(
         &s.shape,
         egui::Shape::Text(t) if t.galley.job.text == "No database is open"
@@ -222,30 +223,24 @@ fn palette_filter_and_review_need_a_table_and_staged_edits() {
         ],
         true,
     );
-    let choose = |app: &mut App, query: &str| {
-        app.open_palette();
-        app.database.ui.palette_query = query.into();
-        frame(app, &ctx, vec![]);
-        press_key(app, &ctx, egui::Key::Enter, egui::Modifiers::NONE);
-    };
     // Open but not on a table: neither command may set hidden state.
-    choose(&mut app, "filter rows");
+    choose(&mut app, &ctx, "filter rows");
     assert!(app.database.ui.palette_open);
     assert!(!app.database.document.ui.filter_open);
     app.database.ui.palette_open = false;
-    choose(&mut app, "review staged");
+    choose(&mut app, &ctx, "review staged");
     assert!(app.database.ui.palette_open);
     assert!(!app.database.document.show_preview);
     app.database.ui.palette_open = false;
     browse_and_wait(&mut app, &ctx, "t");
-    choose(&mut app, "filter rows");
+    choose(&mut app, &ctx, "filter rows");
     assert!(!app.database.ui.palette_open);
     assert!(app.database.document.ui.filter_open);
     close_and_wait(&mut app, &ctx);
 }
 
 #[test]
-fn palette_names_match_the_app_and_old_words_still_find_them() {
+fn palette_names_match_the_app_old_words_find_them_and_misses_point_to_object_search() {
     let (ctx, mut app) = crate::app::test_ui::app();
     frame(&mut app, &ctx, vec![]);
     app.open_palette();
@@ -257,9 +252,7 @@ fn palette_names_match_the_app_and_old_words_still_find_them() {
         ("pragma", "Database checks"),
         ("help", "Keyboard and safety reference"),
     ] {
-        app.database.ui.palette_query = query.into();
-        frame(&mut app, &ctx, vec![]);
-        let output = frame(&mut app, &ctx, vec![]);
+        let output = search_palette(&mut app, &ctx, query);
         let rows: Vec<_> = crate::app::test_ui::nodes(&output)
             .iter()
             .filter_map(|(_, n)| n.bounds().zip(n.label()))
@@ -272,16 +265,7 @@ fn palette_names_match_the_app_and_old_words_still_find_them() {
             "{query}: {rows:?}"
         );
     }
-}
-
-#[test]
-fn palette_empty_result_points_to_object_search() {
-    let (ctx, mut app) = crate::app::test_ui::app();
-    frame(&mut app, &ctx, vec![]);
-    app.open_palette();
-    app.database.ui.palette_query = "zzzz".into();
-    frame(&mut app, &ctx, vec![]);
-    let output = frame(&mut app, &ctx, vec![]);
+    let output = search_palette(&mut app, &ctx, "zzzz");
     assert!(output.shapes.iter().any(|s| matches!(
         &s.shape,
         egui::Shape::Text(t) if t.galley.job.text.starts_with("No matching commands")
