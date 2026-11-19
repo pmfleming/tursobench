@@ -202,35 +202,14 @@ impl App {
         related: bool,
     ) -> bool {
         if kind == "index" || kind == "trigger" {
-            let selected = self
-                .database
-                .document
-                .tools
-                .ddl
-                .as_ref()
-                .is_some_and(|o| o.name == name);
-            let response = tree_row(ui, name, "DDL", icon, selected, false, (22.0, 0.0))
-                .on_hover_text("Click to show its definition in Structure");
-            if response.has_focus() {
-                self.database.tools.tree_focus = Some(response.id);
-            }
-            if response.clicked()
-                || response.has_focus()
-                    && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
-            {
-                self.execute_command(ui.ctx(), super::commands::Command::Definition(name.into()));
-            }
-            return response.hovered();
+            return self.sidebar_definition(ui, name, icon);
         }
-        let highlighted = self.sidebar_search.scope
-            == super::database_navigation::Scope::ThisDatabase
-            && !self.sidebar_search.query.trim().is_empty();
+        let highlighted = self.filtering_tree();
         let keyboard = self
             .sidebar_search
             .tree_highlight
             .as_ref()
             .filter(|(table, _)| table == name);
-        let mut hovered = false;
         let selected = highlighted && keyboard.is_some_and(|(_, column)| column.is_none())
             || self.database.document.view == View::Browse
                 && self.database.document.ui.nav == Nav::Table
@@ -270,10 +249,7 @@ impl App {
         if response.has_focus() {
             self.database.tools.tree_focus = Some(response.id);
         }
-        if arrow.clicked()
-            || response.has_focus()
-                && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight))
-        {
+        if arrow.clicked() || focused_key(ui, &response, egui::Key::ArrowRight) {
             self.database.ui.unfolded = if unfolded {
                 None
             } else {
@@ -282,22 +258,35 @@ impl App {
             if !unfolded && self.loaded_inspection(name).is_none() {
                 self.request_inspection(name.to_owned());
             }
-        } else if response.clicked()
-            || response.has_focus()
-                && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
-        {
+        } else if response.clicked() || focused_key(ui, &response, egui::Key::Enter) {
             self.activate_table(name.to_owned());
         }
-        if response.has_focus()
-            && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft))
-        {
+        if focused_key(ui, &response, egui::Key::ArrowLeft) {
             self.database.ui.unfolded = None;
         }
-        hovered |= response.hovered();
         if unfolded {
             self.sidebar_table(ui, name);
         }
-        hovered
+        response.hovered()
+    }
+    /// An index or trigger: a row that shows its definition in Structure.
+    fn sidebar_definition(&mut self, ui: &mut egui::Ui, name: &str, icon: Icon) -> bool {
+        let tools = &self.database.document.tools;
+        let selected = tools.ddl.as_ref().is_some_and(|o| o.name == name);
+        let response = tree_row(ui, name, "DDL", icon, selected, false, (22.0, 0.0))
+            .on_hover_text("Click to show its definition in Structure");
+        if response.has_focus() {
+            self.database.tools.tree_focus = Some(response.id);
+        }
+        if response.clicked() || focused_key(ui, &response, egui::Key::Enter) {
+            self.execute_command(ui.ctx(), super::commands::Command::Definition(name.into()));
+        }
+        response.hovered()
+    }
+    /// Whether a search of this database is filtering the schema tree.
+    fn filtering_tree(&self) -> bool {
+        self.sidebar_search.scope == super::database_navigation::Scope::ThisDatabase
+            && !self.sidebar_search.query.trim().is_empty()
     }
 
     fn sidebar_table(&mut self, ui: &mut egui::Ui, name: &str) {
@@ -316,24 +305,50 @@ impl App {
         };
         let mut column = None;
         let mut table = None;
-        ui.indent(("columns",name),|ui| {
+        let filtering = self.filtering_tree();
+        let query = &self.sidebar_search.query;
+        let highlight = self.sidebar_search.tree_highlight.as_ref();
+        ui.indent(("columns", name), |ui| {
             for c in &info.table.columns {
-                let filtering = self.sidebar_search.scope == super::database_navigation::Scope::ThisDatabase && !self.sidebar_search.query.trim().is_empty();
-                if filtering && !super::commands::fuzzy(name, &self.sidebar_search.query)
-                    && !super::commands::fuzzy(&format!("{name}.{}", c.name), &self.sidebar_search.query) { continue; }
-                let selected = filtering && self.sidebar_search.tree_highlight.as_ref().is_some_and(|(table,column)| table == name && column.as_deref() == Some(c.name.as_str()));
-                let fk=info.foreign_keys.iter().any(|k|k.columns.iter().any(|(n,_)|n==&c.name));
-                let icon=if c.primary_key>0{Icon::Key}else if fk{Icon::Link}else{Icon::Columns};
-                if tree_row(ui, &c.name, &c.declared_type, icon, selected, fk, (22.0, 0.0)).on_hover_text("Click to find this column in Table data").clicked() { column=Some(c.name.clone()); }
-            }
-            let mut links:Vec<(&str,String)>=info.foreign_keys.iter().map(|k|(k.target.as_str(),format!("Parent: {}",k.target))).collect();
-            if let Some(graph)=&self.database.ui.diagram.data {
-                for node in &graph.tables {
-                    if node.inspection.as_ref().is_some_and(|i|i.foreign_keys.iter().any(|k|k.target==name)) {links.push((node.name.as_str(),format!("Referenced by: {}",node.name)));}
+                if filtering
+                    && !super::commands::fuzzy(name, query)
+                    && !super::commands::fuzzy(&format!("{name}.{}", c.name), query)
+                {
+                    continue;
+                }
+                let selected = filtering
+                    && highlight.is_some_and(|(table, column)| {
+                        table == name && column.as_deref() == Some(c.name.as_str())
+                    });
+                let fk = info
+                    .foreign_keys
+                    .iter()
+                    .any(|k| k.columns.iter().any(|(n, _)| n == &c.name));
+                let icon = if c.primary_key > 0 {
+                    Icon::Key
+                } else if fk {
+                    Icon::Link
+                } else {
+                    Icon::Columns
+                };
+                if tree_row(ui, &c.name, &c.declared_type, icon, selected, fk, (22.0, 0.0))
+                    .on_hover_text("Click to find this column in Table data")
+                    .clicked()
+                {
+                    column = Some(c.name.clone());
                 }
             }
-            for (target,label) in links {
-                if ui.link(egui::RichText::new(label).color(crate::appearance::Tokens::of(ui.ctx()).relationship)).on_hover_text("Open table without a row filter. Select a record to follow a specific key.").clicked(){table = Some(target.to_owned());}
+            let color = crate::appearance::Tokens::of(ui.ctx()).relationship;
+            for (target, label) in table_links(info, self.database.ui.diagram.data.as_ref(), name) {
+                if ui
+                    .link(egui::RichText::new(label).color(color))
+                    .on_hover_text(
+                        "Open table without a row filter. Select a record to follow a specific key.",
+                    )
+                    .clicked()
+                {
+                    table = Some(target.to_owned());
+                }
             }
         });
         if let Some(column) = column {
@@ -439,6 +454,29 @@ impl App {
     }
 }
 
+/// Whether the focused row's key was pressed, consuming it.
+fn focused_key(ui: &egui::Ui, response: &egui::Response, key: egui::Key) -> bool {
+    response.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key))
+}
+/// The tables a table links to: its parents, then the tables that reference it.
+fn table_links<'a>(
+    info: &'a Inspection,
+    graph: Option<&'a tursobench_core::SchemaDiagram>,
+    name: &str,
+) -> Vec<(&'a str, String)> {
+    let parents = info
+        .foreign_keys
+        .iter()
+        .map(|k| (k.target.as_str(), format!("Parent: {}", k.target)));
+    let children = graph.into_iter().flat_map(|g| &g.tables).filter(|node| {
+        node.inspection
+            .as_ref()
+            .is_some_and(|i| i.foreign_keys.iter().any(|k| k.target == name))
+    });
+    parents
+        .chain(children.map(|node| (node.name.as_str(), format!("Referenced by: {}", node.name))))
+        .collect()
+}
 fn tree_row(
     ui: &mut egui::Ui,
     name: &str,

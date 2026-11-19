@@ -29,6 +29,43 @@ struct Cached {
     result: ResultSet,
     error: String,
 }
+impl Cached {
+    /// The count a complete, successful count read returned.
+    fn count(&self) -> Option<i64> {
+        let done = self.result.completion.as_ref()?;
+        if done.delivery != Delivery::Complete || done.error.is_some() {
+            return None;
+        }
+        match self.result.rows.first()?.first()? {
+            Value::Integer(n) => Some(*n),
+            _ => None,
+        }
+    }
+}
+/// One side of a key's column pairs, joined by `separator`.
+fn join<'a>(
+    key: &'a ForeignKey,
+    side: impl Fn(&'a (String, Option<String>)) -> &'a str,
+    separator: &str,
+) -> String {
+    key.columns
+        .iter()
+        .map(side)
+        .collect::<Vec<_>>()
+        .join(separator)
+}
+/// The link icon that starts the related-records line.
+fn related_icon(ui: &mut egui::Ui) {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(14.0, 22.0), egui::Sense::hover());
+    icons::paint(
+        ui.painter(),
+        egui::Rect::from_center_size(rect.center(), egui::vec2(13.0, 13.0)),
+        Icon::Link,
+        crate::appearance::Tokens::of(ui.ctx()).muted,
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, "Related records"));
+    response.on_hover_text("Related records");
+}
 #[derive(Clone, Copy, Debug)]
 pub(super) enum ReadKind {
     Parent,
@@ -407,18 +444,7 @@ impl App {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().interact_size.y = 22.0;
-                    let (rect, response) =
-                        ui.allocate_exact_size(egui::vec2(14.0, 22.0), egui::Sense::hover());
-                    icons::paint(
-                        ui.painter(),
-                        egui::Rect::from_center_size(rect.center(), egui::vec2(13.0, 13.0)),
-                        Icon::Link,
-                        crate::appearance::Tokens::of(ui.ctx()).muted,
-                    );
-                    response.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::Role::Image, true, "Related records")
-                    });
-                    response.on_hover_text("Related records");
+                    related_icon(ui);
                     if self.schema_incomplete() {
                         ui.colored_label(ui.visuals().warn_fg_color, "Incomplete schema")
                             .on_hover_text(
@@ -426,96 +452,78 @@ impl App {
                             );
                     }
                     for (child, key) in keys {
-                        let spec = self
-                            .relationship_read(row, &child, &key, ReadKind::Count)
-                            .map(|plan| plan.id);
-                        let cached = spec
-                            .as_ref()
-                            .and_then(|id| self.database.document.tools.context.cached(id));
-                        let count = cached
-                            .and_then(|c| {
-                                c.result
-                                    .completion
-                                    .as_ref()
-                                    .filter(|done| {
-                                        done.delivery == Delivery::Complete && done.error.is_none()
-                                    })
-                                    .and_then(|_| c.result.rows.first()?.first())
-                            })
-                            .and_then(|v| {
-                                if let Value::Integer(n) = v {
-                                    Some(*n)
-                                } else {
-                                    None
-                                }
-                            });
-                        let error = cached.map(|c| c.error.clone()).unwrap_or_default();
-                        if ui
-                            .add_enabled(
-                                available && spec.is_some(),
-                                egui::Button::new(
-                                    egui::RichText::new(format!(
-                                        "{child}.{} → {} · {}",
-                                        key.columns
-                                            .iter()
-                                            .map(|(from, _)| from.as_str())
-                                            .collect::<Vec<_>>()
-                                            .join(" + "),
-                                        key.columns
-                                            .iter()
-                                            .map(|(_, target)| target
-                                                .as_deref()
-                                                .unwrap_or("unresolved PK"))
-                                            .collect::<Vec<_>>()
-                                            .join(" + "),
-                                        count.map_or("—".into(), |n| n.to_string())
-                                    ))
-                                    .color(crate::appearance::Tokens::of(ui.ctx()).relationship),
-                                )
-                                .frame(false),
-                            )
-                            .on_hover_text(format!(
-                                "Related {child} · FK {} · {}",
-                                key.id,
-                                key.columns
-                                    .iter()
-                                    .map(|(from, to)| format!(
-                                        "{from} → {}",
-                                        to.as_deref().unwrap_or("unresolved PK")
-                                    ))
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            ))
-                            .clicked()
-                        {
-                            self.follow_incoming(row, child.clone(), key.clone());
-                        }
-                        if count.is_none()
-                            && ui
-                                .add_enabled_ui(available && spec.is_some(), |ui| {
-                                    icons::button(
-                                        ui,
-                                        Icon::Count,
-                                        &format!("Count related {child} (FK {})", key.id),
-                                        "",
-                                    )
-                                })
-                                .inner
-                                .on_hover_text(if error.is_empty() {
-                                    "Count matching rows (full scan, may be slow)".to_owned()
-                                } else {
-                                    format!("{error} · click to retry count")
-                                })
-                                .clicked()
-                        {
-                            if let Some(id) = &spec {
-                                self.database.document.tools.context.forget(id);
-                            }
-                            self.request_context(row, &child, &key, ReadKind::Count);
-                        }
+                        self.related_key(ui, row, &child, &key, available);
                     }
                 });
             });
+    }
+    /// One incoming key: a link to the related rows with their count once
+    /// counted, and a button that counts them.
+    fn related_key(
+        &mut self,
+        ui: &mut egui::Ui,
+        row: usize,
+        child: &str,
+        key: &ForeignKey,
+        available: bool,
+    ) {
+        let spec = self
+            .relationship_read(row, child, key, ReadKind::Count)
+            .map(|plan| plan.id);
+        let cached = spec
+            .as_ref()
+            .and_then(|id| self.database.document.tools.context.cached(id));
+        let count = cached.and_then(Cached::count);
+        let error = cached.map(|c| c.error.clone()).unwrap_or_default();
+        let enabled = available && spec.is_some();
+        let count_text = count.map_or("—".into(), |n| n.to_string());
+        let label = format!(
+            "{child}.{} → {} · {count_text}",
+            join(key, |(from, _)| from.as_str(), " + "),
+            join(
+                key,
+                |(_, to)| to.as_deref().unwrap_or("unresolved PK"),
+                " + "
+            ),
+        );
+        let tooltip = format!(
+            "Related {child} · FK {} · {}",
+            key.id,
+            key.columns
+                .iter()
+                .map(|(from, to)| format!("{from} → {}", to.as_deref().unwrap_or("unresolved PK")))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let color = crate::appearance::Tokens::of(ui.ctx()).relationship;
+        let link = egui::Button::new(egui::RichText::new(label).color(color)).frame(false);
+        if ui
+            .add_enabled(enabled, link)
+            .on_hover_text(tooltip)
+            .clicked()
+        {
+            self.follow_incoming(row, child.to_owned(), key.clone());
+        }
+        if count.is_some() {
+            return;
+        }
+        let hint = if error.is_empty() {
+            "Count matching rows (full scan, may be slow)".to_owned()
+        } else {
+            format!("{error} · click to retry count")
+        };
+        let name = format!("Count related {child} (FK {})", key.id);
+        if ui
+            .add_enabled_ui(enabled, |ui| icons::button(ui, Icon::Count, &name, ""))
+            .inner
+            .on_hover_text(hint)
+            .clicked()
+        {
+            if let Some(id) = &spec {
+                self.database.document.tools.context.forget(id);
+            }
+            self.request_context(row, child, key, ReadKind::Count);
+        }
     }
     pub(super) fn wide_related(&mut self, ui: &mut egui::Ui) {
         let Some(row) = self.database.document.inspect.map(|(r, _)| r).or(self
@@ -600,37 +608,35 @@ impl App {
         {
             ui.weak("Related result limited by retention budget");
         }
-        egui::ScrollArea::both().id_salt("related-grid").show_rows(
-            ui,
-            22.0,
-            c.result.rows.len() + 1,
-            |ui, range| {
-                for r in range {
-                    ui.horizontal(|ui| {
-                        if r == 0 {
-                            for col in c.result.columns.iter().take(12) {
-                                ui.add_sized(
-                                    [140.0, 22.0],
-                                    egui::Label::new(egui::RichText::new(&col.name).strong())
-                                        .truncate(),
-                                );
-                            }
-                        } else {
-                            for v in c.result.rows[r - 1].iter().take(12) {
-                                ui.add_sized(
-                                    [140.0, 22.0],
-                                    egui::Label::new(v.preview()).truncate(),
-                                )
-                                .on_hover_text(crate::export::cell_text(v));
-                            }
+        related_grid(ui, &c.result);
+    }
+}
+/// The first 12 columns of related rows, under a header row.
+fn related_grid(ui: &mut egui::Ui, result: &ResultSet) {
+    egui::ScrollArea::both().id_salt("related-grid").show_rows(
+        ui,
+        22.0,
+        result.rows.len() + 1,
+        |ui, range| {
+            for r in range {
+                ui.horizontal(|ui| {
+                    if r == 0 {
+                        for col in result.columns.iter().take(12) {
+                            let name = egui::RichText::new(&col.name).strong();
+                            ui.add_sized([140.0, 22.0], egui::Label::new(name).truncate());
                         }
-                    });
-                }
-            },
-        );
-        if c.result.columns.len() > 12 {
-            ui.weak("Showing first 12 columns; open full view for all columns");
-        }
+                        return;
+                    }
+                    for v in result.rows[r - 1].iter().take(12) {
+                        ui.add_sized([140.0, 22.0], egui::Label::new(v.preview()).truncate())
+                            .on_hover_text(crate::export::cell_text(v));
+                    }
+                });
+            }
+        },
+    );
+    if result.columns.len() > 12 {
+        ui.weak("Showing first 12 columns; open full view for all columns");
     }
 }
 

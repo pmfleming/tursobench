@@ -9,6 +9,16 @@ use StructureSection::{Columns, Ddl, ForeignKeys, Indexes, Triggers};
 use eframe::egui;
 use tursobench_core::{IndexInfo, Inspection, SchemaObject};
 
+/// A section's heading where the wide layout shows them together.
+fn heading(section: StructureSection) -> Option<&'static str> {
+    match section {
+        Ddl => Some("CREATE statement"),
+        ForeignKeys => Some("Foreign keys"),
+        Indexes => Some("Indexes"),
+        Triggers => Some("Triggers"),
+        Columns => None,
+    }
+}
 pub(super) enum Action {
     Load,
     Browse(String),
@@ -53,57 +63,60 @@ impl Structure<'_> {
         if !wide {
             self.tabs(ui, section, is_view, definition_only);
         }
-        let mut action = None;
         if wide && !definition_only {
-            if self.info.is_none() && ui.button("Load structure").clicked() {
-                action = Some(Action::Load);
-            }
-            ui.columns(2, |panes| {
-                for (pane, (id, sections)) in panes.iter_mut().zip([
-                    ("structure-left", &[Columns, Ddl][..]),
-                    ("structure-right", &[ForeignKeys, Indexes, Triggers][..]),
-                ]) {
-                    egui::ScrollArea::vertical()
-                        .id_salt(id)
-                        .auto_shrink([false, false])
-                        .show(pane, |ui| {
-                            for &section in sections {
-                                match section {
-                                    Ddl => {
-                                        ui.strong("CREATE statement");
-                                    }
-                                    ForeignKeys => {
-                                        ui.strong("Foreign keys");
-                                    }
-                                    Indexes => {
-                                        ui.strong("Indexes");
-                                    }
-                                    Triggers => {
-                                        ui.strong("Triggers");
-                                    }
-                                    Columns => {}
-                                }
-                                action = self.section(ui, section).or(action.take());
-                            }
-                        });
-                }
-            });
+            self.wide_sections(ui)
         } else {
-            egui::ScrollArea::vertical()
-                .id_salt(("structure-section", *section))
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    if self.info.is_none()
-                        && !definition_only
-                        && *section != Ddl
-                        && ui.button("Load structure").clicked()
-                    {
-                        action = Some(Action::Load);
-                    }
-                    action = self.section(ui, *section).or(action.take());
-                });
+            self.compact_section(ui, *section, definition_only)
         }
+    }
+    /// Columns and the definition on the left; keys, indexes and triggers on the right.
+    fn wide_sections(&self, ui: &mut egui::Ui) -> Option<Action> {
+        let mut action = None;
+        if self.info.is_none() && ui.button("Load structure").clicked() {
+            action = Some(Action::Load);
+        }
+        ui.columns(2, |panes| {
+            for (pane, (id, sections)) in panes.iter_mut().zip([
+                ("structure-left", &[Columns, Ddl][..]),
+                ("structure-right", &[ForeignKeys, Indexes, Triggers][..]),
+            ]) {
+                egui::ScrollArea::vertical()
+                    .id_salt(id)
+                    .auto_shrink([false, false])
+                    .show(pane, |ui| {
+                        for &section in sections {
+                            if let Some(heading) = heading(section) {
+                                ui.strong(heading);
+                            }
+                            action = self.section(ui, section).or(action.take());
+                        }
+                    });
+            }
+        });
+        action
+    }
+    /// The one section its tab chose.
+    fn compact_section(
+        &self,
+        ui: &mut egui::Ui,
+        section: StructureSection,
+        definition_only: bool,
+    ) -> Option<Action> {
+        let mut action = None;
+        egui::ScrollArea::vertical()
+            .id_salt(("structure-section", section))
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                if self.info.is_none()
+                    && !definition_only
+                    && section != Ddl
+                    && ui.button("Load structure").clicked()
+                {
+                    action = Some(Action::Load);
+                }
+                action = self.section(ui, section).or(action.take());
+            });
         action
     }
     fn foreign_map(&self) -> Option<crate::app::diagram::ForeignMap<'_>> {

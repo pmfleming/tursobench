@@ -1,5 +1,5 @@
 use super::{
-    App, TransactionState, Value, browse_and_wait, click, close_and_wait, control, egui, fixture,
+    App, TransactionState, Value, browsing, click, close_and_wait, control, egui, fixture,
     frame_at, inspect_selected, press_key, shell, wait, wait_closed, wait_until,
 };
 const SIZE: egui::Vec2 = egui::vec2(1280.0, 720.0);
@@ -18,14 +18,7 @@ fn label_exists(output: &egui::FullOutput, label: &str) -> bool {
 }
 #[test]
 fn disconnected_drafts_stay_reachable_and_require_a_close_decision() {
-    let (dir, ctx, mut app) = fixture(
-        &[
-            "CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT)",
-            "INSERT INTO t VALUES(1,'x')",
-        ],
-        true,
-    );
-    browse_and_wait(&mut app, &ctx, "t");
+    let (dir, ctx, mut app) = browsing("t", "id INTEGER PRIMARY KEY, v TEXT", "(1,'x')", true);
     app.stage_cell(0, 1, Value::Text("draft".into()));
     let origin = app.database.id;
     let path = app.database.path.clone();
@@ -53,14 +46,7 @@ fn disconnected_drafts_stay_reachable_and_require_a_close_decision() {
 
 #[test]
 fn retained_outcomes_are_navigable_and_drafts_keep_their_file_identity() {
-    let (dir, ctx, mut app) = fixture(
-        &[
-            "CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT)",
-            "INSERT INTO t VALUES(1,'x')",
-        ],
-        true,
-    );
-    browse_and_wait(&mut app, &ctx, "t");
+    let (dir, ctx, mut app) = browsing("t", "id INTEGER PRIMARY KEY, v TEXT", "(1,'x')", true);
     app.stage_cell(0, 1, Value::Text("draft".into()));
     let id = app.database.id;
     let path = app.database.path.clone();
@@ -133,14 +119,7 @@ fn review_cancel_access_review_returns_to_previous_database() {
 }
 #[test]
 fn cancelling_a_picker_restores_the_database_and_its_drafts() {
-    let (_dir, ctx, mut app) = fixture(
-        &[
-            "CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT)",
-            "INSERT INTO t VALUES(1,'x')",
-        ],
-        true,
-    );
-    browse_and_wait(&mut app, &ctx, "t");
+    let (_dir, ctx, mut app) = browsing("t", "id INTEGER PRIMARY KEY, v TEXT", "(1,'x')", true);
     app.stage_cell(0, 1, Value::Text("local".into()));
     let origin = app.database.id;
     assert!(app.new_workspace(&ctx));

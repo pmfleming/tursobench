@@ -162,85 +162,88 @@ impl App {
             self.database.status = "Commit or discard drafts first".into();
             return;
         }
-        match Bindings::parse_json(&self.database.document.params) {
-            Ok(parameters) => {
-                let operation = match explain {
-                    Some(bytecode) => Operation::Explain {
-                        sql: text.clone(),
-                        parameters,
-                        bytecode,
-                    },
-                    None if migration.is_some() => Operation::Migration {
-                        sql: text.clone(),
-                        expected: migration.clone().unwrap(),
-                    },
-                    None => Operation::ExecuteBound {
-                        sql: text.clone(),
-                        parameters,
-                        budget: Budget {
-                            rows: self.preferences.row_limit,
-                            ..Default::default()
-                        },
-                    },
-                };
-                if self.database.workspace.enabled {
-                    if let Some(previous) = self.navigation_entry() {
-                        self.database.tools.result_return = Some(previous);
-                    }
-                    let source = if self.database.document.kind == super::tiling::Kind::Result {
-                        self.database
-                            .document
-                            .source
-                            .unwrap_or(self.database.document.id)
-                    } else {
-                        self.database.document.id
-                    };
-                    let sql = self.database.document.sql.clone();
-                    let params = self.database.document.params.clone();
-                    if self
-                        .create_window(super::tiling::Kind::Result, None, Some(source), false)
-                        .is_none()
-                    {
-                        return;
-                    }
-                    self.database.document.set_sql(sql);
-                    self.database.document.params = params;
-                }
-                self.database.document.migration = migration.clone();
-                if let Some(ticket) = self.submit(
-                    operation,
-                    if explain.is_some() {
-                        View::Explain
-                    } else {
-                        View::Query
-                    },
-                ) {
-                    if let Some(bytecode) = explain {
-                        self.database.document.explain = super::explain::State {
-                            sql: text.clone(),
-                            bytecode,
-                            raw: false,
-                        };
-                    }
-                    let history_sql = match explain {
-                        Some(true) => format!("EXPLAIN {text}"),
-                        Some(false) => format!("EXPLAIN QUERY PLAN {text}"),
-                        None => text,
-                    };
-                    // Restoring SQL text from history must not lose a migration guard.
-                    if migration.is_none() {
-                        self.database.tools.pending_history.insert(
-                            ticket.request,
-                            (self.database.tools.database_scope.clone(), history_sql),
-                        );
-                    }
-                    self.database.document.table = None;
-                    self.database.document.browse = None;
-                    self.database.document.tools.related = None;
-                }
+        let parameters = match Bindings::parse_json(&self.database.document.params) {
+            Ok(parameters) => parameters,
+            Err(e) => {
+                self.database.status = format!("Typed bindings: {e}");
+                return;
             }
-            Err(e) => self.database.status = format!("Typed bindings: {e}"),
+        };
+        let sql = text.clone();
+        let operation = match (explain, migration.clone()) {
+            (Some(bytecode), _) => Operation::Explain {
+                sql,
+                parameters,
+                bytecode,
+            },
+            (None, Some(expected)) => Operation::Migration { sql, expected },
+            (None, None) => Operation::ExecuteBound {
+                sql,
+                parameters,
+                budget: Budget {
+                    rows: self.preferences.row_limit,
+                    ..Default::default()
+                },
+            },
+        };
+        if self.database.workspace.enabled && !self.open_result_tile() {
+            return;
         }
+        self.database.document.migration = migration.clone();
+        let view = if explain.is_some() {
+            View::Explain
+        } else {
+            View::Query
+        };
+        let Some(ticket) = self.submit(operation, view) else {
+            return;
+        };
+        if let Some(bytecode) = explain {
+            self.database.document.explain = super::explain::State {
+                sql: text.clone(),
+                bytecode,
+                raw: false,
+            };
+        }
+        let history_sql = match explain {
+            Some(true) => format!("EXPLAIN {text}"),
+            Some(false) => format!("EXPLAIN QUERY PLAN {text}"),
+            None => text,
+        };
+        // Restoring SQL text from history must not lose a migration guard.
+        if migration.is_none() {
+            self.database.tools.pending_history.insert(
+                ticket.request,
+                (self.database.tools.database_scope.clone(), history_sql),
+            );
+        }
+        self.database.document.table = None;
+        self.database.document.browse = None;
+        self.database.document.tools.related = None;
+    }
+    /// Results go to a Result tile of their own, linked to the SQL that ran,
+    /// which keeps a copy of that SQL. Returns whether the tile opened.
+    fn open_result_tile(&mut self) -> bool {
+        if let Some(previous) = self.navigation_entry() {
+            self.database.tools.result_return = Some(previous);
+        }
+        let document = &self.database.document;
+        let source = if document.kind == super::tiling::Kind::Result {
+            document.source.unwrap_or(document.id)
+        } else {
+            document.id
+        };
+        let sql = document.sql.clone();
+        let params = document.params.clone();
+        if self
+            .create_window(super::tiling::Kind::Result, None, Some(source), false)
+            .is_none()
+        {
+            return false;
+        }
+        self.database.document.set_sql(sql);
+        self.database.document.params = params;
+        true
     }
     pub(super) fn run_current(&mut self, explain: Option<bool>) {
         match self.current_text() {
