@@ -37,33 +37,59 @@ impl Smoke {
         }
     }
 }
+impl Smoke {
+    /// Count a frame; once `frames` have drawn, screenshot the window to `name`
+    /// and go on to stage `next`, which waits for the screenshot to be written.
+    pub(super) fn capture_after(&mut self, ctx: &egui::Context, frames: u8, name: &str, next: u8) {
+        self.capture_frames += 1;
+        if self.capture_frames < frames {
+            return;
+        }
+        self.capture_pending = Some(name.into());
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let wake = ctx.clone();
+        ctx.request_screenshot(move |image| {
+            let _ = tx.try_send(image);
+            wake.request_repaint();
+        });
+        self.capture_result = Some(rx);
+        self.capture_frames = 0;
+        self.stage = next;
+    }
+    /// Write a requested screenshot once it arrives.
+    fn save_capture(&mut self) {
+        let (Some(dir), Some(name)) = (&self.capture_dir, &self.capture_pending) else {
+            return;
+        };
+        let Some(image) = self
+            .capture_result
+            .as_ref()
+            .and_then(|rx| rx.try_recv().ok())
+        else {
+            return;
+        };
+        use eframe::icon_data::IconDataExt;
+        let icon = egui::IconData {
+            rgba: image.pixels.iter().flat_map(|c| c.to_array()).collect(),
+            width: image.size[0] as u32,
+            height: image.size[1] as u32,
+        };
+        std::fs::create_dir_all(dir).expect("capture directory");
+        std::fs::write(
+            dir.join(name),
+            icon.to_png_bytes().expect("encode screenshot"),
+        )
+        .expect("write screenshot");
+        self.capture_pending = None;
+        self.capture_result = None;
+    }
+}
 impl App {
     pub(super) fn smoke_tick(&mut self, ctx: &egui::Context) {
         let Some(mut smoke) = self.smoke.take() else {
             return;
         };
-        if let (Some(dir), Some(name)) = (&smoke.capture_dir, &smoke.capture_pending) {
-            let screenshot = smoke
-                .capture_result
-                .as_ref()
-                .and_then(|rx| rx.try_recv().ok());
-            if let Some(image) = screenshot {
-                use eframe::icon_data::IconDataExt;
-                let icon = egui::IconData {
-                    rgba: image.pixels.iter().flat_map(|c| c.to_array()).collect(),
-                    width: image.size[0] as u32,
-                    height: image.size[1] as u32,
-                };
-                std::fs::create_dir_all(dir).expect("capture directory");
-                std::fs::write(
-                    dir.join(name),
-                    icon.to_png_bytes().expect("encode screenshot"),
-                )
-                .expect("write screenshot");
-                smoke.capture_pending = None;
-                smoke.capture_result = None;
-            }
-        }
+        smoke.save_capture();
         if smoke.start.elapsed()
             > Duration::from_secs(if smoke.capture_dir.is_some() { 60 } else { 20 })
         {
@@ -85,13 +111,7 @@ impl App {
                 self.database.writable = false;
                 // The desktop smoke runner intentionally uses a closed SQLite
                 // compatibility fixture and opts into opening it with Turso.
-                if self.databases.inspection.kind(&self.database.path)
-                    == crate::discovery::DatabaseKind::LikelySqlite
-                {
-                    self.databases.inspection.override_sqlite = true;
-                }
-                self.open(ctx);
-                if self.database.session.is_some() {
+                if self.smoke_open(ctx) {
                     smoke.stage = 1;
                 }
             }
@@ -106,32 +126,7 @@ impl App {
                 smoke.stage = 2;
             }
             2 if self.database.ready && self.database.document.active.is_none() => {
-                assert!(
-                    self.database
-                        .document
-                        .result
-                        .completion
-                        .as_ref()
-                        .is_some_and(|c| c.error.is_none()),
-                    "{}",
-                    self.database.status
-                );
-                if smoke.project_fixture {
-                    assert!(
-                        !self.database.document.result.rows.is_empty(),
-                        "project fixture table must contain rows"
-                    );
-                    assert!(self.database.document.table.as_ref().is_some_and(
-                        |t| t.columns.len() == self.database.document.result.columns.len()
-                    ));
-                } else {
-                    assert_eq!(
-                        self.database.document.result.rows.len(),
-                        100,
-                        "smoke fixture needs at least 100 rows"
-                    );
-                    assert_eq!(self.database.document.result.rows[0][0], Value::Integer(0));
-                }
+                self.assert_first_page(smoke.project_fixture);
                 smoke.stage = 9;
             }
             9 => {
@@ -147,37 +142,15 @@ impl App {
                 smoke.stage = 7;
             }
             7 if self.database.ui.diagram.ticket.is_none() => {
-                let graph = self
-                    .database
-                    .ui
-                    .diagram
-                    .data
-                    .as_ref()
-                    .expect("diagram metadata");
-                assert!(!graph.limited);
-                assert!(graph.tables.iter().any(|t| t.name == smoke.table));
-                assert!(graph.tables.iter().all(|t| t.error.is_none()));
-                self.database.ui.diagram.selected = Some(smoke.table.clone());
-                if smoke.capture_dir.is_some() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
-                        1800.0, 1000.0,
-                    )));
-                    self.browse_table(smoke.table.clone());
-                    self.retile();
-                    self.preferences.appearance = Some(crate::appearance::Mode::Dark);
-                    if std::env::var_os("TURSOBENCH_ASSISTANT_CAPTURE").is_some() {
-                        smoke.stage = 90;
-                    } else if smoke.readme {
-                        self.start_readme_capture();
-                        smoke.stage = 50;
-                    } else {
-                        smoke.stage = 20;
-                    }
+                self.select_diagram_table(&smoke.table);
+                smoke.stage = if smoke.capture_dir.is_some() {
+                    self.start_captures(ctx, &smoke)
                 } else {
-                    smoke.stage = 8;
-                }
+                    8
+                };
             }
-            20..=31 | 39..=45 if self.smoke_capture_layout(ctx, &mut smoke) => return,
+            20..=31 => self.smoke_capture_workspace(ctx, &mut smoke),
+            39..=45 if self.smoke_capture_scenes(ctx, &mut smoke) => return,
             8 => {
                 self.database
                     .document
@@ -227,24 +200,7 @@ impl App {
                         .kind,
                     ErrorKind::ReadOnly
                 );
-                let column = self
-                    .database
-                    .ui
-                    .diagram
-                    .data
-                    .as_ref()
-                    .unwrap()
-                    .tables
-                    .iter()
-                    .find(|t| t.name == smoke.table)
-                    .unwrap()
-                    .inspection
-                    .as_ref()
-                    .unwrap()
-                    .table
-                    .columns[0]
-                    .name
-                    .clone();
+                let column = self.diagram_columns(&smoke.table)[0].name.clone();
                 self.run_profile(tursobench_db::profile::Request {
                     table: smoke.table.clone(),
                     column: Some(column),
@@ -283,16 +239,7 @@ impl App {
     fn smoke_workbench(&mut self, ctx: &egui::Context, smoke: &mut Smoke) {
         match smoke.stage {
             60 if self.database.document.active.is_none() => {
-                assert!(
-                    self.database
-                        .document
-                        .result
-                        .completion
-                        .as_ref()
-                        .is_some_and(|c| c.error.is_none()),
-                    "{}",
-                    self.database.status
-                );
+                self.assert_query_succeeded();
                 assert!(self.database.document.profile.is_some());
                 assert!(!self.database.document.result.rows.is_empty());
                 // Render the profile before closing on the following frame.
@@ -326,17 +273,7 @@ impl App {
                     smoke.stage = 5;
                 }
             }
-            64 => {
-                if self.databases.inspection.kind(&self.database.path)
-                    == crate::discovery::DatabaseKind::LikelySqlite
-                {
-                    self.databases.inspection.override_sqlite = true;
-                }
-                self.open(ctx);
-                if self.database.session.is_some() {
-                    smoke.stage = 65;
-                }
-            }
+            64 if self.smoke_open(ctx) => smoke.stage = 65,
             65 if self.database.ready
                 && self.database.catalog_ticket.is_none()
                 && self.database.ui.diagram.ticket.is_none() =>
@@ -374,26 +311,12 @@ impl App {
                 }
             }
             71 | 73 => {
-                smoke.capture_frames += 1;
-                if smoke.capture_frames >= 8 {
-                    smoke.capture_pending = Some(
-                        if smoke.stage == 71 {
-                            "sidebar-search.png"
-                        } else {
-                            "sidebar-open-databases.png"
-                        }
-                        .into(),
-                    );
-                    let (tx, rx) = std::sync::mpsc::sync_channel(1);
-                    let wake = ctx.clone();
-                    ctx.request_screenshot(move |image| {
-                        let _ = tx.try_send(image);
-                        wake.request_repaint();
-                    });
-                    smoke.capture_result = Some(rx);
-                    smoke.capture_frames = 0;
-                    smoke.stage += 1;
-                }
+                let name = if smoke.stage == 71 {
+                    "sidebar-search.png"
+                } else {
+                    "sidebar-open-databases.png"
+                };
+                smoke.capture_after(ctx, 8, name, smoke.stage + 1);
             }
             72 if smoke.capture_pending.is_none() => {
                 self.sidebar_search.query.clear();
@@ -527,7 +450,9 @@ impl App {
             _ => {}
         }
     }
-    fn smoke_capture_layout(&mut self, ctx: &egui::Context, smoke: &mut Smoke) -> bool {
+    /// Workspace captures at several sizes and themes: even stages capture,
+    /// odd ones set up the next arrangement once the capture is written.
+    fn smoke_capture_workspace(&mut self, ctx: &egui::Context, smoke: &mut Smoke) {
         match smoke.stage {
             26 if self.database.document.active.is_some()
                 || self.database.document.tools.inspection_ticket.is_some() => {}
@@ -543,29 +468,8 @@ impl App {
                         1795.0, 995.0,
                     )));
                 }
-                smoke.capture_frames += 1;
-                if smoke.capture_frames >= 15 {
-                    smoke.capture_pending = Some(
-                        match smoke.stage {
-                            20 => "workspace-dark.png",
-                            22 => "expanded-map.png",
-                            24 => "laptop-light.png",
-                            26 => "laptop-dark.png",
-                            28 => "minimized-tiles.png",
-                            _ => "widescreen.png",
-                        }
-                        .into(),
-                    );
-                    let (tx, rx) = std::sync::mpsc::sync_channel(1);
-                    let wake = ctx.clone();
-                    ctx.request_screenshot(move |image| {
-                        let _ = tx.try_send(image);
-                        wake.request_repaint();
-                    });
-                    smoke.capture_result = Some(rx);
-                    smoke.capture_frames = 0;
-                    smoke.stage += 1;
-                }
+                let name = WORKSPACE_CAPTURES[usize::from(smoke.stage - 20) / 2];
+                smoke.capture_after(ctx, 15, name, smoke.stage + 1);
             }
             21 if smoke.capture_pending.is_none() => {
                 self.overview();
@@ -601,17 +505,15 @@ impl App {
             31 if smoke.capture_pending.is_none() => {
                 smoke.stage = 8;
             }
-            39 => {
-                if self.databases.inspection.kind(&self.database.path)
-                    == crate::discovery::DatabaseKind::LikelySqlite
-                {
-                    self.databases.inspection.override_sqlite = true;
-                }
-                self.open(ctx);
-                if self.database.session.is_some() {
-                    smoke.stage = 40;
-                }
-            }
+            _ => {}
+        }
+    }
+    /// The visual scenes on a writable copy of the fixture: dialogs, navigator
+    /// tools and settings pages, one capture each. Returns whether the smoke ended.
+    fn smoke_capture_scenes(&mut self, ctx: &egui::Context, smoke: &mut Smoke) -> bool {
+        let spreadsheet = std::env::var_os("TURSOBENCH_SPREADSHEET_CAPTURE").is_some();
+        match smoke.stage {
+            39 if self.smoke_open(ctx) => smoke.stage = 40,
             40 if self.database.ready
                 && self.database.catalog_ticket.is_none()
                 && self.database.ui.diagram.ticket.is_none() =>
@@ -648,36 +550,15 @@ impl App {
                 smoke.stage = 42;
             }
             42 => {
-                smoke.capture_frames += 1;
-                if smoke.capture_frames >= 8 {
-                    smoke.capture_pending = Some(
-                        if std::env::var_os("TURSOBENCH_SPREADSHEET_CAPTURE").is_some()
-                            && matches!(smoke.scene, 1 | 2)
-                        {
-                            if smoke.scene == 1 {
-                                "fill-selection.png"
-                            } else {
-                                "paste-new-rows.png"
-                            }
-                        } else {
-                            VISUAL_SCENES[smoke.scene]
-                        }
-                        .into(),
-                    );
-                    let (tx, rx) = std::sync::mpsc::sync_channel(1);
-                    let wake = ctx.clone();
-                    ctx.request_screenshot(move |image| {
-                        let _ = tx.try_send(image);
-                        wake.request_repaint();
-                    });
-                    smoke.capture_result = Some(rx);
-                    smoke.capture_frames = 0;
-                    smoke.stage = 43;
-                }
+                let name = match smoke.scene {
+                    1 if spreadsheet => "fill-selection.png",
+                    2 if spreadsheet => "paste-new-rows.png",
+                    scene => VISUAL_SCENES[scene],
+                };
+                smoke.capture_after(ctx, 8, name, 43);
             }
             43 if smoke.capture_pending.is_none() => {
-                if smoke.scene == 2 && std::env::var_os("TURSOBENCH_SPREADSHEET_CAPTURE").is_some()
-                {
+                if smoke.scene == 2 && spreadsheet {
                     self.database.document.tools.spreadsheet.dialog = None;
                     self.database.document.drafts = None;
                     self.close();
@@ -715,6 +596,79 @@ impl App {
         }
         false
     }
+    fn assert_query_succeeded(&self) {
+        let completion = self.database.document.result.completion.as_ref();
+        assert!(
+            completion.is_some_and(|c| c.error.is_none()),
+            "{}",
+            self.database.status
+        );
+    }
+    /// The fixture's first page: any rows of a project table with every column,
+    /// or exactly the first hundred rows of the smoke fixture.
+    fn assert_first_page(&self, project_fixture: bool) {
+        self.assert_query_succeeded();
+        let document = &self.database.document;
+        let rows = &document.result.rows;
+        if project_fixture {
+            assert!(!rows.is_empty(), "project fixture table must contain rows");
+            assert!(
+                document
+                    .table
+                    .as_ref()
+                    .is_some_and(|t| t.columns.len() == document.result.columns.len())
+            );
+        } else {
+            assert_eq!(rows.len(), 100, "smoke fixture needs at least 100 rows");
+            assert_eq!(rows[0][0], Value::Integer(0));
+        }
+    }
+    /// The relationship map loaded completely, with the fixture table selected.
+    fn select_diagram_table(&mut self, table: &str) {
+        let graph = self
+            .database
+            .ui
+            .diagram
+            .data
+            .as_ref()
+            .expect("diagram metadata");
+        assert!(!graph.limited);
+        assert!(graph.tables.iter().any(|t| t.name == table));
+        assert!(graph.tables.iter().all(|t| t.error.is_none()));
+        self.database.ui.diagram.selected = Some(table.into());
+    }
+    fn diagram_columns(&self, table: &str) -> &[tursobench_core::TableColumn] {
+        let graph = self.database.ui.diagram.data.as_ref().unwrap();
+        let table = graph.tables.iter().find(|t| t.name == table).unwrap();
+        &table.inspection.as_ref().unwrap().table.columns
+    }
+    /// Set up the large dark workspace the captures start from and return the
+    /// first stage of the captures asked for.
+    fn start_captures(&mut self, ctx: &egui::Context, smoke: &Smoke) -> u8 {
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1800.0, 1000.0)));
+        self.browse_table(smoke.table.clone());
+        self.retile();
+        self.preferences.appearance = Some(crate::appearance::Mode::Dark);
+        if std::env::var_os("TURSOBENCH_ASSISTANT_CAPTURE").is_some() {
+            90
+        } else if smoke.readme {
+            self.start_readme_capture();
+            50
+        } else {
+            20
+        }
+    }
+    /// Open the fixture, opting into Turso for a closed SQLite file as the
+    /// desktop smoke intends. Returns whether a session started.
+    fn smoke_open(&mut self, ctx: &egui::Context) -> bool {
+        if self.databases.inspection.kind(&self.database.path)
+            == crate::discovery::DatabaseKind::LikelySqlite
+        {
+            self.databases.inspection.override_sqlite = true;
+        }
+        self.open(ctx);
+        self.database.session.is_some()
+    }
     fn smoke_readonly_write(&mut self, table: &str) {
         self.database
             .document
@@ -724,6 +678,15 @@ impl App {
     }
 }
 
+/// The workspace captures, one per even stage from 20.
+const WORKSPACE_CAPTURES: [&str; 6] = [
+    "workspace-dark.png",
+    "expanded-map.png",
+    "laptop-light.png",
+    "laptop-dark.png",
+    "minimized-tiles.png",
+    "widescreen.png",
+];
 // Additional captures are opt-in and operate only on the smoke fixture.
 const VISUAL_SCENES: &[&str] = &[
     "staged-workspace.png",
