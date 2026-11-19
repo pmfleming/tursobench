@@ -206,13 +206,45 @@ impl App {
     }
     /// How `provider` would be started, whichever agent the chat uses.
     pub(super) fn profile_for(&self, provider: Provider) -> Result<Profile, String> {
-        let mut preferences = self.preferences.assistant.clone();
-        preferences.provider = provider;
-        profile(&preferences)
+        let preferences = &self.preferences.assistant;
+        let vendor = provider.vendor();
+        let mut words: Vec<String> = if provider == Provider::Custom {
+            command_words(&preferences.custom_command)?
+        } else {
+            std::iter::once(vendor.command.to_owned())
+                .chain(vendor.args.iter().map(|s| (*s).to_owned()))
+                .collect()
+        };
+        let command = words.remove(0);
+        let requested = preferences
+            .executables
+            .get(&provider)
+            .cloned()
+            .unwrap_or_else(|| command.clone().into());
+        let program = locate(&requested).unwrap_or(requested);
+        if provider == Provider::Antigravity && preferences.privacy.of(provider).telemetry_off {
+            words.push("--disable-telemetry".into());
+        }
+        Ok(Profile {
+            name: vendor.name.into(),
+            vendor: vendor.company,
+            program,
+            args: words,
+            env: vec![],
+            protocol: vendor.protocol,
+            missing: format!(
+                "{} was not found. Scan for agents or set its executable in Settings → Assistant.",
+                vendor.name
+            ),
+            sign_in: std::iter::once(command.as_str())
+                .chain(vendor.login.iter().copied())
+                .collect::<Vec<_>>()
+                .join(" "),
+        })
     }
     /// How the chat's agent would be started.
     pub(super) fn assistant_profile(&self) -> Result<Profile, String> {
-        profile(&self.preferences.assistant)
+        self.profile_for(self.preferences.assistant.provider)
     }
     /// What the header knows about one agent: a state, its colour, and whether
     /// it can be chosen. Before any check, a cached lookup says if it is installed.
@@ -293,11 +325,11 @@ impl App {
         let provider = self.configured_agent();
         let grid = AgentGrid::new(ui);
         self.settings_for_ui(ui, grid, provider);
-        self.assistant_agent_status(ui);
+        self.assistant_agent_status(ui, grid);
         if provider == Provider::Custom {
             self.custom_command_ui(ui, grid);
         }
-        self.assistant_agent_program(ui);
+        self.assistant_agent_program(ui, grid);
         self.agent_model_ui(ui, grid, provider);
         self.assistant_privacy(ui, grid, provider);
     }
@@ -383,8 +415,7 @@ impl App {
     }
 
     /// The configured agent's sign-in problems and choices, in its settings area.
-    fn assistant_agent_status(&mut self, ui: &mut egui::Ui) {
-        let grid = AgentGrid::new(ui);
+    fn assistant_agent_status(&mut self, ui: &mut egui::Ui, grid: AgentGrid) {
         let provider = self.configured_agent();
         let Some(row) = self.accounts.rows.get_mut(&provider) else {
             return;
@@ -417,7 +448,7 @@ impl App {
     }
 
     /// The configured agent's executable, terminal sign-in and path override.
-    fn assistant_agent_program(&mut self, ui: &mut egui::Ui) {
+    fn assistant_agent_program(&mut self, ui: &mut egui::Ui, grid: AgentGrid) {
         let provider = self.configured_agent();
         let profile = self.profile_for(provider).ok();
         if self.accounts.editing != Some(provider) {
@@ -435,7 +466,6 @@ impl App {
             .assistant
             .executables
             .contains_key(&provider);
-        let grid = AgentGrid::new(ui);
         if let Some(profile) = &profile
             && program_rows(
                 ui,
@@ -579,45 +609,6 @@ pub(super) struct Profile {
     pub(super) missing: String,
     /// The command that signs in, for error hints.
     pub(super) sign_in: String,
-}
-
-fn profile(preferences: &crate::storage::AssistantPreferences) -> Result<Profile, String> {
-    let vendor = preferences.provider.vendor();
-    let mut words: Vec<String> = if preferences.provider == Provider::Custom {
-        command_words(&preferences.custom_command)?
-    } else {
-        std::iter::once(vendor.command.to_owned())
-            .chain(vendor.args.iter().map(|s| (*s).to_owned()))
-            .collect()
-    };
-    let command = words.remove(0);
-    let requested = preferences
-        .executables
-        .get(&preferences.provider)
-        .cloned()
-        .unwrap_or_else(|| command.clone().into());
-    let program = locate(&requested).unwrap_or(requested);
-    if preferences.provider == Provider::Antigravity
-        && preferences.privacy.of(vendor.id).telemetry_off
-    {
-        words.push("--disable-telemetry".into());
-    }
-    Ok(Profile {
-        name: vendor.name.into(),
-        vendor: vendor.company,
-        program,
-        args: words,
-        env: vec![],
-        protocol: vendor.protocol,
-        missing: format!(
-            "{} was not found. Scan for agents or set its executable in Settings → Assistant.",
-            vendor.name
-        ),
-        sign_in: std::iter::once(command.as_str())
-            .chain(vendor.login.iter().copied())
-            .collect::<Vec<_>>()
-            .join(" "),
-    })
 }
 
 /// One agent's row: choose it, its status, a check, and its account action.

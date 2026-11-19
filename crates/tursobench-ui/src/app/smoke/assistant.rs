@@ -2,9 +2,10 @@
 //! agent runs and nothing leaves the machine.
 use super::{App, Smoke};
 use crate::app::assistant::Entry;
+use crate::app::assistant_picker::{Choice, menu_id};
 use crate::app::presentation::Intent;
 use crate::assistant_tools::Sharing;
-use crate::storage::{FavouriteModel, Provider};
+use crate::storage::Provider;
 use eframe::egui;
 use serde_json::json;
 use tursobench_assistant::account::{SignIn, Status};
@@ -137,12 +138,15 @@ impl App {
                     .assistant
                     .efforts
                     .insert(Provider::Claude, "high".into());
-                self.preferences.assistant.favourite_models = vec![FavouriteModel {
+                self.preferences.assistant.favourite_models.clear();
+                self.toggle_favourite_model(&Choice {
                     provider: Provider::Claude,
                     model: "opus".into(),
-                }];
+                    name: String::new(),
+                    default: false,
+                });
                 self.accounts.menu = Default::default();
-                egui::Popup::open_id(ctx, crate::app::assistant_picker::menu_id());
+                egui::Popup::open_id(ctx, menu_id());
             }
         }
     }
