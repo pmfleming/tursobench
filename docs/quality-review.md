@@ -1,3 +1,134 @@
+# Quality audit and refactor — 2026-11-19
+
+Baseline: `9cb3500` (movable columns and the assistant tile). Measured with the
+local `/home/laufan/Projects/rust-quality-lens` at `f9e5d8b`; the frozen
+executable's SHA-256 is
+`6147c4070e9352a6c70190e27b6f2c051cb2220d4427c8196708bc33fda4c0cf`. Both runs
+use the unchanged source roots (`crates`, `tools/engine-spike/src`), including
+tests, and no exclusions, lint suppressions or `#[allow]` attributes.
+
+| Measurement | Before | After |
+| --- | ---: | ---: |
+| Maximum cognitive complexity | 69 | 33 |
+| Sum of cognitive complexity | 7,863 | 6,715 |
+| Functions above cognitive 25 | 65 | 8 |
+| Maximum cyclomatic complexity | 73 | 65 |
+| Sum of cyclomatic complexity | 8,699 | 8,985 |
+| Decision points (cyclomatic − 1, summed) | 7,051 | 6,934 |
+| Sum of function Halstead effort | 62,482,101 | 48,414,135 |
+| Duplicated source lines | 4,516 (8.06%) | 1,299 (2.36%) |
+| Sum of module locality risk ↓ | 576.0 | 514.5 |
+| Mean observed module leverage ↑ | 28.44 | 28.72 |
+| Authored Rust modules | 128 | 125 |
+| Physical Rust lines | 58,077 | 57,692 |
+| Literal `.clone()` / `.cloned()` calls | 593 / 37 | 542 / 40 |
+| Unsafe blocks (undocumented) | 8 (3) | 3 (0) |
+| Wildcard imports | 50 | 8 |
+| Escape-hatch score | 180 | 46 |
+| Observed panic paths, including tests | 700 | 595 |
+| Catalogued tests | 342 | 330 |
+| Test/helper function lines | 16,226 | 15,012 |
+| Lines coverage (%) | 86.03 | 86.66 |
+| Regions coverage (%) | 85.86 | 86.31 |
+| Functions coverage (%) | 87.63 | 88.05 |
+
+The cyclomatic sum rises only because there are 403 more functions (1,648 →
+2,051) and each counts a base of one; branching itself falls by 117 decision
+points and the mean per function from 5.3 to 4.4. The remaining maximum of 65
+is `icons::marks`, a flat one-arm-per-icon lookup (cognitive 1) kept as a
+`match` so the compiler still checks every icon has a drawing.
+
+The changes address these findings:
+
+- **Assistant accounts and agents:** `account::run` (cognitive 69) dispatches
+  to per-vendor flows with named steps; `acp::response`, Codex notifications and
+  Claude control handling are split the same way. ACP and Codex share the
+  request queue, `initialize` builder, config-option parsing and “could not
+  reach” handling. The two process-group kills share one documented `unsafe`
+  helper. Tests no longer mutate `XDG_RUNTIME_DIR` with `unsafe set_var` while
+  other threads may read it: the relay takes an explicit directory
+  (`Endpoint::start_in`), and the app-level tests use the documented
+  `relay::set_runtime_root` test seam. `getuid` stays behind one documented
+  `uid()`; `/proc/self` is not an equivalent.
+- **Assistant UI:** the conversation, transcript, model picker and account
+  settings each sit with the state they use; settings code lives beside the
+  accounts it edits and the page layout with the other settings pages. Chat
+  display and copied HTML share one Markdown parser.
+- **Database worker:** the worker is a request router. Reads, scripts and
+  migrations, transfers and row delivery each have their own module, engine
+  opening belongs to `connection`, change polling to `observe`, backup
+  publishing to `transfers`, and the value store answers its own requests.
+  Diagram and validation reads merged into `inspection`, sharing one table-name
+  scan. A never-reachable `CommitState` guard was replaced by the session's own
+  uncertainty flag.
+- **Icons and dialogs:** every icon is stroke data drawn by one small pen; shape
+  dumps at four sizes were byte-identical before and after. The database chooser,
+  paste dialog, shortcuts, palette, ribbon dispatch, transfers, access review,
+  discovery and appearance settings, explain hints and theme application are
+  split into named parts; the theme split was checked against the previous
+  `apply` over 74 palette/scheme cases.
+- **Workspace and data views:** tiled workspace drawing and dividers, the
+  column map, grid contents and keys, inspector, diagram layout, context links,
+  sidebar and schema presentation are split into named steps. One
+  `Smoke::capture_after` replaces four copies of the screenshot request, and the
+  workspace and scene captures are separate state machines. One
+  `DatabaseWorkspace::request` replaces eight ticket-and-submit copies; framed
+  dialogs, text measurement and the navigation back stack have one helper each.
+- **Tests:** overlapping journeys merge with their assertions kept (Codex
+  check/login/logout, the cancel tests, ACP probe and login, Claude status,
+  discard, diagram, orphan foreign keys, explicit and filtered counts, privacy
+  notice and its link, ACP agent with background sharing). The three fake-agent
+  suites are one file; the live Claude, Codex and Antigravity tests share
+  `tests/relay.rs` and now all assert that the tool ran exactly once. Database
+  tests share session, script and directory-snapshot fixtures. A few assertions
+  were added (0755 private directory, quoting edge cases, ACP tool-result
+  table, explain hints).
+
+Bugs fixed: with the available list collapsed, “Forget database” on the row
+under review was dropped by an early return and now takes effect. Clearing
+recovery now trims parked workspaces' saved cursors like the active one.
+Reported but not fixed, because it changes the chat's appearance: in egui 0.37,
+`RichText::monospace().small()` loses the monospace font, so SQL and tool output
+in the chat render proportionally.
+
+Smaller behavioural notes: Codex and ACP account checks stop the account process
+before running `--version`; queue byte estimates count relation and cursor text
+they previously omitted; a non-text table name in the foreign-key check reports
+“Unexpected schema name”; the engine spike returns an error instead of panicking
+on a non-integer count.
+
+Coverage changes from 35,179/40,890 to 35,128/40,534 lines and 56,469/65,768 to
+57,018/66,060 regions; uncovered lines fall from 5,711 to 5,406. More functions
+report zero coverage (67 → 111) because code that only the desktop smokes or
+the engine spike run (smoke state machine, transfer windows, spike probes) is
+now split into more functions; no branch or mutation coverage was measured and
+no runtime speedup is claimed.
+
+Syntax inventory remains partial for the same unexpanded macros as before, with
+zero unreadable files; both runs used rust-analyzer semantic identity with no
+identity fallback files. Leverage and locality describe observed
+dependencies.
+
+Validation passed: formatting, workspace Clippy across all targets with
+warnings denied, workspace tests (all pass; five ignored tests in both runs: the manual
+frame profile and live agent tests that need signed-in CLIs), workspace build, engine
+spike, native Wayland desktop, startup discovery and local-project smokes, and
+the assistant, v8, sidebar and record-structure capture scripts. Captures from
+the baseline and refactored builds were compared pixel by pixel; the only
+differences are temporary paths, the checkout path, query timings and the
+number of discovered databases.
+
+Local evidence is under `target/quality-refactor-20261119/`: frozen `rqlens`,
+`before/` and `after/` evidence databases, `compare.py`, `comparison.json`,
+`lens.sh`, logs, the delegate briefs and both capture sets. Reproduce with:
+
+```sh
+nix develop --command bash target/quality-refactor-20261119/lens.sh all after
+nix develop --command python3 target/quality-refactor-20261119/compare.py
+```
+
+---
+
 # Quality audit and refactor — 2026-11-11
 
 Baseline: `1d7da3c12f8b7151de3687235ae8612763cd91df` after the six performance optimizations.
