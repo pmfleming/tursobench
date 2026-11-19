@@ -56,6 +56,53 @@ impl<'a> Graph<'a> {
             limited: data.limited,
         }
     }
+    /// Counts, and warnings that the map is partial or may be stale.
+    fn notices(&self, ui: &mut egui::Ui, stale: bool) {
+        let relationships: usize = self
+            .tables
+            .iter()
+            .filter_map(|t| t.inspection.as_ref())
+            .map(|i| i.foreign_keys.len())
+            .sum();
+        let errors = self.tables.iter().filter(|t| t.error.is_some()).count();
+        ui.horizontal_wrapped(|ui| {
+            if self.limited || errors > 0 {
+                ui.small(format!(
+                    "{} tables · {relationships} links · {errors} metadata errors",
+                    self.tables.len()
+                ));
+            }
+            if self.limited {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    "LIMITED — not the entire schema (512 tables / 8 MiB metadata budget)",
+                );
+            }
+            if stale {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    "Cached — may be stale; refresh after SQL/schema changes",
+                );
+            }
+        });
+    }
+    /// How wide to pack the cards so the map roughly takes the canvas's shape.
+    fn pack_width(&self, all: bool, canvas: egui::Vec2) -> f32 {
+        let aspect = (canvas.x / canvas.y.max(1.0)).clamp(0.5, 8.0);
+        let area: f32 = self
+            .tables
+            .iter()
+            .map(|node| {
+                let rows = node
+                    .inspection
+                    .as_ref()
+                    .map_or(1, |i| key_rows(i, all).len().max(1));
+                (WIDTH + 40.0) * (100.0 + rows as f32 * LINE)
+            })
+            .sum();
+        let columns = ((area * aspect).sqrt() / (WIDTH + 40.0)).ceil().max(1.0);
+        (columns * (WIDTH + 40.0)).clamp(WIDTH, 3600.0)
+    }
 }
 
 impl DiagramState {
@@ -160,34 +207,10 @@ fn key_rows(info: &Inspection, all: bool) -> Vec<usize> {
 #[cfg(test)]
 thread_local! { static LAYOUT_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 fn cards(graph: &Graph<'_>, all: bool, pack_width: f32) -> Vec<(egui::Rect, Vec<usize>)> {
-    use std::collections::{BTreeSet, VecDeque};
     #[cfg(test)]
     LAYOUT_BUILDS.with(|count| count.set(count.get() + 1));
     let count = graph.tables.len();
-    let names: BTreeMap<_, _> = graph
-        .tables
-        .iter()
-        .enumerate()
-        .map(|(i, t)| (t.name.to_ascii_lowercase(), i))
-        .collect();
-    let mut edges = vec![BTreeSet::new(); count];
-    let mut incoming = vec![0usize; count];
-    let mut outgoing = vec![0usize; count];
-    for (i, node) in graph.tables.iter().enumerate() {
-        if let Some(info) = &node.inspection {
-            for fk in &info.foreign_keys {
-                if let Some(&j) = names.get(&fk.target.to_ascii_lowercase()) {
-                    if i == j {
-                        continue;
-                    }
-                    edges[i].insert(j);
-                    edges[j].insert(i);
-                    incoming[j] += 1;
-                    outgoing[i] += 1;
-                }
-            }
-        }
-    }
+    let (edges, incoming, outgoing) = neighbours(graph);
     let mut result: Vec<_> = graph
         .tables
         .iter()
@@ -200,16 +223,14 @@ fn cards(graph: &Graph<'_>, all: bool, pack_width: f32) -> Vec<(egui::Rect, Vec<
             (egui::Rect::from_min_size(egui::Pos2::ZERO, size), rows)
         })
         .collect();
-    // The height a layout packed to `pack_width` would reach; a long level wraps
-    // into side-by-side columns instead of growing past it.
-    let area: f32 = result
-        .iter()
-        .map(|(rect, _)| (WIDTH + 40.0) * (rect.height() + 45.0))
-        .sum();
-    let tallest = result
+    let heights: Vec<_> = result
         .iter()
         .map(|(rect, _)| rect.height() + 45.0)
-        .fold(0.0, f32::max);
+        .collect();
+    // The height a layout packed to `pack_width` would reach; a long level wraps
+    // into side-by-side columns instead of growing past it.
+    let area: f32 = heights.iter().map(|h| (WIDTH + 40.0) * h).sum();
+    let tallest = heights.iter().copied().fold(0.0, f32::max);
     let column_height = (area / pack_width.max(WIDTH)).max(tallest);
     let mut unseen: BTreeSet<_> = (0..count).collect();
     let mut shelf = egui::Pos2::ZERO;
@@ -220,34 +241,8 @@ fn cards(graph: &Graph<'_>, all: bool, pack_width: f32) -> Vec<(egui::Rect, Vec<
         if !unseen.remove(&root) {
             continue;
         }
-        let mut queue = VecDeque::from([(root, 0usize)]);
-        let mut levels: Vec<Vec<usize>> = Vec::new();
-        while let Some((i, depth)) = queue.pop_front() {
-            if levels.len() <= depth {
-                levels.push(Vec::new());
-            }
-            levels[depth].push(i);
-            for &j in &edges[i] {
-                if unseen.remove(&j) {
-                    queue.push_back((j, depth + 1));
-                }
-            }
-        }
-        let mut columns: Vec<Vec<usize>> = Vec::new();
-        for level in &levels {
-            let mut column = Vec::new();
-            let mut height = 0.0;
-            for &i in level {
-                let card = result[i].0.height() + 45.0;
-                if !column.is_empty() && height + card > column_height {
-                    columns.push(std::mem::take(&mut column));
-                    height = 0.0;
-                }
-                column.push(i);
-                height += card;
-            }
-            columns.push(column);
-        }
+        let levels = component_levels(root, &edges, &mut unseen);
+        let columns = wrap_levels(&levels, &heights, column_height);
         let component_width = columns.len() as f32 * (WIDTH + 40.0);
         if shelf.x > 0.0 && shelf.x + component_width > pack_width {
             shelf.x = 0.0;
@@ -257,11 +252,9 @@ fn cards(graph: &Graph<'_>, all: bool, pack_width: f32) -> Vec<(egui::Rect, Vec<
         for (depth, column) in columns.iter().enumerate() {
             let mut y = shelf.y;
             for &i in column {
-                result[i].0 = egui::Rect::from_min_size(
-                    egui::pos2(shelf.x + depth as f32 * (WIDTH + 40.0), y),
-                    result[i].0.size(),
-                );
-                y += result[i].0.height() + 45.0;
+                let x = shelf.x + depth as f32 * (WIDTH + 40.0);
+                result[i].0 = egui::Rect::from_min_size(egui::pos2(x, y), result[i].0.size());
+                y += heights[i];
             }
             shelf_height = shelf_height.max(y - shelf.y);
         }
@@ -269,7 +262,101 @@ fn cards(graph: &Graph<'_>, all: bool, pack_width: f32) -> Vec<(egui::Rect, Vec<
     }
     result
 }
+/// Each table's related tables, and how many foreign keys point into and out
+/// of it. Self references are left out.
+fn neighbours(graph: &Graph<'_>) -> (Vec<BTreeSet<usize>>, Vec<usize>, Vec<usize>) {
+    let count = graph.tables.len();
+    let names: BTreeMap<_, _> = graph
+        .tables
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.name.to_ascii_lowercase(), i))
+        .collect();
+    let mut edges = vec![BTreeSet::new(); count];
+    let mut incoming = vec![0usize; count];
+    let mut outgoing = vec![0usize; count];
+    for (i, node) in graph.tables.iter().enumerate() {
+        let keys = node.inspection.iter().flat_map(|info| &info.foreign_keys);
+        for fk in keys {
+            let Some(&j) = names.get(&fk.target.to_ascii_lowercase()) else {
+                continue;
+            };
+            if i != j {
+                edges[i].insert(j);
+                edges[j].insert(i);
+                incoming[j] += 1;
+                outgoing[i] += 1;
+            }
+        }
+    }
+    (edges, incoming, outgoing)
+}
+/// The tables reachable from `root`, by distance, taking each from `unseen`.
+fn component_levels(
+    root: usize,
+    edges: &[BTreeSet<usize>],
+    unseen: &mut BTreeSet<usize>,
+) -> Vec<Vec<usize>> {
+    let mut queue = std::collections::VecDeque::from([(root, 0usize)]);
+    let mut levels: Vec<Vec<usize>> = Vec::new();
+    while let Some((i, depth)) = queue.pop_front() {
+        if levels.len() <= depth {
+            levels.push(Vec::new());
+        }
+        levels[depth].push(i);
+        for &j in &edges[i] {
+            if unseen.remove(&j) {
+                queue.push_back((j, depth + 1));
+            }
+        }
+    }
+    levels
+}
+/// Columns of cards, one per level, wrapping a level taller than `limit`.
+fn wrap_levels(levels: &[Vec<usize>], heights: &[f32], limit: f32) -> Vec<Vec<usize>> {
+    let mut columns: Vec<Vec<usize>> = Vec::new();
+    for level in levels {
+        let mut column = Vec::new();
+        let mut height = 0.0;
+        for &i in level {
+            if !column.is_empty() && height + heights[i] > limit {
+                columns.push(std::mem::take(&mut column));
+                height = 0.0;
+            }
+            column.push(i);
+            height += heights[i];
+        }
+        columns.push(column);
+    }
+    columns
+}
 
+/// A key column's line on its card, "PK1 FK UQ name  type", and whether it
+/// takes part in a relationship.
+fn key_row_text(info: &Inspection, col: &tursobench_core::TableColumn) -> (String, bool) {
+    let named = |name: &str| name.eq_ignore_ascii_case(&col.name);
+    let fk = info
+        .foreign_keys
+        .iter()
+        .any(|f| f.columns.iter().any(|(n, _)| named(n)));
+    let uq = info
+        .indexes
+        .iter()
+        .any(|i| i.unique && i.columns.iter().flatten().any(|n| named(n)));
+    let pk = if col.primary_key > 0 {
+        format!("PK{} ", col.primary_key)
+    } else {
+        String::new()
+    };
+    let text = format!(
+        "{pk}{}{}{}  {}",
+        if fk { "FK " } else { "" },
+        if uq { "UQ " } else { "" },
+        short(&col.name, 24),
+        short(&col.declared_type, 12)
+    );
+    (text, col.primary_key > 0 || fk)
+}
 fn short(text: &str, limit: usize) -> String {
     let mut s: String = text.chars().take(limit).collect();
     if text.chars().count() > limit {
@@ -553,90 +640,9 @@ impl DiagramDrawing<'_> {
     }
     fn details(&self, ui: &egui::Ui, painter: &egui::Painter, index: usize) {
         let (world, columns) = &self.layout[index];
-        let node = &self.graph.tables[index];
         let zoom = self.zoom;
         let canvas = self.canvas;
-        if let Some(info) = &node.inspection {
-            for (row, &c) in columns.iter().enumerate() {
-                if zoom < KEY_LABEL_ZOOM {
-                    break;
-                }
-                let y = self
-                    .point(world.min + egui::vec2(10.0, 48.0 + row as f32 * LINE))
-                    .y;
-                if y < canvas.top() - LINE * zoom || y > canvas.bottom() + LINE * zoom {
-                    continue;
-                }
-                let col = &info.table.columns[c];
-                let pk = if col.primary_key > 0 {
-                    format!("PK{} ", col.primary_key)
-                } else {
-                    String::new()
-                };
-                let fk = if info.foreign_keys.iter().any(|f| {
-                    f.columns
-                        .iter()
-                        .any(|(n, _)| n.eq_ignore_ascii_case(&col.name))
-                }) {
-                    "FK "
-                } else {
-                    ""
-                };
-                let uq = if info.indexes.iter().any(|i| {
-                    i.unique
-                        && i.columns
-                            .iter()
-                            .flatten()
-                            .any(|n| n.eq_ignore_ascii_case(&col.name))
-                }) {
-                    "UQ "
-                } else {
-                    ""
-                };
-                painter.text(
-                    self.point(world.min + egui::vec2(10.0, 48.0 + row as f32 * LINE)),
-                    egui::Align2::LEFT_CENTER,
-                    format!(
-                        "{pk}{fk}{uq}{}  {}",
-                        short(&col.name, 24),
-                        short(&col.declared_type, 12)
-                    ),
-                    crate::appearance::monospace(ui.ctx(), (12.0 * zoom).max(9.0)),
-                    if col.primary_key > 0 || !fk.is_empty() {
-                        crate::appearance::Tokens::of(ui.ctx()).relationship
-                    } else {
-                        ui.visuals().text_color()
-                    },
-                );
-            }
-            painter.text(
-                self.point(egui::pos2(world.left() + 10.0, world.bottom() - 16.0)),
-                egui::Align2::LEFT_CENTER,
-                if zoom < KEY_LABEL_ZOOM {
-                    format!(
-                        "{} columns · {} FKs",
-                        info.table.columns.len(),
-                        info.foreign_keys.len()
-                    )
-                } else {
-                    format!(
-                        "{} columns · {} indexes · {} FKs",
-                        info.table.columns.len(),
-                        info.indexes.len(),
-                        info.foreign_keys.len()
-                    )
-                },
-                crate::appearance::proportional(
-                    ui.ctx(),
-                    if zoom >= 0.35 {
-                        (12.0 * zoom).max(9.0)
-                    } else {
-                        12.0 * zoom
-                    },
-                ),
-                ui.visuals().weak_text_color(),
-            );
-        } else {
+        let Some(info) = &self.graph.tables[index].inspection else {
             painter.text(
                 self.point(world.min + egui::vec2(10.0, 50.0)),
                 egui::Align2::LEFT_CENTER,
@@ -644,7 +650,45 @@ impl DiagramDrawing<'_> {
                 crate::appearance::proportional(ui.ctx(), 12.0 * zoom),
                 ui.visuals().error_fg_color,
             );
+            return;
+        };
+        if zoom >= KEY_LABEL_ZOOM {
+            for (row, &c) in columns.iter().enumerate() {
+                let at = self.point(world.min + egui::vec2(10.0, 48.0 + row as f32 * LINE));
+                if at.y < canvas.top() - LINE * zoom || at.y > canvas.bottom() + LINE * zoom {
+                    continue;
+                }
+                let (text, related) = key_row_text(info, &info.table.columns[c]);
+                let color = if related {
+                    crate::appearance::Tokens::of(ui.ctx()).relationship
+                } else {
+                    ui.visuals().text_color()
+                };
+                let font = crate::appearance::monospace(ui.ctx(), (12.0 * zoom).max(9.0));
+                painter.text(at, egui::Align2::LEFT_CENTER, text, font, color);
+            }
         }
+        let (columns, keys) = (info.table.columns.len(), info.foreign_keys.len());
+        let summary = if zoom < KEY_LABEL_ZOOM {
+            format!("{columns} columns · {keys} FKs")
+        } else {
+            format!(
+                "{columns} columns · {} indexes · {keys} FKs",
+                info.indexes.len()
+            )
+        };
+        let size = if zoom >= 0.35 {
+            (12.0 * zoom).max(9.0)
+        } else {
+            12.0 * zoom
+        };
+        painter.text(
+            self.point(egui::pos2(world.left() + 10.0, world.bottom() - 16.0)),
+            egui::Align2::LEFT_CENTER,
+            summary,
+            crate::appearance::proportional(ui.ctx(), size),
+            ui.visuals().weak_text_color(),
+        );
     }
     fn links(&self, ui: &egui::Ui, painter: &egui::Painter) -> usize {
         let Self {
@@ -748,33 +792,7 @@ impl DiagramState {
             return None;
         };
         let graph = Graph::new(data, self.show_system);
-        let relationships: usize = graph
-            .tables
-            .iter()
-            .filter_map(|t| t.inspection.as_ref())
-            .map(|i| i.foreign_keys.len())
-            .sum();
-        let errors = graph.tables.iter().filter(|t| t.error.is_some()).count();
-        ui.horizontal_wrapped(|ui| {
-            if graph.limited || errors > 0 {
-                ui.small(format!(
-                    "{} tables · {relationships} links · {errors} metadata errors",
-                    graph.tables.len()
-                ));
-            }
-            if graph.limited {
-                ui.colored_label(
-                    ui.visuals().warn_fg_color,
-                    "LIMITED — not the entire schema (512 tables / 8 MiB metadata budget)",
-                );
-            }
-            if self.stale {
-                ui.colored_label(
-                    ui.visuals().warn_fg_color,
-                    "Cached — may be stale; refresh after SQL/schema changes",
-                );
-            }
-        });
+        graph.notices(ui, self.stale);
         if graph.tables.is_empty() {
             if self.ticket.is_none() && self.error.is_empty() {
                 icons::empty_state(ui, Icon::Map, "No relationships to display");
@@ -784,20 +802,7 @@ impl DiagramState {
         if self.pack_width <= 0.0
             || (self.camera.auto_fit && self.camera.last_canvas_size != ui.available_size())
         {
-            let aspect = (ui.available_width() / ui.available_height().max(1.0)).clamp(0.5, 8.0);
-            let area: f32 = graph
-                .tables
-                .iter()
-                .map(|node| {
-                    let rows = node
-                        .inspection
-                        .as_ref()
-                        .map_or(1, |i| key_rows(i, self.all_columns).len().max(1));
-                    (WIDTH + 40.0) * (100.0 + rows as f32 * LINE)
-                })
-                .sum();
-            let columns = ((area * aspect).sqrt() / (WIDTH + 40.0)).ceil().max(1.0);
-            self.pack_width = (columns * (WIDTH + 40.0)).clamp(WIDTH, 3600.0);
+            self.pack_width = graph.pack_width(self.all_columns, ui.available_size());
         }
         let key = (self.show_system, self.all_columns, self.pack_width);
         if self.layout.as_ref().is_none_or(|layout| layout.key != key) {
@@ -855,23 +860,27 @@ impl DiagramState {
                 self.positions.insert(node.name.clone(), pos);
             }
         }
+        let hint = if zoom < KEY_LABEL_ZOOM {
+            " · zoom in for key labels"
+        } else {
+            ""
+        };
+        let font = crate::appearance::proportional(ui.ctx(), 12.0);
         painter.text(
             canvas.left_top() + egui::vec2(10.0, 8.0),
             egui::Align2::LEFT_TOP,
-            format!(
-                "{:.0}%{}",
-                zoom * 100.0,
-                if zoom < KEY_LABEL_ZOOM {
-                    " · zoom in for key labels"
-                } else {
-                    ""
-                }
-            ),
-            crate::appearance::proportional(ui.ctx(), 12.0),
+            format!("{:.0}%{hint}", zoom * 100.0),
+            font.clone(),
             ui.visuals().weak_text_color(),
         );
         if unresolved > 0 {
-            painter.text(canvas.left_bottom()+egui::vec2(10.0,-10.0),egui::Align2::LEFT_BOTTOM,format!("{unresolved} unresolved relationship endpoints — inspect Structure; no targets invented"),crate::appearance::proportional(ui.ctx(), 12.0),ui.visuals().warn_fg_color);
+            painter.text(
+                canvas.left_bottom() + egui::vec2(10.0, -10.0),
+                egui::Align2::LEFT_BOTTOM,
+                format!("{unresolved} unresolved relationship endpoints — inspect Structure; no targets invented"),
+                font,
+                ui.visuals().warn_fg_color,
+            );
         }
         selected
     }
@@ -978,15 +987,15 @@ mod tests {
         assert!(((size * 0.5 - camera.pan) / camera.zoom - world_center).length() < 0.1);
     }
 
-    #[test]
-    fn a_hub_with_many_children_spreads_across_a_wide_tile() {
+    /// A table with no columns whose foreign keys point at `targets`.
+    fn table(name: &str, targets: &[&str]) -> DiagramTable {
         use tursobench_core::{ForeignKey, Table};
-        let table = |name: String, targets: Vec<&str>| DiagramTable {
-            name: name.clone(),
+        DiagramTable {
+            name: name.into(),
             error: None,
             inspection: Some(Inspection {
                 table: Table {
-                    name,
+                    name: name.into(),
                     columns: vec![],
                     is_table: true,
                     has_rowid: true,
@@ -994,20 +1003,23 @@ mod tests {
                 },
                 indexes: vec![],
                 foreign_keys: targets
-                    .into_iter()
+                    .iter()
                     .map(|target| ForeignKey {
                         id: 0,
-                        target: target.into(),
+                        target: (*target).into(),
                         columns: vec![],
                         on_update: "NO ACTION".into(),
                         on_delete: "NO ACTION".into(),
                     })
                     .collect(),
             }),
-        };
+        }
+    }
+    #[test]
+    fn a_hub_with_many_children_spreads_across_a_wide_tile() {
         let data = SchemaDiagram {
-            tables: std::iter::once(table("hub".into(), vec![]))
-                .chain((0..12).map(|i| table(format!("child{i}"), vec!["hub"])))
+            tables: std::iter::once(table("hub", &[]))
+                .chain((0..12).map(|i| table(&format!("child{i}"), &["hub"])))
                 .collect(),
             limited: false,
         };
@@ -1033,40 +1045,13 @@ mod tests {
 
     #[test]
     fn layouts_keep_relationships_deterministic_and_all_cards_separate() {
-        use tursobench_core::{ForeignKey, Table};
         let mut graph = SchemaDiagram {
-            tables: [
-                ("child", vec!["parent", "child", "missing"]),
-                ("cycle_a", vec!["cycle_b"]),
-                ("cycle_b", vec!["cycle_a"]),
-                ("parent", vec![]),
-            ]
-            .into_iter()
-            .map(|(name, targets)| DiagramTable {
-                name: name.into(),
-                error: None,
-                inspection: Some(Inspection {
-                    table: Table {
-                        name: name.into(),
-                        columns: vec![],
-                        is_table: true,
-                        has_rowid: true,
-                        binary_collations: true,
-                    },
-                    indexes: vec![],
-                    foreign_keys: targets
-                        .into_iter()
-                        .map(|target| ForeignKey {
-                            id: 0,
-                            target: target.into(),
-                            columns: vec![],
-                            on_update: "NO ACTION".into(),
-                            on_delete: "NO ACTION".into(),
-                        })
-                        .collect(),
-                }),
-            })
-            .collect(),
+            tables: vec![
+                table("child", &["parent", "child", "missing"]),
+                table("cycle_a", &["cycle_b"]),
+                table("cycle_b", &["cycle_a"]),
+                table("parent", &[]),
+            ],
             limited: false,
         };
         graph.tables.extend((0..508).map(|i| DiagramTable {
