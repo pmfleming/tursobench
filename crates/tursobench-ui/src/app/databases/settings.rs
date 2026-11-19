@@ -312,8 +312,10 @@ fn metric(ui: &mut egui::Ui, icon: Icon, count: usize, name: &str) {
 
 #[cfg(test)]
 mod tests {
+    use super::super::{request, search_roots, tests::scroll_down_at};
     use super::{App, FolderList, PathBuf, egui};
-    use crate::app::test_ui::{control, key_event, pointer};
+    use crate::app::test_ui::{self, control, key_event, nodes, pointer, render};
+    use crate::discovery::Summary;
 
     fn frame(
         app: &mut App,
@@ -321,7 +323,7 @@ mod tests {
         events: Vec<egui::Event>,
         width: f32,
     ) -> egui::FullOutput {
-        crate::app::test_ui::render(ctx, egui::vec2(width, 900.0), events, |ui| {
+        render(ctx, egui::vec2(width, 900.0), events, |ui| {
             app.discovery_settings_ui(ui)
         })
     }
@@ -335,11 +337,11 @@ mod tests {
 
     #[test]
     fn folder_controls_add_remove_and_restore_saved_search_policy() {
-        let (ctx, mut app) = crate::app::test_ui::app();
-        let roots = super::super::search_roots(&app.preferences.discovery);
+        let (ctx, mut app) = test_ui::app();
+        let roots = search_roots(&app.preferences.discovery);
         assert!(!roots.is_empty());
         frame(&mut app, &ctx, vec![], 420.0);
-        let output = crate::app::test_ui::render(&ctx, egui::vec2(420.0, 600.0), vec![], |ui| {
+        let output = render(&ctx, egui::vec2(420.0, 600.0), vec![], |ui| {
             app.discovery_settings_ui(ui)
         });
         assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == roots[0].path.to_string_lossy())));
@@ -351,16 +353,16 @@ mod tests {
         app.preferences.discovery.normalize();
         let saved = serde_json::to_string(&app.preferences.discovery).unwrap();
         let restored = serde_json::from_str(&saved).unwrap();
-        assert!(super::super::search_roots(&restored).is_empty());
-        assert!(super::super::request(&restored, None).roots.is_empty());
+        assert!(search_roots(&restored).is_empty());
+        assert!(request(&restored, None).roots.is_empty());
         app.preferences.discovery = restored;
         app.add_search_folder(roots[0].path.clone());
-        let restored = super::super::search_roots(&app.preferences.discovery);
+        let restored = search_roots(&app.preferences.discovery);
         assert_eq!(restored.len(), 1);
         assert_eq!(restored[0].path, roots[0].path);
         assert!(restored[0].explicit);
 
-        let roots = super::super::search_roots(&app.preferences.discovery);
+        let roots = search_roots(&app.preferences.discovery);
         app.preferences
             .discovery
             .removed_roots
@@ -470,7 +472,7 @@ mod tests {
             for (limited, cancelled, status) in
                 [(false, true, "Stopped"), (true, true, "Limit reached")]
             {
-                app.databases.summary = Some(crate::discovery::Summary {
+                app.databases.summary = Some(Summary {
                     probes: 7,
                     directories: 3,
                     unavailable: 2,
@@ -487,11 +489,7 @@ mod tests {
                     "Unavailable locations: 2",
                     "Skipped locations: 1",
                 ] {
-                    assert!(
-                        crate::app::test_ui::nodes(&output)
-                            .iter()
-                            .any(|(_, node)| node.label() == Some(name))
-                    );
+                    assert!(nodes(&output).iter().any(|(_, n)| n.label() == Some(name)));
                 }
                 for expected in [status, "Unreadable search root"] {
                     assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == expected)), "missing {expected}");
@@ -501,7 +499,7 @@ mod tests {
     }
     #[test]
     fn excluded_picker_populates_the_originating_tab_before_add() {
-        let (ctx, mut app) = crate::app::test_ui::app();
+        let (ctx, mut app) = test_ui::app();
         app.database.path = "/work/selected.db".into();
         app.database.writable = true;
         let roots = app.preferences.discovery.roots.clone();
@@ -530,11 +528,11 @@ mod tests {
 
     #[test]
     fn results_and_input_stay_visible_when_the_folder_list_scrolls() {
-        let (ctx, mut app) = crate::app::test_ui::app();
+        let (ctx, mut app) = test_ui::app();
         app.preferences.discovery.roots = (0..80)
             .map(|i| PathBuf::from(format!("/work/folder-{i}")))
             .collect();
-        app.databases.summary = Some(crate::discovery::Summary {
+        app.databases.summary = Some(Summary {
             probes: 300,
             directories: 1000,
             limited: true,
@@ -542,9 +540,7 @@ mod tests {
         });
         app.databases.message = Some("Folder excluded.".into());
         let size = egui::vec2(420.0, 400.0);
-        let mut draw = |events| {
-            crate::app::test_ui::render(&ctx, size, events, |ui| app.discovery_settings_ui(ui))
-        };
+        let mut draw = |events| render(&ctx, size, events, |ui| app.discovery_settings_ui(ui));
         let metric = |output: &egui::FullOutput| {
             output
                 .shapes
@@ -559,9 +555,7 @@ mod tests {
         let before = draw(vec![]);
         let footer = metric(&before);
         let input = control(&before, "Search folder path");
-        draw(super::super::tests::scroll_down_at(egui::pos2(
-            200.0, 240.0,
-        )));
+        draw(scroll_down_at(egui::pos2(200.0, 240.0)));
         for _ in 0..20 {
             draw(vec![]);
         }
@@ -579,32 +573,26 @@ mod tests {
 
     #[test]
     fn available_refresh_and_stop_share_the_search_job_without_opening_settings() {
-        let (ctx, mut app) = crate::app::test_ui::app();
+        let (ctx, mut app) = test_ui::app();
         let dir = tempfile::tempdir().unwrap();
-        app.preferences.discovery.removed_roots =
-            super::super::search_roots(&app.preferences.discovery)
-                .into_iter()
-                .map(|r| r.path)
-                .collect();
+        app.preferences.discovery.removed_roots = search_roots(&app.preferences.discovery)
+            .into_iter()
+            .map(|r| r.path)
+            .collect();
         app.preferences.discovery.roots = vec![dir.path().into()];
-        let size = egui::vec2(280.0, 600.0);
-        let output =
-            crate::app::test_ui::render(&ctx, size, vec![], |ui| app.available_databases_ui(ui));
-        let pos = control(&output, "Refresh databases").center();
-        for pressed in [true, false] {
-            crate::app::test_ui::render(&ctx, size, pointer(pos, pressed), |ui| {
-                app.available_databases_ui(ui)
-            });
-        }
+        let press = |app: &mut App, name| {
+            let size = egui::vec2(280.0, 600.0);
+            let output = render(&ctx, size, vec![], |ui| app.available_databases_ui(ui));
+            let pos = control(&output, name).center();
+            for pressed in [true, false] {
+                render(&ctx, size, pointer(pos, pressed), |ui| {
+                    app.available_databases_ui(ui)
+                });
+            }
+        };
+        press(&mut app, "Refresh databases");
         assert!(app.databases.job.is_some());
-        let output =
-            crate::app::test_ui::render(&ctx, size, vec![], |ui| app.available_databases_ui(ui));
-        let pos = control(&output, "Stop search").center();
-        for pressed in [true, false] {
-            crate::app::test_ui::render(&ctx, size, pointer(pos, pressed), |ui| {
-                app.available_databases_ui(ui)
-            });
-        }
+        press(&mut app, "Stop search");
         assert!(app.databases.cancelling);
         assert!(
             app.databases.job.is_some(),

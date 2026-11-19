@@ -264,9 +264,14 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::{App, egui};
-    use crate::app::databases::{Chooser, Entry, State};
-    use crate::app::test_ui::inspect_selected as inspect;
+    use crate::app::databases::{
+        Chooser, Entry, State,
+        tests::{scroll_down_at, wait},
+    };
+    use crate::app::test_ui::{self, control, inspect_selected as inspect, nodes, pointer, render};
     use crate::discovery::Availability;
+
+    const SIZE: egui::Vec2 = egui::vec2(1280.0, 720.0);
 
     fn frame(
         app: &mut App,
@@ -274,7 +279,7 @@ mod tests {
         events: Vec<egui::Event>,
         size: egui::Vec2,
     ) -> Vec<String> {
-        let output = crate::app::test_ui::render(ctx, size, events, |ui| app.render(ui));
+        let output = render(ctx, size, events, |ui| app.render(ui));
         output
             .shapes
             .iter()
@@ -287,12 +292,7 @@ mod tests {
 
     fn click(app: &mut App, ctx: &egui::Context, pos: egui::Pos2) {
         for pressed in [true, false] {
-            frame(
-                app,
-                ctx,
-                crate::app::test_ui::pointer(pos, pressed),
-                egui::vec2(1280.0, 720.0),
-            );
+            frame(app, ctx, pointer(pos, pressed), SIZE);
         }
     }
 
@@ -311,7 +311,7 @@ mod tests {
         file.write_all(&3_047_000u32.to_be_bytes()).unwrap();
         drop(file);
         let before = crate::test_support::snapshot(dir.path());
-        let (ctx, mut app) = crate::app::test_ui::app();
+        let (ctx, mut app) = test_ui::app();
         app.set_database_path(path.to_str().unwrap().into());
 
         inspect(&mut app, &ctx);
@@ -319,7 +319,7 @@ mod tests {
             app.databases.inspection.kind(&app.database.path),
             DatabaseKind::LikelySqlite
         );
-        let texts = frame(&mut app, &ctx, vec![], egui::vec2(1280.0, 720.0));
+        let texts = frame(&mut app, &ctx, vec![], SIZE);
         assert!(texts.iter().any(|t| t.contains("Likely SQLite")));
         assert!(!app.databases.open_enabled);
         app.open(&ctx);
@@ -335,27 +335,23 @@ mod tests {
             "classification and override must not write database files"
         );
         app.open(&ctx);
-        let started = std::time::Instant::now();
-        while !app.database.ready
-            || app.database.document.active.is_some()
-            || app.database.catalog_ticket.is_some()
-            || app.database.ui.diagram.ticket.is_some()
-        {
-            app.poll(&ctx);
-            assert!(
-                started.elapsed() < std::time::Duration::from_secs(5),
-                "{}",
-                app.database.status
-            );
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
+        wait(
+            &mut app,
+            |app| app.poll(&ctx),
+            |app| {
+                app.database.ready
+                    && app.database.document.active.is_none()
+                    && app.database.catalog_ticket.is_none()
+                    && app.database.ui.diagram.ticket.is_none()
+            },
+        );
         assert!(app.database.schema.iter().any(|t| t.name == "example"));
         app.close();
-        while app.database.session.is_some() {
-            app.poll(&ctx);
-            assert!(started.elapsed() < std::time::Duration::from_secs(5));
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
+        wait(
+            &mut app,
+            |app| app.poll(&ctx),
+            |app| app.database.session.is_none(),
+        );
         // Consent belongs to a selection, not a lasting preference.
         app.set_database_path(dir.path().join("other.db").to_str().unwrap().into());
         assert!(!app.databases.inspection.override_sqlite);
@@ -369,16 +365,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("example.db");
         crate::test_support::create(&path, &["CREATE TABLE example(id INTEGER)"]);
-        let (ctx, mut app) = crate::app::test_ui::app();
+        let (ctx, mut app) = test_ui::app();
         app.set_database_path(path.to_string_lossy().into_owned());
-        frame(&mut app, &ctx, vec![], egui::vec2(1280.0, 720.0));
+        frame(&mut app, &ctx, vec![], SIZE);
         assert!(!app.databases.open_enabled);
         let open = app.databases.open_rect.unwrap().center();
         click(&mut app, &ctx, open);
         assert!(app.database.session.is_none());
 
         inspect(&mut app, &ctx);
-        let texts = frame(&mut app, &ctx, vec![], egui::vec2(1280.0, 720.0));
+        let texts = frame(&mut app, &ctx, vec![], SIZE);
         assert!(app.databases.open_enabled);
         assert!(app.databases.edit_path_rect.is_none());
         assert!(
@@ -388,19 +384,12 @@ mod tests {
         );
         assert!(!app.database.writable);
         for (name, writable) in [("Read/write", true), ("Read only", false)] {
-            let output =
-                crate::app::test_ui::render(&ctx, egui::vec2(1280.0, 720.0), vec![], |ui| {
-                    app.render(ui)
-                });
-            let icon = crate::app::test_ui::control(&output, name);
-            click(&mut app, &ctx, icon.center());
+            let output = render(&ctx, SIZE, vec![], |ui| app.render(ui));
+            click(&mut app, &ctx, control(&output, name).center());
             assert_eq!(app.database.writable, writable);
-            let output =
-                crate::app::test_ui::render(&ctx, egui::vec2(1280.0, 720.0), vec![], |ui| {
-                    app.render(ui)
-                });
+            let output = render(&ctx, SIZE, vec![], |ui| app.render(ui));
             assert!(
-                crate::app::test_ui::nodes(&output)
+                nodes(&output)
                     .iter()
                     .any(|(_, node)| node.label() == Some(name)
                         && node.toggled() == Some(egui::accesskit::Toggled::True))
@@ -412,7 +401,7 @@ mod tests {
         }
         let (_tx, rx) = std::sync::mpsc::sync_channel(1);
         app.picker = Some(rx);
-        frame(&mut app, &ctx, vec![], egui::vec2(1280.0, 720.0));
+        frame(&mut app, &ctx, vec![], SIZE);
         assert!(!app.databases.open_enabled);
         app.picker = None;
 
@@ -431,7 +420,7 @@ mod tests {
 
     #[test]
     fn search_settings_are_separate_from_access_review() {
-        let (ctx, mut app) = crate::app::test_ui::app();
+        let (ctx, mut app) = test_ui::app();
         app.set_database_path("/work/example.db".into());
 
         app.database.writable = true;
@@ -441,7 +430,7 @@ mod tests {
             error: Some("Search worker disconnected".into()),
             ..Default::default()
         });
-        let texts = frame(&mut app, &ctx, vec![], egui::vec2(1280.0, 720.0));
+        let texts = frame(&mut app, &ctx, vec![], SIZE);
         for hidden in [
             "Search folders",
             "Search settings…",
@@ -457,8 +446,8 @@ mod tests {
         assert!(!app.settings.open);
         app.execute_command(&ctx, crate::app::commands::Command::Settings);
         app.settings.page = crate::app::settings::Page::Discovery;
-        frame(&mut app, &ctx, vec![], egui::vec2(1280.0, 720.0));
-        let texts = frame(&mut app, &ctx, vec![], egui::vec2(1280.0, 720.0));
+        frame(&mut app, &ctx, vec![], SIZE);
+        let texts = frame(&mut app, &ctx, vec![], SIZE);
         assert!(app.settings.open);
         assert!(
             texts
@@ -472,16 +461,16 @@ mod tests {
         frame(
             &mut app,
             &ctx,
-            super::super::tests::scroll_down_at(egui::pos2(
+            scroll_down_at(egui::pos2(
                 settings_rect.center().x,
                 settings_rect.bottom() - 20.0,
             )),
-            egui::vec2(1280.0, 720.0),
+            SIZE,
         );
         for _ in 0..10 {
-            frame(&mut app, &ctx, vec![], egui::vec2(1280.0, 720.0));
+            frame(&mut app, &ctx, vec![], SIZE);
         }
-        let texts = frame(&mut app, &ctx, vec![], egui::vec2(1280.0, 720.0));
+        let texts = frame(&mut app, &ctx, vec![], SIZE);
         for visible in [
             "Folder excluded.",
             "Limit reached",
@@ -520,15 +509,11 @@ mod tests {
             );
             crate::test_support::create(&path, &["CREATE TABLE ready(id INTEGER)"]);
             app.databases.inspection.recheck();
-            let start = std::time::Instant::now();
-            loop {
-                app.poll_database_inspection(&ctx);
-                if app.databases.inspection.allows_open(&app.database.path) {
-                    break;
-                }
-                assert!(start.elapsed() < std::time::Duration::from_secs(5));
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
+            wait(
+                &mut app,
+                |app| app.poll_database_inspection(&ctx),
+                |app| app.databases.inspection.allows_open(&app.database.path),
+            );
             let texts = frame(&mut app, &ctx, vec![], egui::vec2(960.0, 640.0));
             assert!(app.databases.open_enabled);
             assert!(!texts.iter().any(|t| t == "Cannot open database"));
@@ -548,21 +533,16 @@ mod tests {
         bytes.truncate(100);
         std::fs::write(&path, bytes).unwrap();
         let _ = std::fs::remove_file(path.with_extension("db-wal"));
-        let (ctx, mut app) = crate::app::test_ui::app();
+        let (ctx, mut app) = test_ui::app();
         app.set_database_path(path.to_string_lossy().into_owned());
         inspect(&mut app, &ctx);
         assert!(app.databases.inspection.allows_open(&app.database.path));
         app.open(&ctx);
-        let start = std::time::Instant::now();
-        while app.databases.open_failure.is_none() {
-            app.poll(&ctx);
-            assert!(
-                start.elapsed() < std::time::Duration::from_secs(5),
-                "{}",
-                app.database.status
-            );
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
+        wait(
+            &mut app,
+            |app| app.poll(&ctx),
+            |app| app.databases.open_failure.is_some(),
+        );
         let reason = app.databases.open_failure.as_ref().unwrap().message.clone();
         app.database.status = "Unrelated status change".into();
         let texts = frame(&mut app, &ctx, vec![], egui::vec2(960.0, 640.0));

@@ -68,6 +68,16 @@ pub enum Availability {
     Skipped,
     ExcludedApplication,
 }
+impl Availability {
+    /// Why a path that could not be read is unavailable.
+    fn of(error: &io::Error) -> Self {
+        if error.kind() == io::ErrorKind::NotFound {
+            Self::Missing
+        } else {
+            Self::Unavailable
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum Event {
@@ -625,15 +635,7 @@ impl<F: FnMut(Event) -> bool> Scanner<'_, F> {
                 }
             }
             Ok(None) => self.checked(path, Availability::NotDatabase, known),
-            Err(e) => self.checked(
-                path,
-                if e.kind() == io::ErrorKind::NotFound {
-                    Availability::Missing
-                } else {
-                    Availability::Unavailable
-                },
-                known,
-            ),
+            Err(e) => self.checked(path, Availability::of(&e), known),
         }
     }
     fn check_known(&mut self, path: &Path) {
@@ -662,15 +664,7 @@ impl<F: FnMut(Event) -> bool> Scanner<'_, F> {
                     }
                 }
                 Ok(false) => self.checked(path, Availability::Skipped, true),
-                Err(e) => self.checked(
-                    path,
-                    if e.kind() == io::ErrorKind::NotFound {
-                        Availability::Missing
-                    } else {
-                        Availability::Unavailable
-                    },
-                    true,
-                ),
+                Err(e) => self.checked(path, Availability::of(&e), true),
             }
         }
     }
@@ -871,8 +865,11 @@ mod tests {
         }
     }
     fn run(request: Request) -> (Vec<Event>, Summary) {
+        run_in(request, &Mounts::default())
+    }
+    fn run_in(request: Request, mounts: &Mounts) -> (Vec<Event>, Summary) {
         let mut events = vec![];
-        let summary = scan(request, &Mounts::default(), &AtomicBool::new(false), |e| {
+        let summary = scan(request, mounts, &AtomicBool::new(false), |e| {
             events.push(e);
             true
         });
@@ -944,11 +941,7 @@ mod tests {
         let mut req = request(temp.path());
         req.roots[0].explicit = false;
         req.known = vec![history.clone(), temp.path().join("pki/nssdb/key4.db")];
-        let mut events = vec![];
-        let summary = scan(req, &mounts, &AtomicBool::new(false), |event| {
-            events.push(event);
-            true
-        });
+        let (events, summary) = run_in(req, &mounts);
         assert_eq!(summary.found, 1);
         assert_eq!(
             paths(&events),
@@ -1064,15 +1057,8 @@ mod tests {
         assert!(!mounts.automatic_allowed(&temp.path().join("sub")));
         let mut req = request(temp.path());
         req.roots[0].explicit = false;
-        let summary = scan(req, &mounts, &AtomicBool::new(false), |_| true);
-        assert_eq!(summary.entries, 0);
-        let summary = scan(
-            request(temp.path()),
-            &mounts,
-            &AtomicBool::new(false),
-            |_| true,
-        );
-        assert_eq!(summary.found, 1);
+        assert_eq!(run_in(req, &mounts).1.entries, 0);
+        assert_eq!(run_in(request(temp.path()), &mounts).1.found, 1);
         assert_eq!(unescape_mount("/home/a\\040b"), Path::new("/home/a b"));
         assert!(!Mounts::default().automatic_allowed(temp.path()));
     }
@@ -1099,11 +1085,7 @@ mod tests {
             ));
             let mut req = request(temp.path());
             req.known.push(nested.join("remote.db"));
-            let mut events = vec![];
-            let summary = scan(req, &mounts, &AtomicBool::new(false), |event| {
-                events.push(event);
-                true
-            });
+            let (events, summary) = run_in(req, &mounts);
             assert_eq!(summary.found, 1, "{kind}");
             assert!(
                 events

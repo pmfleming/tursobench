@@ -561,13 +561,6 @@ impl App {
         let path = self.databases.entries[index].path.clone();
         self.forget_database(&path);
     }
-    #[cfg(test)]
-    fn available_database_paths(&self, query: &str) -> Vec<PathBuf> {
-        self.available_search_results(query)
-            .into_iter()
-            .map(|(i, _)| self.databases.entries[i].path.clone())
-            .collect()
-    }
 }
 
 #[cfg(test)]
@@ -576,15 +569,50 @@ mod tests {
         Availability, CachedDatabase, Chooser, DatabaseKind, DiscoveryPreferences, Event, Path,
         State, request,
     };
+    use crate::app::{
+        App,
+        test_ui::{self, key_event, pointer, render},
+    };
     use crate::{discovery::Candidate, storage::RecentDatabase};
+    use eframe::egui;
     use std::{
         sync::mpsc,
         time::{Duration, Instant},
     };
 
+    /// Run `step` until `done`, failing after five seconds.
+    pub(super) fn wait(app: &mut App, mut step: impl FnMut(&mut App), done: fn(&App) -> bool) {
+        let start = Instant::now();
+        while !done(app) {
+            step(app);
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "{}",
+                app.database.status
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// The navigation sidebar at `width` by `height`.
+    fn sidebar(
+        app: &mut App,
+        ctx: &egui::Context,
+        (width, height): (f32, f32),
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        render(ctx, egui::vec2(width, height), events, |ui| {
+            app.navigation_sidebar(ui)
+        })
+    }
+
+    /// A key press.
+    fn key(key: egui::Key) -> Vec<egui::Event> {
+        vec![key_event(key, true, egui::Modifiers::NONE)]
+    }
+
     /// The pointer moved to `pos` and the wheel scrolled down a long way.
-    pub(super) fn scroll_down_at(pos: eframe::egui::Pos2) -> Vec<eframe::egui::Event> {
-        use eframe::egui;
+    pub(super) fn scroll_down_at(pos: egui::Pos2) -> Vec<egui::Event> {
         vec![
             egui::Event::PointerMoved(pos),
             egui::Event::MouseWheel {
@@ -640,29 +668,17 @@ mod tests {
     }
     #[test]
     fn shared_sidebar_search_preserves_cursor_and_selects_the_edited_query() {
-        use crate::app::test_ui::{key_event, render};
-        let (ctx, mut app) = crate::app::test_ui::app();
+        let (ctx, mut app) = test_ui::app();
         app.discovery_event(found("/work/agenda.db"));
         app.discovery_event(found("/work/clipboard.db"));
-        let frame = |app: &mut crate::app::App, events| {
-            render(&ctx, eframe::egui::vec2(300.0, 600.0), events, |ui| {
-                app.navigation_sidebar(ui)
-            })
-        };
+        let frame = |app: &mut App, events| sidebar(app, &ctx, (300.0, 600.0), events);
         frame(&mut app, vec![]);
         frame(&mut app, vec![]);
-        frame(&mut app, vec![eframe::egui::Event::Text("agenda".into())]);
-        for key in [
-            eframe::egui::Key::Home,
-            eframe::egui::Key::ArrowRight,
-            eframe::egui::Key::ArrowDown,
-        ] {
-            frame(
-                &mut app,
-                vec![key_event(key, true, eframe::egui::Modifiers::NONE)],
-            );
+        frame(&mut app, vec![egui::Event::Text("agenda".into())]);
+        for k in [egui::Key::Home, egui::Key::ArrowRight, egui::Key::ArrowDown] {
+            frame(&mut app, key(k));
         }
-        frame(&mut app, vec![eframe::egui::Event::Text("g".into())]);
+        frame(&mut app, vec![egui::Event::Text("g".into())]);
         assert_eq!(app.sidebar_search.query, "aggenda");
         assert!(app.database.path.is_empty());
         app.sidebar_search.query.clear();
@@ -671,12 +687,8 @@ mod tests {
         frame(
             &mut app,
             vec![
-                eframe::egui::Event::Text("clipboard".into()),
-                key_event(
-                    eframe::egui::Key::Enter,
-                    true,
-                    eframe::egui::Modifiers::NONE,
-                ),
+                egui::Event::Text("clipboard".into()),
+                key_event(egui::Key::Enter, true, egui::Modifiers::NONE),
             ],
         );
         assert_eq!(app.database.path, "/work/clipboard.db");
@@ -686,19 +698,14 @@ mod tests {
 
     #[test]
     fn available_rows_select_without_opening_and_skip_unavailable_candidates() {
-        use crate::app::test_ui::{key_event, pointer, render};
-        let (ctx, mut app) = crate::app::test_ui::app();
+        let (ctx, mut app) = test_ui::app();
         app.discovery_event(found("/work/a.db"));
         app.discovery_event(found("/work/missing.db"));
         app.discovery_event(Event::Checked(
             "/work/missing.db".into(),
             Availability::Missing,
         ));
-        let frame = |app: &mut crate::app::App, events| {
-            render(&ctx, eframe::egui::vec2(272.0, 600.0), events, |ui| {
-                app.navigation_sidebar(ui)
-            })
-        };
+        let frame = |app: &mut App, events| sidebar(app, &ctx, (272.0, 600.0), events);
         frame(&mut app, vec![]);
         frame(&mut app, vec![]);
         let row = app.databases.row_rects[0].1;
@@ -710,15 +717,8 @@ mod tests {
         assert!(!app.database.writable);
         app.sidebar_search.focus = true;
         frame(&mut app, vec![]);
-        for key in [
-            eframe::egui::Key::ArrowDown,
-            eframe::egui::Key::ArrowDown,
-            eframe::egui::Key::Enter,
-        ] {
-            frame(
-                &mut app,
-                vec![key_event(key, true, eframe::egui::Modifiers::NONE)],
-            );
+        for k in [egui::Key::ArrowDown, egui::Key::ArrowDown, egui::Key::Enter] {
+            frame(&mut app, key(k));
         }
         assert_eq!(app.database.path, "/work/a.db");
         assert!(app.database.session.is_none() && app.picker.is_none());
@@ -727,23 +727,20 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn cached_identity_and_virtual_rows_bound_database_list_repaints() {
-        use crate::app::test_ui::{inspect_selected, key_event, render};
-        use eframe::egui;
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("source.db");
         let alias = dir.path().join("alias.db");
         crate::test_support::create(&source, &["CREATE TABLE example(id INTEGER PRIMARY KEY)"]);
 
-        let (ctx, mut app) = crate::app::test_ui::app();
+        let (ctx, mut app) = test_ui::app();
         app.set_database_path(source.to_str().unwrap().into());
-        inspect_selected(&mut app, &ctx);
+        test_ui::inspect_selected(&mut app, &ctx);
         app.open(&ctx);
-        let start = std::time::Instant::now();
-        while !app.database.ready || app.database.catalog_ticket.is_some() {
-            app.poll(&ctx);
-            assert!(start.elapsed() < std::time::Duration::from_secs(5));
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
+        wait(
+            &mut app,
+            |app| app.poll(&ctx),
+            |app| app.database.ready && app.database.catalog_ticket.is_none(),
+        );
         std::os::unix::fs::symlink(&source, &alias).unwrap();
         let identity = app.database.identity.clone().expect("opened identity");
         app.discovery_event(Event::Found(Candidate {
@@ -756,27 +753,22 @@ mod tests {
         for index in 0..500 {
             app.discovery_event(found(&format!("/work/{index:03}.db")));
         }
-        assert!(!app.available_database_paths("").contains(&alias));
-        let frame = |app: &mut crate::app::App, events| {
-            render(&ctx, egui::vec2(272.0, 600.0), events, |ui| {
-                app.navigation_sidebar(ui)
-            })
-        };
+        let listed = app.available_search_results("");
+        assert!(
+            listed
+                .iter()
+                .all(|(i, _)| app.databases.entries[*i].path != alias)
+        );
+        let frame = |app: &mut App, events| sidebar(app, &ctx, (272.0, 600.0), events);
         crate::app::sessions::IDENTITY_PROBES.with(|count| count.set(0));
         frame(&mut app, vec![]);
         frame(&mut app, vec![]);
         assert!(app.databases.rendered_candidates < 20);
         crate::app::sessions::IDENTITY_PROBES
             .with(|count| assert_eq!(count.get(), 0, "painting must not stat paths"));
-        frame(
-            &mut app,
-            vec![key_event(egui::Key::ArrowDown, true, egui::Modifiers::NONE)],
-        );
+        frame(&mut app, key(egui::Key::ArrowDown));
         for _ in 0..6 {
-            frame(
-                &mut app,
-                vec![key_event(egui::Key::PageDown, true, egui::Modifiers::NONE)],
-            );
+            frame(&mut app, key(egui::Key::PageDown));
         }
         for _ in 0..15 {
             frame(&mut app, vec![]);
@@ -803,17 +795,12 @@ mod tests {
 
     #[test]
     fn access_review_opens_under_the_clicked_row_without_reordering_the_list() {
-        use crate::app::test_ui::{pointer, render};
-        let (ctx, mut app) = crate::app::test_ui::app();
+        let (ctx, mut app) = test_ui::app();
         let paths: Vec<_> = (0..40).map(|i| format!("/work/{i:03}.db")).collect();
         for path in &paths {
             app.discovery_event(found(path));
         }
-        let frame = |app: &mut crate::app::App, height, events| {
-            render(&ctx, eframe::egui::vec2(272.0, height), events, |ui| {
-                app.navigation_sidebar(ui)
-            })
-        };
+        let frame = |app: &mut App, height, events| sidebar(app, &ctx, (272.0, height), events);
         frame(&mut app, 1000.0, vec![]);
         frame(&mut app, 1000.0, vec![]);
         let before = app.databases.row_rects.clone();
@@ -863,9 +850,7 @@ mod tests {
 
     #[test]
     fn available_search_keeps_filenames_visible_and_selection_opens_access_review() {
-        use crate::app::test_ui::{control, pointer, render};
-        use eframe::egui;
-        let (ctx, mut app) = crate::app::test_ui::app();
+        let (ctx, mut app) = test_ui::app();
         let path = format!(
             "/home/demo/{}/notifications-v2.db",
             "long-folder/".repeat(12)
@@ -873,11 +858,7 @@ mod tests {
         app.discovery_event(found(&path));
         app.databases.entries[0].kind = DatabaseKind::LikelySqlite;
         app.sidebar_search.query = "notifications".into();
-        let frame = |app: &mut crate::app::App, events| {
-            render(&ctx, egui::vec2(272.0, 600.0), events, |ui| {
-                app.navigation_sidebar(ui)
-            })
-        };
+        let frame = |app: &mut App, events| sidebar(app, &ctx, (272.0, 600.0), events);
         frame(&mut app, vec![]);
         let output = frame(&mut app, vec![]);
         assert!(output.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.job.text == "notifications-v2.db")));
@@ -887,7 +868,7 @@ mod tests {
                 .iter()
                 .any(|s| matches!(&s.shape,egui::Shape::Text(t) if t.galley.job.text == "SQLite"))
         );
-        let row = control(&output, &format!("{path} · Likely SQLite"));
+        let row = test_ui::control(&output, &format!("{path} · Likely SQLite"));
         for pressed in [true, false] {
             frame(&mut app, pointer(row.center(), pressed));
         }
@@ -925,7 +906,7 @@ mod tests {
 
     #[test]
     fn incremental_discoveries_never_replace_paths_consent_or_row_order() {
-        let (ctx, mut app) = crate::app::test_ui::app();
+        let (ctx, mut app) = test_ui::app();
         assert!(app.databases.job.is_none());
         app.database.path = "/explicit/command-line.db".into();
 
@@ -952,7 +933,7 @@ mod tests {
 
     #[test]
     fn stale_entries_aliases_and_forgetting_do_not_reappear_from_pending_events() {
-        let (_ctx, mut app) = crate::app::test_ui::app();
+        let (_ctx, mut app) = test_ui::app();
         app.discovery_event(found("/work/a.db"));
         app.discovery_event(found("/work/b.db"));
         app.discovery_event(Event::Checked("/work/a.db".into(), Availability::Missing));
@@ -979,7 +960,7 @@ mod tests {
     }
     #[test]
     fn application_exclusions_remove_old_discoveries_but_keep_deliberate_open_history() {
-        let (_ctx, mut app) = crate::app::test_ui::app();
+        let (_ctx, mut app) = test_ui::app();
         app.discovery_event(found("/data/custom-browser/History"));
         app.discovery_event(found("/data/custom-browser/Cookies"));
         app.database.tools.database_scope = "/data/custom-browser/History".into();
@@ -1006,7 +987,7 @@ mod tests {
         let mut header = [0; 100];
         header[..16].copy_from_slice(b"SQLite format 3\0");
         std::fs::write(&database, header).unwrap();
-        let (ctx, mut app) = crate::app::test_ui::app();
+        let (ctx, mut app) = test_ui::app();
         app.database.path = "selected.db".into();
 
         app.database.writable = true;
@@ -1033,12 +1014,11 @@ mod tests {
         );
         app.poll_discovery(&ctx);
         assert!(app.databases.job.is_some());
-        let start = Instant::now();
-        while app.databases.job.is_some() {
-            app.poll_discovery(&ctx);
-            assert!(start.elapsed() < Duration::from_secs(5));
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        wait(
+            &mut app,
+            |app| app.poll_discovery(&ctx),
+            |app| app.databases.job.is_none(),
+        );
         assert!(
             app.databases
                 .entries
@@ -1051,7 +1031,7 @@ mod tests {
 
     #[test]
     fn roots_are_normalized_exclusions_win_and_only_successful_opens_are_recorded() {
-        let (_ctx, mut app) = crate::app::test_ui::app();
+        let (_ctx, mut app) = test_ui::app();
         app.add_search_folder("relative".into());
         app.add_search_folder("/".into());
         assert!(app.preferences.discovery.roots.is_empty());
@@ -1082,18 +1062,17 @@ mod tests {
     #[test]
     fn cancellation_retains_the_job_until_it_acknowledges_completion() {
         let temp = tempfile::tempdir().unwrap();
-        let (ctx, mut app) = crate::app::test_ui::app();
+        let (ctx, mut app) = test_ui::app();
         app.start_discovery(&ctx, Some(temp.path().into()));
         app.databases.cancel();
         app.start_discovery(&ctx, Some(temp.path().join("replacement")));
         assert!(app.databases.cancelling);
         assert!(app.databases.job.is_some());
-        let start = Instant::now();
-        while app.databases.job.is_some() {
-            app.poll_discovery(&ctx);
-            assert!(start.elapsed() < Duration::from_secs(5));
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        wait(
+            &mut app,
+            |app| app.poll_discovery(&ctx),
+            |app| app.databases.job.is_none(),
+        );
         assert!(app.databases.summary.is_some());
         assert!(!app.databases.cancelling);
     }

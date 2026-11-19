@@ -7,30 +7,14 @@ use eframe::egui;
 use tursobench_db::{Diagnostic, Operation};
 
 impl App {
-    fn query_database_name(&self) -> String {
-        let path = std::path::Path::new(&self.database.tools.database_scope);
-        path.file_name()
-            .unwrap_or(path.as_os_str())
-            .to_string_lossy()
-            .into_owned()
-    }
-
     pub(super) fn saved_queries_ui(&mut self, ui: &mut egui::Ui) {
-        if heading_action(
+        if clear_heading(
             ui,
-            "Saved queries",
-            Icon::Trash,
-            &format!("Clear saved queries for {}", self.query_database_name()),
-            !self.database.tools.database_scope.is_empty()
-                && self
-                    .preferences
-                    .saved_queries
-                    .iter()
-                    .any(|q| q.database == self.database.tools.database_scope),
+            ("Saved queries", "saved queries"),
+            &self.database.tools.database_scope,
+            &mut self.preferences.saved_queries,
+            |q| &q.database,
         ) {
-            self.preferences
-                .saved_queries
-                .retain(|q| q.database != self.database.tools.database_scope);
             self.store.save(&self.preferences);
         }
         ui.horizontal(|ui| self.save_query_ui(ui));
@@ -57,7 +41,10 @@ impl App {
             }
             visible += 1;
             let (changed, action) = ui
-                .push_id(("saved-query", index), |ui| saved_query_row(ui, bookmark))
+                .push_id(("saved-query", index), |ui| {
+                    let legacy = bookmark.database.is_empty();
+                    saved_query_row(ui, &mut bookmark.name, legacy, &bookmark.sql)
+                })
                 .inner;
             renamed |= changed;
             match action {
@@ -114,21 +101,13 @@ impl App {
     }
 
     pub(super) fn query_history_ui(&mut self, ui: &mut egui::Ui) {
-        if heading_action(
+        if clear_heading(
             ui,
-            "History",
-            Icon::Trash,
-            &format!("Clear history for {}", self.query_database_name()),
-            !self.database.tools.database_scope.is_empty()
-                && self
-                    .preferences
-                    .query_history
-                    .iter()
-                    .any(|q| q.database == self.database.tools.database_scope),
+            ("History", "history"),
+            &self.database.tools.database_scope,
+            &mut self.preferences.query_history,
+            |q| &q.database,
         ) {
-            self.preferences
-                .query_history
-                .retain(|q| q.database != self.database.tools.database_scope);
             self.store.save(&self.preferences);
         }
         let threshold = self.preferences.slow_query_ms;
@@ -343,21 +322,50 @@ fn heading_action(ui: &mut egui::Ui, title: &str, icon: Icon, name: &str, enable
     .inner
 }
 
+/// A list's heading, whose trash icon clears the `entries` that `database`
+/// places in this one; true when it did.
+fn clear_heading<T>(
+    ui: &mut egui::Ui,
+    (title, what): (&str, &str),
+    scope: &str,
+    entries: &mut Vec<T>,
+    database: fn(&T) -> &str,
+) -> bool {
+    let path = std::path::Path::new(scope);
+    let name = path
+        .file_name()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy();
+    let ours = |entry: &T| database(entry) == scope;
+    let enabled = !scope.is_empty() && entries.iter().any(ours);
+    let clear = heading_action(
+        ui,
+        title,
+        Icon::Trash,
+        &format!("Clear {what} for {name}"),
+        enabled,
+    );
+    if clear {
+        entries.retain(|entry| !ours(entry));
+    }
+    clear
+}
+
 /// A titled run of flat rows, like the navigator's own tree.
 fn group(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut egui::Ui)) {
-    ui.add_space(4.0);
-    ui.label(
-        egui::RichText::new(title.to_uppercase())
-            .small()
-            .strong()
-            .color(crate::appearance::Tokens::of(ui.ctx()).muted),
-    );
+    caption(ui, title);
     let spacing = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 2.0);
     contents(ui);
     ui.spacing_mut().item_spacing.y = spacing;
 }
 
 pub(super) fn section(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut egui::Ui)) {
+    caption(ui, title);
+    card(ui, contents);
+}
+
+/// A muted, upper-case title above a group or section.
+fn caption(ui: &mut egui::Ui, title: &str) {
     ui.add_space(4.0);
     ui.label(
         egui::RichText::new(title.to_uppercase())
@@ -365,7 +373,6 @@ pub(super) fn section(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut
             .strong()
             .color(crate::appearance::Tokens::of(ui.ctx()).muted),
     );
-    card(ui, contents);
 }
 
 pub(super) fn card<R>(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
@@ -459,17 +466,17 @@ fn action_row(
     })
 }
 
-/// A flat two-line entry. The closure learns whether the pointer is over the
-/// row so per-row actions can recede until they are within reach.
 /// One saved query: its editable name over a SQL preview, with load and
 /// delete actions. Returns whether the name changed and any action.
 fn saved_query_row(
     ui: &mut egui::Ui,
-    bookmark: &mut crate::storage::Bookmark,
+    name: &mut String,
+    legacy: bool,
+    sql: &str,
 ) -> (bool, Option<QueryAction>) {
     list_row(ui, None, |ui, active| {
         let name = ui.add(
-            egui::TextEdit::singleline(&mut bookmark.name)
+            egui::TextEdit::singleline(name)
                 .char_limit(64)
                 .desired_width(ui.available_width())
                 .margin(egui::Margin::ZERO)
@@ -479,25 +486,27 @@ fn saved_query_row(
             egui::WidgetInfo::labeled(egui::Role::TextInput, ui.is_enabled(), "Rename saved query")
         });
         let action = query_actions(ui, active, "Load saved query", "Delete saved query", |ui| {
-            if bookmark.database.is_empty() {
+            if legacy {
                 ui.small("Legacy")
                     .on_hover_text("Saved before database-scoped queries");
             }
             ui.add(
                 egui::Label::new(
-                    egui::RichText::new(sql_preview(&bookmark.sql))
+                    egui::RichText::new(sql_preview(sql))
                         .monospace()
                         .small()
                         .weak(),
                 )
                 .truncate(),
             )
-            .on_hover_text(&bookmark.sql);
+            .on_hover_text(sql);
         });
         (name.changed(), action)
     })
 }
 
+/// A flat two-line entry. The closure learns whether the pointer is over the
+/// row so per-row actions can recede until they are within reach.
 fn list_row<R>(
     ui: &mut egui::Ui,
     edge: Option<egui::Color32>,
@@ -690,7 +699,9 @@ fn sql_preview(sql: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{App, Diagnostic, egui};
-    use crate::{app::settings::Page, appearance::Mode};
+    use crate::app::settings::{Page, assert_controls_fit};
+    use crate::app::test_ui::{self, control, nodes, pointer};
+    use crate::appearance::Mode;
     // Render individual pages without requiring an open database.
     #[derive(Clone, Copy, Debug, PartialEq)]
     enum TestPanel {
@@ -707,7 +718,7 @@ mod tests {
         width: f32,
         events: Vec<egui::Event>,
     ) -> egui::FullOutput {
-        crate::app::test_ui::render(ctx, egui::vec2(width, 1400.0), events, |ui| match panel {
+        test_ui::render(ctx, egui::vec2(width, 1400.0), events, |ui| match panel {
             TestPanel::Settings => app.settings_ui(ui),
             TestPanel::History => app.query_history_ui(ui),
             TestPanel::Saved => app.saved_queries_ui(ui),
@@ -716,29 +727,39 @@ mod tests {
     }
 
     fn click(app: &mut App, ctx: &egui::Context, panel: TestPanel, name: &str) {
+        press(app, ctx, (panel, name), |rect| rect.center());
+    }
+
+    fn assert_disabled(output: &egui::FullOutput, name: &str) {
+        let disabled =
+            |(_, n): &(_, egui::accesskit::Node)| n.label() == Some(name) && n.is_disabled();
+        assert!(nodes(output).iter().any(disabled), "{name}");
+    }
+
+    /// Press and release `name` at the point `at` picks in its bounds.
+    fn press(
+        app: &mut App,
+        ctx: &egui::Context,
+        (panel, name): (TestPanel, &str),
+        at: impl Fn(egui::Rect) -> egui::Pos2,
+    ) {
         let output = frame(app, ctx, panel, 240.0, vec![]);
-        let pos = crate::app::test_ui::control(&output, name).center();
+        let pos = at(control(&output, name));
         for pressed in [true, false] {
-            frame(
-                app,
-                ctx,
-                panel,
-                240.0,
-                crate::app::test_ui::pointer(pos, pressed),
-            );
+            frame(app, ctx, panel, 240.0, pointer(pos, pressed));
         }
     }
 
     #[test]
     fn appearance_controls_apply_size_without_drift() {
-        let (ctx, mut app) = crate::app::test_ui::app();
+        let (ctx, mut app) = test_ui::app();
         let output = frame(&mut app, &ctx, TestPanel::Settings, 240.0, vec![]);
         for name in [
             "Decrease font size",
             "Increase font size",
             "Reset font size",
         ] {
-            crate::app::test_ui::control(&output, name).center();
+            control(&output, name).center();
         }
         click(&mut app, &ctx, TestPanel::Settings, "Increase font size");
         assert_eq!(app.preferences.font_size, 15);
@@ -765,37 +786,20 @@ mod tests {
 
     #[test]
     fn resource_slider_updates_admission_and_reset_restores_system_choice() {
-        let (ctx, mut app) = crate::app::test_ui::app();
+        let (ctx, mut app) = test_ui::app();
         let panel = TestPanel::Settings;
         app.settings.page = Page::Resources;
-        let output = frame(&mut app, &ctx, panel, 240.0, vec![]);
-        let slider = crate::app::test_ui::control(&output, "Maximum open databases");
+        let slider = (panel, "Maximum open databases");
         assert_eq!(app.memory.limits(&app.preferences).database_limit, 8);
-        let position = egui::pos2(slider.right() - 1.0, slider.center().y);
-        for pressed in [true, false] {
-            frame(
-                &mut app,
-                &ctx,
-                panel,
-                240.0,
-                crate::app::test_ui::pointer(position, pressed),
-            );
-        }
+        press(&mut app, &ctx, slider, |s| {
+            egui::pos2(s.right() - 1.0, s.center().y)
+        });
         assert_eq!(app.preferences.database_limit, Some(32));
         assert_eq!(app.preferences.memory_budget_mib, Some(16 * 1024));
         assert_eq!(app.memory.limits(&app.preferences).database_limit, 32);
-        let output = frame(&mut app, &ctx, panel, 240.0, vec![]);
-        let slider = crate::app::test_ui::control(&output, "Maximum open databases");
-        let position = egui::pos2(slider.left() + slider.width() / 8.0, slider.center().y);
-        for pressed in [true, false] {
-            frame(
-                &mut app,
-                &ctx,
-                panel,
-                240.0,
-                crate::app::test_ui::pointer(position, pressed),
-            );
-        }
+        press(&mut app, &ctx, slider, |s| {
+            egui::pos2(s.left() + s.width() / 8.0, s.center().y)
+        });
         let limits = app.memory.limits(&app.preferences);
         assert!(limits.database_limit > 0 && limits.database_limit < 8);
         assert_eq!(limits.budget_mib, limits.database_limit as u64 * 512);
@@ -808,7 +812,7 @@ mod tests {
     #[test]
     fn navigator_controls_fit_narrow_panels_in_both_themes() {
         for dark in [false, true] {
-            let (ctx, mut app) = crate::app::test_ui::app();
+            let (ctx, mut app) = test_ui::app();
             crate::appearance::theme(&ctx, dark);
             app.database.tools.database_scope = "/work/current.db".into();
             app.preferences.row_limit = 10_000;
@@ -827,14 +831,10 @@ mod tests {
                 for panel in [TestPanel::History, TestPanel::Saved, TestPanel::Diagnostics] {
                     frame(&mut app, &ctx, panel, width, vec![]);
                     let output = frame(&mut app, &ctx, panel, width, vec![]);
-                    crate::app::settings::assert_controls_fit(
-                        &output,
-                        width,
-                        &format!("{panel:?}, width {width}"),
-                    );
+                    assert_controls_fit(&output, width, &format!("{panel:?}, width {width}"));
                     if panel == TestPanel::Diagnostics {
                         for diagnostic in Diagnostic::ALL {
-                            crate::app::test_ui::control(&output, diagnostic.label());
+                            control(&output, diagnostic.label());
                         }
                         // The four tool windows are rows too, not a separate button stack.
                         for tool in [
@@ -843,7 +843,7 @@ mod tests {
                             "Data profiling",
                             "Data transfer and maintenance",
                         ] {
-                            crate::app::test_ui::control(&output, tool);
+                            control(&output, tool);
                         }
                     }
                 }
@@ -856,7 +856,7 @@ mod tests {
         assert_eq!(super::sql_preview(" SELECT\n\t λ  "), "SELECT λ");
         assert_eq!(super::sql_preview(&"λ".repeat(32_768)), "λ".repeat(120));
         assert_eq!(super::sql_preview(&"x ".repeat(25)), "x ".repeat(23) + "x");
-        let (ctx, mut app) = crate::app::test_ui::app();
+        let (ctx, mut app) = test_ui::app();
         app.database.tools.database_scope = "/work/current.db".into();
         app.preferences
             .record_query("/work/other.db", "SELECT 'other'", Some(900), false);
@@ -870,7 +870,7 @@ mod tests {
         assert!(app.database.tools.slow_only);
         let output = frame(&mut app, &ctx, TestPanel::History, 240.0, vec![]);
         assert_eq!(
-            crate::app::test_ui::nodes(&output)
+            nodes(&output)
                 .iter()
                 .filter(|(_, n)| n.label() == Some("Load history query"))
                 .count(),
@@ -967,7 +967,7 @@ mod tests {
     }
     #[test]
     fn heading_clears_only_the_current_database_and_settings_clears_every_database() {
-        let (ctx, mut app) = crate::app::test_ui::app();
+        let (ctx, mut app) = test_ui::app();
         for db in ["/work/current.db", "/work/other.db", ""] {
             app.preferences
                 .record_query(db, "SELECT 1", Some(10), false);
@@ -1010,11 +1010,7 @@ mod tests {
             (TestPanel::Saved, "Clear saved queries for current.db"),
         ] {
             let output = frame(&mut app, &ctx, panel, 240.0, vec![]);
-            assert!(
-                crate::app::test_ui::nodes(&output)
-                    .iter()
-                    .any(|(_, n)| n.label() == Some(name) && n.is_disabled())
-            );
+            assert_disabled(&output, name);
         }
         // A missing database scope must never classify legacy entries as local.
         app.database.tools.database_scope.clear();
@@ -1044,11 +1040,7 @@ mod tests {
             "Clear history for all databases",
             "Clear saved queries for all databases",
         ] {
-            assert!(
-                crate::app::test_ui::nodes(&output)
-                    .iter()
-                    .any(|(_, n)| n.label() == Some(name) && n.is_disabled())
-            );
+            assert_disabled(&output, name);
         }
     }
 }
