@@ -29,6 +29,8 @@ pub(super) struct State {
 
 impl App {
     pub(super) fn settings_window(&mut self, ctx: &egui::Context) {
+        // Settings → Assistant checks the agents again each time it opens.
+        self.accounts.view_open &= self.settings.open && self.settings.page == Page::Assistant;
         if !self.settings.open {
             self.save_settings();
             return;
@@ -111,6 +113,24 @@ impl App {
                 Page::Assistant => self.assistant_settings(ui),
                 Page::Discovery => unreachable!(),
             });
+    }
+
+    /// Settings → Assistant.
+    pub(super) fn open_assistant_settings(&mut self) {
+        self.settings.open = true;
+        self.settings.page = Page::Assistant;
+    }
+
+    fn assistant_settings(&mut self, ui: &mut egui::Ui) {
+        ui.spacing_mut().item_spacing.y = 4.0;
+        section(ui, "Agents", |ui| self.assistant_agents_ui(ui));
+        // The chat panel's privacy link opens on the chat agent's settings.
+        if std::mem::take(&mut self.settings.reveal_privacy) {
+            ui.scroll_to_cursor(Some(egui::Align::TOP));
+        }
+        section(ui, "Agent settings", |ui| self.agent_settings_ui(ui));
+        section(ui, "Chat", |ui| self.chat_settings_ui(ui));
+        section(ui, "Sharing", |ui| self.sharing_settings_ui(ui));
     }
 
     pub(super) fn save_settings(&mut self) {
@@ -663,13 +683,13 @@ pub(super) fn assert_controls_fit(output: &egui::FullOutput, width: f32, case: &
 #[cfg(test)]
 mod tests {
     use super::{Mode, Page, assert_controls_fit, egui, format_ms, round_limit};
-    use crate::app::test_ui::{control, pointer, render};
+    use crate::app::test_ui::{self, control, nodes, pointer, render};
 
     #[test]
     fn settings_pages_fit_narrow_and_wide_windows_with_scaled_text() {
         for dark in [false, true] {
             for font in [14, 20] {
-                let (ctx, mut app) = crate::app::test_ui::app();
+                let (ctx, mut app) = test_ui::app();
                 app.preferences.appearance = Some(Mode::from_dark(dark));
                 app.preferences.font_size = font;
                 app.apply_theme(&ctx);
@@ -701,12 +721,12 @@ mod tests {
 
     #[test]
     fn query_limits_are_sliders_with_readable_values() {
-        let (ctx, mut app) = crate::app::test_ui::app();
+        let (ctx, mut app) = test_ui::app();
         app.settings.page = Page::Queries;
         let output = render(&ctx, egui::vec2(440.0, 600.0), vec![], |ui| {
             app.settings_ui(ui)
         });
-        let sliders = crate::app::test_ui::nodes(&output)
+        let sliders = nodes(&output)
             .iter()
             .filter(|(_, node)| node.role() == egui::Role::Slider)
             .count();
@@ -723,10 +743,10 @@ mod tests {
 
     #[test]
     fn editing_a_preference_saves_when_switching_pages() {
-        let (ctx, mut app) = crate::app::test_ui::app();
+        let (ctx, mut app) = test_ui::app();
         let size = egui::vec2(640.0, 540.0);
         let output = render(&ctx, size, vec![], |ui| app.settings_ui(ui));
-        let bounds = crate::app::test_ui::nodes(&output)
+        let bounds = nodes(&output)
             .iter()
             .find_map(|(_, node)| {
                 (node.role() == egui::Role::TextInput)
@@ -738,26 +758,33 @@ mod tests {
             (bounds.x0 + bounds.x1) as f32 / 2.0,
             (bounds.y0 + bounds.y1) as f32 / 2.0,
         );
-        for pressed in [true, false] {
-            render(&ctx, size, pointer(pos, pressed), |ui| app.settings_ui(ui));
-        }
+        let click = |app: &mut crate::app::App, pos| {
+            for pressed in [true, false] {
+                render(&ctx, size, pointer(pos, pressed), |ui| app.settings_ui(ui));
+            }
+        };
+        click(&mut app, pos);
         render(&ctx, size, vec![egui::Event::Text("marker".into())], |ui| {
             app.settings_ui(ui)
         });
         assert!(app.preferences.null_display.contains("marker"));
         assert!(app.settings.dirty);
         let output = render(&ctx, size, vec![], |ui| app.settings_ui(ui));
-        let pos = control(&output, "Queries and SQL recovery").center();
-        for pressed in [true, false] {
-            render(&ctx, size, pointer(pos, pressed), |ui| app.settings_ui(ui));
-        }
+        click(
+            &mut app,
+            control(&output, "Queries and SQL recovery").center(),
+        );
         assert_eq!(app.settings.page, Page::Queries);
         assert!(!app.settings.dirty);
     }
     #[test]
     fn settings_window_keeps_its_title_and_scales_when_font_changes() {
-        let (ctx, mut app) = crate::app::test_ui::app();
+        let (ctx, mut app) = test_ui::app();
         let size = egui::vec2(1280.0, 720.0);
+        let window = || {
+            ctx.memory(|m| m.area_rect(egui::Id::unique("application-settings")))
+                .unwrap()
+        };
         app.settings.open = true;
         for _ in 0..3 {
             render(&ctx, size, vec![], |ui| app.render(ui));
@@ -773,23 +800,17 @@ mod tests {
             app.settings.page = page;
             for _ in 0..3 {
                 let output = render(&ctx, size, vec![], |ui| app.render(ui));
-                let rect = ctx
-                    .memory(|m| m.area_rect(egui::Id::unique("application-settings")))
-                    .unwrap();
+                let rect = window();
                 assert!(output.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.job.text == "Settings" && rect.contains(t.pos))), "missing window title on {page:?}");
             }
         }
-        let before = ctx
-            .memory(|m| m.area_rect(egui::Id::unique("application-settings")))
-            .unwrap();
+        let before = window();
         app.preferences.font_size = 20;
         app.apply_theme(&ctx);
         for _ in 0..3 {
             render(&ctx, size, vec![], |ui| app.render(ui));
         }
-        let after = ctx
-            .memory(|m| m.area_rect(egui::Id::unique("application-settings")))
-            .unwrap();
+        let after = window();
         assert!(after.width() > before.width());
         assert!(after.width() <= size.x && after.height() <= size.y);
     }

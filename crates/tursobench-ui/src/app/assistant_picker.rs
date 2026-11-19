@@ -204,16 +204,9 @@ impl App {
             .map_or("", String::as_str)
     }
 
-    /// Remember a reasoning level for the selected agent and use it from the
-    /// next message of every running conversation; empty restores the agent's own.
-    #[cfg(test)]
-    pub(super) fn select_assistant_effort(&mut self, effort: String) {
-        self.select_effort_for(self.preferences.assistant.provider, effort);
-    }
-
-    /// Remember a reasoning level for an agent; when it is the agent in use,
-    /// running conversations take it from their next message.
-    fn select_effort_for(&mut self, provider: Provider, effort: String) {
+    /// Remember a reasoning level for an agent; empty restores its own. When it
+    /// is the agent in use, running conversations take it from their next message.
+    pub(super) fn select_effort_for(&mut self, provider: Provider, effort: String) {
         if effort == self.effort_for(provider) {
             return;
         }
@@ -229,11 +222,6 @@ impl App {
         }
     }
 
-    #[cfg(test)]
-    pub(super) fn select_assistant_model(&mut self, model: String) {
-        self.choose_assistant_model(self.preferences.assistant.provider, model);
-    }
-
     /// Chat with another agent: every conversation starts afresh.
     pub(super) fn select_assistant_provider(&mut self, provider: Provider) {
         if self.preferences.assistant.provider == provider {
@@ -243,9 +231,7 @@ impl App {
         self.reset_assistant_conversations();
         self.store.save(&self.preferences);
     }
-}
 
-impl App {
     /// The models an agent offers: what its check listed, or Claude Code's aliases.
     pub(super) fn models_for(&self, provider: Provider) -> Vec<Model> {
         self.accounts

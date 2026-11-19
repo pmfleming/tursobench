@@ -3,7 +3,9 @@
 //! Agent Client Protocol agent) and offers it read-only tools for the database
 //! in this workspace. TursoBench never handles credentials.
 use super::{
-    App, assistant_export,
+    App,
+    assistant_accounts::{AgentGrid, Column, status_dot},
+    assistant_export,
     icons::{self, Icon},
     presentation::{self, Intent},
 };
@@ -18,7 +20,6 @@ use tursobench_assistant::{
     relay::{self, Endpoint},
 };
 
-mod settings;
 mod transcript;
 
 const MAX_ENTRIES: usize = 400;
@@ -134,7 +135,7 @@ fn sharing_changed(conversation: &mut Conversation, previous: Sharing, sharing: 
 }
 
 /// The two sharing choices, as the ribbon and settings show them.
-pub(super) fn sharing_choice(sharing: Sharing) -> (Icon, &'static str, &'static str) {
+fn sharing_choice(sharing: Sharing) -> (Icon, &'static str, &'static str) {
     match sharing {
         Sharing::Schema => (
             Icon::Structure,
@@ -147,6 +148,50 @@ pub(super) fn sharing_choice(sharing: Sharing) -> (Icon, &'static str, &'static 
             "Also lets it run read-only SELECT queries of at most 200 rows and read the results",
         ),
     }
+}
+
+/// The two default choices; returns one when clicked.
+fn default_sharing_ui(ui: &mut egui::Ui, current: Sharing) -> Option<Sharing> {
+    let mut default = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 3.0;
+        ui.label("Default").on_hover_text(
+            "What each database shares until you change it with the icons in the \
+             chat panel",
+        );
+        for sharing in [Sharing::Schema, Sharing::Rows] {
+            let (icon, name, detail) = sharing_choice(sharing);
+            let name = format!("Default: {}", name.to_lowercase());
+            if icons::control(ui, icon, &name, "", sharing == current, false)
+                .on_hover_text(detail)
+                .clicked()
+            {
+                default = Some(sharing);
+            }
+        }
+        ui.weak(sharing_choice(current).1);
+    });
+    default
+}
+
+/// One database's choice for one agent; true when it should be forgotten.
+fn grant_row(ui: &mut egui::Ui, path: &str, agent: &str, sharing: Sharing) -> bool {
+    ui.horizontal(|ui| {
+        let (icon, name, _) = sharing_choice(sharing);
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+        icons::paint(ui.painter(), rect, icon, ui.visuals().text_color());
+        response.on_hover_text(name);
+        let file = std::path::Path::new(path)
+            .file_name()
+            .map_or_else(|| path.to_owned(), |n| n.to_string_lossy().into_owned());
+        ui.label(file).on_hover_text(path);
+        ui.weak(format!("{agent} · {name}"));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            icons::control(ui, Icon::Trash, "Forget; use the default", "", false, false).clicked()
+        })
+        .inner
+    })
+    .inner
 }
 
 impl App {
@@ -176,7 +221,7 @@ impl App {
         sharing_changed(&mut self.database.assistant, previous, sharing);
     }
     /// Change what databases without their own choice share, in every workspace.
-    pub(super) fn set_default_assistant_sharing(&mut self, sharing: Sharing) {
+    fn set_default_assistant_sharing(&mut self, sharing: Sharing) {
         let previous = self.preferences.assistant.default_sharing;
         if previous == sharing {
             return;
@@ -192,6 +237,60 @@ impl App {
                 sharing_changed(&mut database.assistant, previous, sharing);
             }
         }
+    }
+    /// How the chat's copy buttons write text.
+    pub(super) fn chat_settings_ui(&mut self, ui: &mut egui::Ui) {
+        let mut format = self.preferences.assistant.copy_format;
+        AgentGrid::new(ui).field(ui, "Copy as", Column::Rest, |ui| {
+            for (choice, name) in assistant_export::FORMATS {
+                ui.selectable_value(&mut format, choice, name)
+                    .on_hover_text("How the chat's copy buttons write a reply or the conversation");
+            }
+        });
+        if format != self.preferences.assistant.copy_format {
+            self.preferences.assistant.copy_format = format;
+            self.store.save(&self.preferences);
+        }
+    }
+
+    /// The default sharing, then each database's own choice, which can be forgotten.
+    pub(super) fn sharing_settings_ui(&mut self, ui: &mut egui::Ui) {
+        if let Some(sharing) = default_sharing_ui(ui, self.preferences.assistant.default_sharing) {
+            self.set_default_assistant_sharing(sharing);
+        }
+        if self.preferences.assistant.grants.is_empty() {
+            return;
+        }
+        ui.add_space(4.0);
+        let mut forget = None;
+        for (path, grants) in &self.preferences.assistant.grants {
+            for (provider, sharing) in grants {
+                if grant_row(ui, path, provider.vendor().name, *sharing) {
+                    forget = Some((path.clone(), *provider));
+                }
+            }
+        }
+        let Some((path, provider)) = forget else {
+            return;
+        };
+        let assistant = &mut self.preferences.assistant;
+        let previous = assistant
+            .grants
+            .get_mut(&path)
+            .and_then(|g| g.remove(&provider));
+        // Conversations with that agent about it go on with the default, and are told so.
+        if let Some(previous) = previous
+            && provider == assistant.provider
+        {
+            let default = assistant.default_sharing;
+            for database in std::iter::once(&mut self.database).chain(self.parked.values_mut()) {
+                if path == database.tools.database_scope {
+                    sharing_changed(&mut database.assistant, previous, default);
+                }
+            }
+        }
+        self.preferences.normalize();
+        self.store.save(&self.preferences);
     }
 
     pub(super) fn reset_assistant_conversations(&mut self) {
@@ -587,7 +686,7 @@ impl App {
         }
         self.assistant_model_menu(ui, ui.available_width() - 20.0);
         let (state, intent, _) = self.agent_state(provider);
-        super::assistant_accounts::status_dot(ui, intent, &format!("{name} · {state}"));
+        status_dot(ui, intent, &format!("{name} · {state}"));
         ui.add_space(6.0);
     }
 
