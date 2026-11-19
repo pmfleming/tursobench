@@ -216,15 +216,7 @@ pub(crate) async fn connect(
     c.execute("PRAGMA query_only = 1", ())
         .await
         .map_err(failure)?;
-    let mut rows = c.query("PRAGMA query_only", ()).await.map_err(failure)?;
-    let enabled = rows
-        .next()
-        .await
-        .map_err(failure)?
-        .map(|row| row.get_value(0))
-        .transpose()
-        .map_err(failure)?;
-    while rows.next().await.map_err(failure)?.is_some() {}
+    let enabled = crate::connection::pragma(&c, "PRAGMA query_only").await?;
     if enabled != Some(turso::Value::Integer(1)) {
         return Err(Failure::input(
             "The assistant's read-only connection is unavailable",
@@ -244,16 +236,8 @@ pub(crate) async fn run(
         Tool::Describe(name) => describe(c, &name).await,
         Tool::Query(text) => {
             validate(&text)?;
-            let interrupt = c.clone();
-            *discard.active_read.lock().unwrap() = Some(crate::ActiveRead {
-                request,
-                interrupt: Box::new(move || {
-                    let _ = interrupt.interrupt();
-                }),
-            });
-            let result = query(c, &text, request, discard).await;
-            *discard.active_read.lock().unwrap() = None;
-            result
+            let _read = discard.interruptible(request, c);
+            query(c, &text, request, discard).await
         }
     }
 }

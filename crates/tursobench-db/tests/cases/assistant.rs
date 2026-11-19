@@ -6,10 +6,8 @@ use tursobench_db::assistant::{MAX_ROWS, Tool};
 const WAIT: Duration = Duration::from_secs(30);
 
 fn fixture() -> (tempfile::TempDir, std::path::PathBuf) {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("assistant.db");
-    common::create(
-        &path,
+    common::database(
+        "assistant.db",
         &[
             "CREATE TABLE owners(id INTEGER PRIMARY KEY, name TEXT NOT NULL)",
             "CREATE TABLE pets(id INTEGER PRIMARY KEY, owner INTEGER REFERENCES owners(id), \
@@ -19,8 +17,7 @@ fn fixture() -> (tempfile::TempDir, std::path::PathBuf) {
             "INSERT INTO owners VALUES (1, 'Ada')",
             "INSERT INTO pets VALUES (1, 1, 'Rex', x'00ff'), (2, 1, NULL, NULL)",
         ],
-    );
-    (dir, path)
+    )
 }
 
 #[test]
@@ -93,8 +90,7 @@ fn writes_are_refused_by_the_gate_and_by_the_engine() {
             "{sql}: {error:?}"
         );
     }
-    let rows = client.sql("SELECT count(*) FROM pets");
-    assert_eq!(rows.rows[0][0], tursobench_core::Value::Integer(2));
+    assert_eq!(client.count("pets"), 2);
     client.close();
 }
 

@@ -70,6 +70,25 @@ fn io_failure(e: std::io::Error) -> Failure {
         message: e.to_string(),
     }
 }
+/// The coordination sidecar beside a database file.
+fn sidecar(path: &Path) -> std::path::PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push("-tshm");
+    name.into()
+}
+/// Hard-link aliases would use different WAL and coordination paths.
+fn hard_linked(file: &File) -> Result<bool, Failure> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Ok(file.metadata().map_err(io_failure)?.nlink() != 1)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = file;
+        Ok(false)
+    }
+}
 
 /// Advisory, non-mutating preflight. Queries locks without acquiring them or
 /// creating sidecars; Session::open still performs authoritative admission.
@@ -100,14 +119,10 @@ pub fn check_access(path: &Path) -> Result<(), Failure> {
         });
     }
     let mut file = File::open(&path).map_err(io_failure)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if file.metadata().map_err(io_failure)?.nlink() != 1 {
-            return Err(Failure::input(
-                "Hard-linked database files are unsupported.",
-            ));
-        }
+    if hard_linked(&file)? {
+        return Err(Failure::input(
+            "Hard-linked database files are unsupported.",
+        ));
     }
     let mut header = [0; 16];
     if metadata.len() < 100
@@ -120,40 +135,43 @@ pub fn check_access(path: &Path) -> Result<(), Failure> {
     }
     #[cfg(target_os = "linux")]
     {
-        if let Some(pid) = conflicting_reader(&file, 0)? {
-            let owner = if pid > 0 {
-                process_name(pid as u32)
-            } else {
-                "Another connection".into()
-            };
-            return Err(Failure {
-                kind: ErrorKind::Busy,
-                message: format!(
-                    "{owner} holds a write lock. Close that connection to open this file."
-                ),
-            });
-        }
-        let mut sidecar = path.as_os_str().to_owned();
-        sidecar.push("-tshm");
-        match File::open(std::path::PathBuf::from(sidecar)) {
-            Ok(file) if conflicting_reader(&file, 1)?.is_some() => {
-                return Err(Failure {
-                    kind: ErrorKind::Busy,
-                    message:
-                        "Another read-only session has reserved this file. Close it before opening."
-                            .into(),
-                });
-            }
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(io_failure(e)),
-        }
-        Ok(())
+        lock_conflicts(&path, &file)
     }
     #[cfg(not(target_os = "linux"))]
     Err(Failure::input(
         "Database access is currently supported on Linux only.",
     ))
+}
+/// Refuses a file another connection writes or a read-only session reserves.
+#[cfg(target_os = "linux")]
+fn lock_conflicts(path: &Path, file: &File) -> Result<(), Failure> {
+    if let Some(pid) = conflicting_reader(file, 0)? {
+        let owner = if pid > 0 {
+            process_name(pid as u32)
+        } else {
+            "Another connection".into()
+        };
+        return Err(Failure {
+            kind: ErrorKind::Busy,
+            message: format!(
+                "{owner} holds a write lock. Close that connection to open this file."
+            ),
+        });
+    }
+    match File::open(sidecar(path)) {
+        Ok(file) if conflicting_reader(&file, 1)?.is_some() => {
+            return Err(Failure {
+                kind: ErrorKind::Busy,
+                message:
+                    "Another read-only session has reserved this file. Close it before opening."
+                        .into(),
+            });
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(io_failure(e)),
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -253,14 +271,12 @@ fn lock_region(_: File, _: bool, _: i64) -> Result<Option<HeldLock>, Failure> {
 }
 
 pub(crate) fn reserve(path: &Path) -> Result<Option<HeldLock>, Failure> {
-    let mut name = path.as_os_str().to_owned();
-    name.push("-tshm");
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .open(std::path::PathBuf::from(name))
+        .open(sidecar(path))
         .map_err(io_failure)?;
     lock(file, true)
 }
@@ -276,14 +292,10 @@ impl Admission {
             return Err(Failure::input("Database file locking must be enabled"));
         }
         let main = File::open(path).map_err(io_failure)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            if main.metadata().map_err(io_failure)?.nlink() != 1 {
-                return Err(Failure::input(
-                    "Hard-linked databases cannot be shared safely because aliases use different WAL/coordination paths. Open a database with one file name.",
-                ));
-            }
+        if hard_linked(&main)? {
+            return Err(Failure::input(
+                "Hard-linked databases cannot be shared safely because aliases use different WAL/coordination paths. Open a database with one file name.",
+            ));
         }
         let Some(main) = lock(main, false)? else {
             return Err(Failure { kind: ErrorKind::Busy, message:
@@ -291,12 +303,10 @@ impl Admission {
         };
         let reservation = reserve(path)?;
         let lifetime = if reservation.is_none() {
-            let mut name = path.as_os_str().to_owned();
-            name.push("-tshm");
             let file = std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
-                .open(std::path::PathBuf::from(name))
+                .open(sidecar(path))
                 .map_err(io_failure)?;
             let Some(file) = lock_region(file, false, 1)? else {
                 return Err(Failure { kind: ErrorKind::Busy, message:

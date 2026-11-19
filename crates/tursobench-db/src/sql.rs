@@ -115,6 +115,14 @@ pub fn validate_bindings(sql: &str, bindings: &Bindings) -> Result<(), Failure> 
     }
     Ok(())
 }
+/// Bindings that match `sql` and fit the 8 MiB statement parameter budget.
+pub(crate) fn validate_parameters(sql: &str, bindings: &Bindings) -> Result<(), Failure> {
+    validate_bindings(sql, bindings)?;
+    if bindings.bytes() > 8 * 1024 * 1024 {
+        return Err(Failure::input("Parameters exceed 8 MiB"));
+    }
+    Ok(())
+}
 pub fn selection_or_statement(sql: &str, selection: Range<usize>) -> Result<String, Failure> {
     if sql.len() > 1024 * 1024
         || selection.end > sql.len()
@@ -139,44 +147,66 @@ pub fn selection_or_statement(sql: &str, selection: Range<usize>) -> Result<Stri
     validate_single(&statement)?;
     Ok(statement)
 }
+/// Whether the lexer is inside a CREATE TRIGGER body, where semicolons
+/// separate body statements rather than script statements.
+#[derive(Default)]
+struct TriggerBody {
+    create: bool,
+    trigger: bool,
+    body: usize,
+    cases: usize,
+}
+impl TriggerBody {
+    fn keyword(&mut self, text: &str) {
+        let is = |keyword: &str| text.eq_ignore_ascii_case(keyword);
+        if is("CREATE") {
+            self.create = true;
+        }
+        if self.create && is("TRIGGER") {
+            self.trigger = true;
+        }
+        if !self.trigger {
+            return;
+        }
+        if is("BEGIN") {
+            self.body += 1;
+        } else if is("CASE") {
+            self.cases += 1;
+        } else if is("END") {
+            self.end();
+        }
+    }
+    /// `END` closes an open CASE first, then the BEGIN body.
+    fn end(&mut self) {
+        if self.cases > 0 {
+            self.cases -= 1;
+        } else if self.body > 0 {
+            self.body -= 1;
+            self.trigger = self.body > 0;
+        }
+    }
+    /// A semicolon ends the statement unless it is inside a trigger body.
+    fn ends_statement(&mut self) -> bool {
+        if self.trigger {
+            return false;
+        }
+        self.create = false;
+        true
+    }
+}
 /// Lexer boundaries retain trigger bodies and quoted/comment semicolons even if another statement is malformed.
 fn statement_ranges(sql: &str) -> Vec<Range<usize>> {
     let mut ranges = Vec::new();
     let mut start = 0;
-    let mut create = false;
-    let mut trigger = false;
-    let mut body = 0;
-    let mut cases = 0;
+    let mut trigger = TriggerBody::default();
     for token in tokens(sql) {
         let text = sql[token.range.clone()].trim();
         if token.style == TokenStyle::Keyword {
-            if text.eq_ignore_ascii_case("CREATE") {
-                create = true;
-            }
-            if create && text.eq_ignore_ascii_case("TRIGGER") {
-                trigger = true;
-            }
-            if trigger {
-                if text.eq_ignore_ascii_case("BEGIN") {
-                    body += 1;
-                } else if text.eq_ignore_ascii_case("CASE") {
-                    cases += 1;
-                } else if text.eq_ignore_ascii_case("END") {
-                    if cases > 0 {
-                        cases -= 1;
-                    } else if body > 0 {
-                        body -= 1;
-                        if body == 0 {
-                            trigger = false;
-                        }
-                    }
-                }
-            }
+            trigger.keyword(text);
         }
-        if text == ";" && !trigger {
+        if text == ";" && trigger.ends_statement() {
             ranges.push(start..token.range.end);
             start = token.range.end;
-            create = false;
         }
     }
     if !sql[start..].trim().is_empty() {
@@ -297,6 +327,11 @@ pub(crate) enum Effect {
     Data,
     Schema,
     Rollback,
+}
+impl Effect {
+    pub(crate) fn writes(self) -> bool {
+        matches!(self, Self::Data | Self::Schema)
+    }
 }
 
 pub(crate) fn effect(sql: &str) -> Effect {

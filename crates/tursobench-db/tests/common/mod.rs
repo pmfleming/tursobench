@@ -15,14 +15,18 @@ pub fn event(session: &Session) -> Event {
         .recv_timeout(Duration::from_secs(30))
         .expect("session event before timeout")
 }
-pub fn opened(path: &Path, access: Access) -> Session {
+/// Starts a session, returning it with its first (open or failure) event.
+pub fn start(path: &Path, access: Access) -> (Session, EventKind) {
     let session = Session::open(path.into(), access, || {}).unwrap();
-    let opened = event(&session);
+    let kind = event(&session).kind;
+    (session, kind)
+}
+pub fn opened(path: &Path, access: Access) -> Session {
+    let (session, opened) = start(path, access);
     assert!(
-        matches!(opened.kind, EventKind::Opened(_)),
-        "open {}: {:?}",
-        path.display(),
-        opened.kind
+        matches!(opened, EventKind::Opened(_)),
+        "open {}: {opened:?}",
+        path.display()
     );
     session
 }
@@ -41,6 +45,17 @@ pub struct Reply {
     pub graph: Option<SchemaDiagram>,
     pub outcome: Option<CommitOutcome>,
     pub failure: Option<Failure>,
+}
+/// The first page of `table`, unfiltered and in key order.
+pub fn browse(table: &str) -> Browse {
+    Browse {
+        options: Default::default(),
+        table: table.into(),
+        offset: 0,
+        sort: None,
+        descending: false,
+        filters: vec![],
+    }
 }
 pub fn run(session: &Session, sequence: u64, operation: Operation) -> Reply {
     let ticket = session.ticket(sequence, 0);
@@ -122,14 +137,21 @@ impl Client {
         );
         result
     }
+    /// The row count of `table` (an SQL table expression).
+    pub fn count(&mut self, table: &str) -> i64 {
+        let rows = self.sql(&format!("SELECT count(*) FROM {table}")).rows;
+        match rows[..] {
+            [ref row] => match row[..] {
+                [tursobench_core::Value::Integer(n)] => n,
+                ref other => panic!("count {table}: {other:?}"),
+            },
+            ref other => panic!("count {table}: {other:?}"),
+        }
+    }
     pub fn browse(&mut self, name: &str, offset: usize) -> (Table, ResultSet) {
         let reply = self.run(Operation::Browse(Browse {
-            options: Default::default(),
-            table: name.into(),
             offset,
-            sort: None,
-            descending: false,
-            filters: vec![],
+            ..browse(name)
         }));
         assert!(
             reply.result.completion.as_ref().unwrap().error.is_none(),
@@ -147,13 +169,37 @@ impl Client {
         self.run(Operation::Diagram).graph.unwrap()
     }
     pub fn close(self) {
-        self.session.close();
-        loop {
-            match event(&self.session).kind {
-                EventKind::Invalidated { .. } => continue,
-                EventKind::Closed { rollback: Ok(()) } => break,
-                other => panic!("Unexpected close response: {other:?}"),
-            }
+        close(&self.session);
+    }
+}
+/// Closes `session` and waits for its clean rollback acknowledgement.
+pub fn close(session: &Session) {
+    session.close();
+    loop {
+        match event(session).kind {
+            EventKind::Invalidated { .. } => continue,
+            EventKind::Closed { rollback: Ok(()) } => break,
+            other => panic!("Unexpected close response: {other:?}"),
         }
     }
+}
+/// Unbound SQL under `budget`.
+pub fn execute(sql: &str, budget: Budget) -> Operation {
+    Operation::Execute {
+        sql: sql.into(),
+        parameters: vec![],
+        budget,
+    }
+}
+pub fn submit(session: &Session, request: u64, operation: Operation) {
+    let ticket = session.ticket(request, 0);
+    session.submit(Request { ticket, operation }).unwrap();
+}
+/// A disposable database named `name`, created from `statements`. The
+/// directory is removed when the returned guard drops.
+pub fn database(name: &str, statements: &[&str]) -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(name);
+    create(&path, statements);
+    (dir, path)
 }

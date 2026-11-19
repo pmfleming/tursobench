@@ -1,6 +1,6 @@
 //! Streaming interchange; destinations publish only after complete success.
 use crate::{
-    connection::{failure, from_engine, state, to_engine},
+    connection::{failure, from_engine, params, state},
     sql,
 };
 use serde_json::{Value as Json, json};
@@ -53,6 +53,14 @@ fn cell(w: &mut impl Write, value: Value) -> Result<(), Failure> {
     };
     serde_json::to_writer(w, &data).map_err(io)
 }
+/// A temporary file beside `path`, published later without clobbering.
+pub(crate) fn sibling_temp(path: &Path) -> std::io::Result<tempfile::NamedTempFile> {
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    tempfile::NamedTempFile::new_in(parent)
+}
 pub(crate) async fn export(
     c: &Connection,
     path: &Path,
@@ -62,10 +70,7 @@ pub(crate) async fn export(
     cancel: impl Fn() -> bool,
 ) -> Result<TransferOutcome, Failure> {
     sql::validate_single(text)?;
-    sql::validate_bindings(text, &parameters)?;
-    if parameters.bytes() > 8 * 1024 * 1024 {
-        return Err(Failure::input("Parameters exceed 8 MiB"));
-    }
+    sql::validate_parameters(text, &parameters)?;
     if path.extension().is_none_or(|e| e != "jsonl") {
         return Err(Failure::input(
             "Choose a new .jsonl destination; SQL has not executed",
@@ -74,11 +79,7 @@ pub(crate) async fn export(
     if std::fs::symlink_metadata(path).is_ok() {
         return Err(Failure::input("Destination exists; SQL has not executed"));
     }
-    let parent = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(io)?;
+    let mut temp = sibling_temp(path).map_err(io)?;
     let mut writer = BufWriter::new(&mut temp);
     let mut outcome = stream(c, text, parameters, scope, &mut writer, cancel).await?;
     drop(writer);
@@ -107,6 +108,23 @@ pub(crate) async fn export(
     Ok(outcome)
 }
 
+fn write_row(writer: &mut impl Write, row: &turso::Row, count: usize) -> Result<(), Failure> {
+    writer
+        .write_all(b"{\"record\":\"row\",\"values\":[")
+        .map_err(io)?;
+    for i in 0..count {
+        if i > 0 {
+            writer.write_all(b",").map_err(io)?;
+        }
+        cell(
+            &mut *writer,
+            from_engine(row.get_value(i).map_err(failure)?),
+        )?;
+    }
+    writer.write_all(b"]}\n").map_err(io)
+}
+/// Writes every row until the first output failure or cancellation; writes
+/// still drain so the reported change count and transaction stay truthful.
 async fn stream(
     c: &Connection,
     text: &str,
@@ -116,28 +134,9 @@ async fn stream(
     cancel: impl Fn() -> bool,
 ) -> Result<TransferOutcome, Failure> {
     let mut stmt = c.prepare(text).await.map_err(failure)?;
-    let columns = stmt.columns();
-    if columns.len() > 512
-        || columns
-            .iter()
-            .map(|c| c.name().len() + c.decl_type().map_or(0, str::len))
-            .sum::<usize>()
-            > 1024 * 1024
-    {
-        return Err(Failure::input(
-            "Export metadata exceeds budget; SQL has not executed",
-        ));
-    }
-    let params = match parameters {
-        Bindings::Positional(v) => turso::params::Params::Positional(
-            v.into_iter().map(to_engine).collect::<Result<_, _>>()?,
-        ),
-        Bindings::Named(v) => turso::params::Params::Named(
-            v.into_iter()
-                .map(|(k, v)| to_engine(v).map(|v| (k.into(), v)))
-                .collect::<Result<_, _>>()?,
-        ),
-    };
+    let columns = crate::connection::columns(&stmt)
+        .ok_or_else(|| Failure::input("Export metadata exceeds budget; SQL has not executed"))?;
+    let params = params(parameters)?;
     let mut outcome = TransferOutcome {
         rows: 0,
         changed: 0,
@@ -148,39 +147,13 @@ async fn stream(
     };
     line(
         &mut writer,
-        &json!({"record":"header","format":"tursobench-typed-jsonl","version":2,"engine":"turso-0.8.3","scope":scope,"rows_expected":null,"columns":columns.iter().map(|c|json!({"name":c.name(),"declared_type":c.decl_type()})).collect::<Vec<_>>()}),
+        &json!({"record":"header","format":"tursobench-typed-jsonl","version":2,"engine":"turso-0.8.3","scope":scope,"rows_expected":null,"columns":columns.iter().map(|c|json!({"name":c.name,"declared_type":c.declared_type})).collect::<Vec<_>>()}),
     )?;
+    let stoppable = sql::stoppable_read(text);
     let mut rows = stmt.query(params).await.map_err(failure)?;
     loop {
-        match rows.next().await {
-            Ok(Some(row)) => {
-                outcome.rows += 1;
-                if cancel() && outcome.error.is_none() {
-                    outcome.error = Some(Failure::input(
-                        "Export cancelled; preceding committed SQL is not undone",
-                    ));
-                }
-                if outcome.error.is_none() {
-                    let result = (|| {
-                        writer
-                            .write_all(b"{\"record\":\"row\",\"values\":[")
-                            .map_err(io)?;
-                        for i in 0..rows.column_count() {
-                            if i > 0 {
-                                writer.write_all(b",").map_err(io)?;
-                            }
-                            cell(&mut writer, from_engine(row.get_value(i).map_err(failure)?))?;
-                        }
-                        writer.write_all(b"]}\n").map_err(io)
-                    })();
-                    if let Err(e) = result {
-                        outcome.error = Some(e);
-                    }
-                }
-                if outcome.error.is_some() && sql::stoppable_read(text) {
-                    break;
-                }
-            }
+        let row = match rows.next().await {
+            Ok(Some(row)) => row,
             Ok(None) => {
                 outcome.executed = true;
                 outcome.changed = stmt.n_change();
@@ -190,18 +163,28 @@ async fn stream(
                 outcome.error = Some(failure(e));
                 break;
             }
+        };
+        outcome.rows += 1;
+        let cancelled = cancel();
+        if outcome.error.is_none() {
+            outcome.error = if cancelled {
+                Some(Failure::input(
+                    "Export cancelled; preceding committed SQL is not undone",
+                ))
+            } else {
+                write_row(&mut writer, &row, rows.column_count()).err()
+            };
+        }
+        if outcome.error.is_some() && stoppable {
+            break;
         }
     }
     drop(rows);
     outcome.transaction = state(c);
     if outcome.error.is_none() {
-        let result = (|| {
-            line(&mut writer, &json!({"record":"end","rows":outcome.rows}))?;
-            writer.flush().map_err(io)
-        })();
-        if let Err(e) = result {
-            outcome.error = Some(e);
-        }
+        outcome.error = line(&mut writer, &json!({"record":"end","rows":outcome.rows}))
+            .and_then(|()| writer.flush().map_err(io))
+            .err();
     }
     Ok(outcome)
 }
@@ -227,7 +210,40 @@ pub(crate) async fn checkpoint(c: &Connection) -> Result<(), Failure> {
     while rows.next().await.map_err(failure)?.is_some() {}
     Ok(())
 }
-pub(crate) async fn copy_closed(
+async fn verify_integrity(
+    path: &Path,
+    settings: tursobench_core::ConnectionSettings,
+) -> Result<(), Failure> {
+    let path = path
+        .to_str()
+        .ok_or_else(|| Failure::input("Non-UTF8 backup path"))?;
+    let db = turso::Builder::new_local(path)
+        .experimental_index_method(true)
+        .read_only(true)
+        .build()
+        .await
+        .map_err(failure)?;
+    let c = db.connect().map_err(failure)?;
+    crate::connection::configure(&c, settings).await?;
+    let mut rows = c
+        .query("PRAGMA integrity_check", ())
+        .await
+        .map_err(failure)?;
+    let mut count = 0;
+    while let Some(row) = rows.next().await.map_err(failure)? {
+        if row.get_value(0).map_err(failure)? != turso::Value::Text("ok".into()) {
+            return Err(Failure::input("Backup failed integrity verification"));
+        }
+        count += 1;
+    }
+    if count != 1 {
+        return Err(Failure::input(
+            "Backup integrity check returned an unexpected result",
+        ));
+    }
+    Ok(())
+}
+async fn copy_closed(
     source: &Path,
     destination: &Path,
     settings: tursobench_core::ConnectionSettings,
@@ -243,45 +259,48 @@ pub(crate) async fn copy_closed(
             "Closed source still has WAL data; refusing a main-file-only backup",
         ));
     }
-    let parent = destination
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(io)?;
+    let mut temp = sibling_temp(destination).map_err(io)?;
     std::io::copy(&mut File::open(source).map_err(io)?, &mut temp).map_err(io)?;
     temp.as_file().sync_all().map_err(io)?;
-    {
-        let db = turso::Builder::new_local(
-            temp.path()
-                .to_str()
-                .ok_or_else(|| Failure::input("Non-UTF8 backup path"))?,
-        )
-        .experimental_index_method(true)
-        .read_only(true)
-        .build()
-        .await
-        .map_err(failure)?;
-        let c = db.connect().map_err(failure)?;
-        crate::connection::configure(&c, settings).await?;
-        let mut rows = c
-            .query("PRAGMA integrity_check", ())
-            .await
-            .map_err(failure)?;
-        let mut count = 0;
-        while let Some(row) = rows.next().await.map_err(failure)? {
-            if row.get_value(0).map_err(failure)? != turso::Value::Text("ok".into()) {
-                return Err(Failure::input("Backup failed integrity verification"));
-            }
-            count += 1;
-        }
-        if count != 1 {
-            return Err(Failure::input(
-                "Backup integrity check returned an unexpected result",
-            ));
-        }
-    }
+    verify_integrity(temp.path(), settings).await?;
     temp.persist_noclobber(destination).map_err(io)?;
     Ok(())
+}
+/// Publishes a verified copy once every session connection has closed;
+/// `cleanup` is the outcome of rolling those connections back.
+pub(crate) async fn publish_backup(
+    source: &Path,
+    destination: &Path,
+    settings: tursobench_core::ConnectionSettings,
+    cleanup: &Result<(), Failure>,
+) -> TransferOutcome {
+    let result = match cleanup {
+        Ok(()) => match crate::access::reserve(source) {
+            Ok(Some(_reservation)) => copy_closed(source, destination, settings).await,
+            Ok(None) => Err(Failure { kind: tursobench_core::ErrorKind::Busy, message: "Backup not published: another shared connection is still open. Close it and retry from a new session.".into() }),
+            Err(e) => Err(e),
+        },
+        Err(e) => Err(e.clone()),
+    };
+    let message = match &result {
+        Err(e) => format!("Backup not published; session closed: {e}"),
+        Ok(()) => format!(
+            "Verified backup saved to {}; source session closed",
+            destination.display()
+        ),
+    };
+    TransferOutcome {
+        rows: 0,
+        changed: 0,
+        transaction: if cleanup.is_err() {
+            TransactionState::Unknown
+        } else {
+            TransactionState::Autocommit
+        },
+        error: result.err(),
+        message,
+        executed: false,
+    }
 }
 
 pub(crate) fn bounded_line(reader: &mut impl BufRead) -> Result<Option<Vec<u8>>, Failure> {

@@ -33,10 +33,9 @@ fn integer(row: &[Value], i: usize) -> Result<i64, Failure> {
         _ => Err(Failure::input("Unexpected schema metadata integer")),
     }
 }
-pub(crate) async fn inspect(c: &Connection, name: &str) -> Result<Inspection, Failure> {
-    let table = describe(c, name).await?;
+async fn indexes(c: &Connection, name: &str) -> Result<Vec<IndexInfo>, Failure> {
     let mut indexes = Vec::new();
-    let mut index_bytes = 0;
+    let mut bytes = 0;
     for row in metadata(c, format!("PRAGMA index_list({})", quote_identifier(name))).await? {
         if indexes.len() >= 128 {
             return Err(Failure::input("Index count exceeds metadata budget"));
@@ -47,8 +46,8 @@ pub(crate) async fn inspect(c: &Connection, name: &str) -> Result<Inspection, Fa
             format!("PRAGMA index_info({})", quote_identifier(&index_name)),
         )
         .await?;
-        index_bytes += index_name.len() + entries.iter().flatten().map(Value::bytes).sum::<usize>();
-        if index_bytes > 1024 * 1024 {
+        bytes += index_name.len() + entries.iter().flatten().map(Value::bytes).sum::<usize>();
+        if bytes > 1024 * 1024 {
             return Err(Failure::input("Combined index metadata exceeds 1 MiB"));
         }
         indexes.push(IndexInfo {
@@ -64,75 +63,73 @@ pub(crate) async fn inspect(c: &Connection, name: &str) -> Result<Inspection, Fa
                 .collect(),
         });
     }
+    Ok(indexes)
+}
+/// Names an implicit parent primary key, unless empty identifiers make the
+/// native metadata ambiguous.
+async fn resolve_implicit(
+    c: &Connection,
+    parent_name: &str,
+    columns: &mut [(String, Option<String>)],
+) {
+    if !columns.iter().any(|(_, target)| target.is_none()) {
+        return;
+    }
+    let Ok(parent) = describe(c, parent_name).await else {
+        return;
+    };
+    let keys = parent.keys();
+    if keys.len() != columns.len() || parent.columns.iter().any(|c| c.name.is_empty()) {
+        return;
+    }
+    for (position, (_, target)) in columns.iter_mut().enumerate() {
+        if target.is_none() {
+            *target = Some(parent.columns[keys[position]].name.clone());
+        }
+    }
+}
+async fn foreign_keys(c: &Connection, name: &str) -> Result<Vec<ForeignKey>, Failure> {
     type Parts = std::collections::BTreeMap<i64, (String, Option<String>)>;
-    let mut fks = std::collections::BTreeMap::<i64, (String, Parts, String, String)>::new();
-    for row in metadata(
-        c,
-        format!("PRAGMA foreign_key_list({})", quote_identifier(name)),
-    )
-    .await?
-    {
+    let mut keys = std::collections::BTreeMap::<i64, (ForeignKey, Parts)>::new();
+    let sql = format!("PRAGMA foreign_key_list({})", quote_identifier(name));
+    for row in metadata(c, sql).await? {
         let id = integer(&row, 0)?;
         let sequence = integer(&row, 1)?;
-        let group = fks.entry(id).or_insert((
-            text(&row, 2)?,
-            Default::default(),
-            text(&row, 5)?,
-            text(&row, 6)?,
-        ));
+        let key = ForeignKey {
+            id,
+            target: text(&row, 2)?,
+            columns: vec![],
+            on_update: text(&row, 5)?,
+            on_delete: text(&row, 6)?,
+        };
+        let (_, parts) = keys.entry(id).or_insert((key, Parts::new()));
         // Turso 0.8.3 reports an empty string, not NULL, for an implicit parent PK.
-        group.1.insert(
-            sequence,
-            (
-                text(&row, 3)?,
-                match row.get(4) {
-                    Some(Value::Text(s)) if !s.is_empty() => Some(s.clone()),
-                    _ => None,
-                },
-            ),
-        );
+        let target = match row.get(4) {
+            Some(Value::Text(s)) if !s.is_empty() => Some(s.clone()),
+            _ => None,
+        };
+        parts.insert(sequence, (text(&row, 3)?, target));
     }
     let mut foreign_keys = Vec::new();
-    let mut foreign_key_bytes = 0;
-    for (id, (target, parts, on_update, on_delete)) in fks {
-        let mut columns: Vec<_> = parts.into_values().collect();
-        if columns.iter().any(|(_, target)| target.is_none())
-            && let Ok(parent) = describe(c, &target).await
-        {
-            let keys = parent.keys();
-            // Empty identifiers make native metadata ambiguous: leave unresolved.
-            if keys.len() == columns.len() && !parent.columns.iter().any(|c| c.name.is_empty()) {
-                for (position, (_, target)) in columns.iter_mut().enumerate() {
-                    if target.is_none() {
-                        *target = Some(parent.columns[keys[position]].name.clone());
-                    }
-                }
-            }
-        }
-        foreign_key_bytes += target.len()
-            + on_update.len()
-            + on_delete.len()
-            + columns
-                .iter()
-                .map(|(source, target)| source.len() + target.as_ref().map_or(0, String::len))
-                .sum::<usize>();
-        if foreign_key_bytes > 1024 * 1024 {
+    let mut bytes = 0;
+    for (mut key, parts) in keys.into_values() {
+        key.columns = parts.into_values().collect();
+        resolve_implicit(c, &key.target, &mut key.columns).await;
+        bytes += key.bytes();
+        if bytes > 1024 * 1024 {
             return Err(Failure::input(
                 "Resolved foreign-key metadata exceeds 1 MiB",
             ));
         }
-        foreign_keys.push(ForeignKey {
-            id,
-            target,
-            columns,
-            on_update,
-            on_delete,
-        });
+        foreign_keys.push(key);
     }
+    Ok(foreign_keys)
+}
+pub(crate) async fn inspect(c: &Connection, name: &str) -> Result<Inspection, Failure> {
     Ok(Inspection {
-        table,
-        indexes,
-        foreign_keys,
+        table: describe(c, name).await?,
+        indexes: indexes(c, name).await?,
+        foreign_keys: foreign_keys(c, name).await?,
     })
 }
 pub(crate) fn lookup_sql(

@@ -1,11 +1,9 @@
 use crate::common::{self, Client};
-use tursobench_core::*;
+use tursobench_core::{Access, ErrorKind, TransactionState, Value};
 use tursobench_db::Operation;
 #[test]
 fn persistent_editor_isolated_browse_foreign_keys_and_close_rollback() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("tx.db");
-    common::create(&path, &["CREATE TABLE parent(id INTEGER PRIMARY KEY)"]);
+    let (_dir, path) = common::database("tx.db", &["CREATE TABLE parent(id INTEGER PRIMARY KEY)"]);
     let mut client = Client::open(&path, Access::ReadWrite);
     assert_eq!(
         client.sql("BEGIN").completion.unwrap().transaction,
@@ -23,14 +21,7 @@ fn persistent_editor_isolated_browse_foreign_keys_and_close_rollback() {
         ErrorKind::Constraint
     );
     client.sql("INSERT INTO parent VALUES (1)");
-    let r = client.run(Operation::Browse(Browse {
-        options: Default::default(),
-        table: "parent".into(),
-        offset: 0,
-        sort: None,
-        descending: false,
-        filters: vec![],
-    }));
+    let r = client.run(Operation::Browse(common::browse("parent")));
     let r = r.result;
     assert!(r.rows.is_empty());
     assert_eq!(r.completion.unwrap().transaction, TransactionState::Active);
