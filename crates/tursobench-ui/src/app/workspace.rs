@@ -10,16 +10,27 @@ use super::{
 use eframe::egui;
 use std::collections::{BTreeMap, BTreeSet};
 pub(super) const MAX_VIEWS: usize = 16;
+/// Width of the strip at the left of a tile's header that drags the tile.
+const GRIP: f32 = 12.0;
+pub(super) fn tile_icon(kind: Kind) -> Icon {
+    match kind {
+        Kind::Map => Icon::Map,
+        Kind::Data | Kind::Result => Icon::Data,
+        Kind::Record => Icon::Selection,
+        Kind::Structure => Icon::Structure,
+        Kind::Sql => Icon::Sql,
+        Kind::Chat => Icon::Assistant,
+    }
+}
 pub(super) struct Workspace {
     pub enabled: bool,
     pub focused: u64,
     pub active: Kind,
     pub expanded: Option<Kind>,
-    pub splits: tiling::Splits,
+    pub layout: tiling::Layout,
     pub minimized: BTreeSet<Kind>,
-    /// Record, Structure and SQL tiles that were open when their column
-    /// folded; unfolding opens these again.
-    pub unfold: Vec<Kind>,
+    /// The tile being dragged to another place by its grip.
+    pub drag: Option<TileDrag>,
     pub visible: BTreeMap<Kind, u64>,
     pub next_id: u64,
     pub area: egui::Rect,
@@ -29,6 +40,16 @@ pub(super) struct Workspace {
     pub pane_rects: Vec<(Kind, egui::Rect)>,
     #[cfg(test)]
     pub controls: Vec<(Kind, egui::Rect, egui::Rect)>,
+    #[cfg(test)]
+    pub grips: Vec<(Kind, egui::Rect)>,
+}
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct TileDrag {
+    pub kind: Kind,
+    /// Where it would land if released now.
+    pub target: Option<tiling::Target>,
+    /// Escape was pressed; the rest of the drag does nothing.
+    pub cancelled: bool,
 }
 impl Default for Workspace {
     fn default() -> Self {
@@ -37,9 +58,9 @@ impl Default for Workspace {
             focused: 0,
             active: Kind::Map,
             expanded: None,
-            splits: Default::default(),
+            layout: Default::default(),
             minimized: Default::default(),
-            unfold: vec![],
+            drag: None,
             visible: Default::default(),
             next_id: 1,
             area: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 600.0)),
@@ -49,6 +70,8 @@ impl Default for Workspace {
             pane_rects: vec![],
             #[cfg(test)]
             controls: vec![],
+            #[cfg(test)]
+            grips: vec![],
         }
     }
 }
@@ -94,8 +117,7 @@ impl App {
         }
     }
     pub(super) fn focus_pane(&mut self, kind: Kind) {
-        // A tile asked for attention, so the chat gives the workspace back.
-        self.database.ui.assistant_expanded = false;
+        self.release_expanded_chat(kind);
         self.database.workspace.active = kind.pane();
         self.database.workspace.minimized.remove(&kind.pane());
         if self.database.workspace.expanded.is_some() {
@@ -104,6 +126,13 @@ impl App {
         if let Some(id) = self.pane_document(kind) {
             self.switch_document(id);
             self.database.workspace.focused = id;
+        }
+    }
+    /// Another tile asked for attention, so an expanded chat gives the
+    /// workspace back to the tiles.
+    fn release_expanded_chat(&mut self, kind: Kind) {
+        if kind.pane() != Kind::Chat && self.database.workspace.expanded == Some(Kind::Chat) {
+            self.database.workspace.expanded = None;
         }
     }
     pub(super) fn focus_window(&mut self, id: u64) {
@@ -125,7 +154,7 @@ impl App {
             self.database.workspace.visible.insert(Kind::Sql, source);
         }
         self.database.workspace.focused = id;
-        self.database.ui.assistant_expanded = false;
+        self.release_expanded_chat(kind);
         self.database.workspace.active = kind.pane();
         self.database.workspace.minimized.remove(&kind.pane());
         if self.database.workspace.expanded.is_some() {
@@ -207,6 +236,10 @@ impl App {
             .visible
             .insert(Kind::Map, self.database.document.id);
         self.database.workspace.focused = self.database.document.id;
+        // The assistant starts as it was last left, in any database.
+        if !self.preferences.panels.assistant {
+            self.database.workspace.minimized.insert(Kind::Chat);
+        }
         self.open_sql_window(false);
         self.focus_pane(Kind::Map);
     }
@@ -276,39 +309,88 @@ impl App {
             self.database.workspace.expanded = None;
         }
     }
-    /// Whether Record, Structure and SQL are folded to a line.
-    pub(super) fn tiles_folded(&self) -> bool {
-        tiling::folded(&self.database.workspace.minimized, 2..5)
-    }
-    /// Fold Record, Structure and SQL to a line, or open the ones that were
-    /// open before (all three if none were).
-    pub(super) fn toggle_tiles_column(&mut self) {
-        let column = &Kind::PANES[2..5];
+    /// Fold a column to a line, or open the tiles that were open before it
+    /// folded (all of them if none were).
+    pub(super) fn toggle_column(&mut self, column: usize) {
         let workspace = &mut self.database.workspace;
-        if tiling::folded(&workspace.minimized, 2..5) {
-            let open = std::mem::take(&mut workspace.unfold);
-            for kind in if open.is_empty() { column } else { &open[..] } {
-                workspace.minimized.remove(kind);
-            }
+        if column >= workspace.layout.columns.len() {
+            return;
+        }
+        if workspace.layout.all_minimized(column, &workspace.minimized) {
+            workspace.layout.unfold(column, &mut workspace.minimized);
         } else {
-            workspace.unfold = column
-                .iter()
-                .copied()
-                .filter(|kind| !workspace.minimized.contains(kind))
-                .collect();
-            workspace.minimized.extend(column);
-            if workspace
-                .expanded
-                .is_some_and(|kind| column.contains(&kind.pane()))
-            {
+            workspace.layout.fold(column, &mut workspace.minimized);
+            if workspace.expanded.is_some_and(|kind| {
+                workspace.layout.columns[column]
+                    .tiles
+                    .contains(&kind.pane())
+            }) {
                 workspace.expanded = None;
             }
         }
         self.save_workspace();
     }
+    /// Fold or reopen the column that holds the focused tile.
+    pub(super) fn toggle_tiles_column(&mut self) {
+        let workspace = &self.database.workspace;
+        if let Some(column) = workspace.layout.column_of(workspace.active) {
+            self.toggle_column(column);
+        }
+    }
+    /// Restore every minimized tile. The assistant stays as it is: it is shown
+    /// and hidden on its own.
     pub(super) fn retile(&mut self) {
-        self.database.workspace.minimized.clear();
+        self.database
+            .workspace
+            .minimized
+            .retain(|kind| *kind == Kind::Chat);
         self.database.workspace.expanded = None;
+    }
+    /// Whether "Restore all tiles" has anything to restore.
+    pub(super) fn tiles_restorable(&self) -> bool {
+        let workspace = &self.database.workspace;
+        workspace.expanded.is_some() || workspace.minimized.iter().any(|kind| *kind != Kind::Chat)
+    }
+    /// Return this database to the default layout. Open tables stay open.
+    pub(super) fn reset_layout(&mut self) {
+        let workspace = &mut self.database.workspace;
+        workspace.layout = Default::default();
+        workspace.drag = None;
+        self.retile();
+        self.save_workspace();
+        self.database.status = "Layout reset to the default for this database".into();
+    }
+    /// Move the focused tile one step: into the neighbouring column, up or
+    /// down its own, or right from the last column into a new one.
+    pub(super) fn move_focused_tile(&mut self, direction: tiling::Direction) {
+        let workspace = &self.database.workspace;
+        if workspace.expanded.is_some() {
+            return;
+        }
+        let kind = workspace.active;
+        if let Some(target) = workspace.layout.step(
+            kind,
+            direction,
+            workspace.area.width(),
+            &workspace.minimized,
+        ) {
+            self.move_tile(kind, target);
+        }
+    }
+    pub(super) fn move_tile(&mut self, kind: Kind, target: tiling::Target) {
+        if self.database.workspace.layout.move_tile(kind, target) {
+            self.focus_pane(kind);
+            self.save_workspace();
+        }
+    }
+    pub(super) fn workspace_frame(&self) -> tiling::Frame {
+        let workspace = &self.database.workspace;
+        tiling::layout(
+            workspace.area,
+            workspace.expanded,
+            &workspace.minimized,
+            &workspace.layout,
+        )
     }
     pub(super) fn tiled_workspace(&mut self, ui: &mut egui::Ui) {
         self.database.workspace.area = ui.available_rect_before_wrap();
@@ -317,58 +399,36 @@ impl App {
             self.database.workspace.tiles.clear();
             self.database.workspace.pane_rects.clear();
             self.database.workspace.controls.clear();
+            self.database.workspace.grips.clear();
         }
-        let mut panes = tiling::layout(
-            self.database.workspace.area,
-            self.database.workspace.expanded,
-            &self.database.workspace.minimized,
-            &self.database.workspace.splits,
-        );
-        if self.workspace_dividers(ui, &panes) {
-            panes = tiling::layout(
-                self.database.workspace.area,
-                self.database.workspace.expanded,
-                &self.database.workspace.minimized,
-                &self.database.workspace.splits,
-            );
+        let mut frame = self.workspace_frame();
+        if self.workspace_dividers(ui, &frame) {
+            frame = self.workspace_frame();
         }
         let pointer_on_workspace = ui
             .ctx()
             .pointer_interact_pos()
             .is_some_and(|p| ui.ctx().layer_id_at(p) == Some(ui.layer_id()));
         // A column whose tiles are all minimized is drawn as one line instead.
-        let minimized = &self.database.workspace.minimized;
-        let folds: Vec<_> = if panes.len() == 5 {
-            [
-                (0..2, "Show Relationships and Table data"),
-                (2..5, "Show Record, Structure and SQL"),
-            ]
-            .into_iter()
-            .filter(|(range, _)| tiling::folded(minimized, range.clone()))
-            .filter(|_| !(tiling::folded(minimized, 0..2) && tiling::folded(minimized, 2..5)))
-            .map(|(range, name)| {
-                let x = panes[range.start].1.x_range();
-                let area = self.database.workspace.area;
-                (range, name, egui::Rect::from_x_y_ranges(x, area.y_range()))
-            })
-            .collect()
-        } else {
-            vec![]
-        };
-        for (range, name, rect) in &folds {
-            if presentation::fold_line(ui, *rect, range.start, name).clicked() {
-                if range.start == 2 {
-                    self.toggle_tiles_column();
-                } else {
-                    for kind in &Kind::PANES[range.clone()] {
-                        self.database.workspace.minimized.remove(kind);
-                    }
-                }
+        let mut hidden = BTreeSet::new();
+        for (column, lane) in frame.columns.iter().enumerate() {
+            if !lane.folded {
+                continue;
+            }
+            let layout = &self.database.workspace.layout;
+            hidden.extend(layout.columns[column].tiles.iter().copied());
+            let name = format!("Show {}", layout.names(column));
+            if presentation::fold_line(ui, lane.rect, ("column", column), &name).clicked() {
+                self.toggle_column(column);
             }
         }
-        for (index, (kind, rect)) in panes.into_iter().enumerate() {
-            if folds.iter().any(|(range, _, _)| range.contains(&index)) {
+        for (kind, rect) in frame.tiles.iter().copied() {
+            if hidden.contains(&kind) {
                 continue;
+            }
+            // The assistant has no document of its own; it sees the focused one.
+            if kind == Kind::Chat {
+                self.switch_document(self.database.workspace.focused);
             }
             let owner = self.pane_document(kind);
             if let Some(id) = owner {
@@ -388,6 +448,9 @@ impl App {
             #[cfg(test)]
             {
                 self.database.workspace.pane_rects.push((kind, rect));
+                if kind == Kind::Chat {
+                    self.database.ui.assistant_rect = rect;
+                }
                 if let Some(id) = owner {
                     self.database.workspace.tiles.push((id, rect));
                 }
@@ -470,7 +533,9 @@ impl App {
                         |ui| {
                             ui.set_clip_rect(body.intersect(ui.clip_rect()));
                             ui.set_max_size(body.size());
-                            if let Some(id) = self.pane_document(kind) {
+                            if kind == Kind::Chat {
+                                self.assistant_body(ui);
+                            } else if let Some(id) = self.pane_document(kind) {
                                 self.switch_document(id);
                                 self.pane_content(ui, kind);
                             } else {
@@ -481,7 +546,9 @@ impl App {
                                     }
                                     Kind::Map => (Icon::Map, "No relationships to display"),
                                     Kind::Sql => (Icon::Sql, "Empty SQL editor"),
-                                    Kind::Data | Kind::Result => (Icon::Data, "No rows to display"),
+                                    Kind::Data | Kind::Result | Kind::Chat => {
+                                        (Icon::Data, "No rows to display")
+                                    }
                                 };
                                 icons::empty_state(ui, icon, description);
                             }
@@ -489,8 +556,145 @@ impl App {
                     );
                 },
             );
+            self.tile_grip(ui, kind, rect);
         }
+        self.tile_drag(ui, &frame);
         self.switch_document(self.database.workspace.focused);
+    }
+    /// The grip at the left of a tile's header. Dragging it moves the tile.
+    fn tile_grip(&mut self, ui: &mut egui::Ui, kind: Kind, rect: egui::Rect) {
+        if self.database.workspace.expanded.is_some() {
+            return;
+        }
+        let grip = egui::Rect::from_min_max(
+            rect.min + egui::vec2(1.0, 1.0),
+            egui::pos2(
+                rect.left() + GRIP,
+                (rect.top() + tiling::BAR - 4.0).min(rect.bottom()),
+            ),
+        );
+        #[cfg(test)]
+        self.database.workspace.grips.push((kind, grip));
+        let name = format!("Move {}", kind.label());
+        let response = ui
+            .interact(
+                grip,
+                ui.scope_id().with(("tile-grip", kind)),
+                egui::Sense::drag(),
+            )
+            .on_hover_cursor(egui::CursorIcon::Grab)
+            .on_hover_text(format!(
+                "{name}\nDrag onto a column, or past the last one to start a column\nAlt Shift arrows move the focused tile"
+            ));
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &name));
+        let held = self
+            .database
+            .workspace
+            .drag
+            .is_some_and(|drag| drag.kind == kind && !drag.cancelled);
+        let tokens = crate::appearance::Tokens::of(ui.ctx());
+        let color = if response.hovered() || held {
+            tokens.primary
+        } else {
+            tokens.muted
+        };
+        for dy in [-6.0, 0.0, 6.0] {
+            ui.painter()
+                .circle_filled(grip.center() + egui::vec2(0.0, dy), 1.5, color);
+        }
+        if response.drag_started() {
+            self.database.workspace.drag = Some(TileDrag {
+                kind,
+                target: None,
+                cancelled: false,
+            });
+        }
+    }
+    /// Follow a tile dragged by its grip: mark where it would land and move it
+    /// there on release. Escape leaves it where it was.
+    fn tile_drag(&mut self, ui: &mut egui::Ui, frame: &tiling::Frame) {
+        let Some(mut drag) = self.database.workspace.drag else {
+            return;
+        };
+        let (pointer, down) = ui.input(|i| (i.pointer.latest_pos(), i.pointer.primary_down()));
+        let workspace = &mut self.database.workspace;
+        drag.target = pointer.filter(|_| !drag.cancelled).and_then(|pointer| {
+            tiling::drop_target(
+                pointer,
+                drag.kind,
+                frame,
+                &workspace.layout,
+                &workspace.minimized,
+                workspace.area,
+            )
+        });
+        if !down {
+            workspace.drag = None;
+            if let Some(target) = drag.target {
+                self.move_tile(drag.kind, target);
+            }
+            return;
+        }
+        workspace.drag = Some(drag);
+        let workspace = &self.database.workspace;
+        ui.ctx().request_repaint();
+        if drag.cancelled {
+            return;
+        }
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        let tokens = crate::appearance::Tokens::of(ui.ctx());
+        let painter = ui.ctx().layer_painter(egui::LayerId::new(
+            egui::Order::Tooltip,
+            egui::Id::unique("tile-drag"),
+        ));
+        if let Some(rect) = frame.rect(drag.kind) {
+            painter.rect_filled(rect, 10.0, ui.visuals().panel_fill.gamma_multiply(0.6));
+        }
+        if let Some(target) = drag.target {
+            let marker = tiling::marker(target, frame, &workspace.layout, workspace.area);
+            painter.rect_filled(marker.expand(3.0), 5.0, tokens.primary.gamma_multiply(0.25));
+            painter.rect_filled(marker, 2.0, tokens.primary);
+        }
+        if let Some(pointer) = pointer {
+            // A small copy of the tile's header follows the pointer.
+            let label = painter.layout_no_wrap(
+                drag.kind.label().into(),
+                crate::appearance::proportional(ui.ctx(), icons::RIBBON_TEXT_SIZE),
+                ui.visuals().text_color(),
+            );
+            let ghost = egui::Rect::from_min_size(
+                pointer + egui::vec2(12.0, 10.0),
+                egui::vec2(label.size().x + 52.0, 30.0),
+            );
+            painter.rect(
+                ghost,
+                8.0,
+                tokens.raised,
+                egui::Stroke::new(1.0, tokens.primary.gamma_multiply(0.5)),
+                egui::StrokeKind::Inside,
+            );
+            for dy in [-6.0, 0.0, 6.0] {
+                painter.circle_filled(
+                    ghost.left_center() + egui::vec2(8.0, dy),
+                    1.5,
+                    tokens.primary,
+                );
+            }
+            icons::paint(
+                &painter,
+                egui::Rect::from_center_size(
+                    ghost.left_center() + egui::vec2(26.0, 0.0),
+                    egui::vec2(16.0, 16.0),
+                ),
+                tile_icon(drag.kind),
+                ui.visuals().text_color(),
+            );
+            painter.galley(
+                egui::pos2(ghost.left() + 40.0, ghost.center().y - label.size().y / 2.0),
+                label,
+                ui.visuals().text_color(),
+            );
+        }
     }
     fn minimized_pane_title(&mut self, ui: &mut egui::Ui, kind: Kind) {
         let document = &self.database.document;
@@ -572,8 +776,8 @@ impl App {
         super::presentation::text_at(
             ui,
             egui::Rect::from_min_max(
-                rect.min + egui::vec2(5.0, 0.0),
-                egui::pos2(right.max(rect.left() + 6.0), rect.bottom()),
+                rect.min + egui::vec2(10.0, 0.0),
+                egui::pos2(right.max(rect.left() + 11.0), rect.bottom()),
             ),
             &title,
             ui.visuals().text_color(),
@@ -598,12 +802,14 @@ impl App {
             self.focus_pane(kind);
         }
     }
-    fn workspace_dividers(&mut self, ui: &mut egui::Ui, panes: &[(Kind, egui::Rect)]) -> bool {
+    fn workspace_dividers(&mut self, ui: &mut egui::Ui, frame: &tiling::Frame) -> bool {
         let mut changed = false;
+        let workspace = &self.database.workspace;
         for (divider, rect) in tiling::dividers(
-            panes,
-            &self.database.workspace.minimized,
-            self.database.workspace.area,
+            frame,
+            &workspace.layout,
+            &workspace.minimized,
+            workspace.area,
         ) {
             let response = ui
                 .interact(
@@ -630,12 +836,10 @@ impl App {
                 };
                 let movement = if divider.vertical() { delta.x } else { delta.y };
                 if movement != 0.0 {
-                    self.database.workspace.splits.resize(
-                        divider,
-                        delta,
-                        panes,
-                        &self.database.workspace.minimized,
-                    );
+                    let workspace = &mut self.database.workspace;
+                    workspace
+                        .layout
+                        .resize(divider, delta, frame, &workspace.minimized);
                     changed = true;
                     ui.ctx().request_repaint();
                 }
@@ -651,29 +855,25 @@ impl App {
                     .line_segment(line, egui::Stroke::new(2.0, color));
             }
             if response.drag_stopped() {
-                // Dragging the column divider into an edge folds that column to a line.
-                let area = self.database.workspace.area;
+                // Dragging a column divider far into a column folds that column to a line.
                 let edge = tiling::MIN_WIDTH / 2.0;
-                if divider == tiling::Divider::Columns
+                if let tiling::Divider::Columns(left) = divider
                     && let Some(x) = ui.input(|i| i.pointer.latest_pos()).map(|p| p.x)
+                    && let (Some(a), Some(b)) =
+                        (frame.columns.get(left), frame.columns.get(left + 1))
                 {
-                    let column = if x > area.right() - edge {
-                        Some(2..5)
-                    } else if x < area.left() + edge {
-                        Some(0..2)
+                    let column = if x > b.rect.right() - edge {
+                        Some(left + 1)
+                    } else if x < a.rect.left() + edge {
+                        Some(left)
                     } else {
                         None
                     };
-                    if column.clone().is_some_and(|c| c.start == 2) {
-                        if !self.tiles_folded() {
-                            self.toggle_tiles_column();
+                    if let Some(column) = column {
+                        let workspace = &self.database.workspace;
+                        if !workspace.layout.all_minimized(column, &workspace.minimized) {
+                            self.toggle_column(column);
                         }
-                        changed = true;
-                    } else if let Some(column) = column {
-                        self.database
-                            .workspace
-                            .minimized
-                            .extend(&Kind::PANES[column]);
                         changed = true;
                     }
                 }
@@ -741,6 +941,7 @@ impl App {
                     });
             }
             Kind::Sql => self.sql_pane(ui),
+            Kind::Chat => self.assistant_body(ui),
             Kind::Data | Kind::Result => {
                 if self.database.document.has_drafts()
                     || self.database.commit_owner == Some(self.database.document.id)
@@ -781,7 +982,7 @@ impl App {
             // editor and its results drags to change it.
             let total = ui.available_height();
             let range = 45.0..=(total - 80.0).max(45.0);
-            let height = (total * self.database.workspace.splits.sql_editor)
+            let height = (total * self.database.workspace.layout.sql_editor)
                 .clamp(*range.start(), *range.end());
             let panel = egui::Panel::top("sql-editor")
                 .resizable(false)
@@ -804,7 +1005,7 @@ impl App {
             });
             if response.dragged() && total > 0.0 {
                 let height = (height + response.drag_delta().y).clamp(*range.start(), *range.end());
-                self.database.workspace.splits.sql_editor = (height / total).clamp(0.01, 0.99);
+                self.database.workspace.layout.sql_editor = (height / total).clamp(0.01, 0.99);
                 ui.ctx().request_repaint();
             }
             if response.hovered() || response.dragged() {
@@ -842,8 +1043,12 @@ pub(crate) struct Snapshot {
     minimized: BTreeSet<Kind>,
     #[serde(default)]
     active: Option<Kind>,
-    #[serde(default)]
-    splits: tiling::Splits,
+    /// Where every tile sits. Absent in layouts saved before tiles could move.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    layout: Option<tiling::Layout>,
+    /// The two-column splits those older layouts saved instead.
+    #[serde(default, skip_serializing)]
+    splits: Option<tiling::Splits>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub(crate) struct SavedView {
@@ -857,7 +1062,8 @@ impl Snapshot {
             || !std::path::Path::new(&self.database).is_absolute()
             || self.views.is_empty()
             || self.views.len() > MAX_VIEWS
-            || !self.splits.valid()
+            || self.layout.as_ref().is_some_and(|layout| !layout.valid())
+            || self.splits.is_some_and(|splits| !splits.valid())
         {
             return false;
         }
@@ -877,7 +1083,7 @@ impl Snapshot {
                             .object
                             .as_ref()
                             .is_some_and(|s| !s.is_empty() && s.len() <= 4096),
-                        Kind::Result | Kind::Record => false,
+                        Kind::Result | Kind::Record | Kind::Chat => false,
                     }
             })
     }
@@ -918,7 +1124,8 @@ impl App {
             expanded: self.database.workspace.expanded.map(|_| focused),
             active: Some(self.database.workspace.active),
             minimized: self.database.workspace.minimized.clone(),
-            splits: self.database.workspace.splits,
+            layout: Some(self.database.workspace.layout.clone()),
+            splits: None,
         };
         saved.valid().then_some(saved)
     }
@@ -932,6 +1139,9 @@ impl App {
         if let Some(snapshot) = self.workspace_snapshot() {
             self.preferences.workspace_layouts.insert(0, snapshot);
         }
+        // A database opened for the first time starts with the assistant as it was last left.
+        self.preferences.panels.assistant =
+            !self.database.workspace.minimized.contains(&Kind::Chat);
         self.preferences.normalize();
         self.store.save(&self.preferences);
     }
@@ -991,7 +1201,15 @@ impl App {
         self.database.workspace.active = active;
         self.database.workspace.expanded = saved.expanded.map(|_| active);
         self.database.workspace.minimized = saved.minimized;
-        self.database.workspace.splits = saved.splits;
+        // A layout saved before the assistant was a tile says nothing about it.
+        if saved.layout.is_none() && !self.preferences.panels.assistant {
+            self.database.workspace.minimized.insert(Kind::Chat);
+        }
+        self.database.workspace.layout = saved
+            .layout
+            .or(saved.splits.map(Into::into))
+            .unwrap_or_default();
+        self.database.workspace.drag = None;
         if let Some(id) = self.pane_document(active) {
             self.switch_document(id);
             self.database.workspace.focused = id;

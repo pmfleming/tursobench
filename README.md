@@ -17,6 +17,7 @@ The agent reaches the database only through TursoBench's MCP tools, limited to s
 
 Native Linux/Wayland workbench for inspecting, querying and editing local Turso databases.
 Five linked tiles combine relational navigation, typed data, schema metadata and SQL execution.
+Tiles sit in columns you arrange per database: drag one by its grip into another column, or past the last column to start a new one.
 
 Rust 1.95 · eframe/egui 0.37 · Turso 0.8.3 with native FTS enabled.
 Each database session serializes engine work on a dedicated thread with a current-thread Tokio runtime; the GUI holds no engine handles.
@@ -85,10 +86,10 @@ Database admission uses a configurable count and estimated memory budget; switch
 
 ## Assistant
 
-![Assistant panel with a seeded conversation, database tool calls and an unexecuted SQL proposal](docs/assets/ui/readme/assistant.png)
+![Assistant tile with a seeded conversation, database tool calls and an unexecuted SQL proposal](docs/assets/ui/readme/assistant.png)
 
 Use Claude Code, Codex or ACP agents to inspect schema, query shared data and propose SQL.
-One picker chooses the agent, model and reasoning level; sharing controls live in the panel, which expands to the workspace like a tile. The screenshot uses a seeded conversation.
+One picker chooses the agent, model and reasoning level; sharing controls live in its header. The assistant is a tile: it moves, stacks, folds and expands to the workspace like the others. The screenshot uses a seeded conversation.
 
 MCP tools expose metadata, bounded reads and SQL proposals according to the selected sharing scope.
 Queries pass parser checks and run on a dedicated `query_only` connection, capped at 200 rows / 256 KiB.

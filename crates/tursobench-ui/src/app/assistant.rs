@@ -422,11 +422,16 @@ impl App {
         }
     }
 
+    /// The assistant as a side panel, beside the database chooser.
     pub(super) fn assistant_ui(&mut self, ui: &mut egui::Ui) {
+        self.assistant_header(ui, false);
+        ui.separator();
+        self.assistant_body(ui);
+    }
+    /// The conversation and its input, below the header.
+    pub(super) fn assistant_body(&mut self, ui: &mut egui::Ui) {
         self.poll_assistant();
         self.check_selected_assistant(ui.ctx());
-        self.assistant_header(ui);
-        ui.separator();
         let Some(_) = self.assistant_database() else {
             icons::empty_state(
                 ui,
@@ -474,12 +479,21 @@ impl App {
         }
     }
 
-    fn assistant_header(&mut self, ui: &mut egui::Ui) {
+    /// `tile`: the header of the assistant tile, which minimizes and leaves
+    /// room for the grip like every tile's.
+    pub(super) fn assistant_header(&mut self, ui: &mut egui::Ui, tile: bool) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
+            if tile {
+                ui.set_min_height(icons::RIBBON_BUTTON_SIZE);
+                ui.add_space(super::presentation::BAR_INSET);
+            }
             let name = self.preferences.assistant.provider.vendor().name;
             // The icons claim their room first; the agent picker gets the rest.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if tile {
+                    ui.add_space(super::presentation::BAR_INSET);
+                }
                 // The same control, place and wording as a tile's expand button.
                 let expanded = self.assistant_expanded();
                 let expand = ui
@@ -500,6 +514,12 @@ impl App {
                     .inner;
                 if expand.clicked() {
                     self.toggle_assistant_expanded();
+                }
+                if tile
+                    && icons::control(ui, Icon::Minimize, "Minimize to header", "", false, false)
+                        .clicked()
+                {
+                    self.set_assistant_shown(false);
                 }
                 ui.separator();
                 if let Some(current) = self.assistant_sharing() {

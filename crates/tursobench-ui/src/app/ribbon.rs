@@ -369,6 +369,10 @@ impl App {
     }
 
     pub(super) fn pane_ribbon(&mut self, ui: &mut egui::Ui, kind: Kind, available: bool) {
+        if kind == Kind::Chat {
+            self.assistant_header(ui, true);
+            return;
+        }
         if kind == Kind::Record
             && self.database.document.inspect.is_none()
             && !self.database.document.result.rows.is_empty()
@@ -385,8 +389,7 @@ impl App {
                 icons::RIBBON_TEXT_SIZE,
             ));
             ui.spacing_mut().interact_size.y = icons::RIBBON_BUTTON_SIZE;
-            let show_restore = !self.database.workspace.minimized.is_empty()
-                || self.database.workspace.expanded.is_some();
+            let show_restore = self.tiles_restorable();
             let controls_width = 2.0 * icons::RIBBON_BUTTON_SIZE
                 + 20.0
                 + if show_restore {
@@ -715,6 +718,7 @@ impl Kind {
     fn ribbon_actions(self) -> &'static [(Action, Icon, &'static str)] {
         use Action::*;
         match self {
+            Kind::Chat => &[],
             Kind::Data => &[
                 (Refresh, Icon::Refresh, "Refresh"),
                 (Count, Icon::Count, "Count table rows (full scan)"),

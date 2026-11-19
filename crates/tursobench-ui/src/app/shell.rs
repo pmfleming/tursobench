@@ -52,8 +52,6 @@ pub(super) struct UiState {
     pub palette_index: usize,
     pub export_open: bool,
     pub access_dialog: bool,
-    /// The chat fills the workspace in place of the tiles, like an expanded tile.
-    pub assistant_expanded: bool,
     pub font_rx: Option<std::sync::mpsc::Receiver<(egui::FontDefinitions, String)>>,
     pub font_label: String,
     #[cfg(test)]
@@ -85,7 +83,6 @@ impl UiState {
             palette_index: 0,
             export_open: false,
             access_dialog: false,
-            assistant_expanded: false,
             font_rx: Some(crate::appearance::system_fonts(ctx.clone())),
             font_label: "Loading system fonts; built-in fallback available".into(),
             #[cfg(test)]
@@ -132,19 +129,20 @@ impl App {
                     egui::Key::Enter,
                 )
             }) {
-                if self.assistant_expanded() {
-                    self.toggle_assistant_expanded();
-                } else {
-                    self.expand_window(self.database.workspace.focused);
-                }
+                self.expand_window(self.database.workspace.focused);
             }
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Tab)) {
-                let panes = super::tiling::Kind::PANES;
+                // Left to right, top to bottom. A hidden assistant stays hidden.
+                let workspace = &self.database.workspace;
+                let mut panes = workspace.layout.order();
+                panes.retain(|kind| {
+                    *kind != super::tiling::Kind::Chat || !workspace.minimized.contains(kind)
+                });
                 let index = panes
                     .iter()
-                    .position(|kind| *kind == self.database.workspace.active)
-                    .unwrap_or(0);
-                self.focus_pane(panes[(index + 1) % panes.len()]);
+                    .position(|kind| *kind == workspace.active)
+                    .map_or(0, |index| index + 1);
+                self.focus_pane(panes[index % panes.len()]);
             }
         }
         self.shortcuts(&ctx);
@@ -190,16 +188,15 @@ impl App {
         ) {
             self.toggle_sidebar();
         }
-        // Navigation stays on the left; the assistant reserves the right edge,
-        // or takes the whole workspace when expanded.
-        let chat_fills = self.assistant_expanded();
-        if chat_fills {
-            // Drawn in the central panel below.
+        // With a database open the assistant is a tile among the others. Until
+        // then it keeps the right edge, beside the database chooser.
+        if self.workspace_tiled() {
+            // Drawn with the tiles in the central panel below.
         } else if !self.preferences.panels.assistant {
             if self.fold_panel(
                 ui,
                 egui::Panel::right("assistant-panel-line"),
-                "Show assistant",
+                "Show Assistant",
             ) {
                 self.toggle_assistant();
             }
@@ -218,17 +215,7 @@ impl App {
             let _ = panel;
         }
         self.status_bar(ui);
-        if chat_fills {
-            let panel = egui::CentralPanel::default().show(ui, |ui| self.assistant_ui(ui));
-            #[cfg(test)]
-            {
-                self.database.ui.assistant_rect = panel.response.rect;
-            }
-            #[cfg(not(test))]
-            let _ = panel;
-        } else {
-            egui::CentralPanel::default().show(ui, |ui| self.workspace_ui(ui));
-        }
+        egui::CentralPanel::default().show(ui, |ui| self.workspace_ui(ui));
         self.edit_windows(&ctx);
         self.inspection_surfaces(&ctx);
         self.command_palette(&ctx);
@@ -375,24 +362,15 @@ impl App {
                             Icon::Assistant,
                             "Assistant",
                             "Ctrl I",
-                            self.preferences.panels.assistant,
+                            self.assistant_shown(),
                             false,
                         )
                         .clicked()
                         {
                             self.toggle_assistant();
                         }
-                        if icons::control(
-                            ui,
-                            Icon::TilesColumn,
-                            "Record, Structure and SQL",
-                            "Ctrl L",
-                            !self.tiles_folded(),
-                            false,
-                        )
-                        .clicked()
-                        {
-                            self.toggle_tiles_column();
+                        if self.workspace_tiled() {
+                            self.column_map(ui);
                         }
                         ui.separator();
                         self.status_details(ui)
@@ -440,27 +418,138 @@ impl App {
         self.preferences.panels.sidebar = !self.preferences.panels.sidebar;
         self.save_panels();
     }
-    pub(super) fn toggle_assistant(&mut self) {
-        self.preferences.panels.assistant = !self.preferences.panels.assistant;
-        if self.preferences.panels.assistant {
+    /// Whether the tiles are on screen, rather than the database chooser or
+    /// a database that is still opening.
+    pub(super) fn workspace_tiled(&self) -> bool {
+        match self.database.session {
+            None => self.database.document.ui.nav != Nav::Databases,
+            Some(_) => self.database.ready,
+        }
+    }
+    /// The assistant is a tile; hidden, it is minimized. Before a database is
+    /// open it is a side panel that remembers the same choice.
+    pub(super) fn assistant_shown(&self) -> bool {
+        if self.workspace_tiled() {
+            !self
+                .database
+                .workspace
+                .minimized
+                .contains(&super::tiling::Kind::Chat)
+        } else {
+            self.preferences.panels.assistant
+        }
+    }
+    pub(super) fn set_assistant_shown(&mut self, show: bool) {
+        use super::tiling::Kind;
+        self.preferences.panels.assistant = show;
+        let workspace = &mut self.database.workspace;
+        if show {
+            workspace.minimized.remove(&Kind::Chat);
             self.assistant_focus();
         } else {
-            self.database.ui.assistant_expanded = false;
+            workspace.minimized.insert(Kind::Chat);
+            if workspace.expanded == Some(Kind::Chat) {
+                workspace.expanded = None;
+            }
         }
         self.save_panels();
+        self.save_workspace();
     }
-    /// Whether the chat fills the workspace. It can only while it is shown
-    /// and has a database to talk about.
+    pub(super) fn toggle_assistant(&mut self) {
+        self.set_assistant_shown(!self.assistant_shown());
+    }
+    /// Whether the chat fills the workspace, like any expanded tile.
     pub(super) fn assistant_expanded(&self) -> bool {
-        self.database.ui.assistant_expanded
-            && self.preferences.panels.assistant
-            && self.assistant_database().is_some()
+        self.workspace_tiled()
+            && self.database.workspace.expanded == Some(super::tiling::Kind::Chat)
     }
     /// Expand the chat to the workspace, or give the workspace back to the tiles.
     pub(super) fn toggle_assistant_expanded(&mut self) {
-        self.database.ui.assistant_expanded = !self.assistant_expanded();
-        if self.database.ui.assistant_expanded {
+        self.expand_pane(super::tiling::Kind::Chat);
+        if self.assistant_expanded() {
             self.assistant_focus();
+        }
+    }
+    /// A small picture of the columns in the status bar. Each column folds to
+    /// a line, or reopens, on a click.
+    fn column_map(&mut self, ui: &mut egui::Ui) {
+        const HEIGHT: f32 = 18.0;
+        let tokens = crate::appearance::Tokens::of(ui.ctx());
+        let folds = {
+            let workspace = &self.database.workspace;
+            workspace.layout.folds(&workspace.minimized)
+        };
+        let mut toggled = None;
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            // The bar fills right to left, so the last column is added first.
+            for column in (0..self.database.workspace.layout.columns.len()).rev() {
+                let workspace = &self.database.workspace;
+                let folded = folds[column];
+                let names = workspace.layout.names(column);
+                let (rect, response) = ui.allocate_exact_size(
+                    egui::vec2(if folded { 6.0 } else { 12.0 }, 24.0),
+                    egui::Sense::click(),
+                );
+                response.widget_info(|| {
+                    egui::WidgetInfo::selected(
+                        egui::Role::Button,
+                        ui.is_enabled(),
+                        !folded,
+                        format!("Column: {names}"),
+                    )
+                });
+                let base = if response.hovered() {
+                    ui.visuals().text_color()
+                } else {
+                    tokens.muted
+                };
+                let picture = egui::Rect::from_center_size(
+                    rect.center(),
+                    egui::vec2(if folded { 3.0 } else { rect.width() }, HEIGHT),
+                );
+                if folded {
+                    ui.painter().rect_filled(picture, 1.5, base);
+                } else {
+                    let tiles = &workspace.layout.columns[column].tiles;
+                    let small = |kind| workspace.minimized.contains(kind);
+                    let gaps = 2.0 * (tiles.len() - 1) as f32;
+                    let bars = 2.0 * tiles.iter().filter(|kind| small(kind)).count() as f32;
+                    let open = tiles.iter().filter(|kind| !small(kind)).count().max(1) as f32;
+                    let cell = ((HEIGHT - gaps - bars) / open).max(2.0);
+                    let mut y = picture.top();
+                    for kind in tiles {
+                        let height = if small(kind) { 2.0 } else { cell };
+                        let color = if *kind == workspace.active && !small(kind) {
+                            tokens.primary
+                        } else {
+                            base
+                        };
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_max(
+                                egui::pos2(picture.left(), y),
+                                egui::pos2(picture.right(), y + height),
+                            ),
+                            1.5,
+                            color,
+                        );
+                        y += height + 2.0;
+                    }
+                }
+                let hint = if folded { "Show" } else { "Fold" };
+                if response
+                    .on_hover_text(format!(
+                        "{hint} {names}\nCtrl L folds the focused tile's column"
+                    ))
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    toggled = Some(column);
+                }
+            }
+        });
+        if let Some(column) = toggled {
+            self.toggle_column(column);
         }
     }
     fn save_panels(&mut self) {

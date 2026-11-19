@@ -52,7 +52,7 @@ fn a_conversation_shares_results_by_default_streams_tools_and_proposes_sql_witho
     );
     runtime_dir(&dir);
     scripted(&mut app, &dir);
-    app.preferences.panels.assistant = true;
+    app.set_assistant_shown(true);
     let database = app.database.tools.database_scope.clone();
     frame_at(&mut app, &ctx, SIZE, vec![]);
     assert_eq!(app.preferences.assistant.grant_for(&database), None);
@@ -419,7 +419,7 @@ fn each_agents_notice_shows_on_first_use_then_every_few_sessions() {
     use crate::storage::{AssistantPreferences, Provider};
     let (dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
     runtime_dir(&dir);
-    app.preferences.panels.assistant = true;
+    app.set_assistant_shown(true);
     let notice = "Privacy settings";
     let session = |app: &mut App| {
         // A new session forgets what this one decided.
@@ -445,7 +445,7 @@ fn each_agents_notice_shows_on_first_use_then_every_few_sessions() {
 fn an_empty_conversation_links_to_the_agents_privacy_settings() {
     let (dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
     runtime_dir(&dir);
-    app.preferences.panels.assistant = true;
+    app.set_assistant_shown(true);
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
     click(
         &mut app,
@@ -627,7 +627,7 @@ fn one_picker_changes_agent_model_and_favourites_with_each_agents_sharing() {
     let (dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
     runtime_dir(&dir);
     scripted(&mut app, &dir);
-    app.preferences.panels.assistant = true;
+    app.set_assistant_shown(true);
     app.set_assistant_sharing(Sharing::Schema);
     app.database.assistant.draft = "Hello".into();
     app.send_assistant(&ctx);
@@ -795,7 +795,7 @@ done
     executables.insert(Provider::Codex, codex);
     executables.insert(Provider::Claude, broken);
     app.preferences.assistant.provider = Provider::Codex;
-    app.preferences.panels.assistant = true;
+    app.set_assistant_shown(true);
     app.accounts.automatic = true;
 
     frame_at(&mut app, &ctx, SIZE, vec![]);
@@ -910,7 +910,7 @@ fn cancelling_or_failing_a_sign_in_keeps_the_last_status_and_models() {
 fn copy_buttons_write_the_reply_and_conversation_in_the_chosen_format() {
     use crate::storage::CopyFormat;
     let (_dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
-    app.preferences.panels.assistant = true;
+    app.set_assistant_shown(true);
     app.database.assistant.entries =
         vec![Entry::User("Hi".into()), Entry::Reply("**Done**".into())];
     let copied = |app: &mut App, name: &str| -> Vec<String> {
@@ -970,7 +970,7 @@ fn the_reasoning_level_changes_mid_conversation_and_follows_each_codex_model() {
     .unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     app.database.assistant.program = Some(script);
-    app.preferences.panels.assistant = true;
+    app.set_assistant_shown(true);
     app.database.assistant.draft = "Hello".into();
     app.send_assistant(&ctx);
     wait_until(&mut app, &ctx, |a| !a.database.assistant.busy);

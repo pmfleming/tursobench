@@ -17,6 +17,8 @@ const SCENES: &[&str] = &[
     "assistant-privacy.png",
     "assistant-expanded.png",
     "assistant-model-picker.png",
+    "tiles-moved.png",
+    "tiles-folded.png",
 ];
 
 impl App {
@@ -69,7 +71,7 @@ impl App {
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1366.0, 768.0)));
         self.preferences.appearance = Some(crate::appearance::Mode::Dark);
         self.preferences.panels.sidebar = true;
-        self.preferences.panels.assistant = true;
+        self.set_assistant_shown(true);
         match scene {
             0 => {}
             1 => {
@@ -83,7 +85,7 @@ impl App {
             }
             4 => {
                 self.preferences.panels.sidebar = false;
-                self.preferences.panels.assistant = false;
+                self.set_assistant_shown(false);
             }
             5 => {
                 use tursobench_assistant::{
@@ -116,11 +118,34 @@ impl App {
             7 => {
                 self.settings.open = false;
                 self.preferences.assistant.provider = crate::storage::Provider::Claude;
-                self.database.ui.assistant_expanded = true;
+                if !self.assistant_expanded() {
+                    self.toggle_assistant_expanded();
+                }
+            }
+            9 => {
+                // Structure joins the left column; SQL starts a column on the right.
+                use crate::app::tiling::{Kind, Target};
+                egui::Popup::close_all(ctx);
+                self.reset_layout();
+                self.move_tile(
+                    Kind::Structure,
+                    Target::Slot {
+                        column: 0,
+                        index: 1,
+                    },
+                );
+                self.move_tile(Kind::Sql, Target::NewColumn);
+                self.focus_pane(Kind::Data);
+            }
+            10 => {
+                // Any column folds to a line; here the one holding Record.
+                self.toggle_column(1);
             }
             _ => {
                 use crate::storage::{FavouriteModel, Provider};
-                self.database.ui.assistant_expanded = false;
+                if self.assistant_expanded() {
+                    self.toggle_assistant_expanded();
+                }
                 self.preferences
                     .assistant
                     .models

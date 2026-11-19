@@ -2,8 +2,8 @@
 
 ## README overview
 
-The `readme/` overview and tile images were captured on 2026-11-16 from the
-application code in `1e4278c` under
+The `readme/` overview and tile images were captured on 2026-11-19, with tiles
+in movable columns and the assistant as a tile, under
 headless Weston/Mesa, using disposable synthetic databases and isolated
 preferences. They use the application's explicit Dark mode, charcoal
 surfaces (`#141b18`, `#0c1210`) and mint accent (`#87d3ad`). The banner uses
@@ -17,9 +17,8 @@ retouching. No personal database is opened.
   `navigator.png`: individual tiles/panel cropped from the overview.
 - `sql.png`: expanded SQL tile with a real join and twelve result rows, using
   a second synthetic fixture with 120 snapshots and 120 history records.
-- `assistant.png`: panel cropped from a 1366 × 768 capture, with the model
-  picker, database tools and proposed SQL. Re-cropped on 2026-11-19 from the
-  `assistant/` conversation capture at `30ceb49`. The conversation is a seeded
+- `assistant.png`: the assistant tile cropped from a 1366 × 768 capture, with
+  the model picker, database tools and proposed SQL. The conversation is a seeded
   fixture; no agent CLI runs and nothing leaves the machine.
 - `edit-review.png`: retained from the 2026-11-15 capture at `aeb8938`; staged
   update, original-value predicates and typed bindings at 1366 × 768. The edit
@@ -83,7 +82,7 @@ with Image.open(out / 'workspace.png') as image:
 with Image.open(root / 'sql/sql-results.png') as image:
     image.crop((280, 8, 1774, 958)).save(out / 'sql.png', optimize=True)
 with Image.open(root / 'assistant/assistant-conversation.png') as image:
-    image.crop((995, 0, 1366, 768)).save(out / 'assistant.png', optimize=True)
+    image.crop((995, 8, 1358, 726)).save(out / 'assistant.png', optimize=True)
 PY
 ```
 
@@ -97,7 +96,7 @@ The PNG is 2400 × 440. Earlier capture sets below retain their original provena
 
 ## Assistant and panel visibility — native Wayland
 
-The `assistant/` captures were taken on 2026-11-18 with synthetic data and
+The `assistant/` captures were taken on 2026-11-19 with synthetic data and
 isolated preferences under headless Weston/Mesa at 1366×768. The conversation is
 a seeded visual fixture, as are the agent status/version rows: no agent CLI runs
 during the capture and nothing leaves
@@ -106,13 +105,15 @@ the machine.
 | Capture | Behaviour |
 | --- | --- |
 | [Consent](assistant/assistant-consent.png) | An empty conversation: who receives the data, with the two sharing icons in the header. |
-| [Conversation](assistant/assistant-conversation.png) | Right-side chat, the one model picker (agent badge, model and reasoning level), tool rows, a reply with a SQL block, and proposed SQL opened unrun in the SQL tile. |
+| [Conversation](assistant/assistant-conversation.png) | The assistant tile in the last column, the one model picker (agent badge, model and reasoning level), tool rows, a reply with a SQL block, and proposed SQL opened unrun in the SQL tile. |
 | [Without sidebar](assistant/assistant-without-sidebar.png) | Sidebar hidden, assistant shown. |
 | [Light](assistant/assistant-light.png) | The same in the light theme. |
-| [Both hidden](assistant/panels-hidden.png) | The workspace takes almost the full width; each hidden panel leaves a thin line that brings it back. |
+| [Both hidden](assistant/panels-hidden.png) | The tiles take almost the full width; the hidden sidebar and the assistant's folded column each leave a thin line that brings them back. |
 | [Settings](assistant/assistant-settings.png) | Local agent statuses, scan/retry, sign-in/out controls, executable override and per-agent privacy. |
 | [Privacy](assistant/assistant-privacy.png) | Codex's settings area (program, model and privacy choices), opened from the empty conversation's link. |
 | [Expanded](assistant/assistant-expanded.png) | The chat expanded to the workspace like a tile; the sidebar stays and the header icon restores the tiles. |
+| [Tiles moved](assistant/tiles-moved.png) | Structure dragged under Relationships and SQL into a new fourth column; the status bar's picture of the columns shows the arrangement. |
+| [Column folded](assistant/tiles-folded.png) | The same with Record's column folded to a line. |
 | [Model picker](assistant/assistant-model-picker.png) | The picker open: favourites and agents on the rail with status dots, searchable models with Ctrl 1–9 and a starred favourite, and the reasoning levels for the chosen model. |
 
 Reproduce with:

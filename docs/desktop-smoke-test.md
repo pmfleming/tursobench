@@ -156,11 +156,21 @@ build; primary smoke tests always run Wayland without an X server.
 
 ## Fixed workspace acceptance
 
-- Relationships is above Table data; Record, Structure and SQL occupy the right
-  column. All five tiles appear without a global ribbon or activity rail.
+- By default Relationships is above Table data, Record, Structure and SQL occupy
+  the next column and the assistant the last. All tiles appear without a global
+  ribbon or activity rail.
+- Drag a tile by the grip at the left of its header into another column: a line
+  marks the slot and the tile joins there. Drag one past the last column: a new
+  column starts on the right. No column starts on the left or between columns.
+  Move a column's last tile out: the column disappears. Escape cancels a drag.
+  Alt Shift arrows do the same for the focused tile. Reopen the database: the
+  arrangement returns. **Reset layout** in the palette restores the default for
+  this database only.
+- Fold each column from the status bar's picture of the columns and with Ctrl L;
+  click its line to bring back the tiles that were open.
 - Minimize every tile in turn, restore through its header, expand each tile and
   restore. Other minimized states persist; the database navigator stays visible.
-  Dragging a ribbon must not move a tile. Repeat at 1366×768 and 3440×1440, in
+  Dragging a ribbon scrolls it and must not move a tile; only the grip does. Repeat at 1366×768 and 3440×1440, in
   light and dark modes and with desktop scaling.
 - Click between tiles, then immediately use their icon actions. Tooltips and
   accessible names identify each action; narrow ribbons move actions into More.

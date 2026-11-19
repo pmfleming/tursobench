@@ -29,9 +29,10 @@ export XDG_CONFIG_HOME="$work/config"
 export TURSOBENCH_CAPTURE_DIR="$output"
 export TURSOBENCH_ASSISTANT_CAPTURE=1
 binary=${TURSOBENCH_BINARY:-target/debug/tursobench}
-python3 scripts/wayland-run.py --width 1440 --height 840 -- timeout 75 "$binary" --smoke-test "$work/sample.db"
+python3 scripts/wayland-run.py --width 1440 --height 840 -- timeout 90 "$binary" --smoke-test "$work/sample.db"
 for name in assistant-consent assistant-conversation assistant-without-sidebar \
-    assistant-light panels-hidden assistant-settings assistant-model-picker; do
+    assistant-light panels-hidden assistant-settings assistant-model-picker \
+    tiles-moved tiles-folded; do
   test -s "$output/$name.png" || { echo "missing $name.png" >&2; exit 1; }
 done
 echo "Assistant captures written to $output"

@@ -70,7 +70,7 @@ unsupported. Shared access is an experimental Linux preview feature.
 ## Features
 
 - Startup database discovery across application data/state and development folders, with recent files, Turso/SQLite/unknown type icons, a per-file SQLite override, and search-folder controls. See [discovery behavior and limits](database-discovery.md).
-- Persistent database navigator and five tiles with compact local ribbons, full-length draggable dividers, a draggable line between SQL and its results, minimize-to-header and workspace expansion. Tile proportions, including the SQL split, are saved per database.
+- Persistent database navigator and six tiles (Relationships, Table data, Record, Structure, SQL and the assistant) in columns you arrange: drag a tile by the grip at the left of its header into another column, or past the last column to start a new one. Compact local ribbons, full-length draggable dividers, a draggable line between SQL and its results, minimize-to-header and workspace expansion. The arrangement and proportions, including the SQL split, are saved per database; **Reset layout** in the command palette returns a database to the default.
 - Engine-enforced read-only opening by default; read/write is explicit opt-in.
 - Searchable schema/DDL, native index/FK details, related-row navigation and read-only diagnostics.
 - Relationship-arranged schema home: tables, keys, composite/self/cyclic FKs, Map/List fallback and saved map layout.
@@ -94,8 +94,9 @@ unsupported. Shared access is an experimental Linux preview feature.
   INSERTs; complete table/query JSONL export, mapped imports, checkpoint and backup.
 
 See the [UI guide and capability map](ui-redesign.md) for workspace navigation,
-responsive behavior, diagram limits and validation. Relationships sits above Table data;
-Record and Structure follow the selected table. SQL editors keep drafts and linked results
+responsive behavior, diagram limits and validation. By default Relationships sits above Table data,
+Record, Structure and SQL share the next column and the assistant has the last; tiles can be moved
+between columns. Record and Structure follow the selected table. SQL editors keep drafts and linked results
 inside the SQL tile. Within each database workspace, views share its editor session and transaction; different database workspaces are independent.
 Settings opens in one application-wide, resizable window over the workspace.
 The separate Settings button, the Settings command and Ctrl+, open the same window.
@@ -303,16 +304,29 @@ Sign out; sign out of ACP agents in their own CLI. Signing in or out of the
 agent you chat with ends its conversations; other agents’ account changes leave
 the chat running. Use Scan again after a manual terminal login.
 
-The assistant panel sits on the right. Show or hide it with the icon on the right
-of the status bar. The sidebar toggle stays on the left. Ctrl B (sidebar) and Ctrl I
-(assistant), or the command palette, toggle them independently. Either, both or neither can be visible, and
-the choice persists. A hidden panel leaves a thin line at its edge; click it to
-bring the panel back. Ctrl P search and close confirmations also bring a hidden
-sidebar back. The status-bar button next to the assistant's (Ctrl L) folds Record, Structure and
-SQL to a line the same way and reopens the tiles that were open; minimizing all
-three or dragging the column divider into the right edge also folds it.
+The assistant is a tile like the others, by default alone in the last column. Show or hide
+it with the icon on the right of the status bar. The sidebar toggle stays on the left. Ctrl B
+(sidebar) and Ctrl I (assistant), or the command palette, toggle them independently. A hidden
+sidebar leaves a thin line at its edge; click it to bring the sidebar back. Ctrl P search and
+close confirmations also bring it back. Hidden, the assistant is minimized: alone in its column
+it is the same thin line, and stacked with other tiles it is a header like theirs. Each database
+remembers whether its assistant is shown; a database opened for the first time starts as the
+assistant was last left. Before a database is open, the assistant is a panel on the right.
 
-Like a tile, the chat can expand to fill the workspace: use the icon at the right
+Tiles sit in columns, and any tile moves. Drag the grip (three dots) at the left of a tile's
+header onto another column and it joins at the slot under the pointer, marked by a line. Drag
+it past the last column and a new column starts on the right; columns never start on the left
+or between columns, and a new one is offered only while every column keeps its minimum width.
+A column whose last tile leaves is removed. Alt Shift ←/→ moves the focused tile into the
+neighbouring column (right from the last column starts a new one) and Alt Shift ↑/↓ reorders it
+within its column; the palette has the same commands. Escape cancels a drag. The layout is saved
+per database; **Reset layout** in the palette returns the open database to the default.
+
+Any column folds to a thin line: click it in the picture of the columns at the right of the
+status bar, press Ctrl L for the focused tile's column, minimize every tile in it, or drag a
+column divider far into it. Click the line, or the picture, to reopen the tiles that were open.
+
+Like any tile, the chat can expand to fill the workspace: use the icon at the right
 of its header, and the same icon or Ctrl Alt Enter to restore. The sidebar stays.
 Opening proposed SQL, or any tile taking focus, gives the workspace back to the tiles.
 
@@ -345,6 +359,8 @@ its history follows its own settings. The notice above an empty conversation lin
 agent is used and every fifth session after.
 
 ![Assistant on the right with a proposed UPDATE in the SQL tile.](assets/ui/assistant/assistant-conversation.png)
+
+![Structure moved under Relationships and SQL in a new fourth column.](assets/ui/assistant/tiles-moved.png)
 
 See the [assistant contract](../contracts/assistant.md) for what is sent, the
 read-only guards and process lifecycle.

@@ -64,7 +64,6 @@ pub(super) enum Icon {
     Transfer,
     Sidebar,
     /// The sidebar mirrored: the Record, Structure and SQL column.
-    TilesColumn,
     Assistant,
     Send,
     Stop,
@@ -677,12 +676,6 @@ pub(super) fn paint(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color
             line(&[(9., 4.), (9., 20.)]);
             line(&[(5., 8.), (7., 8.)]);
             line(&[(5., 11.), (7., 11.)]);
-        }
-        TilesColumn => {
-            box_(3., 4., 18., 16.);
-            line(&[(15., 4.), (15., 20.)]);
-            line(&[(17., 8.), (19., 8.)]);
-            line(&[(17., 11.), (19., 11.)]);
         }
         Assistant => {
             // A speech bubble holding a spark: a conversation with an agent.

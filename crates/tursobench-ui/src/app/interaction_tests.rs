@@ -2450,27 +2450,35 @@ fn full_length_workspace_dividers_resize_adjacent_tiles_and_preserve_live_state(
         frame(app, &ctx, vec![pointer_button(start + delta, false)]);
         frame(app, &ctx, vec![]);
     };
+    // The assistant is hidden, so its column is a line and five tiles show.
+    let handles = |app: &App| {
+        tiling::dividers(
+            &app.workspace_frame(),
+            &app.database.workspace.layout,
+            &app.database.workspace.minimized,
+            app.database.workspace.area,
+        )
+    };
+    let index = |kind| tiling::Kind::PANES.iter().position(|k| *k == kind).unwrap();
+    use tiling::Kind::{Data, Map, Record, Sql, Structure};
     for divider in [
-        tiling::Divider::Columns,
-        tiling::Divider::Rows(0, 1),
-        tiling::Divider::Rows(2, 3),
-        tiling::Divider::Rows(3, 4),
+        tiling::Divider::Columns(0),
+        tiling::Divider::Rows(Map, Data),
+        tiling::Divider::Rows(Record, Structure),
+        tiling::Divider::Rows(Structure, Sql),
     ] {
         for (fraction, distance) in [(0.08, 30.0), (0.92, -20.0)] {
             let before = app.database.workspace.pane_rects.clone();
-            let rect = tiling::dividers(
-                &before,
-                &app.database.workspace.minimized,
-                app.database.workspace.area,
-            )
-            .into_iter()
-            .find(|(d, _)| *d == divider)
-            .unwrap()
-            .1;
-            let original_splits = app.database.workspace.splits;
+            assert_eq!(before.len(), 5);
+            let rect = handles(&app)
+                .into_iter()
+                .find(|(d, _)| *d == divider)
+                .unwrap()
+                .1;
+            let original_layout = app.database.workspace.layout.clone();
             click(&mut app, &ctx, rect.center());
             assert_eq!(
-                app.database.workspace.splits, original_splits,
+                app.database.workspace.layout, original_layout,
                 "clicking without dragging must not change proportions"
             );
             let (start, delta) = if divider.vertical() {
@@ -2487,7 +2495,7 @@ fn full_length_workspace_dividers_resize_adjacent_tiles_and_preserve_live_state(
             drag(&mut app, start, delta);
             let after = &app.database.workspace.pane_rects;
             match divider {
-                tiling::Divider::Columns => {
+                tiling::Divider::Columns(_) => {
                     for i in 0..5 {
                         let expected = if i < 2 { distance } else { -distance };
                         assert!((after[i].1.width() - before[i].1.width() - expected).abs() < 0.1);
@@ -2495,6 +2503,7 @@ fn full_length_workspace_dividers_resize_adjacent_tiles_and_preserve_live_state(
                     }
                 }
                 tiling::Divider::Rows(a, b) => {
+                    let (a, b) = (index(a), index(b));
                     assert!((after[a].1.bottom() - before[a].1.bottom() - distance).abs() < 0.1);
                     assert!((after[b].1.top() - before[b].1.top() - distance).abs() < 0.1);
                     for i in 0..5 {
@@ -2507,23 +2516,15 @@ fn full_length_workspace_dividers_resize_adjacent_tiles_and_preserve_live_state(
             }
         }
     }
-    for (distance, column) in [(10000.0, 2..5), (-10000.0, 0..2)] {
-        let panes = &app.database.workspace.pane_rects;
-        let handle = tiling::dividers(
-            panes,
-            &app.database.workspace.minimized,
-            app.database.workspace.area,
-        )[0]
-        .1;
+    for (distance, column) in [(10000.0, 1), (-10000.0, 0)] {
+        let handle = handles(&app)[0].1;
         drag(&mut app, handle.center(), egui::vec2(distance, 0.0));
-        // Dragging into an edge folds that column to a line; restoring it
+        // Dragging far into a column folds it to a line; restoring it
         // keeps the clamped split.
-        assert!(tiling::folded(
-            &app.database.workspace.minimized,
-            column.clone()
-        ));
-        for kind in &tiling::Kind::PANES[column] {
-            app.database.workspace.minimized.remove(kind);
+        let workspace = &mut app.database.workspace;
+        assert!(workspace.layout.all_minimized(column, &workspace.minimized));
+        for kind in &workspace.layout.columns[column].tiles {
+            workspace.minimized.remove(kind);
         }
         frame(&mut app, &ctx, vec![]);
         assert!(
@@ -2533,13 +2534,7 @@ fn full_length_workspace_dividers_resize_adjacent_tiles_and_preserve_live_state(
                 .iter()
                 .all(|(_, rect)| rect.width() >= 179.9)
         );
-        let panes = &app.database.workspace.pane_rects;
-        let handle = tiling::dividers(
-            panes,
-            &app.database.workspace.minimized,
-            app.database.workspace.area,
-        )[1]
-        .1;
+        let handle = handles(&app)[1].1;
         drag(&mut app, handle.center(), egui::vec2(0.0, distance));
         assert!(
             app.database
@@ -2549,13 +2544,13 @@ fn full_length_workspace_dividers_resize_adjacent_tiles_and_preserve_live_state(
                 .all(|(_, rect)| rect.height() >= 95.9)
         );
     }
-    let splits = app.database.workspace.splits;
+    let layout = app.database.workspace.layout.clone();
     for fraction in [0.08, 0.92] {
         let before = app.database.ui.sidebar_rect;
         let pos = egui::pos2(before.right(), before.top() + before.height() * fraction);
         drag(&mut app, pos, egui::vec2(30.0, 0.0));
         assert!((app.database.ui.sidebar_rect.width() - before.width() - 30.0).abs() < 1.0);
-        assert_eq!(app.database.workspace.splits, splits);
+        assert_eq!(app.database.workspace.layout, layout);
     }
     assert_eq!(visible_result(&app).current, ticket);
     assert_retained(&app, 0, 1, Value::Text("retained".into()));
@@ -2615,27 +2610,57 @@ fn workspace_geometry_roundtrips_without_query_data_or_bindings() {
     app.retile();
     app.minimize_pane(tiling::Kind::Map);
     app.expand_window(editor);
-    app.database.workspace.splits = tiling::Splits {
+    let splits = tiling::Splits {
         column: 0.48,
         rows: [1.0, 2.0, 1.5, 0.8, 1.0],
         sql_editor: 0.6,
     };
+    app.database.workspace.layout = splits.into();
+    // A moved tile and a new column are part of what is saved.
+    assert!(
+        app.database
+            .workspace
+            .layout
+            .move_tile(tiling::Kind::Record, tiling::Target::NewColumn)
+    );
+    let arranged = app.database.workspace.layout.clone();
     let snapshot = app.workspace_snapshot().unwrap();
     let encoded = serde_json::to_string(&snapshot).unwrap();
     assert!(!encoded.contains("private") && !encoded.contains("buffer-"));
+    // Layouts saved before tiles could move carry no arrangement, or only the
+    // two-column splits; both open in the default arrangement.
     let mut legacy: serde_json::Value = serde_json::from_str(&encoded).unwrap();
-    legacy.as_object_mut().unwrap().remove("splits");
-    let legacy: workspace::Snapshot = serde_json::from_value(legacy).unwrap();
-    assert!(legacy.valid());
-    app.preferences.workspace_layouts = vec![legacy];
+    legacy.as_object_mut().unwrap().remove("layout");
+    let bare: workspace::Snapshot = serde_json::from_value(legacy.clone()).unwrap();
+    assert!(bare.valid());
+    app.preferences.workspace_layouts = vec![bare];
     app.restore_workspace();
-    assert_eq!(app.database.workspace.splits, tiling::Splits::default());
-    for invalid in [
-        serde_json::json!({"column": 0.0}),
-        serde_json::json!({"rows": [1.0, 1.0, 1.0, 0.0, 1.0]}),
+    assert_eq!(app.database.workspace.layout, tiling::Layout::default());
+    legacy["splits"] =
+        serde_json::json!({"column": 0.48, "rows": [1.0, 2.0, 1.5, 0.8, 1.0], "sql_editor": 0.6});
+    let split: workspace::Snapshot = serde_json::from_value(legacy).unwrap();
+    assert!(split.valid());
+    app.preferences.workspace_layouts = vec![split];
+    app.restore_workspace();
+    assert_eq!(app.database.workspace.layout, tiling::Layout::from(splits));
+    for (key, invalid) in [
+        ("splits", serde_json::json!({"column": 0.0})),
+        (
+            "splits",
+            serde_json::json!({"rows": [1.0, 1.0, 1.0, 0.0, 1.0]}),
+        ),
+        // Every tile must sit in exactly one column, and no column is empty.
+        (
+            "layout",
+            serde_json::json!({"columns": [], "rows": {}, "sql_editor": 0.5}),
+        ),
+        (
+            "layout",
+            serde_json::json!({"columns": [{"tiles": ["Map", "Map", "Data", "Record", "Structure", "Sql"], "width": 1.0}], "rows": {}, "sql_editor": 0.5}),
+        ),
     ] {
         let mut value: serde_json::Value = serde_json::from_str(&encoded).unwrap();
-        value["splits"] = invalid;
+        value[key] = invalid;
         assert!(
             !serde_json::from_value::<workspace::Snapshot>(value)
                 .unwrap()
@@ -2645,6 +2670,7 @@ fn workspace_geometry_roundtrips_without_query_data_or_bindings() {
     app.preferences.workspace_layouts = vec![serde_json::from_str(&encoded).unwrap()];
     app.restore_workspace();
     assert_eq!(app.workspace_snapshot(), Some(snapshot));
+    assert_eq!(app.database.workspace.layout, arranged);
     assert_eq!(app.database.document.id, editor);
     assert!(app.database.document.sql.is_empty());
     assert_eq!(app.database.document.params, "[]");
@@ -2899,7 +2925,8 @@ fn fixed_panes_preserve_drafts_selection_and_results_through_layout_changes() {
     assert_eq!(app.database.document.id, data);
     assert!(app.database.document.has_drafts());
     app.expand_pane(tiling::Kind::Record);
-    assert_eq!(app.database.workspace.minimized.len(), 4);
+    // Everything but the record stays minimized, the hidden assistant included.
+    assert_eq!(app.database.workspace.minimized.len(), 5);
     app.retile();
     frame(&mut app, &ctx, vec![]);
     assert_eq!(app.database.workspace.pane_rects.len(), 5);
@@ -3767,6 +3794,7 @@ mod spreadsheet;
 mod discoverability;
 
 mod panels;
+mod tiles;
 
 mod assistant;
 
@@ -3784,7 +3812,7 @@ fn the_line_between_sql_and_its_results_drags_to_share_the_tile() {
     frame_at(&mut app, &ctx, SIZE, vec![]);
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
     let start = control(&output, "Resize SQL and results").center();
-    let before = app.database.workspace.splits.sql_editor;
+    let before = app.database.workspace.layout.sql_editor;
     let end = start + egui::vec2(0.0, 120.0);
     frame_at(
         &mut app,
@@ -3800,12 +3828,12 @@ fn the_line_between_sql_and_its_results_drags_to_share_the_tile() {
         frame_at(&mut app, &ctx, SIZE, vec![egui::Event::PointerMoved(pos)]);
     }
     frame_at(&mut app, &ctx, SIZE, vec![pointer_button(end, false)]);
-    let after = app.database.workspace.splits.sql_editor;
+    let after = app.database.workspace.layout.sql_editor;
     assert!(after > before + 0.05, "{before} -> {after}");
     // The new share is part of the saved layout.
     assert_eq!(
         app.workspace_snapshot()
-            .map(|s| serde_json::to_value(s).unwrap()["splits"]["sql_editor"]
+            .map(|s| serde_json::to_value(s).unwrap()["layout"]["sql_editor"]
                 .as_f64()
                 .unwrap() as f32),
         Some(after)

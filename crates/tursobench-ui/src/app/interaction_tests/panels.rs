@@ -10,9 +10,10 @@ fn label_exists(output: &egui::FullOutput, label: &str) -> bool {
 fn sidebar_and_assistant_hide_independently_and_the_workspace_reclaims_their_width() {
     let (_dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
     let mut widths = vec![];
+    let mut tiles = vec![];
     for (sidebar, assistant) in [(true, false), (true, true), (false, true), (false, false)] {
         app.preferences.panels.sidebar = sidebar;
-        app.preferences.panels.assistant = assistant;
+        app.set_assistant_shown(assistant);
         let output = frame_at(&mut app, &ctx, SIZE, vec![]);
         let output = if output.platform_output.accesskit_update.is_none() {
             frame_at(&mut app, &ctx, SIZE, vec![])
@@ -28,8 +29,8 @@ fn sidebar_and_assistant_hide_independently_and_the_workspace_reclaims_their_wid
             app.database.ui.assistant_rect != egui::Rect::NOTHING,
             assistant
         );
-        // The status-bar button opens and closes it; a closed panel leaves a line.
-        assert_eq!(label_exists(&output, "Show assistant"), !assistant);
+        // The status-bar button opens and closes it; hidden, it leaves a line.
+        assert_eq!(label_exists(&output, "Show Assistant"), !assistant);
         // The status-bar toggles stay reachable whatever is hidden.
         assert!(label_exists(&output, "Sidebar"));
         assert!(label_exists(&output, "Assistant"));
@@ -37,13 +38,20 @@ fn sidebar_and_assistant_hide_independently_and_the_workspace_reclaims_their_wid
         if sidebar {
             assert!(app.database.ui.sidebar_rect.right() <= workspace.left());
         }
+        // The assistant is a tile in the workspace's last column.
+        let data = app.database.workspace.pane_rects[1].1;
         if assistant {
-            assert!(workspace.right() <= app.database.ui.assistant_rect.left());
+            let chat = app.database.ui.assistant_rect;
+            assert!(workspace.contains_rect(chat) && data.right() < chat.left());
+            assert!((chat.right() - workspace.right()).abs() < 0.5);
         }
         widths.push(workspace.width());
+        tiles.push(data.width());
     }
-    // Shown panels take width from the workspace; collapsing both leaves two thin lines.
-    assert!(widths[1] < widths[0] && widths[0] < widths[3] && widths[2] < widths[3]);
+    // The sidebar takes width from the workspace, the assistant from the other
+    // tiles; collapsing both leaves two thin lines.
+    assert!(widths[0] == widths[1] && widths[2] == widths[3] && widths[0] < widths[3]);
+    assert!(tiles[1] < tiles[0] && tiles[0] < tiles[3] && tiles[2] < tiles[3]);
     assert!(widths[3] >= SIZE.x - 60.0);
     app.close();
 }
@@ -79,7 +87,7 @@ fn collapsed_areas_leave_lines_that_bring_them_back() {
     use crate::app::tiling::Kind;
     let (_dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
     app.preferences.panels.sidebar = false;
-    app.preferences.panels.assistant = false;
+    app.set_assistant_shown(false);
     app.database
         .workspace
         .minimized
@@ -91,7 +99,7 @@ fn collapsed_areas_leave_lines_that_bring_them_back() {
     assert!(data.width() > app.database.workspace.area.width() - 40.0);
     for name in [
         "Show databases",
-        "Show assistant",
+        "Show Assistant",
         "Show Record, Structure and SQL",
     ] {
         click(&mut app, &ctx, control(&output, name).center());
@@ -108,26 +116,35 @@ fn the_tiles_toggle_folds_the_column_and_reopens_what_was_open() {
     use crate::app::tiling::Kind;
     use std::collections::BTreeSet;
     let (_dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
+    app.focus_pane(Kind::Sql);
     app.database
         .workspace
         .minimized
         .extend([Kind::Record, Kind::Structure]);
     frame_at(&mut app, &ctx, SIZE, vec![]);
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    // The status bar's picture of the columns folds the one clicked.
     click(
         &mut app,
         &ctx,
-        control(&output, "Record, Structure and SQL").center(),
+        control(&output, "Column: Record, Structure and SQL").center(),
     );
-    assert!(app.tiles_folded());
+    let workspace = &app.database.workspace;
+    assert!(workspace.layout.all_minimized(1, &workspace.minimized));
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
     assert!(label_exists(&output, "Show Record, Structure and SQL"));
-    // Ctrl L unfolds it with SQL open and the others still minimized.
+    // Ctrl L reopens the focused tile's column with SQL open and the others
+    // still minimized. The assistant stays hidden.
     press_key(&mut app, &ctx, egui::Key::L, egui::Modifiers::CTRL);
     assert_eq!(
         app.database.workspace.minimized,
-        BTreeSet::from([Kind::Record, Kind::Structure])
+        BTreeSet::from([Kind::Record, Kind::Structure, Kind::Chat])
     );
+    // Pressed again it folds that column, whichever column that is.
+    app.focus_pane(Kind::Map);
+    press_key(&mut app, &ctx, egui::Key::L, egui::Modifiers::CTRL);
+    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    assert!(label_exists(&output, "Show Relationships and Table data"));
     app.close();
 }
 
@@ -135,7 +152,7 @@ fn the_tiles_toggle_folds_the_column_and_reopens_what_was_open() {
 fn the_chat_expands_to_the_workspace_like_a_tile() {
     use crate::app::tiling::Kind;
     let (_dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
-    app.preferences.panels.assistant = true;
+    app.set_assistant_shown(true);
     frame_at(&mut app, &ctx, SIZE, vec![]);
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
     let side = app.database.ui.assistant_rect;
@@ -153,7 +170,7 @@ fn the_chat_expands_to_the_workspace_like_a_tile() {
     assert!(chat.left() <= tiles.left() + 1.0 && chat.right() >= side.right() - 1.0);
     assert!(app.database.ui.sidebar_rect.right() <= chat.left());
     assert!(label_exists(&output, "Restore workspace"));
-    assert!(!label_exists(&output, "Minimize to header"));
+    assert_eq!(app.database.workspace.pane_rects.len(), 1);
     // Ctrl Alt Enter restores it, as it does a tile.
     press_key(
         &mut app,
@@ -177,6 +194,7 @@ fn the_chat_expands_to_the_workspace_like_a_tile() {
     // Hiding the chat ends the expansion.
     app.toggle_assistant_expanded();
     app.toggle_assistant();
-    assert!(!app.assistant_expanded() && !app.database.ui.assistant_expanded);
+    assert!(!app.assistant_expanded() && app.database.workspace.expanded.is_none());
+    assert!(!app.assistant_shown());
     app.close();
 }

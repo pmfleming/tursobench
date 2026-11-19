@@ -7,19 +7,21 @@ the desktop's warning and relationship roles.
 
 ## Workspace
 
-Five tiles keep a fixed arrangement with adjustable sizes. Relationships sits above Table data on the left;
-Record, Structure and SQL share the right column. Each tile combines its context
+Six tiles sit in columns that can be rearranged, with adjustable sizes. By default Relationships sits above
+Table data on the left, Record, Structure and SQL share the next column and the assistant has the last.
+A grip at the left of each header drags the tile into another column, or past the last column to start
+a new one; a column that loses its last tile is removed. The layout is saved per database and
+**Reset layout** returns to the default. Each tile combines its context
 and icon actions in one compact ribbon. There is no global ribbon, activity rail,
 separate open-tile title bar or window dragging. Drag anywhere along a divider to
-resize the adjacent tiles; the vertical divider moves the complete left and right
-columns. Tile proportions are saved per database.
+resize the adjacent tiles; a vertical divider resizes the two columns beside it.
 
 - Minimize collapses a tile to its header and gives the other tiles in that column
   more room. Click the header to restore it.
 - Expand fills the workspace while preserving the database navigator. Restore
-  returns to the fixed arrangement and preserves the other minimized tiles.
-- Ctrl Alt Enter expands/restores the focused tile. Ctrl Tab cycles the five tiles.
-  While the chat is expanded to the workspace, Ctrl Alt Enter restores it instead.
+  returns to the columns and preserves the other minimized tiles.
+- Ctrl Alt Enter expands/restores the focused tile, the assistant included. Ctrl Tab
+  cycles the tiles left to right and top to bottom, skipping a hidden assistant.
   Escape dismisses an active edit, popup or dialog before restoring expansion.
 - Tile ribbons expose actions directly with 18-point icons and 30-point buttons
   inside 44-point headers. Titles use a 13.5-point base size, and thin dividers group

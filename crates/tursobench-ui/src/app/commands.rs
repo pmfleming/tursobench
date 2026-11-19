@@ -33,6 +33,8 @@ pub(super) enum Command {
     ToggleSidebar,
     ToggleAssistant,
     ToggleTiles,
+    MoveTile(super::tiling::Direction),
+    ResetLayout,
 }
 
 pub(super) struct PaletteItem {
@@ -231,6 +233,11 @@ impl App {
         self.grid_keys(ctx);
         let consumed = |mods, key| ctx.input_mut(|i| i.consume_key(mods, key));
         if consumed(Modifiers::NONE, Key::Escape) {
+            // A tile being dragged goes back where it was before anything closes.
+            if let Some(drag) = &mut self.database.workspace.drag {
+                drag.cancelled = true;
+                return;
+            }
             let search = egui::Id::unique("sidebar-search");
             if ctx.memory(|m| m.has_focus(search)) && !self.sidebar_search.query.is_empty() {
                 self.sidebar_search.query.clear();
@@ -295,6 +302,8 @@ impl App {
                 self.refresh_table();
             }
         }
+        use super::tiling::Direction;
+        const MOVE: Modifiers = Modifiers::ALT.plus(Modifiers::SHIFT);
         for (modifiers, key, command) in [
             (Modifiers::CTRL, Key::J, Command::Sql),
             (Modifiers::CTRL, Key::E, Command::Action(Action::Export)),
@@ -312,6 +321,11 @@ impl App {
             (Modifiers::CTRL, Key::B, Command::ToggleSidebar),
             (Modifiers::CTRL, Key::I, Command::ToggleAssistant),
             (Modifiers::CTRL, Key::L, Command::ToggleTiles),
+            // Before Alt Left: a shortcut without Shift also matches with it held.
+            (MOVE, Key::ArrowLeft, Command::MoveTile(Direction::Left)),
+            (MOVE, Key::ArrowRight, Command::MoveTile(Direction::Right)),
+            (MOVE, Key::ArrowUp, Command::MoveTile(Direction::Up)),
+            (MOVE, Key::ArrowDown, Command::MoveTile(Direction::Down)),
             (Modifiers::ALT, Key::ArrowLeft, Command::Back),
         ] {
             if !consumed(modifiers, key) {
@@ -614,6 +628,36 @@ impl App {
                 Command::ToggleTiles,
             ),
             (
+                "Move tile left",
+                "Alt Shift ←",
+                "tile column layout arrange drag move left",
+                Command::MoveTile(super::tiling::Direction::Left),
+            ),
+            (
+                "Move tile right",
+                "Alt Shift →",
+                "tile column layout arrange drag move right new column",
+                Command::MoveTile(super::tiling::Direction::Right),
+            ),
+            (
+                "Move tile up",
+                "Alt Shift ↑",
+                "tile column layout arrange drag move up reorder",
+                Command::MoveTile(super::tiling::Direction::Up),
+            ),
+            (
+                "Move tile down",
+                "Alt Shift ↓",
+                "tile column layout arrange drag move down reorder",
+                Command::MoveTile(super::tiling::Direction::Down),
+            ),
+            (
+                "Reset layout",
+                "",
+                "tiles columns default arrange restore original layout this database",
+                Command::ResetLayout,
+            ),
+            (
                 "Settings",
                 "Ctrl ,",
                 "preferences options",
@@ -849,6 +893,8 @@ impl App {
             Command::ToggleSidebar => self.toggle_sidebar(),
             Command::ToggleAssistant => self.toggle_assistant(),
             Command::ToggleTiles => self.toggle_tiles_column(),
+            Command::MoveTile(direction) => self.move_focused_tile(direction),
+            Command::ResetLayout => self.reset_layout(),
             Command::Settings => self.settings.open = true,
             Command::Panel(panel) => {
                 self.show_sidebar();
