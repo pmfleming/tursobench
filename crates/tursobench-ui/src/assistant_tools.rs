@@ -209,7 +209,10 @@ pub fn system_prompt(database: Option<&str>, sharing: Sharing) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        Arc, DESCRIBE_TABLE, Host, Mutex, NAMES, PROPOSE_SQL, RUN_QUERY, Sharing, ToolHost, json,
+        system_prompt,
+    };
     use std::sync::mpsc;
     #[test]
     fn schema_only_sharing_refuses_queries_and_proposals_reach_the_ui() {

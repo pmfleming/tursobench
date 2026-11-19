@@ -3,13 +3,15 @@
 //! with search in the middle, and the reasoning levels on the right.
 use super::{
     App,
-    assistant::effort_name,
     icons::{self, Icon},
     presentation::{self, Intent},
 };
 use crate::storage::{FavouriteModel, Provider};
 use eframe::egui;
-use tursobench_assistant::{account::Model, vendor::VENDORS};
+use tursobench_assistant::{
+    account::{self, Effort, Model},
+    vendor::VENDORS,
+};
 
 /// Rows listed before "Show more".
 const SHORT_LIST: usize = 4;
@@ -113,6 +115,136 @@ fn truncated(
     ui.painter().layout_job(job)
 }
 
+/// Remember `value` for an agent; empty forgets it, so the agent's own applies.
+fn remember(
+    choices: &mut std::collections::BTreeMap<Provider, String>,
+    provider: Provider,
+    value: String,
+) {
+    if value.is_empty() {
+        choices.remove(&provider);
+    } else {
+        choices.insert(provider, value);
+    }
+}
+
+/// A reasoning level as the picker names it.
+fn effort_name(id: &str) -> String {
+    match id {
+        "xhigh" => "Extra high".into(),
+        _ => {
+            let mut chars = id.chars();
+            chars.next().map_or_else(String::new, |first| {
+                first.to_uppercase().chain(chars).collect()
+            })
+        }
+    }
+}
+
+impl App {
+    /// The reasoning levels an agent and its chosen model offer, and the level
+    /// the agent uses when none is chosen, when it says.
+    fn efforts_for(&self, provider: Provider) -> (Vec<Effort>, Option<String>) {
+        let status = self
+            .accounts
+            .rows
+            .get(&provider)
+            .and_then(|r| r.status.as_ref());
+        let named = |ids: Vec<String>| -> Vec<Effort> {
+            ids.into_iter()
+                .map(|id| Effort {
+                    name: effort_name(&id),
+                    id,
+                })
+                .collect()
+        };
+        match provider {
+            Provider::Claude => (
+                named(
+                    account::claude_efforts()
+                        .into_iter()
+                        .map(|e| e.id)
+                        .collect(),
+                ),
+                None,
+            ),
+            // Codex lists levels per model; the default model stands in for none.
+            Provider::Codex => {
+                let selected = self.model_for(provider);
+                status
+                    .and_then(|s| {
+                        s.models.iter().find(|m| {
+                            if selected.is_empty() {
+                                m.default
+                            } else {
+                                m.id == selected
+                            }
+                        })
+                    })
+                    .map(|m| (named(m.efforts.clone()), m.default_effort.clone()))
+                    .unwrap_or_default()
+            }
+            _ => (status.map(|s| s.efforts.clone()).unwrap_or_default(), None),
+        }
+    }
+
+    /// The chosen reasoning level, when the chat's agent offers it.
+    pub(super) fn assistant_effort(&self) -> Option<String> {
+        let chosen = self.preferences.assistant.selected_effort();
+        let (efforts, _) = self.efforts_for(self.preferences.assistant.provider);
+        (!chosen.is_empty() && efforts.iter().any(|e| e.id == chosen)).then(|| chosen.to_owned())
+    }
+
+    /// The level remembered for an agent; empty is its own.
+    fn effort_for(&self, provider: Provider) -> &str {
+        self.preferences
+            .assistant
+            .efforts
+            .get(&provider)
+            .map_or("", String::as_str)
+    }
+
+    /// Remember a reasoning level for the selected agent and use it from the
+    /// next message of every running conversation; empty restores the agent's own.
+    #[cfg(test)]
+    pub(super) fn select_assistant_effort(&mut self, effort: String) {
+        self.select_effort_for(self.preferences.assistant.provider, effort);
+    }
+
+    /// Remember a reasoning level for an agent; when it is the agent in use,
+    /// running conversations take it from their next message.
+    fn select_effort_for(&mut self, provider: Provider, effort: String) {
+        if effort == self.effort_for(provider) {
+            return;
+        }
+        remember(&mut self.preferences.assistant.efforts, provider, effort);
+        self.preferences.normalize();
+        self.store.save(&self.preferences);
+        if provider != self.preferences.assistant.provider {
+            return;
+        }
+        let effort = self.assistant_effort();
+        for database in std::iter::once(&self.database).chain(self.parked.values()) {
+            database.assistant.set_effort(effort.clone());
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn select_assistant_model(&mut self, model: String) {
+        self.choose_assistant_model(self.preferences.assistant.provider, model);
+    }
+
+    /// Chat with another agent: every conversation starts afresh.
+    pub(super) fn select_assistant_provider(&mut self, provider: Provider) {
+        if self.preferences.assistant.provider == provider {
+            return;
+        }
+        self.preferences.assistant.provider = provider;
+        self.reset_assistant_conversations();
+        self.store.save(&self.preferences);
+    }
+}
+
 impl App {
     /// The models an agent offers: what its check listed, or Claude Code's aliases.
     pub(super) fn models_for(&self, provider: Provider) -> Vec<Model> {
@@ -124,7 +256,7 @@ impl App {
             .filter(|models| !models.is_empty() || provider != Provider::Claude)
             .unwrap_or_else(|| {
                 if provider == Provider::Claude {
-                    tursobench_assistant::account::claude_models()
+                    account::claude_models()
                 } else {
                     vec![]
                 }
@@ -138,6 +270,15 @@ impl App {
             .models
             .get(&provider)
             .map_or("", String::as_str)
+    }
+
+    /// The name of the model an agent would use, unless it is its own default.
+    fn current_model_name(&self, provider: Provider) -> Option<String> {
+        self.agent_choices(provider)
+            .into_iter()
+            .find(|c| self.is_current(c))
+            .filter(|c| !c.model.is_empty())
+            .map(|c| c.name)
     }
 
     /// Whether a row is the model its agent would use.
@@ -260,11 +401,7 @@ impl App {
         if provider == self.preferences.assistant.provider && model == self.model_for(provider) {
             return;
         }
-        if model.is_empty() {
-            self.preferences.assistant.models.remove(&provider);
-        } else {
-            self.preferences.assistant.models.insert(provider, model);
-        }
+        remember(&mut self.preferences.assistant.models, provider, model);
         self.preferences.assistant.provider = provider;
         self.reset_assistant_conversations();
         self.preferences.normalize();
@@ -304,11 +441,8 @@ impl App {
         let provider = self.preferences.assistant.provider;
         let vendor = provider.vendor().name;
         let model = self
-            .agent_choices(provider)
-            .into_iter()
-            .find(|c| self.is_current(c))
-            .filter(|c| !c.model.is_empty())
-            .map_or_else(|| vendor.to_owned(), |c| c.name);
+            .current_model_name(provider)
+            .unwrap_or_else(|| vendor.to_owned());
         let effort = self.assistant_effort().map(|e| effort_name(&e));
         let text = match &effort {
             Some(effort) => format!("{model} · {effort}"),
@@ -340,10 +474,7 @@ impl App {
             visuals.bg_stroke,
             egui::StrokeKind::Inside,
         );
-        let badge = egui::Rect::from_min_size(
-            egui::pos2(rect.left() + 6.0, rect.center().y - 8.0),
-            egui::Vec2::splat(16.0),
-        );
+        let badge = badge_at(rect.left(), rect.center().y);
         paint_badge(ui, badge, provider, false);
         let galley = truncated(ui, &text, size, visuals.text_color(), width - chrome);
         ui.painter().galley(
@@ -456,8 +587,7 @@ impl App {
                 .on_hover_text("Manage agents, sign-in and custom models in Settings")
                 .clicked()
             {
-                self.settings.open = true;
-                self.settings.page = super::settings::Page::Assistant;
+                self.open_assistant_settings();
                 if let Shelf::Agent(provider) = shelf {
                     self.accounts.configuring = Some(provider);
                 }
@@ -467,19 +597,7 @@ impl App {
     }
 
     fn menu_models(&mut self, ui: &mut egui::Ui) {
-        let tokens = crate::appearance::Tokens::of(ui.ctx());
         let shelf = self.shelf();
-        // Search, and a refresh for agents that list their models.
-        let (bar, _) = ui.allocate_exact_size(egui::vec2(LIST, 38.0), egui::Sense::hover());
-        icons::paint(
-            ui.painter(),
-            egui::Rect::from_center_size(
-                egui::pos2(bar.left() + 18.0, bar.center().y),
-                egui::Vec2::splat(15.0),
-            ),
-            Icon::Search,
-            tokens.muted,
-        );
         let checking = match shelf {
             Shelf::Agent(provider) => self
                 .accounts
@@ -488,6 +606,55 @@ impl App {
                 .is_some_and(|r| r.job.is_some()),
             Shelf::Favourites => false,
         };
+        self.models_search(ui, shelf, checking);
+        ui.add_space(4.0);
+        let (rows, hidden) = self.menu_rows();
+        let active = self.preferences.assistant.provider;
+        // In favourites only the agent in use has a current model.
+        let marks: Vec<_> = rows
+            .iter()
+            .map(|row| {
+                let checked =
+                    self.is_current(row) && (shelf != Shelf::Favourites || row.provider == active);
+                (checked, self.is_favourite(row))
+            })
+            .collect();
+        let note = if !self.accounts.menu.query.trim().is_empty() {
+            "No models match"
+        } else if shelf == Shelf::Favourites {
+            "Star a model to keep it here"
+        } else if checking {
+            "Finding models…"
+        } else {
+            "No models listed yet"
+        };
+        let (clicked, more) = egui::ScrollArea::vertical()
+            .id_salt("chat-model-list")
+            .auto_shrink([false, false])
+            .max_height(HEIGHT - 44.0)
+            .show(ui, |ui| model_list(ui, &rows, &marks, hidden, note))
+            .inner;
+        self.accounts.menu.more |= more;
+        match clicked {
+            Some((RowClick::Star, row)) => self.toggle_favourite_model(row),
+            Some((RowClick::Row, row)) => self.choose_row(row),
+            _ => {}
+        }
+    }
+
+    /// Search, and a refresh for agents that list their models.
+    fn models_search(&mut self, ui: &mut egui::Ui, shelf: Shelf, checking: bool) {
+        let muted = crate::appearance::Tokens::of(ui.ctx()).muted;
+        let bar = bar(ui, LIST);
+        icons::paint(
+            ui.painter(),
+            egui::Rect::from_center_size(
+                egui::pos2(bar.left() + 18.0, bar.center().y),
+                egui::Vec2::splat(15.0),
+            ),
+            Icon::Search,
+            muted,
+        );
         let field = egui::Rect::from_min_max(
             egui::pos2(bar.left() + 32.0, bar.top() + 7.0),
             egui::pos2(bar.right() - 36.0, bar.bottom() - 7.0),
@@ -506,199 +673,144 @@ impl App {
         if std::mem::take(&mut self.accounts.menu.focus) {
             search.request_focus();
         }
-        if let Shelf::Agent(provider) = shelf {
-            let refresh = egui::Rect::from_center_size(
-                egui::pos2(bar.right() - 20.0, bar.center().y),
-                egui::Vec2::splat(26.0),
-            );
-            if checking {
-                ui.put(refresh.shrink(5.0), egui::Spinner::new())
-                    .on_hover_text("Finding models…");
-            } else if provider != Provider::Claude {
-                let button = ui
-                    .scope_builder(egui::UiBuilder::new().max_rect(refresh), |ui| {
-                        icons::control(ui, Icon::Refresh, "Find available models", "", false, false)
-                    })
-                    .inner;
-                if button.clicked() {
-                    self.agent_account_job(
-                        ui.ctx(),
-                        provider,
-                        tursobench_assistant::account::Operation::Check,
-                    );
-                }
-            }
-        }
-        ui.painter().hline(
-            bar.x_range(),
-            bar.bottom(),
-            egui::Stroke::new(1.0, tokens.line_soft),
+        let Shelf::Agent(provider) = shelf else {
+            return;
+        };
+        let refresh = egui::Rect::from_center_size(
+            egui::pos2(bar.right() - 20.0, bar.center().y),
+            egui::Vec2::splat(26.0),
         );
-        ui.add_space(4.0);
-        let (rows, hidden) = self.menu_rows();
-        let active = self.preferences.assistant.provider;
-        let mut chosen = None;
-        let mut starred = None;
-        egui::ScrollArea::vertical()
-            .id_salt("chat-model-list")
-            .auto_shrink([false, false])
-            .max_height(HEIGHT - 44.0)
-            .show(ui, |ui| {
-                for (index, row) in rows.iter().enumerate() {
-                    // In favourites only the agent in use has a current model.
-                    let checked = self.is_current(row)
-                        && (shelf != Shelf::Favourites || row.provider == active);
-                    let favourite = self.is_favourite(row);
-                    match model_row(ui, row, index, checked, favourite) {
-                        RowClick::Row => chosen = Some(row.clone()),
-                        RowClick::Star => starred = Some(row.clone()),
-                        RowClick::None => {}
-                    }
-                }
-                if hidden > 0 {
-                    let more = ui.add_sized(
-                        egui::vec2(LIST - 12.0, 26.0),
-                        egui::Button::new(egui::RichText::new("Show more").color(tokens.muted))
-                            .frame(false),
-                    );
-                    if more.on_hover_text(format!("{hidden} more")).clicked() {
-                        self.accounts.menu.more = true;
-                    }
-                }
-                if rows.is_empty() {
-                    let note = if !self.accounts.menu.query.trim().is_empty() {
-                        "No models match"
-                    } else if shelf == Shelf::Favourites {
-                        "Star a model to keep it here"
-                    } else if checking {
-                        "Finding models…"
-                    } else {
-                        "No models listed yet"
-                    };
-                    ui.add_space(14.0);
-                    ui.vertical_centered(|ui| ui.weak(note));
-                }
-            });
-        if let Some(row) = starred {
-            self.toggle_favourite_model(&row);
-        } else if let Some(row) = chosen {
-            self.choose_row(&row);
+        if checking {
+            ui.put(refresh.shrink(5.0), egui::Spinner::new())
+                .on_hover_text("Finding models…");
+        } else if provider != Provider::Claude
+            && ui
+                .scope_builder(egui::UiBuilder::new().max_rect(refresh), |ui| {
+                    icons::control(ui, Icon::Refresh, "Find available models", "", false, false)
+                })
+                .inner
+                .clicked()
+        {
+            self.agent_account_job(ui.ctx(), provider, account::Operation::Check);
         }
     }
 
     fn menu_reasoning(&mut self, ui: &mut egui::Ui) {
-        let tokens = crate::appearance::Tokens::of(ui.ctx());
         let provider = match self.shelf() {
             Shelf::Agent(provider) => provider,
             Shelf::Favourites => self.preferences.assistant.provider,
         };
         let (efforts, default) = self.efforts_for(provider);
-        let chosen = self.effort_for(provider).to_owned();
         // A remembered level this model lacks acts as the default.
-        let chosen = if efforts.iter().any(|e| e.id == chosen) {
-            chosen
-        } else {
-            String::new()
-        };
+        let chosen = Some(self.effort_for(provider))
+            .filter(|chosen| efforts.iter().any(|e| e.id == *chosen))
+            .unwrap_or_default()
+            .to_owned();
         let model = self
-            .agent_choices(provider)
-            .into_iter()
-            .find(|c| self.is_current(c))
-            .map_or_else(
-                || "Default".to_owned(),
-                |c| {
-                    if c.model.is_empty() {
-                        "Default".into()
-                    } else {
-                        c.name
-                    }
-                },
-            );
-        let current = if chosen.is_empty() {
-            default.as_deref().map_or_else(
-                || "Default".to_owned(),
-                |level| format!("Default · {}", effort_name(level)),
-            )
-        } else {
-            effort_name(&chosen)
+            .current_model_name(provider)
+            .unwrap_or_else(|| "Default".to_owned());
+        let current = match (chosen.as_str(), &default) {
+            ("", None) => "Default".to_owned(),
+            ("", Some(level)) => format!("Default · {}", effort_name(level)),
+            (chosen, _) => effort_name(chosen),
         };
-        let (bar, heading) =
-            ui.allocate_exact_size(egui::vec2(REASONING, 38.0), egui::Sense::hover());
-        ui.painter().text(
-            egui::pos2(bar.left() + 12.0, bar.center().y),
-            egui::Align2::LEFT_CENTER,
-            "Reasoning",
-            egui::FontId::proportional(13.0),
-            tokens.muted,
-        );
-        let label = truncated(ui, &model, 12.0, tokens.muted, REASONING - 96.0);
-        ui.painter().galley(
-            egui::pos2(
-                bar.right() - 12.0 - label.size().x,
-                bar.center().y - label.size().y / 2.0,
-            ),
-            label,
-            tokens.muted,
-        );
-        heading.widget_info(|| {
-            let mut info = egui::WidgetInfo::labeled(
-                egui::Role::RadioGroup,
-                true,
-                "Assistant reasoning level",
-            );
-            info.current_text_value = Some(current.clone());
-            info
-        });
-        heading.on_hover_text(
-            "How much the agent thinks before it answers. A new level applies from \
-             the next message; the conversation carries on.",
-        );
-        ui.painter().hline(
-            bar.x_range(),
-            bar.bottom(),
-            egui::Stroke::new(1.0, tokens.line_soft),
-        );
-        ui.add_space(4.0);
+        reasoning_heading(ui, &model, &current);
         if efforts.is_empty() {
+            let muted = crate::appearance::Tokens::of(ui.ctx()).muted;
             ui.add_space(14.0);
             ui.horizontal(|ui| {
                 ui.add_space(12.0);
                 ui.add(
                     egui::Label::new(
-                        egui::RichText::new("This agent sets its own level").color(tokens.muted),
+                        egui::RichText::new("This agent sets its own level").color(muted),
                     )
                     .wrap(),
                 );
             });
-            return;
-        }
-        let mut picked = None;
-        // Without a known default, the agent's own level is a row of its own.
-        if default.is_none() && level_row(ui, "Default", "", false, chosen.is_empty()) {
-            picked = Some(String::new());
-        }
-        for effort in &efforts {
-            let is_default = default.as_deref() == Some(effort.id.as_str());
-            let checked = chosen == effort.id || chosen.is_empty() && is_default;
-            if level_row(
-                ui,
-                &effort_name(&effort.id),
-                &effort.id,
-                is_default,
-                checked,
-            ) {
-                // The default level is kept as "the agent's own".
-                picked = Some(if is_default {
-                    String::new()
-                } else {
-                    effort.id.clone()
-                });
-            }
-        }
-        if let Some(effort) = picked {
+        } else if let Some(effort) = level_rows(ui, &efforts, default.as_deref(), &chosen) {
             self.select_effort_for(provider, effort);
         }
     }
+}
+
+/// The top bar of a picker column, with its line below; the rows follow it.
+fn bar(ui: &mut egui::Ui, width: f32) -> egui::Rect {
+    let (bar, _) = ui.allocate_exact_size(egui::vec2(width, 38.0), egui::Sense::hover());
+    paint_bar_line(ui, bar);
+    bar
+}
+
+fn paint_bar_line(ui: &egui::Ui, bar: egui::Rect) {
+    let line = crate::appearance::Tokens::of(ui.ctx()).line_soft;
+    ui.painter()
+        .hline(bar.x_range(), bar.bottom(), egui::Stroke::new(1.0, line));
+}
+
+/// "Reasoning", the model it applies to, and the current level for assistive tech.
+fn reasoning_heading(ui: &mut egui::Ui, model: &str, current: &str) {
+    let muted = crate::appearance::Tokens::of(ui.ctx()).muted;
+    let (bar, heading) = ui.allocate_exact_size(egui::vec2(REASONING, 38.0), egui::Sense::hover());
+    ui.painter().text(
+        egui::pos2(bar.left() + 12.0, bar.center().y),
+        egui::Align2::LEFT_CENTER,
+        "Reasoning",
+        egui::FontId::proportional(13.0),
+        muted,
+    );
+    let label = truncated(ui, model, 12.0, muted, REASONING - 96.0);
+    ui.painter().galley(
+        egui::pos2(
+            bar.right() - 12.0 - label.size().x,
+            bar.center().y - label.size().y / 2.0,
+        ),
+        label,
+        muted,
+    );
+    heading.widget_info(|| {
+        let mut info =
+            egui::WidgetInfo::labeled(egui::Role::RadioGroup, true, "Assistant reasoning level");
+        info.current_text_value = Some(current.to_owned());
+        info
+    });
+    heading.on_hover_text(
+        "How much the agent thinks before it answers. A new level applies from \
+         the next message; the conversation carries on.",
+    );
+    paint_bar_line(ui, bar);
+    ui.add_space(4.0);
+}
+
+/// Every level row; returns the level picked, empty for the agent's own.
+fn level_rows(
+    ui: &mut egui::Ui,
+    efforts: &[Effort],
+    default: Option<&str>,
+    chosen: &str,
+) -> Option<String> {
+    let mut picked = None;
+    // Without a known default, the agent's own level is a row of its own.
+    if default.is_none() && level_row(ui, "Default", "", false, chosen.is_empty()) {
+        picked = Some(String::new());
+    }
+    for effort in efforts {
+        let is_default = default == Some(effort.id.as_str());
+        let checked = chosen == effort.id || chosen.is_empty() && is_default;
+        if level_row(
+            ui,
+            &effort_name(&effort.id),
+            &effort.id,
+            is_default,
+            checked,
+        ) {
+            // The default level is kept as "the agent's own".
+            picked = Some(if is_default {
+                String::new()
+            } else {
+                effort.id.clone()
+            });
+        }
+    }
+    picked
 }
 
 /// One rail entry: a 20-point glyph, a hover fill and an accent bar when shown.
@@ -729,10 +841,71 @@ fn rail_item(
     response
 }
 
+/// A badge's place: 16 points square, `left` of a row centred on `y`.
+fn badge_at(left: f32, y: f32) -> egui::Rect {
+    egui::Rect::from_min_size(egui::pos2(left + 6.0, y - 8.0), egui::Vec2::splat(16.0))
+}
+
+/// A full-width list row: its rect, its response and its inset.
+fn list_row(ui: &mut egui::Ui) -> (egui::Rect, egui::Response, egui::Rect) {
+    let width = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, ROW), egui::Sense::click());
+    (rect, response, rect.shrink2(egui::vec2(6.0, 1.0)))
+}
+
+fn paint_hover(ui: &egui::Ui, inner: egui::Rect) {
+    let fill = crate::appearance::Tokens::of(ui.ctx()).raised_hover;
+    ui.painter().rect_filled(inner, 6.0, fill);
+}
+
+/// The tick beside a chosen row.
+fn paint_check(ui: &egui::Ui, center: egui::Pos2) {
+    icons::paint(
+        ui.painter(),
+        egui::Rect::from_center_size(center, egui::Vec2::splat(13.0)),
+        Icon::Check,
+        ui.visuals().text_color(),
+    );
+}
+
 enum RowClick {
     None,
     Row,
     Star,
+}
+
+/// The model rows with their (checked, favourite) marks, "Show more" when
+/// `hidden` rows wait, or `note` when there are none. Returns the click, a
+/// star before a row, and whether to show more.
+fn model_list<'a>(
+    ui: &mut egui::Ui,
+    rows: &'a [Choice],
+    marks: &[(bool, bool)],
+    hidden: usize,
+    note: &str,
+) -> (Option<(RowClick, &'a Choice)>, bool) {
+    let mut clicked = None;
+    for (index, (row, &(checked, favourite))) in rows.iter().zip(marks).enumerate() {
+        match model_row(ui, row, index, checked, favourite) {
+            RowClick::None => {}
+            RowClick::Row if matches!(clicked, Some((RowClick::Star, _))) => {}
+            click => clicked = Some((click, row)),
+        }
+    }
+    let muted = crate::appearance::Tokens::of(ui.ctx()).muted;
+    let more = hidden > 0
+        && ui
+            .add_sized(
+                egui::vec2(LIST - 12.0, 26.0),
+                egui::Button::new(egui::RichText::new("Show more").color(muted)).frame(false),
+            )
+            .on_hover_text(format!("{hidden} more"))
+            .clicked();
+    if rows.is_empty() {
+        ui.add_space(14.0);
+        ui.vertical_centered(|ui| ui.weak(note));
+    }
+    (clicked, more)
 }
 
 fn model_row(
@@ -743,45 +916,30 @@ fn model_row(
     favourite: bool,
 ) -> RowClick {
     let tokens = crate::appearance::Tokens::of(ui.ctx());
-    let width = ui.available_width();
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, ROW), egui::Sense::click());
+    let (rect, response, inner) = list_row(ui);
     let star_rect = egui::Rect::from_center_size(
         egui::pos2(rect.right() - 62.0, rect.center().y),
         egui::Vec2::splat(22.0),
     );
     let star = ui.interact(star_rect, response.id.with("star"), egui::Sense::click());
     let hovered = response.hovered() || star.hovered();
-    let inner = rect.shrink2(egui::vec2(6.0, 1.0));
     if hovered {
-        ui.painter().rect_filled(inner, 6.0, tokens.raised_hover);
+        paint_hover(ui, inner);
     }
     let text = ui.visuals().text_color();
-    let badge = egui::Rect::from_min_size(
-        egui::pos2(inner.left() + 6.0, rect.center().y - 8.0),
-        egui::Vec2::splat(16.0),
-    );
+    let badge = badge_at(inner.left(), rect.center().y);
     paint_badge(ui, badge, row.provider, false);
     // Right to left: the shortcut, the star, then "Default".
-    let mut right = inner.right() - 6.0;
     if index < NUMBER_KEYS.len() {
-        let chip = truncated(ui, &format!("Ctrl+{}", index + 1), 11.0, tokens.muted, 60.0);
-        let chip_rect = egui::Rect::from_min_size(
-            egui::pos2(right - chip.size().x - 10.0, rect.center().y - 9.0),
-            egui::vec2(chip.size().x + 10.0, 18.0),
-        );
-        ui.painter().rect_filled(chip_rect, 4.0, tokens.raised);
-        ui.painter()
-            .galley(chip_rect.center() - chip.size() / 2.0, chip, tokens.muted);
+        paint_shortcut(ui, index, inner.right() - 6.0, rect.center().y);
     }
-    right = star_rect.left();
-    if favourite || hovered {
-        let glyph = star_rect.shrink(4.0);
-        if favourite {
-            icons::paint_filled_star(ui.painter(), glyph, tokens.pending);
-        } else {
-            let color = if star.hovered() { text } else { tokens.muted };
-            icons::paint(ui.painter(), glyph, Icon::Star, color);
-        }
+    let mut right = star_rect.left();
+    let glyph = star_rect.shrink(4.0);
+    if favourite {
+        icons::paint_filled_star(ui.painter(), glyph, tokens.pending);
+    } else if hovered {
+        let color = if star.hovered() { text } else { tokens.muted };
+        icons::paint(ui.painter(), glyph, Icon::Star, color);
     }
     if row.default && !row.model.is_empty() {
         let tag = truncated(ui, "Default", 11.0, tokens.muted, 60.0);
@@ -802,16 +960,32 @@ fn model_row(
         text,
     );
     if checked {
-        icons::paint(
-            ui.painter(),
-            egui::Rect::from_center_size(
-                egui::pos2(left + name_width + 12.0, rect.center().y),
-                egui::Vec2::splat(13.0),
-            ),
-            Icon::Check,
-            text,
-        );
+        paint_check(ui, egui::pos2(left + name_width + 12.0, rect.center().y));
     }
+    model_row_click(row, response, star, checked, favourite)
+}
+
+/// The Ctrl and number that choose a row, in a chip ending at `right`.
+fn paint_shortcut(ui: &egui::Ui, index: usize, right: f32, y: f32) {
+    let tokens = crate::appearance::Tokens::of(ui.ctx());
+    let chip = truncated(ui, &format!("Ctrl+{}", index + 1), 11.0, tokens.muted, 60.0);
+    let chip_rect = egui::Rect::from_min_size(
+        egui::pos2(right - chip.size().x - 10.0, y - 9.0),
+        egui::vec2(chip.size().x + 10.0, 18.0),
+    );
+    ui.painter().rect_filled(chip_rect, 4.0, tokens.raised);
+    ui.painter()
+        .galley(chip_rect.center() - chip.size() / 2.0, chip, tokens.muted);
+}
+
+/// A model row's and its star's names, states and tooltips, and which was clicked.
+fn model_row_click(
+    row: &Choice,
+    response: egui::Response,
+    star: egui::Response,
+    checked: bool,
+    favourite: bool,
+) -> RowClick {
     let vendor = row.provider.vendor().name;
     response
         .widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, checked, &row.name));
@@ -847,41 +1021,28 @@ fn model_row(
 
 /// One reasoning level: its name, a "Default" tag and a tick when chosen.
 fn level_row(ui: &mut egui::Ui, name: &str, id: &str, default: bool, checked: bool) -> bool {
-    let tokens = crate::appearance::Tokens::of(ui.ctx());
-    let width = ui.available_width();
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, ROW), egui::Sense::click());
-    let inner = rect.shrink2(egui::vec2(6.0, 1.0));
+    let (rect, response, inner) = list_row(ui);
     if response.hovered() {
-        ui.painter().rect_filled(inner, 6.0, tokens.raised_hover);
+        paint_hover(ui, inner);
     }
-    let text = ui.visuals().text_color();
     ui.painter().text(
         egui::pos2(inner.left() + 8.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         name,
         egui::FontId::proportional(13.0),
-        text,
+        ui.visuals().text_color(),
     );
-    let mut right = inner.right() - 8.0;
+    let right = inner.right() - 8.0;
     if checked {
-        icons::paint(
-            ui.painter(),
-            egui::Rect::from_center_size(
-                egui::pos2(right - 7.0, rect.center().y),
-                egui::Vec2::splat(13.0),
-            ),
-            Icon::Check,
-            text,
-        );
+        paint_check(ui, egui::pos2(right - 7.0, rect.center().y));
     }
-    right -= 20.0;
     if default {
         ui.painter().text(
-            egui::pos2(right, rect.center().y),
+            egui::pos2(right - 20.0, rect.center().y),
             egui::Align2::RIGHT_CENTER,
             "Default",
             egui::FontId::proportional(11.0),
-            tokens.muted,
+            crate::appearance::Tokens::of(ui.ctx()).muted,
         );
     }
     let label = format!("Reasoning {name}");
