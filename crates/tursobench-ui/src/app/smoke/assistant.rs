@@ -4,8 +4,10 @@ use super::{App, Smoke};
 use crate::app::assistant::Entry;
 use crate::app::presentation::Intent;
 use crate::assistant_tools::Sharing;
+use crate::storage::{FavouriteModel, Provider};
 use eframe::egui;
 use serde_json::json;
+use tursobench_assistant::account::{SignIn, Status};
 
 const SCENES: &[&str] = &[
     "assistant-consent.png",
@@ -88,10 +90,6 @@ impl App {
                 self.set_assistant_shown(false);
             }
             5 => {
-                use tursobench_assistant::{
-                    account::{SignIn, Status},
-                    vendor::Provider,
-                };
                 for (provider, state, version) in [
                     (Provider::Claude, SignIn::SignedIn, "Claude Code · example"),
                     (Provider::Codex, SignIn::SignedIn, "Codex · example"),
@@ -108,16 +106,15 @@ impl App {
                         ..Default::default()
                     });
                 }
-                self.settings.open = true;
-                self.settings.page = crate::app::settings::Page::Assistant;
+                self.open_assistant_settings();
             }
             6 => {
-                self.preferences.assistant.provider = crate::storage::Provider::Codex;
+                self.preferences.assistant.provider = Provider::Codex;
                 self.open_assistant_privacy();
             }
             7 => {
                 self.settings.open = false;
-                self.preferences.assistant.provider = crate::storage::Provider::Claude;
+                self.preferences.assistant.provider = Provider::Claude;
                 if !self.assistant_expanded() {
                     self.toggle_assistant_expanded();
                 }
@@ -142,7 +139,6 @@ impl App {
                 self.toggle_column(1);
             }
             _ => {
-                use crate::storage::{FavouriteModel, Provider};
                 if self.assistant_expanded() {
                     self.toggle_assistant_expanded();
                 }

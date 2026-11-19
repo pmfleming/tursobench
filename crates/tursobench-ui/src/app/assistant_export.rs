@@ -56,58 +56,95 @@ fn render(markdown: &str, format: CopyFormat) -> String {
     }
 }
 
+/// How the copy buttons write text, as Settings names each format.
+pub(super) const FORMATS: [(CopyFormat, &str); 2] = [
+    (CopyFormat::Markdown, "Markdown"),
+    (CopyFormat::Html, "HTML"),
+];
+
+pub(super) fn format_name(format: CopyFormat) -> &'static str {
+    FORMATS
+        .into_iter()
+        .find_map(|(choice, name)| (choice == format).then_some(name))
+        .unwrap_or_default()
+}
+
+/// One block of the chat's Markdown subset, as the panel and the copies read it.
+pub(super) enum Block<'a> {
+    /// A fenced block: its language, lowercased, and its text.
+    Code {
+        language: String,
+        code: String,
+    },
+    Heading(u8, &'a str),
+    Item(&'a str),
+    Blank,
+    /// A line of a paragraph, untrimmed.
+    Text(&'a str),
+}
+
+pub(super) fn blocks(markdown: &str) -> Vec<Block<'_>> {
+    let mut lines = markdown.lines();
+    let mut blocks = vec![];
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim_start();
+        blocks.push(if let Some(language) = trimmed.strip_prefix("```") {
+            let code: Vec<&str> = lines
+                .by_ref()
+                .take_while(|l| !l.trim_start().starts_with("```"))
+                .collect();
+            Block::Code {
+                language: language.trim().to_lowercase(),
+                code: code.join("\n"),
+            }
+        } else if let Some((level, heading)) = [("### ", 3), ("## ", 2), ("# ", 1)]
+            .into_iter()
+            .find_map(|(mark, level)| trimmed.strip_prefix(mark).map(|h| (level, h)))
+        {
+            Block::Heading(level, heading)
+        } else if let Some(item) = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+        {
+            Block::Item(item)
+        } else if trimmed.is_empty() {
+            Block::Blank
+        } else {
+            Block::Text(line)
+        });
+    }
+    blocks
+}
+
 /// The Markdown subset above as HTML; everything else stays escaped text.
 fn html(markdown: &str) -> String {
     let mut out = Vec::new();
     let mut paragraph: Vec<&str> = vec![];
     let mut list: Vec<String> = vec![];
-    let flush = |out: &mut Vec<String>, paragraph: &mut Vec<&str>, list: &mut Vec<String>| {
-        if !paragraph.is_empty() {
+    // A closing blank ends the last paragraph or list.
+    for block in blocks(markdown).into_iter().chain([Block::Blank]) {
+        // A list item ends a paragraph, a text line ends a list, anything else
+        // ends both; at most one of them is open.
+        if !matches!(block, Block::Text(_)) && !paragraph.is_empty() {
             out.push(format!("<p>{}</p>", inline(&paragraph.join("\n"))));
             paragraph.clear();
         }
-        if !list.is_empty() {
+        if !matches!(block, Block::Item(_)) && !list.is_empty() {
             out.push(format!("<ul>{}</ul>", list.concat()));
             list.clear();
         }
-    };
-    let mut lines = markdown.lines();
-    while let Some(line) = lines.next() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("```") {
-            flush(&mut out, &mut paragraph, &mut list);
-            let code: Vec<&str> = lines
-                .by_ref()
-                .take_while(|l| !l.trim_start().starts_with("```"))
-                .collect();
-            out.push(format!(
-                "<pre><code>{}</code></pre>",
-                escape(&code.join("\n"))
-            ));
-        } else if let Some((level, heading)) = [("### ", 3), ("## ", 2), ("# ", 1)]
-            .into_iter()
-            .find_map(|(mark, level)| trimmed.strip_prefix(mark).map(|h| (level, h)))
-        {
-            flush(&mut out, &mut paragraph, &mut list);
-            out.push(format!("<h{level}>{}</h{level}>", inline(heading)));
-        } else if let Some(item) = trimmed
-            .strip_prefix("- ")
-            .or_else(|| trimmed.strip_prefix("* "))
-        {
-            if !paragraph.is_empty() {
-                flush(&mut out, &mut paragraph, &mut vec![]);
+        match block {
+            Block::Code { code, .. } => {
+                out.push(format!("<pre><code>{}</code></pre>", escape(&code)));
             }
-            list.push(format!("<li>{}</li>", inline(item)));
-        } else if trimmed.is_empty() {
-            flush(&mut out, &mut paragraph, &mut list);
-        } else {
-            if !list.is_empty() {
-                flush(&mut out, &mut vec![], &mut list);
+            Block::Heading(level, heading) => {
+                out.push(format!("<h{level}>{}</h{level}>", inline(heading)));
             }
-            paragraph.push(line);
+            Block::Item(item) => list.push(format!("<li>{}</li>", inline(item))),
+            Block::Text(line) => paragraph.push(line),
+            Block::Blank => {}
         }
     }
-    flush(&mut out, &mut paragraph, &mut list);
     out.join("\n")
 }
 
@@ -145,7 +182,7 @@ fn escape(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{CopyFormat, Entry, conversation, last_reply, tools};
     use crate::app::presentation::Intent;
     use serde_json::json;
 
