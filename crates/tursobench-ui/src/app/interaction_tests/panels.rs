@@ -1,10 +1,5 @@
-use super::{click, control, egui, fixture, frame_at, press_key};
+use super::{click, control, egui, fixture, frame_at, label_exists, press_key};
 const SIZE: egui::Vec2 = egui::vec2(1280.0, 720.0);
-fn label_exists(output: &egui::FullOutput, label: &str) -> bool {
-    crate::app::test_ui::nodes(output)
-        .iter()
-        .any(|(_, node)| node.label() == Some(label))
-}
 
 #[test]
 fn sidebar_and_assistant_hide_independently_and_the_workspace_reclaims_their_width() {

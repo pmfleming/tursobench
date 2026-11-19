@@ -31,20 +31,7 @@ impl App {
                 smoke.capture_frames = 0;
                 smoke.stage = 91;
             }
-            91 => {
-                smoke.capture_frames += 1;
-                if smoke.capture_frames >= 20 {
-                    smoke.capture_pending = Some(SCENES[smoke.scene].into());
-                    let (tx, rx) = std::sync::mpsc::sync_channel(1);
-                    let wake = ctx.clone();
-                    ctx.request_screenshot(move |image| {
-                        let _ = tx.try_send(image);
-                        wake.request_repaint();
-                    });
-                    smoke.capture_result = Some(rx);
-                    smoke.stage = 92;
-                }
-            }
+            91 => smoke.capture_after(ctx, 20, SCENES[smoke.scene], 92),
             92 if smoke.capture_pending.is_none() => {
                 smoke.scene += 1;
                 if smoke.scene == SCENES.len() {

@@ -1,6 +1,6 @@
 use super::{
-    App, browse_and_wait, click, close_and_wait, control, egui, fixture, frame, inspect_selected,
-    press_key, shell, wait,
+    App, browse_and_wait, browsing, click, close_and_wait, control, egui, fixture, frame,
+    inspect_selected, press_key, shell, wait,
 };
 
 /// Type `query` into the palette and let its results settle.
@@ -45,14 +45,12 @@ fn sidebar_foot_opens_help_and_commands_without_a_database() {
 
 #[test]
 fn headers_name_every_sort_level_in_engine_order() {
-    let (_dir, ctx, mut app) = fixture(
-        &[
-            "CREATE TABLE sample(id INTEGER PRIMARY KEY, label TEXT, number INTEGER)",
-            "INSERT INTO sample VALUES(1,'a',42)",
-        ],
+    let (_dir, ctx, mut app) = browsing(
+        "sample",
+        "id INTEGER PRIMARY KEY, label TEXT, number INTEGER",
+        "(1,'a',42)",
         false,
     );
-    browse_and_wait(&mut app, &ctx, "sample");
     frame(&mut app, &ctx, vec![]);
     ctx.enable_accesskit();
     let browse = app.database.document.browse.as_mut().unwrap();
@@ -294,14 +292,7 @@ fn palette_closes_on_a_click_outside_but_not_inside() {
 
 #[test]
 fn escape_closes_the_palette_before_a_cell_edit_beneath_it() {
-    let (_dir, ctx, mut app) = fixture(
-        &[
-            "CREATE TABLE t(id INTEGER PRIMARY KEY, value TEXT)",
-            "INSERT INTO t VALUES(1,'a')",
-        ],
-        true,
-    );
-    browse_and_wait(&mut app, &ctx, "t");
+    let (_dir, ctx, mut app) = browsing("t", "id INTEGER PRIMARY KEY, value TEXT", "(1,'a')", true);
     app.start_inline(0, 1);
     assert!(app.database.document.tools.inline.is_some());
     press_key(&mut app, &ctx, egui::Key::K, egui::Modifiers::CTRL);
