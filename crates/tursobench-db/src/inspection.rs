@@ -1,9 +1,15 @@
+//! Bounded committed-schema discovery: per-table inspection, the schema diagram
+//! and foreign-key diagnostics. No table scans and no inferred relationships.
 use crate::{
+    Diagnostic,
     browse::describe,
     connection::{failure, from_engine},
 };
 use turso::Connection;
-use tursobench_core::{Failure, ForeignKey, IndexInfo, Inspection, Table, Value, quote_identifier};
+use tursobench_core::{
+    DiagramTable, Failure, ForeignKey, IndexInfo, Inspection, SchemaDiagram, Table, TableColumn,
+    Value, quote_identifier,
+};
 
 async fn metadata(c: &Connection, sql: String) -> Result<Vec<Vec<Value>>, Failure> {
     let mut rows = c.query(sql, ()).await.map_err(failure)?;
@@ -257,4 +263,173 @@ pub(crate) fn reference_condition(
         quote_identifier(&parent.name),
         predicates.join(" AND ")
     ))
+}
+
+/// Table names in name order, cut short (`true`) once `max` names or
+/// `max_bytes` of names are reached.
+async fn table_names(
+    c: &Connection,
+    max: usize,
+    max_bytes: usize,
+) -> Result<(Vec<String>, bool), Failure> {
+    let sql = format!(
+        "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*' ORDER BY name LIMIT {}",
+        max + 1
+    );
+    let mut rows = c.query(sql, ()).await.map_err(failure)?;
+    let (mut names, mut bytes) = (Vec::new(), 0);
+    while let Some(row) = rows.next().await.map_err(failure)? {
+        let turso::Value::Text(name) = row.get_value(0).map_err(failure)? else {
+            return Err(Failure::input("Unexpected schema name"));
+        };
+        bytes += name.len();
+        if names.len() == max || bytes > max_bytes {
+            return Ok((names, true));
+        }
+        names.push(name);
+    }
+    Ok((names, false))
+}
+
+const DIAGRAM_TABLES: usize = 512;
+const DIAGRAM_BYTES: usize = 8 * 1024 * 1024;
+fn inspection_bytes(info: &Inspection) -> usize {
+    info.table.name.capacity()
+        + info.table.columns.capacity() * std::mem::size_of::<TableColumn>()
+        + info.indexes.capacity() * std::mem::size_of::<IndexInfo>()
+        + info.foreign_keys.capacity() * std::mem::size_of::<ForeignKey>()
+        + info
+            .table
+            .columns
+            .iter()
+            .map(|c| {
+                c.name.capacity()
+                    + c.declared_type.capacity()
+                    + c.default_sql.as_ref().map_or(0, String::capacity)
+            })
+            .sum::<usize>()
+        + info
+            .indexes
+            .iter()
+            .map(|i| {
+                i.name.capacity()
+                    + i.columns.capacity() * std::mem::size_of::<Option<String>>()
+                    + i.columns
+                        .iter()
+                        .flatten()
+                        .map(String::capacity)
+                        .sum::<usize>()
+            })
+            .sum::<usize>()
+        + info
+            .foreign_keys
+            .iter()
+            .map(|f| {
+                f.target.capacity()
+                    + f.on_update.capacity()
+                    + f.on_delete.capacity()
+                    + f.columns.capacity() * std::mem::size_of::<(String, Option<String>)>()
+                    + f.columns
+                        .iter()
+                        .map(|(a, b)| a.capacity() + b.as_ref().map_or(0, String::capacity))
+                        .sum::<usize>()
+            })
+            .sum::<usize>()
+}
+pub(crate) async fn diagram(c: &Connection) -> Result<SchemaDiagram, Failure> {
+    let (mut names, mut limited) = table_names(c, DIAGRAM_TABLES, DIAGRAM_BYTES).await?;
+    if let Some(long) = names.iter().position(|name| name.len() > 64 * 1024) {
+        names.truncate(long);
+        limited = true;
+    }
+    let mut graph = SchemaDiagram {
+        tables: Vec::with_capacity(DIAGRAM_TABLES),
+        limited,
+    };
+    let mut used = std::mem::size_of::<SchemaDiagram>()
+        + graph.tables.capacity() * std::mem::size_of::<DiagramTable>();
+    for name in names {
+        let (inspection, error) = match inspect(c, &name).await {
+            Ok(info) => (Some(info), None),
+            Err(error) => (
+                None,
+                Some(error.to_string().chars().take(2048).collect::<String>()),
+            ),
+        };
+        used += name.capacity()
+            + inspection.as_ref().map_or(0, inspection_bytes)
+            + error.as_ref().map_or(0, String::capacity);
+        if used > DIAGRAM_BYTES {
+            graph.limited = true;
+            break;
+        }
+        graph.tables.push(DiagramTable {
+            name,
+            inspection,
+            error,
+        });
+    }
+    Ok(graph)
+}
+
+/// The SQL for `kind`; foreign keys are checked by a query built from supported
+/// native metadata rather than `PRAGMA foreign_key_check`.
+pub(crate) async fn diagnostic(c: &Connection, kind: Diagnostic) -> Result<String, Failure> {
+    match kind {
+        Diagnostic::ForeignKeys => foreign_key_check(c).await,
+        kind => Ok(kind.sql().into()),
+    }
+}
+async fn foreign_key_check(c: &Connection) -> Result<String, Failure> {
+    let (names, truncated) = table_names(c, 1000, 1024 * 1024).await?;
+    if truncated {
+        return Err(Failure::input(
+            "Schema exceeds validation budget; validation incomplete",
+        ));
+    }
+    let mut checks = Vec::new();
+    for name in &names {
+        let info = inspect(c, name).await?;
+        for key in &info.foreign_keys {
+            let parent = describe(c, &key.target).await?;
+            let mut present = Vec::new();
+            let mut matches = Vec::new();
+            for (source, target) in &key.columns {
+                let target = target
+                    .as_ref()
+                    .filter(|target| {
+                        parent
+                            .columns
+                            .iter()
+                            .any(|c| c.name.eq_ignore_ascii_case(target))
+                    })
+                    .ok_or_else(|| {
+                        Failure::input("Unresolved parent key; validation incomplete")
+                    })?;
+                present.push(format!("c.{} IS NOT NULL", quote_identifier(source)));
+                // Parent affinity and collation govern FK comparisons.
+                matches.push(format!(
+                    "p.{} = c.{}",
+                    quote_identifier(target),
+                    quote_identifier(source)
+                ));
+            }
+            if present.is_empty() {
+                return Err(Failure::input("Empty foreign key; validation incomplete"));
+            }
+            let literal = |s: &str| format!("'{}'", s.replace('\'', "''"));
+            checks.push(format!("SELECT {} AS child_table, {} AS parent_table, {} AS foreign_key_id, count(*) AS violations, {} AS checked_tables FROM {} AS c WHERE {} AND NOT EXISTS (SELECT 1 FROM {} AS p WHERE {})",
+                literal(name), literal(&key.target), key.id, names.len(), quote_identifier(name), present.join(" AND "), quote_identifier(&key.target), matches.join(" AND ")));
+            if checks.len() > 256 || checks.iter().map(String::len).sum::<usize>() > 1024 * 1024 {
+                return Err(Failure::input(
+                    "Foreign keys exceed validation budget; validation incomplete",
+                ));
+            }
+        }
+    }
+    if checks.is_empty() {
+        Ok("SELECT NULL AS child_table, NULL AS parent_table, NULL AS foreign_key_id, 0 AS violations, 0 AS checked_tables WHERE 0".into())
+    } else {
+        Ok(checks.join(" UNION ALL "))
+    }
 }

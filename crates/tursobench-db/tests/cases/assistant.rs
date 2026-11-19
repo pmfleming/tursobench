@@ -123,11 +123,7 @@ fn the_database_location_is_not_readable() {
 fn turso_query_only_rejects_writes_on_its_connection() {
     // The engine guard behind the parser gate, checked directly.
     let (_dir, path) = fixture();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
-    runtime.block_on(async {
+    common::block_on(async {
         let db = turso::Builder::new_local(path.to_str().unwrap())
             .build()
             .await

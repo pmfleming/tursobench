@@ -1,7 +1,7 @@
 //! Imports, exports and maintenance: each refuses to run after an unconfirmed
 //! outcome and reports the editor's transaction state afterwards.
 use super::Worker;
-use crate::{connection::state, sql, transfers};
+use crate::{sql, transfers};
 use std::path::{Path, PathBuf};
 use tursobench_core::{
     Access, Bindings, Browse, Completion, ErrorKind, EventKind, Failure, ImportSpec, Ticket,
@@ -50,7 +50,7 @@ impl Worker<'_> {
             };
             self.note_completion(ticket, effect, &completion);
         }
-        outcome.transaction = state(self.editor);
+        outcome.transaction = self.transaction();
         Ok(EventKind::TransferFinished(outcome))
     }
     pub(super) async fn export_table(
@@ -76,7 +76,7 @@ impl Worker<'_> {
         spec: ImportSpec,
     ) -> Result<EventKind, Failure> {
         self.settled("reopen before importing")?;
-        if self.access != Access::ReadWrite || state(self.editor) != TransactionState::Autocommit {
+        if self.access != Access::ReadWrite || self.transaction() != TransactionState::Autocommit {
             return Err(Failure::input(
                 "Import requires write access and editor autocommit",
             ));
@@ -101,7 +101,7 @@ impl Worker<'_> {
         Ok(EventKind::TransferFinished(TransferOutcome {
             rows: 0,
             changed: 0,
-            transaction: state(self.editor),
+            transaction: self.transaction(),
             error: None,
             message: "Checkpoint completed".into(),
             executed: false,

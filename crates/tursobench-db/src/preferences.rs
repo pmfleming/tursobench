@@ -90,15 +90,16 @@ fn runtime() -> Result<tokio::runtime::Runtime, String> {
         .build()
         .map_err(error)
 }
-/// Reads a snapshot through a read-only engine; nothing is created or locked for writing.
-async fn read_only(text: &str) -> Result<Option<String>, String> {
-    let db = turso::Builder::new_local(text)
-        .read_only(true)
-        .build()
-        .await
-        .map_err(error)?;
+/// The store engine and a connection whose statements stop after five seconds.
+async fn connect(builder: turso::Builder) -> Result<(Database, Connection), String> {
+    let db = builder.build().await.map_err(error)?;
     let c = db.connect().map_err(error)?;
     c.query_timeout(Duration::from_secs(5)).map_err(error)?;
+    Ok((db, c))
+}
+/// Reads a snapshot through a read-only engine; nothing is created or locked for writing.
+async fn read_only(text: &str) -> Result<Option<String>, String> {
+    let (_db, c) = connect(turso::Builder::new_local(text).read_only(true)).await?;
     read(&c).await
 }
 /// Creates an owner-only empty file, or reports that one already exists.
@@ -151,13 +152,8 @@ async fn open_writer(path: &Path) -> Result<(Database, Connection, Option<String
         }
         read_only(text).await?;
     }
-    let db = turso::Builder::new_local(text)
-        .build()
-        .await
-        .map_err(error)?;
-    let c = db.connect().map_err(error)?;
+    let (db, c) = connect(turso::Builder::new_local(text)).await?;
     c.busy_timeout(Duration::from_millis(250)).map_err(error)?;
-    c.query_timeout(Duration::from_secs(5)).map_err(error)?;
     if created {
         initialize(&c).await?;
     }

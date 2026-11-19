@@ -11,8 +11,6 @@ mod schema_compare;
 mod session;
 #[path = "cases/shared.rs"]
 mod shared;
-#[path = "cases/transactions.rs"]
-mod transactions;
 #[path = "cases/transfers.rs"]
 mod transfers;
 #[path = "cases/workbench.rs"]

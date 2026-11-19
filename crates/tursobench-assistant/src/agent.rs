@@ -332,3 +332,14 @@ pub(crate) fn tool_name(name: &str) -> String {
         .unwrap_or(name)
         .to_owned()
 }
+
+/// The JSON-RPC `initialize` request ACP and Codex sessions open with:
+/// `params` plus this client's identity.
+pub(crate) fn initialize(id: u64, mut params: Json) -> Json {
+    params["clientInfo"] = serde_json::json!({
+        "name": "tursobench",
+        "title": "TursoBench",
+        "version": env!("CARGO_PKG_VERSION"),
+    });
+    serde_json::json!({"jsonrpc": "2.0", "id": id, "method": "initialize", "params": params})
+}

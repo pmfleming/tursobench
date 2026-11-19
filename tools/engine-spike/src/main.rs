@@ -13,6 +13,9 @@ const SAMPLE_COUNT: &str = "SELECT count(*) FROM sample";
 fn local(path: &str) -> Builder {
     Builder::new_local(path).experimental_index_method(true)
 }
+fn reader(path: &Path) -> Builder {
+    local(path.to_str().unwrap()).read_only(true)
+}
 
 async fn scalar(c: &Connection, sql: &str) -> turso::Result<Value> {
     let mut r = c.query(sql, ()).await?;
@@ -29,12 +32,8 @@ async fn count(c: &Connection, sql: &str) -> Probe<i64> {
 
 /// Child process: report whether a second process can read the probe file.
 async fn child(path: &str, shared: &str) -> Probe {
-    let db = local(path)
-        .read_only(true)
-        .experimental_multiprocess_wal(shared == "true")
-        .build()
-        .await;
-    match db {
+    let builder = reader(Path::new(path)).experimental_multiprocess_wal(shared == "true");
+    match builder.build().await {
         Ok(db) => println!(
             "child read: {:?}",
             scalar(&db.connect()?, SAMPLE_COUNT).await
@@ -178,7 +177,7 @@ async fn read_only_reopen(path: &Path) -> Probe {
     let p = path.to_str().unwrap();
     let before = std::fs::read(path)?;
     let wal_before = std::fs::read(format!("{p}-wal")).ok();
-    let ro = local(p).read_only(true).build().await?;
+    let ro = reader(path).build().await?;
     let c = ro.connect()?;
     assert_eq!(count(&c, SAMPLE_COUNT).await?, 1);
     assert!(
@@ -196,31 +195,16 @@ async fn read_only_reopen(path: &Path) -> Probe {
 }
 async fn open_failures(dir: &Path, path: &Path) -> Probe {
     let missing = dir.join("missing.db");
-    assert!(
-        local(missing.to_str().unwrap())
-            .read_only(true)
-            .build()
-            .await
-            .is_err()
-    );
+    assert!(reader(&missing).build().await.is_err());
     assert!(!missing.exists());
     let corrupt = dir.join("corrupt.db");
     std::fs::write(&corrupt, vec![0x42; 8192])?;
-    println!(
-        "corrupt open: {:?}",
-        local(corrupt.to_str().unwrap())
-            .read_only(true)
-            .build()
-            .await
-    );
+    println!("corrupt open: {:?}", reader(&corrupt).build().await);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000))?;
-        println!(
-            "permission denied: {:?}",
-            local(path.to_str().unwrap()).read_only(true).build().await
-        );
+        println!("permission denied: {:?}", reader(path).build().await);
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     }
     Ok(())
@@ -229,10 +213,7 @@ async fn sqlite_fixture(dir: &Path) -> Probe {
     let sqlite = dir.join("sqlite.db");
     let output = Command::new("python3").args(["-c", "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('CREATE TABLE sample(id INTEGER PRIMARY KEY, t TEXT)'); c.execute(\"INSERT INTO sample VALUES (1, 'sqlite fixture')\"); c.commit(); c.close()", sqlite.to_str().unwrap()]).output()?;
     assert!(output.status.success());
-    let db = local(sqlite.to_str().unwrap())
-        .read_only(true)
-        .build()
-        .await?;
+    let db = reader(&sqlite).build().await?;
     assert_eq!(count(&db.connect()?, SAMPLE_COUNT).await?, 1);
     println!("Python stdlib SQLite closed-file fixture opened through Turso: passed");
     Ok(())

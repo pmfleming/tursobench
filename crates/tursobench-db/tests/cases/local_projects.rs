@@ -1,4 +1,4 @@
-use crate::common::{self, Client, local_fixtures as fixtures, snapshot as bytes};
+use crate::common::{self, Client, local_fixtures as fixtures};
 
 use tursobench_core::{
     Access, Browse, CommitOutcome, Delivery, Edit, ErrorKind, Failure, TransactionState, Value,
@@ -33,7 +33,7 @@ fn matches(c: &mut Client, needle: &str) -> Vec<Vec<Value>> {
 fn exact_project_schemas_open_browse_filter_page_and_preserve_readonly_files() {
     for name in fixtures::NAMES {
         let (dir, path) = fixture(name);
-        let before = bytes(dir.path());
+        let files = common::Files::record(dir.path());
         let mut c = Client::open(&path, Access::ReadOnly);
         let schema = c.run(Operation::Schema).result;
         assert!(schema.completion.unwrap().error.is_none());
@@ -101,9 +101,8 @@ fn exact_project_schemas_open_browse_filter_page_and_preserve_readonly_files() {
             assert_eq!(first.rows[0][8], Value::Null);
         }
         c.close();
-        assert_eq!(
-            before,
-            bytes(dir.path()),
+        assert!(
+            files.unchanged(),
             "read-only access changed {name} fixture files"
         );
         eprintln!(
@@ -298,17 +297,8 @@ fn project_typed_edits_and_close_rollback() {
     ] {
         let (_dir, path) = fixture(name);
         let mut c = Client::open(&path, Access::ReadWrite);
-        let (table, before) = c.browse(table_name, 0);
-        assert!(matches!(
-            c.commit(
-                table,
-                vec![Edit::Update {
-                    original: before.rows[0].clone(),
-                    changes: vec![(column, value.clone())]
-                }]
-            ),
-            CommitOutcome::Committed { .. }
-        ));
+        let committed = c.update_first(table_name, vec![(column, value.clone())]);
+        assert!(matches!(committed, CommitOutcome::Committed { .. }));
         let (_, after) = c.browse(table_name, 0);
         assert_eq!(after.rows[0][column], value);
         c.sql("BEGIN");

@@ -1,6 +1,9 @@
 //! Turso conversions and connection invariants shared by all worker operations.
 use crate::access::Admission;
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use turso::{Builder, Connection};
 use tursobench_core::{
     Access, Bindings, Column, ConnectionSettings, Coordination, ErrorKind, Failure,
@@ -155,7 +158,7 @@ async fn validate_schema(c: &Connection) -> Result<(), Failure> {
     while rows.next().await.map_err(failure)?.is_some() {}
     Ok(())
 }
-fn database_file(path: PathBuf) -> Result<PathBuf, Failure> {
+fn database_file(path: &Path) -> Result<PathBuf, Failure> {
     let path = std::fs::canonicalize(path).map_err(|e| Failure {
         kind: ErrorKind::Io,
         message: e.to_string(),
@@ -172,8 +175,23 @@ fn database_file(path: PathBuf) -> Result<PathBuf, Failure> {
     }
     Ok(path)
 }
+/// Opens the session engine; a failure also names applications holding the file.
 pub(crate) async fn open(
-    path: PathBuf,
+    path: &Path,
+    access: Access,
+    settings: ConnectionSettings,
+) -> Result<Engine, Failure> {
+    engine(path, access, settings).await.map_err(|mut failure| {
+        let usage = crate::access::processes_using(path);
+        if !usage.applications.is_empty() {
+            let names = usage.applications.join(", ");
+            failure.message.push_str(&format!(" Also open in {names}."));
+        }
+        failure
+    })
+}
+async fn engine(
+    path: &Path,
     access: Access,
     settings: ConnectionSettings,
 ) -> Result<Engine, Failure> {

@@ -479,52 +479,46 @@ async fn relationship(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn indexed_browse_does_not_require_a_temporary_sort() {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_time()
+    #[tokio::test]
+    async fn indexed_browse_does_not_require_a_temporary_sort() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = turso::Builder::new_local(dir.path().join("plan.db").to_str().unwrap())
             .build()
-            .unwrap()
-            .block_on(async {
-                let dir = tempfile::tempdir().unwrap();
-                let db = turso::Builder::new_local(dir.path().join("plan.db").to_str().unwrap())
-                    .build()
-                    .await
-                    .unwrap();
-                let c = db.connect().unwrap();
-                c.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, name TEXT)", ())
-                    .await
-                    .unwrap();
-                c.execute("CREATE INDEX by_name ON t(name)", ())
-                    .await
-                    .unwrap();
-                let table = describe(&c, "t").await.unwrap();
-                for sort in [None, Some(1)] {
-                    let (sql, _) = browse_sql(
-                        &table,
-                        Browse {
-                            table: "t".into(),
-                            offset: 1_000_100,
-                            sort,
-                            descending: false,
-                            filters: vec![],
-                            options: Default::default(),
-                        },
-                        None,
-                    )
-                    .unwrap();
-                    let mut rows = c
-                        .query(format!("EXPLAIN QUERY PLAN {sql}"), ())
-                        .await
-                        .unwrap();
-                    let mut plan = String::new();
-                    while let Some(row) = rows.next().await.unwrap() {
-                        for i in 0..rows.column_count() {
-                            plan.push_str(&format!("{:?}", row.get_value(i).unwrap()));
-                        }
-                    }
-                    assert!(!plan.to_uppercase().contains("TEMP B-TREE"), "{plan}");
+            .await
+            .unwrap();
+        let c = db.connect().unwrap();
+        c.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, name TEXT)", ())
+            .await
+            .unwrap();
+        c.execute("CREATE INDEX by_name ON t(name)", ())
+            .await
+            .unwrap();
+        let table = describe(&c, "t").await.unwrap();
+        for sort in [None, Some(1)] {
+            let (sql, _) = browse_sql(
+                &table,
+                Browse {
+                    table: "t".into(),
+                    offset: 1_000_100,
+                    sort,
+                    descending: false,
+                    filters: vec![],
+                    options: Default::default(),
+                },
+                None,
+            )
+            .unwrap();
+            let mut rows = c
+                .query(format!("EXPLAIN QUERY PLAN {sql}"), ())
+                .await
+                .unwrap();
+            let mut plan = String::new();
+            while let Some(row) = rows.next().await.unwrap() {
+                for i in 0..rows.column_count() {
+                    plan.push_str(&format!("{:?}", row.get_value(i).unwrap()));
                 }
-            });
+            }
+            assert!(!plan.to_uppercase().contains("TEMP B-TREE"), "{plan}");
+        }
     }
 }

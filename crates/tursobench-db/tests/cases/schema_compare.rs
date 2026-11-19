@@ -6,6 +6,13 @@ use tursobench_db::{
     schema_compare::{Status, compare},
 };
 
+fn migrate(client: &mut Client, sql: &str, expected: &Arc<SchemaSnapshot>) -> common::Reply {
+    let expected = expected.clone();
+    client.run(Operation::Migration {
+        sql: sql.into(),
+        expected,
+    })
+}
 fn capture(client: &mut Client) -> Arc<SchemaSnapshot> {
     let reply = client.run(Operation::CaptureSchema);
     assert!(reply.failure.is_none(), "{:?}", reply.failure);
@@ -35,11 +42,7 @@ fn comparison_captures_readonly_schema_and_classifies_manual_changes() {
             "CREATE TABLE old_name(id INTEGER)",
         ],
     );
-    let before = (
-        common::snapshot(dir.path()),
-        std::fs::read(&desired).unwrap(),
-        std::fs::read(&target).unwrap(),
-    );
+    let files = common::Files::record(dir.path());
     let mut a = Client::open(&desired, Access::ReadOnly);
     let mut b = Client::open(&target, Access::ReadOnly);
     let (a_schema, b_schema) = (capture(&mut a), capture(&mut b));
@@ -78,16 +81,11 @@ fn comparison_captures_readonly_schema_and_classifies_manual_changes() {
             .iter()
             .all(|d| d.status == Status::Identical)
     );
-    let denied = b.run(Operation::Migration {
-        sql: "CREATE TABLE main.no_write(x)".into(),
-        expected: b_schema,
-    });
+    let denied = migrate(&mut b, "CREATE TABLE main.no_write(x)", &b_schema);
     assert!(denied.failure.unwrap().message.contains("read/write"));
     a.close();
     b.close();
-    assert_eq!(before.0, common::snapshot(dir.path()));
-    assert_eq!(before.1, std::fs::read(&desired).unwrap());
-    assert_eq!(before.2, std::fs::read(&target).unwrap());
+    assert!(files.unchanged());
     // Execute the actual generated drafts in dependency order, refreshing the
     // expected target after each explicit per-object migration.
     let mut writable = Client::open(&target, Access::ReadWrite);
@@ -100,7 +98,7 @@ fn comparison_captures_readonly_schema_and_classifies_manual_changes() {
             .clone()
             .unwrap();
         let expected = capture(&mut writable);
-        let applied = writable.run(Operation::Migration { sql, expected });
+        let applied = migrate(&mut writable, &sql, &expected);
         assert!(applied.failure.is_none(), "{name}: {:?}", applied.failure);
         assert!(applied.result.completion.unwrap().error.is_none(), "{name}");
     }
@@ -122,27 +120,25 @@ fn migration_checks_schema_in_transaction_and_rolls_back_failed_batches() {
     );
     let mut c = Client::open(&path, Access::ReadWrite);
     let original = capture(&mut c);
-    let applied = c.run(Operation::Migration {
-        sql: "ALTER TABLE main.t ADD COLUMN value TEXT; CREATE INDEX main.idx ON t(value);".into(),
-        expected: original.clone(),
-    });
-    assert!(applied.failure.is_none(), "{:?}", applied.failure);
-    assert!(applied.result.completion.unwrap().error.is_none());
+    let applied = migrate(
+        &mut c,
+        "ALTER TABLE main.t ADD COLUMN value TEXT; CREATE INDEX main.idx ON t(value);",
+        &original,
+    );
+    applied.assert_succeeded();
     assert_eq!(
         c.sql("SELECT id,value FROM t").rows,
         vec![vec![Value::Integer(1), Value::Null]]
     );
-    let stale = c.run(Operation::Migration {
-        sql: "CREATE TABLE main.stale(x)".into(),
-        expected: original,
-    });
+    let stale = migrate(&mut c, "CREATE TABLE main.stale(x)", &original);
     assert!(stale.failure.unwrap().message.contains("schema changed"));
     assert_eq!(c.count("sqlite_schema WHERE name='stal'"), 0);
     let current = capture(&mut c);
-    let failed = c.run(Operation::Migration {
-        sql: "CREATE TABLE main.undone(x); CREATE TABLE main.t(x);".into(),
-        expected: current.clone(),
-    });
+    let failed = migrate(
+        &mut c,
+        "CREATE TABLE main.undone(x); CREATE TABLE main.t(x);",
+        &current,
+    );
     assert!(failed.rolled_back);
     assert!(failed.result.completion.unwrap().error.is_some());
     assert_eq!(c.count("sqlite_schema WHERE name='undon'"), 0);
@@ -156,17 +152,11 @@ fn migration_checks_schema_in_transaction_and_rolls_back_failed_batches() {
         "CREATE TABLE temp.bad(x)",
         "ALTER TABLE t ADD COLUMN unqualified TEXT",
     ] {
-        let denied = c.run(Operation::Migration {
-            sql: sql.into(),
-            expected: current.clone(),
-        });
+        let denied = migrate(&mut c, sql, &current);
         assert!(denied.failure.is_some(), "{sql}");
     }
     c.sql("BEGIN");
-    let denied = c.run(Operation::Migration {
-        sql: "CREATE TABLE main.nested(x)".into(),
-        expected: current,
-    });
+    let denied = migrate(&mut c, "CREATE TABLE main.nested(x)", &current);
     assert!(denied.failure.unwrap().message.contains("autocommit"));
     c.sql("ROLLBACK");
     assert_eq!(

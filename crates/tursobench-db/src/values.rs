@@ -4,7 +4,7 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     path::Path,
 };
-use tursobench_core::{DeferredCell, Failure, LargeKind, Value};
+use tursobench_core::{DeferredCell, EventKind, Failure, LargeKind, Value};
 
 const TOTAL: usize = 256 * 1024 * 1024;
 const CELL: usize = 64 * 1024 * 1024;
@@ -68,32 +68,39 @@ impl Depot {
             .map(|(_, file, size)| (file, *size))
             .ok_or_else(|| Failure::input("Value backing expired or belongs to another session"))
     }
+    /// Up to `size` bytes of value `handle` from `offset`, as the chunk event.
     pub(crate) fn read(
         &mut self,
-        id: u64,
+        handle: u64,
         offset: u64,
         size: usize,
-    ) -> Result<(Vec<u8>, u64), Failure> {
+    ) -> Result<EventKind, Failure> {
         if size == 0 || size > 64 * 1024 {
             return Err(Failure::input("Value chunks require 1–65536 bytes"));
         }
-        let (file, total) = self.backing(id)?;
+        let (file, total) = self.backing(handle)?;
         if offset > total as u64 {
             return Err(Failure::input("Offset exceeds value size"));
         }
         file.seek(SeekFrom::Start(offset)).map_err(input)?;
         let mut data = vec![0; size.min(total - offset as usize)];
         file.read_exact(&mut data).map_err(input)?;
-        Ok((data, total as u64))
+        Ok(EventKind::ValueChunk {
+            handle,
+            offset,
+            bytes: data,
+            total: total as u64,
+        })
     }
-    pub(crate) fn save(&mut self, id: u64, path: &Path) -> Result<(), Failure> {
-        let (file, _) = self.backing(id)?;
+    /// Writes value `handle` to a new file at `path`, answering with the saved event.
+    pub(crate) fn save(&mut self, handle: u64, path: &Path) -> Result<EventKind, Failure> {
+        let (file, _) = self.backing(handle)?;
         let mut output = crate::transfers::sibling_temp(path).map_err(input)?;
         file.seek(SeekFrom::Start(0)).map_err(input)?;
         std::io::copy(file, &mut output).map_err(input)?;
         output.as_file().sync_all().map_err(input)?;
         output.persist_noclobber(path).map_err(input)?;
-        Ok(())
+        Ok(EventKind::ValueSaved(path.display().to_string()))
     }
 }
 fn input(e: impl std::fmt::Display) -> Failure {
@@ -134,7 +141,9 @@ mod tests {
         assert_eq!(depot.files.len(), 1024);
         assert_eq!(depot.used, 1024);
         assert!(depot.read(first, 0, 1).is_err());
-        assert_eq!(depot.read(last, 0, 1).unwrap().0, vec![1]);
+        assert!(
+            matches!(depot.read(last, 0, 1), Ok(EventKind::ValueChunk { bytes, total: 1, .. }) if bytes == [1])
+        );
         assert!(depot.read(last, 2, 1).is_err());
         assert!(depot.read(last, 0, 65537).is_err());
     }
