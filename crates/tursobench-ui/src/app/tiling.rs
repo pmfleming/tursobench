@@ -733,9 +733,10 @@ pub(super) fn marker(target: Target, frame: &Frame, layout: &Layout, area: Rect)
 }
 #[cfg(test)]
 mod tests {
+    use super::Kind::{Chat, Data, Map, Record, Sql, Structure};
     use super::{
-        BAR, Column, Direction, Divider, Kind, LINE, Layout, Splits, Target, dividers, drop_target,
-        layout, marker,
+        BAR, Column, Direction, Divider, Frame, Kind, LINE, Layout, Splits, Target, dividers,
+        drop_target, layout, marker,
     };
     use eframe::egui::{Pos2, Rect, pos2, vec2};
     use std::collections::BTreeSet;
@@ -753,7 +754,6 @@ mod tests {
         }
     }
     fn arrangements() -> Vec<Layout> {
-        use Kind::*;
         let mut uneven = Layout::default();
         uneven.columns[0].width = 1e-20;
         uneven.columns[2].width = 1e20;
@@ -774,6 +774,72 @@ mod tests {
             arranged(&[&[Map, Data], &[Record, Structure, Sql, Chat]]),
         ]
     }
+    /// Every combination of minimized tiles.
+    fn minimized_sets() -> impl Iterator<Item = BTreeSet<Kind>> {
+        (0..1 << Kind::PANES.len()).map(|mask| {
+            Kind::PANES
+                .into_iter()
+                .enumerate()
+                .filter_map(|(i, k)| (mask & (1 << i) != 0).then_some(k))
+                .collect()
+        })
+    }
+    /// Lines are `LINE` wide with no divider beside them; open neighbours have
+    /// one; columns never overlap, and the open ones fill the width.
+    fn check_columns(frame: &Frame, arrangement: &Layout, minimized: &BTreeSet<Kind>, area: Rect) {
+        let folds = arrangement.folds(minimized);
+        assert!(folds.iter().any(|folded| !folded), "something stays open");
+        let handles = dividers(frame, arrangement, minimized, area);
+        let dragged = |column: usize| handles.iter().any(|(d, _)| *d == Divider::Columns(column));
+        for (index, lane) in frame.columns.iter().enumerate() {
+            assert_eq!(lane.folded, folds[index]);
+            assert!(area.contains_rect(lane.rect));
+            let next_open = frame.columns.get(index + 1).is_some_and(|n| !n.folded);
+            if lane.folded {
+                if area.width() >= 720.0 {
+                    assert!((lane.rect.width() - LINE).abs() < 0.01);
+                }
+                assert!(!dragged(index) && (index == 0 || !dragged(index - 1)));
+            } else if next_open {
+                assert!(dragged(index));
+            }
+        }
+        for pair in frame.columns.windows(2) {
+            assert!(pair[0].rect.right() <= pair[1].rect.left() + 0.01);
+        }
+        if area.width() >= 720.0 && arrangement.columns.len() < 6 {
+            let last = frame.columns.last().unwrap().rect;
+            assert!((last.right() - area.right()).abs() < 0.5, "{last:?}");
+        }
+    }
+    /// Drawn tiles fill their column's width, minimized ones are bars, none
+    /// overlap, and each expands alone to the whole workspace.
+    fn check_tiles(frame: &Frame, arrangement: &Layout, minimized: &BTreeSet<Kind>, area: Rect) {
+        let folds = arrangement.folds(minimized);
+        let drawn = |kind: &Kind| !folds[arrangement.column_of(*kind).unwrap()];
+        for (index, (kind, rect)) in frame.tiles.iter().enumerate() {
+            assert!(area.contains_rect(*rect));
+            if !drawn(kind) {
+                continue;
+            }
+            let column = arrangement.column_of(*kind).unwrap();
+            assert_eq!(rect.x_range(), frame.columns[column].rect.x_range());
+            if minimized.contains(kind) {
+                assert!(rect.height() <= BAR + 0.01);
+                if area.height() >= 480.0 {
+                    assert!((rect.height() - BAR).abs() < 0.01);
+                }
+            }
+            assert!(
+                frame.tiles[index + 1..]
+                    .iter()
+                    .all(|(other, next)| !drawn(other) || !rect.intersects(*next))
+            );
+            let whole = layout(area, Some(*kind), minimized, arrangement);
+            assert_eq!(whole.tiles, vec![(*kind, area)]);
+            assert!(dividers(&whole, arrangement, minimized, area).is_empty());
+        }
+    }
     #[test]
     fn tiles_minimize_fold_and_reclaim_space_without_overlap_in_any_arrangement() {
         for size in [
@@ -786,76 +852,18 @@ mod tests {
             let area = Rect::from_min_size(Pos2::ZERO, size);
             for arrangement in arrangements() {
                 assert!(arrangement.valid());
-                for mask in 0..64 {
-                    let minimized: BTreeSet<_> = Kind::PANES
-                        .into_iter()
-                        .enumerate()
-                        .filter_map(|(i, k)| (mask & (1 << i) != 0).then_some(k))
-                        .collect();
+                for minimized in minimized_sets() {
                     let frame = layout(area, None, &minimized, &arrangement);
-                    assert_eq!(frame.tiles.len(), 6);
-                    assert_eq!(
-                        frame.tiles.iter().map(|t| t.0).collect::<Vec<_>>(),
-                        arrangement.order()
-                    );
-                    let folds = arrangement.folds(&minimized);
-                    assert!(folds.iter().any(|folded| !folded), "something stays open");
-                    let handles = dividers(&frame, &arrangement, &minimized, area);
-                    for (index, lane) in frame.columns.iter().enumerate() {
-                        assert_eq!(lane.folded, folds[index]);
-                        assert!(area.contains_rect(lane.rect));
-                        if lane.folded && size.x >= 720.0 {
-                            assert!((lane.rect.width() - LINE).abs() < 0.01);
-                        }
-                        // A line has no divider to drag on either side.
-                        let dragged = |column: usize| {
-                            handles.iter().any(|(d, _)| *d == Divider::Columns(column))
-                        };
-                        if lane.folded {
-                            assert!(!dragged(index) && (index == 0 || !dragged(index - 1)));
-                        } else if frame
-                            .columns
-                            .get(index + 1)
-                            .is_some_and(|next| !next.folded)
-                        {
-                            assert!(dragged(index));
-                        }
-                    }
-                    // Columns never overlap, and the open ones fill the width.
-                    for pair in frame.columns.windows(2) {
-                        assert!(pair[0].rect.right() <= pair[1].rect.left() + 0.01);
-                    }
-                    if size.x >= 720.0 && arrangement.columns.len() < 6 {
-                        let last = frame.columns.last().unwrap().rect;
-                        assert!((last.right() - area.right()).abs() < 0.5, "{last:?}");
-                    }
-                    for (index, (kind, rect)) in frame.tiles.iter().enumerate() {
-                        assert!(area.contains_rect(*rect));
-                        let column = arrangement.column_of(*kind).unwrap();
-                        if folds[column] {
-                            continue;
-                        }
-                        assert_eq!(rect.x_range(), frame.columns[column].rect.x_range());
-                        if minimized.contains(kind) {
-                            assert!(rect.height() <= BAR + 0.01);
-                            if size.y >= 480.0 {
-                                assert!((rect.height() - BAR).abs() < 0.01);
-                            }
-                        }
-                        assert!(frame.tiles[index + 1..].iter().all(|(other, next)| {
-                            folds[arrangement.column_of(*other).unwrap()] || !rect.intersects(*next)
-                        }));
-                        let whole = layout(area, Some(*kind), &minimized, &arrangement);
-                        assert_eq!(whole.tiles, vec![(*kind, area)]);
-                        assert!(dividers(&whole, &arrangement, &minimized, area).is_empty());
-                    }
+                    let order: Vec<_> = frame.tiles.iter().map(|t| t.0).collect();
+                    assert_eq!(order, arrangement.order());
+                    check_columns(&frame, &arrangement, &minimized, area);
+                    check_tiles(&frame, &arrangement, &minimized, area);
                 }
             }
         }
     }
     #[test]
     fn the_default_layout_is_the_fixed_one_with_the_assistant_beside_it() {
-        use Kind::*;
         let default = Layout::default();
         assert_eq!(default.order(), Kind::PANES);
         assert_eq!(
@@ -913,7 +921,6 @@ mod tests {
     }
     #[test]
     fn a_column_emptied_of_tiles_is_removed_and_new_columns_start_only_on_the_right() {
-        use Kind::*;
         let width = 1078.0;
         let none = BTreeSet::new();
         let mut layout = Layout::default();
@@ -966,7 +973,6 @@ mod tests {
     }
     #[test]
     fn any_column_folds_to_a_line_and_reopens_what_was_open() {
-        use Kind::*;
         let mut layout = Layout::default();
         let mut minimized = BTreeSet::from([Record, Chat]);
         assert_eq!(layout.folds(&minimized), [false, false, true]);
@@ -993,7 +999,6 @@ mod tests {
     }
     #[test]
     fn a_dragged_tile_lands_in_the_slot_under_the_pointer_or_a_new_last_column() {
-        use Kind::*;
         let area = Rect::from_min_size(pos2(280.0, 8.0), vec2(1078.0, 718.0));
         let arrangement = Layout::default();
         let none = BTreeSet::new();

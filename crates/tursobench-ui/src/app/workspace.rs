@@ -409,19 +409,7 @@ impl App {
             .ctx()
             .pointer_interact_pos()
             .is_some_and(|p| ui.ctx().layer_id_at(p) == Some(ui.layer_id()));
-        // A column whose tiles are all minimized is drawn as one line instead.
-        let mut hidden = BTreeSet::new();
-        for (column, lane) in frame.columns.iter().enumerate() {
-            if !lane.folded {
-                continue;
-            }
-            let layout = &self.database.workspace.layout;
-            hidden.extend(layout.columns[column].tiles.iter().copied());
-            let name = format!("Show {}", layout.names(column));
-            if presentation::fold_line(ui, lane.rect, ("column", column), &name).clicked() {
-                self.toggle_column(column);
-            }
-        }
+        let hidden = self.fold_lines(ui, &frame);
         for (kind, rect) in frame.tiles.iter().copied() {
             if hidden.contains(&kind) {
                 continue;
@@ -455,44 +443,7 @@ impl App {
                     self.database.workspace.tiles.push((id, rect));
                 }
             }
-            let focused = self.database.workspace.active == kind;
-            let tokens = crate::appearance::Tokens::of(ui.ctx());
-            ui.painter()
-                .rect_filled(rect, 10.0, ui.visuals().extreme_bg_color);
-            let header = egui::Rect::from_min_max(
-                rect.min,
-                egui::pos2(rect.right(), (rect.top() + tiling::BAR).min(rect.bottom())),
-            );
-            ui.painter().rect_filled(
-                header,
-                egui::CornerRadius {
-                    nw: 10,
-                    ne: 10,
-                    sw: 0,
-                    se: 0,
-                },
-                tokens.raised,
-            );
-            ui.painter().rect_stroke(
-                rect,
-                10.0,
-                egui::Stroke::new(
-                    1.0,
-                    if focused {
-                        tokens.primary.gamma_multiply(0.5)
-                    } else {
-                        tokens.line
-                    },
-                ),
-                egui::StrokeKind::Inside,
-            );
-            if focused {
-                ui.painter().hline(
-                    rect.x_range().shrink(8.0),
-                    rect.top() + 1.0,
-                    egui::Stroke::new(2.0, tokens.primary),
-                );
-            }
+            tile_chrome(ui, rect, self.database.workspace.active == kind);
             let content = rect.shrink(4.0);
             ui.scope_builder(
                 egui::UiBuilder::new()
@@ -502,64 +453,83 @@ impl App {
                     ui.set_clip_rect(content.intersect(ui.clip_rect()));
                     ui.set_min_size(content.size());
                     ui.set_max_size(content.size());
-                    if self.database.workspace.minimized.contains(&kind) {
-                        ui.horizontal(|ui| {
-                            self.minimized_pane_title(ui, kind);
-                            if icons::ribbon_button(ui, Icon::Fit, "Expand to workspace", "", None)
-                                .clicked()
-                            {
-                                self.expand_pane(kind);
-                            }
-                        });
-                        return;
-                    }
-                    self.pane_ribbon(ui, kind, owner.is_some());
-                    if self.database.workspace.minimized.contains(&kind) {
-                        return;
-                    }
-                    let divider_y = ui.cursor().top().min(content.bottom());
-                    ui.painter().hline(
-                        content.x_range(),
-                        divider_y,
-                        egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
-                    );
-                    ui.add_space(5.0);
-                    let body = egui::Rect::from_min_max(
-                        egui::pos2(content.left(), ui.cursor().top().min(content.bottom())),
-                        content.max,
-                    );
-                    ui.scope_builder(
-                        egui::UiBuilder::new().id_salt("body").max_rect(body),
-                        |ui| {
-                            ui.set_clip_rect(body.intersect(ui.clip_rect()));
-                            ui.set_max_size(body.size());
-                            if kind == Kind::Chat {
-                                self.assistant_body(ui);
-                            } else if let Some(id) = self.pane_document(kind) {
-                                self.switch_document(id);
-                                self.pane_content(ui, kind);
-                            } else {
-                                let (icon, description) = match kind {
-                                    Kind::Record => (Icon::Selection, "Select a row to inspect"),
-                                    Kind::Structure => {
-                                        (Icon::Structure, "Select a table to inspect its structure")
-                                    }
-                                    Kind::Map => (Icon::Map, "No relationships to display"),
-                                    Kind::Sql => (Icon::Sql, "Empty SQL editor"),
-                                    Kind::Data | Kind::Result | Kind::Chat => {
-                                        (Icon::Data, "No rows to display")
-                                    }
-                                };
-                                icons::empty_state(ui, icon, description);
-                            }
-                        },
-                    );
+                    self.tile_contents(ui, kind, owner.is_some(), content);
                 },
             );
             self.tile_grip(ui, kind, rect);
         }
         self.tile_drag(ui, &frame);
         self.switch_document(self.database.workspace.focused);
+    }
+    /// Draw each column whose tiles are all minimized as one line instead, and
+    /// return the tiles those lines hide.
+    fn fold_lines(&mut self, ui: &mut egui::Ui, frame: &tiling::Frame) -> BTreeSet<Kind> {
+        let mut hidden = BTreeSet::new();
+        for (column, lane) in frame.columns.iter().enumerate() {
+            if !lane.folded {
+                continue;
+            }
+            let layout = &self.database.workspace.layout;
+            hidden.extend(layout.columns[column].tiles.iter().copied());
+            let name = format!("Show {}", layout.names(column));
+            if presentation::fold_line(ui, lane.rect, ("column", column), &name).clicked() {
+                self.toggle_column(column);
+            }
+        }
+        hidden
+    }
+    /// A minimized tile is only its title bar; an open one has its ribbon and body.
+    fn tile_contents(&mut self, ui: &mut egui::Ui, kind: Kind, owned: bool, content: egui::Rect) {
+        if self.database.workspace.minimized.contains(&kind) {
+            ui.horizontal(|ui| {
+                self.minimized_pane_title(ui, kind);
+                if icons::ribbon_button(ui, Icon::Fit, "Expand to workspace", "", None).clicked() {
+                    self.expand_pane(kind);
+                }
+            });
+            return;
+        }
+        self.pane_ribbon(ui, kind, owned);
+        // The ribbon can minimize the tile.
+        if self.database.workspace.minimized.contains(&kind) {
+            return;
+        }
+        let divider_y = ui.cursor().top().min(content.bottom());
+        ui.painter().hline(
+            content.x_range(),
+            divider_y,
+            egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+        );
+        ui.add_space(5.0);
+        let body = egui::Rect::from_min_max(
+            egui::pos2(content.left(), ui.cursor().top().min(content.bottom())),
+            content.max,
+        );
+        ui.scope_builder(
+            egui::UiBuilder::new().id_salt("body").max_rect(body),
+            |ui| {
+                ui.set_clip_rect(body.intersect(ui.clip_rect()));
+                ui.set_max_size(body.size());
+                self.tile_body(ui, kind);
+            },
+        );
+    }
+    fn tile_body(&mut self, ui: &mut egui::Ui, kind: Kind) {
+        if kind == Kind::Chat {
+            self.assistant_body(ui);
+        } else if let Some(id) = self.pane_document(kind) {
+            self.switch_document(id);
+            self.pane_content(ui, kind);
+        } else {
+            let description = match kind {
+                Kind::Record => "Select a row to inspect",
+                Kind::Structure => "Select a table to inspect its structure",
+                Kind::Map => "No relationships to display",
+                Kind::Sql => "Empty SQL editor",
+                Kind::Data | Kind::Result | Kind::Chat => "No rows to display",
+            };
+            icons::empty_state(ui, tile_icon(kind), description);
+        }
     }
     /// The grip at the left of a tile's header. Dragging it moves the tile.
     fn tile_grip(&mut self, ui: &mut egui::Ui, kind: Kind, rect: egui::Rect) {
@@ -825,24 +795,15 @@ impl App {
             response.widget_info(|| {
                 egui::WidgetInfo::labeled(egui::Role::Splitter, ui.is_enabled(), divider.label())
             });
-            if response.dragged() {
-                let delta = if response.drag_started() {
-                    response
-                        .interact_pointer_pos()
-                        .zip(ui.input(|i| i.pointer.press_origin()))
-                        .map_or(egui::Vec2::ZERO, |(p, origin)| p - origin)
-                } else {
-                    response.drag_delta()
-                };
-                let movement = if divider.vertical() { delta.x } else { delta.y };
-                if movement != 0.0 {
-                    let workspace = &mut self.database.workspace;
-                    workspace
-                        .layout
-                        .resize(divider, delta, frame, &workspace.minimized);
-                    changed = true;
-                    ui.ctx().request_repaint();
-                }
+            if let Some(delta) = divider_drag(ui, &response)
+                && (if divider.vertical() { delta.x } else { delta.y }) != 0.0
+            {
+                let workspace = &mut self.database.workspace;
+                workspace
+                    .layout
+                    .resize(divider, delta, frame, &workspace.minimized);
+                changed = true;
+                ui.ctx().request_repaint();
             }
             if response.hovered() || response.dragged() {
                 let color = crate::appearance::Tokens::of(ui.ctx()).primary;
@@ -855,32 +816,43 @@ impl App {
                     .line_segment(line, egui::Stroke::new(2.0, color));
             }
             if response.drag_stopped() {
-                // Dragging a column divider far into a column folds that column to a line.
-                let edge = tiling::MIN_WIDTH / 2.0;
-                if let tiling::Divider::Columns(left) = divider
-                    && let Some(x) = ui.input(|i| i.pointer.latest_pos()).map(|p| p.x)
-                    && let (Some(a), Some(b)) =
-                        (frame.columns.get(left), frame.columns.get(left + 1))
-                {
-                    let column = if x > b.rect.right() - edge {
-                        Some(left + 1)
-                    } else if x < a.rect.left() + edge {
-                        Some(left)
-                    } else {
-                        None
-                    };
-                    if let Some(column) = column {
-                        let workspace = &self.database.workspace;
-                        if !workspace.layout.all_minimized(column, &workspace.minimized) {
-                            self.toggle_column(column);
-                        }
-                        changed = true;
-                    }
-                }
+                changed |= self.fold_dragged_column(ui, frame, divider);
                 self.save_workspace();
             }
         }
         changed
+    }
+    /// Dragging a column divider far into a column folds that column to a line.
+    /// Returns whether the divider ended in such a column.
+    fn fold_dragged_column(
+        &mut self,
+        ui: &egui::Ui,
+        frame: &tiling::Frame,
+        divider: tiling::Divider,
+    ) -> bool {
+        let edge = tiling::MIN_WIDTH / 2.0;
+        let tiling::Divider::Columns(left) = divider else {
+            return false;
+        };
+        let (Some(x), Some(a), Some(b)) = (
+            ui.input(|i| i.pointer.latest_pos()).map(|p| p.x),
+            frame.columns.get(left),
+            frame.columns.get(left + 1),
+        ) else {
+            return false;
+        };
+        let column = if x > b.rect.right() - edge {
+            left + 1
+        } else if x < a.rect.left() + edge {
+            left
+        } else {
+            return false;
+        };
+        let workspace = &self.database.workspace;
+        if !workspace.layout.all_minimized(column, &workspace.minimized) {
+            self.toggle_column(column);
+        }
+        true
     }
     fn pane_content(&mut self, ui: &mut egui::Ui, kind: Kind) {
         match kind {
@@ -1275,4 +1247,54 @@ impl App {
         self.switch_document(focused);
         ctx.request_repaint_after(std::time::Duration::from_millis(50));
     }
+}
+/// A tile's card: its background, header band and outline, accented when focused.
+fn tile_chrome(ui: &egui::Ui, rect: egui::Rect, focused: bool) {
+    let tokens = crate::appearance::Tokens::of(ui.ctx());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 10.0, ui.visuals().extreme_bg_color);
+    let header = egui::Rect::from_min_max(
+        rect.min,
+        egui::pos2(rect.right(), (rect.top() + tiling::BAR).min(rect.bottom())),
+    );
+    let top = egui::CornerRadius {
+        nw: 10,
+        ne: 10,
+        sw: 0,
+        se: 0,
+    };
+    painter.rect_filled(header, top, tokens.raised);
+    let outline = if focused {
+        tokens.primary.gamma_multiply(0.5)
+    } else {
+        tokens.line
+    };
+    painter.rect_stroke(
+        rect,
+        10.0,
+        egui::Stroke::new(1.0, outline),
+        egui::StrokeKind::Inside,
+    );
+    if focused {
+        painter.hline(
+            rect.x_range().shrink(8.0),
+            rect.top() + 1.0,
+            egui::Stroke::new(2.0, tokens.primary),
+        );
+    }
+}
+/// How far a divider moved this frame. The first frame of a drag counts from
+/// where the press began, so the movement before egui recognised the drag is kept.
+fn divider_drag(ui: &egui::Ui, response: &egui::Response) -> Option<egui::Vec2> {
+    if !response.dragged() {
+        return None;
+    }
+    Some(if response.drag_started() {
+        response
+            .interact_pointer_pos()
+            .zip(ui.input(|i| i.pointer.press_origin()))
+            .map_or(egui::Vec2::ZERO, |(p, origin)| p - origin)
+    } else {
+        response.drag_delta()
+    })
 }

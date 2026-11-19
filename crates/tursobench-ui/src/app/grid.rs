@@ -219,32 +219,7 @@ impl App {
             self.fk_cell_rect = None;
         }
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-        let grid_id = ui.scope_id().with("grid-keyboard");
-        self.database.document.tools.grid_focus = Some(grid_id);
-        let grid_response = ui.interact(
-            ui.available_rect_before_wrap(),
-            grid_id,
-            egui::Sense::click(),
-        );
-        grid_response.widget_info(|| {
-            egui::WidgetInfo::labeled(
-                egui::Role::Grid,
-                ui.is_enabled(),
-                "Result grid · arrows move, Shift selects, Enter edits or follows",
-            )
-        });
-        if grid_response.has_focus() {
-            ui.ctx().memory_mut(|m| {
-                m.set_focus_lock_filter(
-                    grid_id,
-                    egui::EventFilter {
-                        horizontal_arrows: true,
-                        vertical_arrows: true,
-                        ..Default::default()
-                    },
-                )
-            });
-        }
+        self.grid_keyboard_focus(ui);
         self.database.document.tools.context.hovered = None;
         let mut action = None;
         let editable = self.can_edit();
@@ -252,14 +227,10 @@ impl App {
         if !ui.input(|i| i.pointer.primary_down()) {
             self.database.document.tools.dragging_selection = false;
         }
-        let auxiliary_rows = usize::from(
-            self.database
-                .document
-                .inspect
-                .and_then(|(r, c)| self.database.document.result.rows.get(r)?.get(c))
-                .is_some_and(|v| matches!(v, Value::Deferred(_))),
-        ) + usize::from(self.database.document.tools.pages.pending.is_some())
-            + 2 * usize::from(!self.database.document.tools.pages.error.is_empty());
+        let tools = &self.database.document.tools;
+        let auxiliary_rows = usize::from(self.inspected_deferred().is_some())
+            + usize::from(tools.pages.pending.is_some())
+            + 2 * usize::from(!tools.pages.error.is_empty());
         let remaining =
             (ui.available_height() - HEADER_HEIGHT - auxiliary_rows as f32 * ROW_HEIGHT).max(0.0);
         self.database.document.tools.grid_height = remaining;
@@ -268,32 +239,11 @@ impl App {
             self.database.ui.grid_rect = ui.available_rect_before_wrap();
         }
         self.prepare_columns(ui);
-        if self.database.document.view == View::Explain
-            && let Some(detail) = self
-                .database
-                .document
-                .result
-                .columns
-                .iter()
-                .position(|c| c.name.eq_ignore_ascii_case("detail"))
-        {
-            let scans=self.database.document.result.rows.iter().filter(|r|matches!(r.get(detail),Some(Value::Text(s))if s.to_uppercase().contains("SCAN "))).count();
-            ui.label(format!("Planner notes: {scans} scan entries. Scans may be intentional; not a runtime profile."));
-        }
+        self.explain_scan_note(ui);
         let mut page_range = 0..0;
         let restore = self.database.document.tools.restore_scroll.take();
         if !self.database.document.result.columns.is_empty() {
-            let band = egui::Rect::from_min_size(
-                ui.cursor().min,
-                egui::vec2(ui.available_width(), HEADER_HEIGHT),
-            );
-            ui.painter()
-                .rect_filled(band, 0.0, ui.visuals().faint_bg_color);
-            ui.painter().hline(
-                band.x_range(),
-                band.bottom() - 0.5,
-                egui::Stroke::new(1.0, crate::appearance::Tokens::of(ui.ctx()).line_soft),
-            );
+            header_band(ui);
         }
         let horizontal = egui::ScrollArea::horizontal()
             .horizontal_scroll_offset(
@@ -336,46 +286,10 @@ impl App {
                 self.database.document.tools.grid_scroll.y = vertical.state.clamped_offset().y;
             });
         self.database.document.tools.grid_scroll.x = horizontal.state.clamped_offset().x;
-        match action {
-            Some(GridAction::Cell(r, c)) => self.select_cell(
-                r,
-                c,
-                ui.input(|i| i.modifiers.shift) || self.database.document.tools.dragging_selection,
-            ),
-            Some(GridAction::Edit(r, c)) => self.start_inline(r, c),
-            Some(GridAction::Inspect(r, c)) => {
-                self.open_record_window(r, c);
-            }
-            Some(GridAction::Stage(r, c, v)) => {
-                self.stage_cell(r, c, v);
-                self.database.document.tools.inline = None;
-                if let Some(id) = self.database.document.tools.grid_focus {
-                    ui.ctx().memory_mut(|m| m.request_focus(id));
-                }
-            }
-            Some(GridAction::Record(r)) => self.open_record_window(r, 0),
-            Some(GridAction::Copy(r)) => self.copy_row(ui.ctx(), r),
-            Some(GridAction::Delete(r)) => self.stage_delete(r),
-            Some(GridAction::BulkDelete) => self.stage_selected_deletions(),
-            Some(GridAction::Spreadsheet(action)) => self.spreadsheet_action(action),
-            Some(GridAction::Follow(r, key)) => self.follow_key(r, key),
-            Some(GridAction::Filter(filter)) => {
-                self.add_filter(filter);
-            }
-            None => {}
+        if let Some(action) = action {
+            self.grid_action(ui, action);
         }
-        if let Some(cell) = self
-            .database
-            .document
-            .inspect
-            .and_then(|(r, c)| self.database.document.result.rows.get(r)?.get(c))
-            .and_then(|v| {
-                if let Value::Deferred(v) = v {
-                    Some((**v).clone())
-                } else {
-                    None
-                }
-            })
+        if let Some(cell) = self.inspected_deferred().cloned()
             && ui.button("View large value…").clicked()
         {
             self.open_large_value(cell);
@@ -384,26 +298,7 @@ impl App {
         if self.database.document.ui.nav == shell::Nav::Table
             && self.database.document.ui.table_view == shell::TableView::Data
         {
-            self.maybe_page(
-                page_range.start,
-                page_range.end,
-                ui.input(|i| i.smooth_scroll_delta.y),
-            );
-            if self.database.document.tools.pages.pending.is_some() {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.small("Loading 100 rows…");
-                });
-            }
-            if !self.database.document.tools.pages.error.is_empty() {
-                ui.colored_label(
-                    ui.visuals().error_fg_color,
-                    &self.database.document.tools.pages.error,
-                );
-                if ui.button("Retry page").clicked() {
-                    self.request_page(self.database.document.tools.pages.retry_previous);
-                }
-            }
+            self.paging_footer(ui, page_range);
         }
         if !self.database.document.tools.inspection_error.is_empty()
             && self.database.document.result.columns.is_empty()
@@ -416,6 +311,112 @@ impl App {
         if self.database.document.result.rows.is_empty() && self.database.document.active.is_none()
         {
             icons::empty_state(ui, Icon::Data, "No rows to display");
+        }
+    }
+    /// The grid takes keyboard focus as a whole, and keeps the arrow keys while it has it.
+    fn grid_keyboard_focus(&mut self, ui: &mut egui::Ui) {
+        let grid_id = ui.scope_id().with("grid-keyboard");
+        self.database.document.tools.grid_focus = Some(grid_id);
+        let grid_response = ui.interact(
+            ui.available_rect_before_wrap(),
+            grid_id,
+            egui::Sense::click(),
+        );
+        grid_response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::Role::Grid,
+                ui.is_enabled(),
+                "Result grid · arrows move, Shift selects, Enter edits or follows",
+            )
+        });
+        if grid_response.has_focus() {
+            let arrows = egui::EventFilter {
+                horizontal_arrows: true,
+                vertical_arrows: true,
+                ..Default::default()
+            };
+            ui.ctx()
+                .memory_mut(|m| m.set_focus_lock_filter(grid_id, arrows));
+        }
+    }
+    /// The inspected cell's value when it was too large to load with the page.
+    fn inspected_deferred(&self) -> Option<&tursobench_core::DeferredCell> {
+        let document = &self.database.document;
+        let (r, c) = document.inspect?;
+        match document.result.rows.get(r)?.get(c)? {
+            Value::Deferred(cell) => Some(cell),
+            _ => None,
+        }
+    }
+    fn explain_scan_note(&self, ui: &mut egui::Ui) {
+        let result = &self.database.document.result;
+        if self.database.document.view != View::Explain {
+            return;
+        }
+        let Some(detail) = result
+            .columns
+            .iter()
+            .position(|c| c.name.eq_ignore_ascii_case("detail"))
+        else {
+            return;
+        };
+        let scans = result
+            .rows
+            .iter()
+            .filter(|r| matches!(r.get(detail), Some(Value::Text(s)) if s.to_uppercase().contains("SCAN ")))
+            .count();
+        ui.label(format!(
+            "Planner notes: {scans} scan entries. Scans may be intentional; not a runtime profile."
+        ));
+    }
+    fn grid_action(&mut self, ui: &egui::Ui, action: GridAction) {
+        match action {
+            GridAction::Cell(r, c) => self.select_cell(
+                r,
+                c,
+                ui.input(|i| i.modifiers.shift) || self.database.document.tools.dragging_selection,
+            ),
+            GridAction::Edit(r, c) => self.start_inline(r, c),
+            GridAction::Inspect(r, c) => {
+                self.open_record_window(r, c);
+            }
+            GridAction::Stage(r, c, v) => {
+                self.stage_cell(r, c, v);
+                self.database.document.tools.inline = None;
+                if let Some(id) = self.database.document.tools.grid_focus {
+                    ui.ctx().memory_mut(|m| m.request_focus(id));
+                }
+            }
+            GridAction::Record(r) => self.open_record_window(r, 0),
+            GridAction::Copy(r) => self.copy_row(ui.ctx(), r),
+            GridAction::Delete(r) => self.stage_delete(r),
+            GridAction::BulkDelete => self.stage_selected_deletions(),
+            GridAction::Spreadsheet(action) => self.spreadsheet_action(action),
+            GridAction::Follow(r, key) => self.follow_key(r, key),
+            GridAction::Filter(filter) => {
+                self.add_filter(filter);
+            }
+        }
+    }
+    /// Table data loads further pages as it scrolls; show that and any failure.
+    fn paging_footer(&mut self, ui: &mut egui::Ui, visible: std::ops::Range<usize>) {
+        self.maybe_page(
+            visible.start,
+            visible.end,
+            ui.input(|i| i.smooth_scroll_delta.y),
+        );
+        let pages = &self.database.document.tools.pages;
+        if pages.pending.is_some() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.small("Loading 100 rows…");
+            });
+        }
+        if !pages.error.is_empty() {
+            ui.colored_label(ui.visuals().error_fg_color, &pages.error);
+            if ui.button("Retry page").clicked() {
+                self.request_page(pages.retry_previous);
+            }
         }
     }
     fn grid_status_bar(&mut self, ui: &mut egui::Ui) {
@@ -875,19 +876,8 @@ impl App {
             row,
         };
         appearance.describe(ui, &response, offset + row + 1);
-        if let Some(edit) = self.database.document.tools.inline.as_mut().filter(|e| {
-            e.row == row
-                && e.column == col
-                && self.database.workspace.active != super::tiling::Kind::Record
-        }) {
-            let response = ui.put(rect, egui::TextEdit::singleline(&mut edit.editor.input));
-            response.context_menu(|ui| edit.editor.type_picker(ui, "inline-type", false));
-            match edit.submitted(ui, &response) {
-                Some(Ok(value)) => action = Some(GridAction::Stage(row, col, value)),
-                Some(Err(error)) => self.database.status = error,
-                None => {}
-            }
-            return action;
+        if self.editing_inline(row, col) {
+            return self.inline_cell(ui, rect, row, col);
         }
         if self.database.document.tools.scroll_to_cell
             && self.database.document.inspect == Some((row, col))
@@ -929,30 +919,15 @@ impl App {
         {
             ui.ctx().memory_mut(|m| m.request_focus(id));
         }
-        if response.clicked()
-            && ui.input(|i| i.modifiers.alt)
-            && self.database.document.browse.is_some()
-        {
-            action = Some(GridAction::Filter(tursobench_core::Filter {
-                column: col,
-                op: tursobench_core::FilterOp::Equal,
-                value: value.clone(),
-            }));
-        } else if response.clicked() {
-            action = Some(
-                if references.len() == 1 && !ui.input(|i| i.modifiers.shift) {
-                    GridAction::Follow(row, (*references[0]).clone())
-                } else {
-                    GridAction::Cell(row, col)
-                },
-            );
-        }
-        if response.double_clicked() {
-            action = Some(GridAction::Edit(row, col));
-        }
-        if response.secondary_clicked() && !self.cell_selected(row, col) {
-            action = Some(GridAction::Cell(row, col));
-        }
+        let click = CellClick {
+            row,
+            col,
+            value,
+            references: &references,
+            filterable: self.database.document.browse.is_some(),
+            selected: self.cell_selected(row, col),
+        };
+        action = click.action(ui, &response).or(action);
         if response.hovered() && references.len() == 1 {
             self.database.document.tools.context.hovered = Some((row, (*references[0]).clone()));
         }
@@ -975,6 +950,35 @@ impl App {
             }
         });
         action
+    }
+    fn editing_inline(&self, row: usize, col: usize) -> bool {
+        self.database
+            .document
+            .tools
+            .inline
+            .as_ref()
+            .is_some_and(|e| {
+                e.row == row
+                    && e.column == col
+                    && self.database.workspace.active != super::tiling::Kind::Record
+            })
+    }
+    /// The cell being edited in place: its editor, staging the value on submit.
+    fn inline_cell(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        row: usize,
+        col: usize,
+    ) -> Option<GridAction> {
+        let edit = self.database.document.tools.inline.as_mut()?;
+        let response = ui.put(rect, egui::TextEdit::singleline(&mut edit.editor.input));
+        response.context_menu(|ui| edit.editor.type_picker(ui, "inline-type", false));
+        match edit.submitted(ui, &response)? {
+            Ok(value) => return Some(GridAction::Stage(row, col, value)),
+            Err(error) => self.database.status = error,
+        }
+        None
     }
     fn cell_menu(
         &self,
@@ -1132,6 +1136,61 @@ fn cell_fill(ui: &egui::Ui, deleted: bool, staged: bool, row: usize) -> egui::Co
     }
 }
 
+/// The band behind the column headers, across the whole visible width.
+fn header_band(ui: &egui::Ui) {
+    let band = egui::Rect::from_min_size(
+        ui.cursor().min,
+        egui::vec2(ui.available_width(), HEADER_HEIGHT),
+    );
+    ui.painter()
+        .rect_filled(band, 0.0, ui.visuals().faint_bg_color);
+    ui.painter().hline(
+        band.x_range(),
+        band.bottom() - 0.5,
+        egui::Stroke::new(1.0, crate::appearance::Tokens::of(ui.ctx()).line_soft),
+    );
+}
+/// What a click on a grid cell asks for.
+struct CellClick<'a> {
+    row: usize,
+    col: usize,
+    value: &'a Value,
+    references: &'a [&'a ForeignKey],
+    /// Browsing a table, where Alt-click filters by the value.
+    filterable: bool,
+    selected: bool,
+}
+impl CellClick<'_> {
+    /// Alt-click filters, a click on a single reference follows it (Shift
+    /// selects instead), a double-click edits, and a right-click selects an
+    /// unselected cell for its menu.
+    fn action(&self, ui: &egui::Ui, response: &egui::Response) -> Option<GridAction> {
+        let (row, col) = (self.row, self.col);
+        let (alt, shift) = ui.input(|i| (i.modifiers.alt, i.modifiers.shift));
+        if response.secondary_clicked() && !self.selected {
+            return Some(GridAction::Cell(row, col));
+        }
+        if response.double_clicked() {
+            return Some(GridAction::Edit(row, col));
+        }
+        if !response.clicked() {
+            return None;
+        }
+        Some(if alt && self.filterable {
+            GridAction::Filter(tursobench_core::Filter {
+                column: col,
+                op: tursobench_core::FilterOp::Equal,
+                value: self.value.clone(),
+            })
+        } else if let [key] = self.references
+            && !shift
+        {
+            GridAction::Follow(row, (*key).clone())
+        } else {
+            GridAction::Cell(row, col)
+        })
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::{egui, shell};
