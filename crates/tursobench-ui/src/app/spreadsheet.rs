@@ -781,7 +781,7 @@ fn preview_text(field: &Field, mapping: Option<Mapping>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{CLIPBOARD_BYTES, CellKind, Field, MAX_CELLS, Sheet, Value, cell_value};
     #[test]
     fn clipboard_quotes_empty_null_unicode_and_line_endings() {
         let sheet = Sheet::parse("\"a\tb\"\t\"line\nλ\"\t\"a\"\"b\"\t\t\\N\t\"\\N\"\r\n").unwrap();
