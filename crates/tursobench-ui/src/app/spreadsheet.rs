@@ -74,7 +74,7 @@ pub(super) struct Mapping {
     pub column: Option<usize>,
     pub kind: CellKind,
 }
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Default, PartialEq)]
 struct Field {
     text: String,
     quoted: bool,
@@ -83,73 +83,83 @@ struct Field {
 pub(super) struct Sheet {
     rows: Vec<Vec<Field>>,
 }
+/// Clipboard text read so far: complete rows, the open row and its open field.
+#[derive(Default)]
+struct Reader {
+    rows: Vec<Vec<Field>>,
+    row: Vec<Field>,
+    field: Field,
+    cells: usize,
+    /// Inside a quoted field.
+    inside: bool,
+    /// A quoted field has closed; only a separator may follow.
+    closed: bool,
+}
+impl Reader {
+    fn end_field(&mut self) {
+        self.row.push(std::mem::take(&mut self.field));
+        self.cells += 1;
+        self.closed = false;
+    }
+    fn end_row(&mut self) {
+        self.end_field();
+        self.rows.push(std::mem::take(&mut self.row));
+    }
+    fn read(
+        &mut self,
+        c: char,
+        chars: &mut std::iter::Peekable<std::str::Chars>,
+    ) -> Result<(), String> {
+        match c {
+            '"' if self.inside => {
+                if chars.next_if_eq(&'"').is_some() {
+                    self.field.text.push('"');
+                } else {
+                    self.inside = false;
+                    self.closed = true;
+                }
+            }
+            _ if self.inside => self.field.text.push(c),
+            '\t' => self.end_field(),
+            '\n' | '\r' => {
+                if c == '\r' {
+                    chars.next_if_eq(&'\n');
+                }
+                self.end_row();
+            }
+            '"' if self.field.text.is_empty() && !self.closed => {
+                self.field.quoted = true;
+                self.inside = true;
+            }
+            _ if self.closed => return Err("Unexpected text after closing clipboard quote".into()),
+            // Quotes within an unquoted value are ordinary text (e.g. JSON).
+            _ => self.field.text.push(c),
+        }
+        if self.field.text.len() > 64 * 1024 || self.cells > MAX_CELLS || self.rows.len() > 1000 {
+            return Err("Clipboard exceeds 1,000 rows, 10,000 cells, or 64 KiB per cell".into());
+        }
+        Ok(())
+    }
+}
 impl Sheet {
     /// Quoted TSV preserves tabs/newlines, doubled quotes, and literal NULL markers.
     pub fn parse(text: &str) -> Result<Self, String> {
         if text.is_empty() || text.len() > CLIPBOARD_BYTES {
             return Err("Clipboard must contain between 1 byte and 2 MiB".into());
         }
+        let mut reader = Reader::default();
         let mut chars = text.chars().peekable();
-        let mut rows = Vec::new();
-        let mut row = Vec::new();
-        let mut value = String::new();
-        let (mut quoted, mut inside, mut closed, mut pending) = (false, false, false, false);
-        let mut cells = 0;
         while let Some(c) = chars.next() {
-            pending = true;
-            if inside {
-                if c == '"' {
-                    if chars.peek() == Some(&'"') {
-                        chars.next();
-                        value.push('"');
-                    } else {
-                        inside = false;
-                        closed = true;
-                    }
-                } else {
-                    value.push(c);
-                }
-            } else if matches!(c, '\t' | '\n' | '\r') {
-                row.push(Field {
-                    text: std::mem::take(&mut value),
-                    quoted,
-                });
-                cells += 1;
-                quoted = false;
-                closed = false;
-                if c != '\t' {
-                    if c == '\r' && chars.peek() == Some(&'\n') {
-                        chars.next();
-                    }
-                    rows.push(std::mem::take(&mut row));
-                    pending = false;
-                }
-            } else if c == '"' && value.is_empty() && !closed {
-                quoted = true;
-                inside = true;
-            } else if closed {
-                return Err("Unexpected text after closing clipboard quote".into());
-            } else {
-                // Quotes within an unquoted value are ordinary text (e.g. JSON).
-                value.push(c);
-            }
-            if value.len() > 64 * 1024 || cells > MAX_CELLS || rows.len() > 1000 {
-                return Err(
-                    "Clipboard exceeds 1,000 rows, 10,000 cells, or 64 KiB per cell".into(),
-                );
-            }
+            reader.read(c, &mut chars)?;
         }
-        if inside {
+        if reader.inside {
             return Err("Unclosed quoted clipboard field".into());
         }
-        if pending {
-            row.push(Field {
-                text: value,
-                quoted,
-            });
-            cells += 1;
-            rows.push(row);
+        // A final line break ends the last row; otherwise it is still open.
+        if !text.ends_with(['\n', '\r']) {
+            reader.end_row();
         }
+        let Reader { rows, cells, .. } = reader;
         if rows.is_empty() || rows.len() > 1000 || cells > MAX_CELLS {
             return Err("Clipboard exceeds 1,000 rows or 10,000 cells".into());
         }
@@ -163,19 +173,19 @@ impl Sheet {
         self.rows[0].len()
     }
 }
+/// The storage class a column's declared type suggests, by SQLite's affinity rules.
 fn declared_kind(column: &tursobench_core::TableColumn) -> CellKind {
+    const AFFINITIES: [(&[&str], CellKind); 4] = [
+        (&["INT"], CellKind::Integer),
+        (&["CHAR", "CLOB", "TEXT"], CellKind::Text),
+        (&["BLOB"], CellKind::Blob),
+        (&["REAL", "FLOA", "DOUB"], CellKind::Real),
+    ];
     let ty = column.declared_type.to_ascii_uppercase();
-    if ty.contains("INT") {
-        CellKind::Integer
-    } else if ty.contains("CHAR") || ty.contains("CLOB") || ty.contains("TEXT") {
-        CellKind::Text
-    } else if ty.contains("BLOB") {
-        CellKind::Blob
-    } else if ty.contains("REAL") || ty.contains("FLOA") || ty.contains("DOUB") {
-        CellKind::Real
-    } else {
-        CellKind::Text
-    }
+    AFFINITIES
+        .iter()
+        .find(|(names, _)| names.iter().any(|name| ty.contains(name)))
+        .map_or(CellKind::Text, |&(_, kind)| kind)
 }
 fn cell_value(field: &Field, kind: CellKind) -> Result<Value, String> {
     if !field.quoted && field.text == "\\N" {
@@ -564,83 +574,14 @@ impl App {
                 );
                 if let Some(table) = &self.database.document.table {
                     for (i, mapping) in paste.mapping.iter_mut().enumerate() {
-                        ui.horizontal(|ui| {
-                            ui.label(format!("Clipboard {} →", i + 1));
-                            let before = mapping.column;
-                            egui::ComboBox::from_id_salt(("paste-column", i))
-                                .selected_text(
-                                    mapping
-                                        .column
-                                        .map_or("Skip", |c| table.columns[c].name.as_str()),
-                                )
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(&mut mapping.column, None, "Skip");
-                                    for (c, column) in table
-                                        .columns
-                                        .iter()
-                                        .enumerate()
-                                        .filter(|(_, c)| c.hidden == 0)
-                                    {
-                                        ui.selectable_value(
-                                            &mut mapping.column,
-                                            Some(c),
-                                            &column.name,
-                                        );
-                                    }
-                                });
-                            if before != mapping.column {
-                                mapping.kind = mapping
-                                    .column
-                                    .map_or(CellKind::Text, |c| declared_kind(&table.columns[c]));
-                            }
-                            let mut editor = CellEditor {
-                                kind: mapping.kind,
-                                input: String::new(),
-                            };
-                            editor.type_picker(ui, ("paste-kind", i), true);
-                            mapping.kind = editor.kind;
-                        });
+                        ui.horizontal(|ui| mapping_ui(ui, table, i, mapping));
                     }
                 }
             }
+            let mappings = paste.new_rows.then_some(paste.mapping.as_slice());
             egui::ScrollArea::horizontal()
                 .id_salt("paste-preview")
-                .show(ui, |ui| {
-                    egui::Grid::new("paste-preview-grid")
-                        .striped(true)
-                        .show(ui, |ui| {
-                            for row in sheet.rows.iter().take(10) {
-                                for (i, field) in row.iter().enumerate() {
-                                    let displayed = if paste.new_rows {
-                                        let mapping = &paste.mapping[i];
-                                        if mapping.column.is_none() {
-                                            "(skipped)".into()
-                                        } else {
-                                            cell_value(field, mapping.kind)
-                                                .map(|v| match &v {
-                                                    Value::Text(s) if s.is_empty() => {
-                                                        "(empty text)".into()
-                                                    }
-                                                    _ => v.preview(),
-                                                })
-                                                .unwrap_or_else(|e| format!("Invalid: {e}"))
-                                        }
-                                    } else if !field.quoted && field.text == "\\N" {
-                                        "NULL".into()
-                                    } else if field.text.is_empty() {
-                                        "(empty text)".into()
-                                    } else {
-                                        field.text.chars().take(100).collect()
-                                    };
-                                    ui.add_sized(
-                                        [140.0, 24.0],
-                                        egui::Label::new(displayed).truncate(),
-                                    );
-                                }
-                                ui.end_row();
-                            }
-                        });
-                });
+                .show(ui, |ui| preview_grid(ui, sheet, mappings));
         }
         if !paste.error.is_empty() {
             ui.colored_label(ui.visuals().error_fg_color, &paste.error);
@@ -651,15 +592,9 @@ impl App {
             return;
         };
         let mut open = true;
-        let mut stage = None;
-        let mut fill = None;
+        let mut prepared = None;
         let enabled = self.can_edit();
-        let title = match &dialog {
-            Dialog::Paste(p) if p.new_rows => "Paste as new rows",
-            Dialog::Paste(_) => "Paste cells",
-            Dialog::Fill(_) => "Fill selected cells",
-        };
-        egui::Window::new(title)
+        egui::Window::new(dialog.title())
             .id(egui::Id::unique("spreadsheet-edit"))
             .default_pos(ctx.content_rect().center() - egui::vec2(320.0, 240.0))
             .open(&mut open)
@@ -693,49 +628,154 @@ impl App {
                         Dialog::Paste(paste) => self.paste_dialog_ui(ui, paste),
                     });
                 ui.separator();
-                match &mut dialog {
-                    Dialog::Fill(editor) => {
-                        if ui
-                            .add_enabled(enabled, egui::Button::new("Stage fill"))
-                            .clicked()
-                        {
-                            match editor.parse() {
-                                Ok(value) => fill = Some(value),
-                                Err(e) => self.database.status = e,
-                            }
-                        }
-                    }
-                    Dialog::Paste(paste) => {
-                        if ui
-                            .add_enabled(
-                                enabled && paste.sheet.is_some(),
-                                egui::Button::new("Stage entire paste"),
-                            )
-                            .clicked()
-                            && let Some(sheet) = &paste.sheet
-                        {
-                            match if paste.new_rows {
-                                self.clipboard_inserts(sheet, &paste.mapping)
-                            } else {
-                                self.clipboard_updates(sheet)
-                            } {
-                                Ok(prepared) => stage = Some(prepared),
-                                Err(error) => paste.error = error,
-                            }
-                        }
-                    }
-                }
+                prepared = self.stage_button_ui(ui, &mut dialog, enabled);
                 if !enabled {
                     ui.label("Editing is unavailable for the current database state.");
                 }
                 ui.add(egui::Label::new(&self.database.status).truncate())
                     .on_hover_text(&self.database.status);
             });
-        let applied = stage.is_some_and(|edits| self.stage_spreadsheet(edits))
-            || fill.is_some_and(|value| self.fill_selection(value));
+        let applied = match prepared {
+            Some(Prepared::Edits(edits)) => self.stage_spreadsheet(edits),
+            Some(Prepared::Fill(value)) => self.fill_selection(value),
+            None => false,
+        };
         if open && !applied {
             self.database.document.tools.spreadsheet.dialog = Some(dialog);
         }
+    }
+    /// The dialog's stage button; a failure to prepare stays in the dialog.
+    fn stage_button_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        dialog: &mut Dialog,
+        enabled: bool,
+    ) -> Option<Prepared> {
+        match dialog {
+            Dialog::Fill(editor) => {
+                if !ui
+                    .add_enabled(enabled, egui::Button::new("Stage fill"))
+                    .clicked()
+                {
+                    return None;
+                }
+                match editor.parse() {
+                    Ok(value) => Some(Prepared::Fill(value)),
+                    Err(e) => {
+                        self.database.status = e;
+                        None
+                    }
+                }
+            }
+            Dialog::Paste(paste) => {
+                let clicked = ui
+                    .add_enabled(
+                        enabled && paste.sheet.is_some(),
+                        egui::Button::new("Stage entire paste"),
+                    )
+                    .clicked();
+                let sheet = paste.sheet.as_ref().filter(|_| clicked)?;
+                let edits = if paste.new_rows {
+                    self.clipboard_inserts(sheet, &paste.mapping)
+                } else {
+                    self.clipboard_updates(sheet)
+                };
+                match edits {
+                    Ok(edits) => Some(Prepared::Edits(edits)),
+                    Err(error) => {
+                        paste.error = error;
+                        None
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// What a dialog prepared to stage this frame.
+enum Prepared {
+    Edits(Vec<Edit>),
+    Fill(Value),
+}
+
+impl Dialog {
+    fn title(&self) -> &'static str {
+        match self {
+            Dialog::Paste(p) if p.new_rows => "Paste as new rows",
+            Dialog::Paste(_) => "Paste cells",
+            Dialog::Fill(_) => "Fill selected cells",
+        }
+    }
+}
+
+/// One clipboard column's destination and type; choosing a column resets
+/// the type to that column's declared one.
+fn mapping_ui(ui: &mut egui::Ui, table: &tursobench_core::Table, i: usize, mapping: &mut Mapping) {
+    ui.label(format!("Clipboard {} →", i + 1));
+    let before = mapping.column;
+    egui::ComboBox::from_id_salt(("paste-column", i))
+        .selected_text(
+            mapping
+                .column
+                .map_or("Skip", |c| table.columns[c].name.as_str()),
+        )
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut mapping.column, None, "Skip");
+            for (c, column) in table
+                .columns
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.hidden == 0)
+            {
+                ui.selectable_value(&mut mapping.column, Some(c), &column.name);
+            }
+        });
+    if before != mapping.column {
+        mapping.kind = mapping
+            .column
+            .map_or(CellKind::Text, |c| declared_kind(&table.columns[c]));
+    }
+    let mut editor = CellEditor {
+        kind: mapping.kind,
+        input: String::new(),
+    };
+    editor.type_picker(ui, ("paste-kind", i), true);
+    mapping.kind = editor.kind;
+}
+
+/// Up to ten clipboard rows as they would be staged: typed values when
+/// pasting new rows with `mappings`, otherwise the raw fields.
+fn preview_grid(ui: &mut egui::Ui, sheet: &Sheet, mappings: Option<&[Mapping]>) {
+    egui::Grid::new("paste-preview-grid")
+        .striped(true)
+        .show(ui, |ui| {
+            for row in sheet.rows.iter().take(10) {
+                for (i, field) in row.iter().enumerate() {
+                    let displayed = preview_text(field, mappings.map(|m| m[i]));
+                    ui.add_sized([140.0, 24.0], egui::Label::new(displayed).truncate());
+                }
+                ui.end_row();
+            }
+        });
+}
+
+fn preview_text(field: &Field, mapping: Option<Mapping>) -> String {
+    let Some(mapping) = mapping else {
+        return if !field.quoted && field.text == "\\N" {
+            "NULL".into()
+        } else if field.text.is_empty() {
+            "(empty text)".into()
+        } else {
+            field.text.chars().take(100).collect()
+        };
+    };
+    if mapping.column.is_none() {
+        return "(skipped)".into();
+    }
+    match cell_value(field, mapping.kind) {
+        Ok(Value::Text(s)) if s.is_empty() => "(empty text)".into(),
+        Ok(value) => value.preview(),
+        Err(e) => format!("Invalid: {e}"),
     }
 }
 
