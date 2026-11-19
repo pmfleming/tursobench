@@ -519,10 +519,12 @@ fn tree_row(
     } else {
         ui.visuals().text_color()
     };
-    super::presentation::icon_at(
+    icons::paint(
         &painter,
-        rect.left_center() + egui::vec2(indent + 9.0, 0.0),
-        12.0,
+        egui::Rect::from_center_size(
+            rect.left_center() + egui::vec2(indent + 9.0, 0.0),
+            egui::vec2(12.0, 12.0),
+        ),
         icon,
         if matches!(icon, Icon::Key | Icon::Link) {
             tokens.relationship

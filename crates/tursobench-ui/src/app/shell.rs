@@ -1,10 +1,12 @@
 use super::presentation::{self, Intent};
+use super::tiling::{Kind, Layout};
 use super::{
     App, View, diagram,
     icons::{self, Icon},
     ribbon::Action,
 };
 use eframe::egui;
+use std::collections::BTreeSet;
 use tursobench_core::TransactionState;
 /// Space around a collapsed panel's line.
 const FOLD_MARGIN: i8 = 4;
@@ -480,7 +482,8 @@ impl App {
             ui.spacing_mut().item_spacing.x = 3.0;
             // The bar fills right to left, so the last column is added first.
             for (column, folded) in folds.into_iter().enumerate().rev() {
-                if column_map_button(ui, workspace, column, folded) {
+                let tiles = (&workspace.layout, &workspace.minimized, workspace.active);
+                if column_map_button(ui, tiles, column, folded) {
                     toggled = Some(column);
                 }
             }
@@ -700,17 +703,18 @@ pub(super) struct ViewUi {
     pub params_open: bool,
     pub filter_open: bool,
 }
+
 /// One column in the status bar's column map: a line when folded, otherwise
 /// its tiles stacked as bars. Returns whether it was clicked.
 fn column_map_button(
     ui: &mut egui::Ui,
-    workspace: &super::workspace::Workspace,
+    (layout, minimized, active): (&Layout, &BTreeSet<Kind>, Kind),
     column: usize,
     folded: bool,
 ) -> bool {
     const HEIGHT: f32 = 18.0;
     let tokens = crate::appearance::Tokens::of(ui.ctx());
-    let names = workspace.layout.names(column);
+    let names = layout.names(column);
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(if folded { 6.0 } else { 12.0 }, 24.0),
         egui::Sense::click(),
@@ -735,8 +739,8 @@ fn column_map_button(
     if folded {
         ui.painter().rect_filled(picture, 1.5, base);
     } else {
-        let tiles = &workspace.layout.columns[column].tiles;
-        let small = |kind: &super::tiling::Kind| workspace.minimized.contains(kind);
+        let tiles = &layout.columns[column].tiles;
+        let small = |kind: &Kind| minimized.contains(kind);
         let gaps = 2.0 * (tiles.len() - 1) as f32;
         let bars = 2.0 * tiles.iter().filter(|kind| small(kind)).count() as f32;
         let open = tiles.iter().filter(|kind| !small(kind)).count().max(1) as f32;
@@ -744,7 +748,7 @@ fn column_map_button(
         let mut y = picture.top();
         for kind in tiles {
             let height = if small(kind) { 2.0 } else { cell };
-            let color = if *kind == workspace.active && !small(kind) {
+            let color = if *kind == active && !small(kind) {
                 tokens.primary
             } else {
                 base

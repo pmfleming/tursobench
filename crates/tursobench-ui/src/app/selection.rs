@@ -1,4 +1,8 @@
-use super::{App, results::CellEditor, shell};
+use super::{
+    App,
+    results::{CellEditor, CellKind},
+    shell,
+};
 use eframe::egui;
 use tursobench_core::{Ticket, Value};
 
@@ -34,6 +38,36 @@ impl InlineEdit {
         ((response.has_focus() || response.lost_focus())
             && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)))
         .then(|| self.editor.parse())
+    }
+    /// A record field edited in place: its type and value, parsed on Enter.
+    pub fn record_field(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        col: usize,
+    ) -> Option<Result<Value, String>> {
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .id_salt(("record-edit", col))
+                .max_rect(rect)
+                .layout(egui::Layout::right_to_left(egui::Align::Center)),
+            |ui| {
+                ui.spacing_mut().interact_size = egui::vec2(40.0, 20.0);
+                ui.spacing_mut().combo_width = 62.0;
+                self.editor.type_picker(ui, "type", false);
+                let hint = if self.editor.kind == CellKind::Null {
+                    "NULL"
+                } else {
+                    ""
+                };
+                let response = ui.add_sized(
+                    [ui.available_width(), 20.0],
+                    egui::TextEdit::singleline(&mut self.editor.input).hint_text(hint),
+                );
+                self.submitted(ui, &response)
+            },
+        )
+        .inner
     }
 }
 impl App {

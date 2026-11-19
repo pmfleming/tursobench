@@ -236,36 +236,6 @@ fn revert_button(
     )
     .inner
 }
-/// A record field edited in place: its type and value, parsed on Enter.
-fn inline_field_editor(
-    ui: &mut egui::Ui,
-    rect: egui::Rect,
-    col: usize,
-    inline: &mut super::selection::InlineEdit,
-) -> Option<Result<Value, String>> {
-    ui.scope_builder(
-        egui::UiBuilder::new()
-            .id_salt(("record-edit", col))
-            .max_rect(rect)
-            .layout(egui::Layout::right_to_left(egui::Align::Center)),
-        |ui| {
-            ui.spacing_mut().interact_size = egui::vec2(40.0, 20.0);
-            ui.spacing_mut().combo_width = 62.0;
-            inline.editor.type_picker(ui, "type", false);
-            let hint = if inline.editor.kind == CellKind::Null {
-                "NULL"
-            } else {
-                ""
-            };
-            let response = ui.add_sized(
-                [ui.available_width(), 20.0],
-                egui::TextEdit::singleline(&mut inline.editor.input).hint_text(hint),
-            );
-            inline.submitted(ui, &response)
-        },
-    )
-    .inner
-}
 /// A value as typed JSON; a non-finite real, which JSON cannot hold, says so.
 fn typed_text(value: &Value) -> String {
     match value {
@@ -626,7 +596,7 @@ impl App {
                     && (!self.database.workspace.enabled
                         || self.database.workspace.active == super::tiling::Kind::Record)
             }) {
-                match inline_field_editor(ui, value_rect, col, inline) {
+                match inline.record_field(ui, value_rect, col) {
                     Some(Ok(value)) => action = Some(RecordAction::Stage(col, value)),
                     Some(Err(error)) => self.database.status = error,
                     None => {}
