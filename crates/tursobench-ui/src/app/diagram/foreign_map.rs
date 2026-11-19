@@ -324,7 +324,7 @@ fn actions(ui: &egui::Ui, center: egui::Pos2, key: &ForeignKey) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{ForeignKey, ForeignMap, Inspection, SchemaDiagram, egui};
     use tursobench_core::{DiagramTable, Table};
     fn inspection(name: &str, foreign_keys: Vec<ForeignKey>) -> Inspection {
         Inspection {

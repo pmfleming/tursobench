@@ -29,21 +29,7 @@ impl App {
                 self.focus_pane(Kind::Data);
                 smoke.stage = 51;
             }
-            51 => {
-                smoke.capture_frames += 1;
-                if smoke.capture_frames >= 10 {
-                    smoke.capture_pending = Some(SCENES[smoke.scene].into());
-                    let (tx, rx) = std::sync::mpsc::sync_channel(1);
-                    let wake = ctx.clone();
-                    ctx.request_screenshot(move |image| {
-                        let _ = tx.try_send(image);
-                        wake.request_repaint();
-                    });
-                    smoke.capture_result = Some(rx);
-                    smoke.capture_frames = 0;
-                    smoke.stage = 52;
-                }
-            }
+            51 => smoke.capture_after(ctx, 10, SCENES[smoke.scene], 52),
             52 if smoke.capture_pending.is_none() => {
                 smoke.scene += 1;
                 self.retile();

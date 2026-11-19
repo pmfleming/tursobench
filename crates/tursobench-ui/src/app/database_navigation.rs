@@ -41,6 +41,20 @@ struct SearchResult {
     target: Target,
     more: usize,
 }
+impl SearchResult {
+    /// The table, and column, a result of this database shows in the schema tree.
+    fn tree_node(&self) -> Option<(String, Option<String>)> {
+        match &self.target {
+            Target::Object(_, super::commands::Command::Table(name, column)) => {
+                Some((name.clone(), column.clone()))
+            }
+            Target::Object(_, super::commands::Command::Definition(name)) => {
+                Some((name.clone(), None))
+            }
+            _ => None,
+        }
+    }
+}
 
 impl App {
     pub(super) fn database_navigation_keys(&mut self, ctx: &egui::Context) {
@@ -338,18 +352,58 @@ impl App {
         self.sidebar_search.index = 0;
         self.sidebar_search.navigating = false;
     }
-    pub(super) fn sidebar_search_results_ui(&mut self, ui: &mut egui::Ui) {
-        if self.sidebar_search.scope != Scope::Databases {
-            let active = self.database.id;
-            for database in std::iter::once(&mut self.database).chain(self.parked.values_mut()) {
-                if (self.sidebar_search.scope == Scope::AllOpen || database.id == active)
-                    && (database.ui.diagram.data.is_none() || database.ui.diagram.stale)
-                    && database.ui.diagram.error.is_empty()
-                {
-                    database.request_diagram();
-                }
+    /// Searching objects needs the relationship metadata of each database in scope.
+    fn request_search_metadata(&mut self) {
+        let scope = self.sidebar_search.scope;
+        if scope == Scope::Databases {
+            return;
+        }
+        let active = self.database.id;
+        for database in std::iter::once(&mut self.database).chain(self.parked.values_mut()) {
+            let diagram = &database.ui.diagram;
+            if (scope == Scope::AllOpen || database.id == active)
+                && (diagram.data.is_none() || diagram.stale)
+                && diagram.error.is_empty()
+            {
+                database.request_diagram();
             }
         }
+    }
+    /// Results under their group headings. Returns the clicked result and any
+    /// available database the user asked to forget.
+    fn search_result_list(
+        &self,
+        ui: &mut egui::Ui,
+        results: &[SearchResult],
+        highlighted: Option<usize>,
+    ) -> (Option<usize>, Option<usize>) {
+        let (mut chosen, mut forgotten) = (None, None);
+        let mut group = None;
+        for (index, result) in results.iter().enumerate() {
+            if group != Some(&result.group) {
+                ui.small(&result.group);
+                group = Some(&result.group);
+            }
+            let current = highlighted == Some(index);
+            let (response, forget) = self.sidebar_result_ui(ui, result, current);
+            forgotten = forget.or(forgotten);
+            if current {
+                response.scroll_to_me(None);
+            }
+            if response.on_hover_text(&result.label).clicked() {
+                chosen = Some(index);
+            }
+            if result.more > 0 {
+                ui.weak(format!(
+                    "+ {} more in this database; refine the query",
+                    result.more
+                ));
+            }
+        }
+        (chosen, forgotten)
+    }
+    pub(super) fn sidebar_search_results_ui(&mut self, ui: &mut egui::Ui) {
+        self.request_search_metadata();
         let mut results = self.sidebar_matches();
         let total = results.len();
         results.truncate(100);
@@ -357,51 +411,21 @@ impl App {
         let mut chosen = self.sidebar_selection_keys(ui, results.len());
         let mut forgotten = None;
         let tree_mode = self.sidebar_search.scope == Scope::ThisDatabase;
-        self.sidebar_search.tree_highlight = if tree_mode && focused {
-            results
-                .get(self.sidebar_search.index)
-                .and_then(|r| match &r.target {
-                    Target::Object(_, super::commands::Command::Table(name, column)) => {
-                        Some((name.clone(), column.clone()))
-                    }
-                    Target::Object(_, super::commands::Command::Definition(name)) => {
-                        Some((name.clone(), None))
-                    }
-                    _ => None,
-                })
-        } else {
-            None
-        };
+        self.sidebar_search.tree_highlight = results
+            .get(self.sidebar_search.index)
+            .filter(|_| tree_mode && focused)
+            .and_then(SearchResult::tree_node);
         egui::ScrollArea::vertical()
             .id_salt("sidebar-search-results")
             .show(ui, |ui| {
                 if tree_mode {
                     self.schema_tree_ui(ui);
                 }
-                let mut group = None;
-                for (index, result) in results.iter().enumerate().filter(|_| !tree_mode) {
-                    if group != Some(&result.group) {
-                        ui.small(&result.group);
-                        group = Some(&result.group);
-                    }
-                    let (response, forget) = self.sidebar_result_ui(
-                        ui,
-                        result,
-                        focused && index == self.sidebar_search.index,
-                    );
-                    forgotten = forget.or(forgotten);
-                    if focused && index == self.sidebar_search.index {
-                        response.scroll_to_me(None);
-                    }
-                    if response.on_hover_text(&result.label).clicked() {
-                        chosen = Some(index);
-                    }
-                    if result.more > 0 {
-                        ui.weak(format!(
-                            "+ {} more in this database; refine the query",
-                            result.more
-                        ));
-                    }
+                if !tree_mode {
+                    let highlighted = focused.then_some(self.sidebar_search.index);
+                    let (clicked, forget) = self.search_result_list(ui, &results, highlighted);
+                    chosen = clicked.or(chosen);
+                    forgotten = forget;
                 }
                 if results.is_empty() {
                     ui.weak("No matches. Try another scope or query.");

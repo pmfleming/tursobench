@@ -59,12 +59,10 @@ impl RecordField<'_> {
         }
         let label_rect = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), 24.0));
         if let Some(icon) = icon {
-            icons::paint(
+            presentation::icon_at(
                 ui.painter(),
-                egui::Rect::from_center_size(
-                    label_rect.left_center() + egui::vec2(10.0, 0.0),
-                    egui::vec2(12.0, 12.0),
-                ),
+                label_rect.left_center() + egui::vec2(10.0, 0.0),
+                12.0,
                 icon,
                 tokens.relationship,
             );
@@ -107,12 +105,10 @@ impl RecordField<'_> {
             _ => None,
         };
         if let Some((icon, caption)) = compact {
-            icons::paint(
+            presentation::icon_at(
                 ui.painter(),
-                egui::Rect::from_center_size(
-                    rect.left_center() + egui::vec2(7.0, 0.0),
-                    egui::vec2(13.0, 13.0),
-                ),
+                rect.left_center() + egui::vec2(7.0, 0.0),
+                13.0,
                 icon,
                 tokens.faint,
             );
@@ -204,6 +200,51 @@ fn record_wrap(
     Some(ui.painter().layout_job(job))
 }
 
+/// A record field's declared type, at the right of its first line.
+fn type_label(ui: &egui::Ui, row: egui::Rect, declared: &str) {
+    let rect = egui::Rect::from_min_max(
+        egui::pos2(row.right() - 64.0, row.top()),
+        egui::pos2(row.right() - 4.0, row.top() + 24.0),
+    );
+    let color = crate::appearance::Tokens::of(ui.ctx()).faint;
+    super::presentation::text_right_at(ui, rect, declared, color, 11.0);
+}
+/// The button at the right of a staged field's value that reverts its draft.
+/// Returns whether it was clicked.
+fn revert_button(
+    ui: &mut egui::Ui,
+    row: egui::Rect,
+    value: egui::Rect,
+    col: usize,
+    name: &str,
+    enabled: bool,
+) -> bool {
+    let rect = egui::Rect::from_min_max(
+        egui::pos2(value.right() - 24.0, row.top()),
+        egui::pos2(value.right(), row.top() + 24.0),
+    );
+    let label = format!("Revert {name} draft");
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .id_salt(("revert", col))
+            .max_rect(rect),
+        |ui| {
+            ui.add_enabled_ui(enabled, |ui| icons::button(ui, Icon::Undo, &label, ""))
+                .inner
+                .clicked()
+        },
+    )
+    .inner
+}
+/// A value as typed JSON; a non-finite real, which JSON cannot hold, says so.
+fn typed_text(value: &Value) -> String {
+    match value {
+        Value::Real(n) if !n.is_finite() => {
+            format!("Real({n}) — inspectable/exportable, not editable as a non-finite real")
+        }
+        _ => serde_json::to_string_pretty(value).unwrap_or_default(),
+    }
+}
 impl App {
     pub(super) fn cell_inspector(&mut self, ui: &mut egui::Ui, row: usize, col: usize) {
         let Some(value) = self
@@ -244,19 +285,12 @@ impl App {
                 .get(row)
                 .and_then(|r| d.displayed(r, col))
         });
-        let typed = |value: &Value| match value {
-            Value::Real(n) if !n.is_finite() => {
-                format!("Real({n}) — inspectable/exportable, not editable as a non-finite real")
-            }
-            _ => serde_json::to_string_pretty(value).unwrap_or_default(),
-        };
         if let Some(value) = staged {
             ui.colored_label(ui.visuals().warn_fg_color, "Staged value — not yet written");
-            let text = typed(value);
-            code_view(ui, &text, 3);
+            code_view(ui, &typed_text(value), 3);
         }
         presentation::notice(ui, Icon::Selection, Intent::Neutral, "Stored value");
-        let text = typed(value);
+        let text = typed_text(value);
         egui::ScrollArea::vertical()
             .id_salt("stored-cell")
             .max_height(180.0)
@@ -280,56 +314,63 @@ impl App {
             }
         });
         if self.can_edit() {
-            ui.separator();
-            ui.strong("Change value · staged locally");
-            self.database
-                .document
-                .tools
-                .cell_editor
-                .type_picker(ui, "cell-kind", true);
-            if self.database.document.tools.cell_editor.kind != CellKind::Null {
-                ui.add(
-                    egui::TextEdit::multiline(&mut self.database.document.tools.cell_editor.input)
-                        .desired_width(ui.available_width())
-                        .desired_rows(3),
-                );
-            }
-            if presentation::footer(ui, |ui| {
-                ui.add(presentation::action(
-                    ui,
-                    "Stage cell change",
-                    Intent::Pending,
-                ))
-            })
-            .inner
-            .clicked()
-            {
-                match self.database.document.tools.cell_editor.parse() {
-                    Ok(value) => self.stage_cell(row, col, value),
-                    Err(e) => self.database.status = e,
-                }
-            }
-            ui.horizontal_wrapped(|ui| {
-                if icons::button(ui, Icon::Undo, "Revert cell draft", "").clicked() {
-                    self.revert_grid_draft(row, Some(col));
-                }
-                if ui.button("Revert row draft").clicked() {
-                    self.revert_grid_draft(row, None);
-                }
-                if icons::control(ui, Icon::Trash, "Stage row deletion", "", false, true).clicked()
-                {
-                    self.stage_delete(row);
-                }
-                if ui.button("Clone as new row…").clicked() {
-                    self.clone_row(row);
-                }
-            });
+            self.cell_editing(ui, row, col);
         } else {
             ui.small("Editing requires writable access, editor autocommit, a complete controlled non-engine-managed table result with a proven key, and no pending/uncertain commit. Arbitrary SQL results remain read-only.");
         }
-        if self.database.document.view == View::Browse
-            && let Some(info) = &self.database.document.tools.inspection
+        if self.database.document.view == View::Browse {
+            self.parent_links(ui, row);
+        }
+    }
+    /// Stage a typed value for the cell, or revert, delete or clone its row.
+    fn cell_editing(&mut self, ui: &mut egui::Ui, row: usize, col: usize) {
+        ui.separator();
+        ui.strong("Change value · staged locally");
+        self.database
+            .document
+            .tools
+            .cell_editor
+            .type_picker(ui, "cell-kind", true);
+        if self.database.document.tools.cell_editor.kind != CellKind::Null {
+            ui.add(
+                egui::TextEdit::multiline(&mut self.database.document.tools.cell_editor.input)
+                    .desired_width(ui.available_width())
+                    .desired_rows(3),
+            );
+        }
+        if presentation::footer(ui, |ui| {
+            ui.add(presentation::action(
+                ui,
+                "Stage cell change",
+                Intent::Pending,
+            ))
+        })
+        .inner
+        .clicked()
         {
+            match self.database.document.tools.cell_editor.parse() {
+                Ok(value) => self.stage_cell(row, col, value),
+                Err(e) => self.database.status = e,
+            }
+        }
+        ui.horizontal_wrapped(|ui| {
+            if icons::button(ui, Icon::Undo, "Revert cell draft", "").clicked() {
+                self.revert_grid_draft(row, Some(col));
+            }
+            if ui.button("Revert row draft").clicked() {
+                self.revert_grid_draft(row, None);
+            }
+            if icons::control(ui, Icon::Trash, "Stage row deletion", "", false, true).clicked() {
+                self.stage_delete(row);
+            }
+            if ui.button("Clone as new row…").clicked() {
+                self.clone_row(row);
+            }
+        });
+    }
+    /// The browsed table's foreign keys, each followed to the row's parent on a click.
+    fn parent_links(&mut self, ui: &mut egui::Ui, row: usize) {
+        if let Some(info) = &self.database.document.tools.inspection {
             ui.separator();
             ui.strong("References");
             let mut selected = None;
@@ -537,50 +578,17 @@ impl App {
             }
             let mut value_rect = field.paint(ui, rect, name_width, header.key_icon());
             if wide {
-                let type_rect = egui::Rect::from_min_max(
-                    egui::pos2(rect.right() - 64.0, rect.top()),
-                    egui::pos2(rect.right() - 4.0, rect.top() + 24.0),
-                );
-                super::presentation::text_right_at(
-                    ui,
-                    type_rect,
-                    header.declared_type().unwrap_or("VALUE"),
-                    crate::appearance::Tokens::of(ui.ctx()).faint,
-                    11.0,
-                );
+                let declared = header.declared_type().unwrap_or("VALUE");
+                type_label(ui, rect, declared);
                 value_rect.max.x -= 64.0;
             }
             if staged {
-                let button_rect = egui::Rect::from_min_max(
-                    egui::pos2(value_rect.right() - 24.0, rect.top()),
-                    egui::pos2(value_rect.right(), rect.top() + 24.0),
-                );
+                let enabled =
+                    self.database.commit_ticket.is_none() && !self.database.uncertain_edit;
+                if revert_button(ui, rect, value_rect, col, field.name, enabled) {
+                    action = Some(RecordAction::Revert(col));
+                }
                 value_rect.max.x -= 24.0;
-                ui.scope_builder(
-                    egui::UiBuilder::new()
-                        .id_salt(("revert", col))
-                        .max_rect(button_rect),
-                    |ui| {
-                        if ui
-                            .add_enabled_ui(
-                                self.database.commit_ticket.is_none()
-                                    && !self.database.uncertain_edit,
-                                |ui| {
-                                    icons::button(
-                                        ui,
-                                        Icon::Undo,
-                                        &format!("Revert {} draft", field.name),
-                                        "",
-                                    )
-                                },
-                            )
-                            .inner
-                            .clicked()
-                        {
-                            action = Some(RecordAction::Revert(col));
-                        }
-                    },
-                );
             }
             if let Some(inline) = self.database.document.tools.inline.as_mut().filter(|e| {
                 e.row == row
@@ -588,32 +596,11 @@ impl App {
                     && (!self.database.workspace.enabled
                         || self.database.workspace.active == super::tiling::Kind::Record)
             }) {
-                ui.scope_builder(
-                    egui::UiBuilder::new()
-                        .id_salt(("record-edit", col))
-                        .max_rect(value_rect)
-                        .layout(egui::Layout::right_to_left(egui::Align::Center)),
-                    |ui| {
-                        ui.spacing_mut().interact_size = egui::vec2(40.0, 20.0);
-                        ui.spacing_mut().combo_width = 62.0;
-                        inline.editor.type_picker(ui, "type", false);
-                        let response = ui.add_sized(
-                            [ui.available_width(), 20.0],
-                            egui::TextEdit::singleline(&mut inline.editor.input).hint_text(
-                                if inline.editor.kind == CellKind::Null {
-                                    "NULL"
-                                } else {
-                                    ""
-                                },
-                            ),
-                        );
-                        match inline.submitted(ui, &response) {
-                            Some(Ok(value)) => action = Some(RecordAction::Stage(col, value)),
-                            Some(Err(error)) => self.database.status = error,
-                            None => {}
-                        }
-                    },
-                );
+                match inline.record_field(ui, value_rect, col) {
+                    Some(Ok(value)) => action = Some(RecordAction::Stage(col, value)),
+                    Some(Err(error)) => self.database.status = error,
+                    None => {}
+                }
             } else {
                 let style = self
                     .database
@@ -877,7 +864,7 @@ fn kind_name(value: &Value) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Value, byte_size, detail_text, egui, record_tooltip, record_wrap};
     #[test]
     fn long_selected_text_is_bounded_and_byte_captions_keep_sizes() {
         assert_eq!(byte_size(3), "3 bytes");

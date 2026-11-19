@@ -1,10 +1,12 @@
 use super::presentation::{self, Intent};
+use super::tiling::{Kind, Layout};
 use super::{
     App, View, diagram,
     icons::{self, Icon},
     ribbon::Action,
 };
 use eframe::egui;
+use std::collections::BTreeSet;
 use tursobench_core::TransactionState;
 /// Space around a collapsed panel's line.
 const FOLD_MARGIN: i8 = 4;
@@ -473,77 +475,15 @@ impl App {
     /// A small picture of the columns in the status bar. Each column folds to
     /// a line, or reopens, on a click.
     fn column_map(&mut self, ui: &mut egui::Ui) {
-        const HEIGHT: f32 = 18.0;
-        let tokens = crate::appearance::Tokens::of(ui.ctx());
-        let folds = {
-            let workspace = &self.database.workspace;
-            workspace.layout.folds(&workspace.minimized)
-        };
+        let workspace = &self.database.workspace;
+        let folds = workspace.layout.folds(&workspace.minimized);
         let mut toggled = None;
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
             // The bar fills right to left, so the last column is added first.
-            for column in (0..self.database.workspace.layout.columns.len()).rev() {
-                let workspace = &self.database.workspace;
-                let folded = folds[column];
-                let names = workspace.layout.names(column);
-                let (rect, response) = ui.allocate_exact_size(
-                    egui::vec2(if folded { 6.0 } else { 12.0 }, 24.0),
-                    egui::Sense::click(),
-                );
-                response.widget_info(|| {
-                    egui::WidgetInfo::selected(
-                        egui::Role::Button,
-                        ui.is_enabled(),
-                        !folded,
-                        format!("Column: {names}"),
-                    )
-                });
-                let base = if response.hovered() {
-                    ui.visuals().text_color()
-                } else {
-                    tokens.muted
-                };
-                let picture = egui::Rect::from_center_size(
-                    rect.center(),
-                    egui::vec2(if folded { 3.0 } else { rect.width() }, HEIGHT),
-                );
-                if folded {
-                    ui.painter().rect_filled(picture, 1.5, base);
-                } else {
-                    let tiles = &workspace.layout.columns[column].tiles;
-                    let small = |kind| workspace.minimized.contains(kind);
-                    let gaps = 2.0 * (tiles.len() - 1) as f32;
-                    let bars = 2.0 * tiles.iter().filter(|kind| small(kind)).count() as f32;
-                    let open = tiles.iter().filter(|kind| !small(kind)).count().max(1) as f32;
-                    let cell = ((HEIGHT - gaps - bars) / open).max(2.0);
-                    let mut y = picture.top();
-                    for kind in tiles {
-                        let height = if small(kind) { 2.0 } else { cell };
-                        let color = if *kind == workspace.active && !small(kind) {
-                            tokens.primary
-                        } else {
-                            base
-                        };
-                        ui.painter().rect_filled(
-                            egui::Rect::from_min_max(
-                                egui::pos2(picture.left(), y),
-                                egui::pos2(picture.right(), y + height),
-                            ),
-                            1.5,
-                            color,
-                        );
-                        y += height + 2.0;
-                    }
-                }
-                let hint = if folded { "Show" } else { "Fold" };
-                if response
-                    .on_hover_text(format!(
-                        "{hint} {names}\nCtrl L folds the focused tile's column"
-                    ))
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .clicked()
-                {
+            for (column, folded) in folds.into_iter().enumerate().rev() {
+                let tiles = (&workspace.layout, &workspace.minimized, workspace.active);
+                if column_map_button(ui, tiles, column, folded) {
                     toggled = Some(column);
                 }
             }
@@ -762,4 +702,67 @@ pub(super) struct ViewUi {
     pub sql_open: bool,
     pub params_open: bool,
     pub filter_open: bool,
+}
+
+/// One column in the status bar's column map: a line when folded, otherwise
+/// its tiles stacked as bars. Returns whether it was clicked.
+fn column_map_button(
+    ui: &mut egui::Ui,
+    (layout, minimized, active): (&Layout, &BTreeSet<Kind>, Kind),
+    column: usize,
+    folded: bool,
+) -> bool {
+    const HEIGHT: f32 = 18.0;
+    let tokens = crate::appearance::Tokens::of(ui.ctx());
+    let names = layout.names(column);
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(if folded { 6.0 } else { 12.0 }, 24.0),
+        egui::Sense::click(),
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::Role::Button,
+            ui.is_enabled(),
+            !folded,
+            format!("Column: {names}"),
+        )
+    });
+    let base = if response.hovered() {
+        ui.visuals().text_color()
+    } else {
+        tokens.muted
+    };
+    let picture = egui::Rect::from_center_size(
+        rect.center(),
+        egui::vec2(if folded { 3.0 } else { rect.width() }, HEIGHT),
+    );
+    if folded {
+        ui.painter().rect_filled(picture, 1.5, base);
+    } else {
+        let tiles = &layout.columns[column].tiles;
+        let small = |kind: &Kind| minimized.contains(kind);
+        let gaps = 2.0 * (tiles.len() - 1) as f32;
+        let bars = 2.0 * tiles.iter().filter(|kind| small(kind)).count() as f32;
+        let open = tiles.iter().filter(|kind| !small(kind)).count().max(1) as f32;
+        let cell = ((HEIGHT - gaps - bars) / open).max(2.0);
+        let mut y = picture.top();
+        for kind in tiles {
+            let height = if small(kind) { 2.0 } else { cell };
+            let color = if *kind == active && !small(kind) {
+                tokens.primary
+            } else {
+                base
+            };
+            let bar = egui::Rect::from_x_y_ranges(picture.x_range(), y..=y + height);
+            ui.painter().rect_filled(bar, 1.5, color);
+            y += height + 2.0;
+        }
+    }
+    let hint = if folded { "Show" } else { "Fold" };
+    response
+        .on_hover_text(format!(
+            "{hint} {names}\nCtrl L folds the focused tile's column"
+        ))
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .clicked()
 }

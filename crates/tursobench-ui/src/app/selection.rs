@@ -1,4 +1,8 @@
-use super::{App, results::CellEditor, shell};
+use super::{
+    App,
+    results::{CellEditor, CellKind},
+    shell,
+};
 use eframe::egui;
 use tursobench_core::{Ticket, Value};
 
@@ -8,6 +12,8 @@ pub(super) struct Selection {
     pub anchor: (usize, usize),
     pub cursor: (usize, usize),
 }
+/// A key the grid handles, and what it does.
+type GridShortcut = (egui::Modifiers, egui::Key, fn(&mut App));
 pub(super) struct SummaryCache {
     selection: Selection,
     visible: Vec<usize>,
@@ -32,6 +38,36 @@ impl InlineEdit {
         ((response.has_focus() || response.lost_focus())
             && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)))
         .then(|| self.editor.parse())
+    }
+    /// A record field edited in place: its type and value, parsed on Enter.
+    pub fn record_field(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        col: usize,
+    ) -> Option<Result<Value, String>> {
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .id_salt(("record-edit", col))
+                .max_rect(rect)
+                .layout(egui::Layout::right_to_left(egui::Align::Center)),
+            |ui| {
+                ui.spacing_mut().interact_size = egui::vec2(40.0, 20.0);
+                ui.spacing_mut().combo_width = 62.0;
+                self.editor.type_picker(ui, "type", false);
+                let hint = if self.editor.kind == CellKind::Null {
+                    "NULL"
+                } else {
+                    ""
+                };
+                let response = ui.add_sized(
+                    [ui.available_width(), 20.0],
+                    egui::TextEdit::singleline(&mut self.editor.input).hint_text(hint),
+                );
+                self.submitted(ui, &response)
+            },
+        )
+        .inner
     }
 }
 impl App {
@@ -231,42 +267,24 @@ impl App {
         });
     }
 
+    /// Whether the focused grid of a table's data or a result takes the keys.
+    fn grid_takes_keys(&self, ctx: &egui::Context) -> bool {
+        let document = &self.database.document;
+        document.tools.inline.is_none()
+            && document.tools.spreadsheet.dialog.is_none()
+            && matches!(document.ui.nav, shell::Nav::Table | shell::Nav::Result)
+            && document.ui.table_view == shell::TableView::Data
+            && !egui::Popup::is_any_open(ctx)
+            && !self.database.ui.palette_open
+            && document.tools.grid_focus.is_some()
+            && ctx.memory(|m| m.focused()) == document.tools.grid_focus
+    }
     pub(super) fn grid_keys(&mut self, ctx: &egui::Context) {
-        if self.database.document.tools.inline.is_some()
-            || self.database.document.tools.spreadsheet.dialog.is_some()
-            || !matches!(
-                self.database.document.ui.nav,
-                shell::Nav::Table | shell::Nav::Result
-            )
-            || self.database.document.ui.table_view != shell::TableView::Data
-            || egui::Popup::is_any_open(ctx)
-            || self.database.ui.palette_open
-        {
+        if !self.grid_takes_keys(ctx) {
             return;
         }
-        if self.database.document.tools.grid_focus.is_none()
-            || ctx.memory(|m| m.focused()) != self.database.document.tools.grid_focus
-        {
-            return;
-        }
-        // Native integrations send clipboard events instead of Ctrl+C/V key events.
-        let clipboard = ctx.input_mut(|i| {
-            let mut paste = None;
-            let mut copy = false;
-            i.events.retain(|event| match event {
-                egui::Event::Paste(text) => {
-                    paste = Some(text.clone());
-                    false
-                }
-                egui::Event::Copy => {
-                    copy = true;
-                    false
-                }
-                _ => true,
-            });
-            (paste, copy)
-        });
-        if let Some(text) = clipboard.0 {
+        let (paste, copy) = take_clipboard_events(ctx);
+        if let Some(text) = paste {
             if ctx.input(|i| i.modifiers.shift) {
                 self.open_paste(true, text);
             } else {
@@ -274,26 +292,26 @@ impl App {
             }
             return;
         }
-        if clipboard.1 {
-            match self.selection_tsv() {
-                Ok(text) => ctx.copy_text(text),
-                Err(error) => self.database.status = error,
+        if copy {
+            self.copy_selection(ctx);
+            return;
+        }
+        let edits: [GridShortcut; 3] = [
+            (
+                egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
+                egui::Key::V,
+                |app| app.open_paste(true, String::new()),
+            ),
+            (egui::Modifiers::CTRL, egui::Key::Z, Self::undo_grid_edit),
+            (egui::Modifiers::NONE, egui::Key::Backspace, |app| {
+                app.fill_selection(Value::Null);
+            }),
+        ];
+        for (modifiers, key, edit) in edits {
+            if ctx.input_mut(|i| i.consume_key(modifiers, key)) {
+                edit(self);
+                return;
             }
-            return;
-        }
-        if ctx.input_mut(|i| {
-            i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::V)
-        }) {
-            self.open_paste(true, String::new());
-            return;
-        }
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Z)) {
-            self.undo_grid_edit();
-            return;
-        }
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)) {
-            self.fill_selection(Value::Null);
-            return;
         }
         let Some(s) = self
             .database
@@ -309,10 +327,7 @@ impl App {
             return;
         };
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::C)) {
-            match self.selection_tsv() {
-                Ok(text) => ctx.copy_text(text),
-                Err(error) => self.database.status = error,
-            }
+            self.copy_selection(ctx);
             return;
         }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
@@ -328,58 +343,85 @@ impl App {
             self.toggle_inspector();
             return;
         }
+        self.move_cursor(ctx, s.cursor.0, &cols, c);
+    }
+    fn copy_selection(&mut self, ctx: &egui::Context) {
+        match self.selection_tsv() {
+            Ok(text) => ctx.copy_text(text),
+            Err(error) => self.database.status = error,
+        }
+    }
+    /// Arrows move the cursor a cell and Page keys 25 rows, Shift extending the
+    /// selection; paging past either end loads the neighbouring page.
+    fn move_cursor(&mut self, ctx: &egui::Context, row: usize, cols: &[usize], c: usize) {
         let shift = ctx.input(|i| i.modifiers.shift);
         let mods = if shift {
             egui::Modifiers::SHIFT
         } else {
             egui::Modifiers::NONE
         };
-        for (key, dr, dc) in [
+        let Some((key, dr, dc)) = [
             (egui::Key::ArrowUp, -1, 0),
             (egui::Key::ArrowDown, 1, 0),
             (egui::Key::ArrowLeft, 0, -1),
             (egui::Key::ArrowRight, 0, 1),
             (egui::Key::PageDown, 25, 0),
             (egui::Key::PageUp, -25, 0),
-        ] {
-            if ctx.input_mut(|i| i.consume_key(mods, key)) {
-                let row = s
-                    .cursor
-                    .0
-                    .saturating_add_signed(dr)
-                    .min(self.database.document.result.rows.len().saturating_sub(1));
-                let col = c.saturating_add_signed(dc).min(cols.len() - 1);
-                if key == egui::Key::PageDown && row == s.cursor.0 {
-                    self.request_page(false);
-                }
-                if key == egui::Key::PageUp && row == 0 {
-                    self.request_page(true);
-                }
-                self.select_cell(row, cols[col], shift);
-                self.database.document.tools.scroll_to_cell = true;
-                let stride = self
-                    .database
-                    .document
-                    .tools
-                    .row_stride
-                    .max(super::grid::ROW_HEIGHT);
-                let y = row as f32 * stride;
-                let current = self.database.document.tools.grid_scroll.y;
-                let next = if y < current {
-                    y
-                } else if y + stride > current + self.database.document.tools.grid_height {
-                    (y + stride - self.database.document.tools.grid_height).max(0.0)
-                } else {
-                    current
-                };
-                if next != current {
-                    self.database.document.tools.restore_scroll =
-                        Some(egui::vec2(self.database.document.tools.grid_scroll.x, next));
-                }
-                break;
-            }
+        ]
+        .into_iter()
+        .find(|(key, _, _)| ctx.input_mut(|i| i.consume_key(mods, *key))) else {
+            return;
+        };
+        let last = self.database.document.result.rows.len().saturating_sub(1);
+        let next = row.saturating_add_signed(dr).min(last);
+        let col = c.saturating_add_signed(dc).min(cols.len() - 1);
+        if key == egui::Key::PageDown && next == row {
+            self.request_page(false);
+        }
+        if key == egui::Key::PageUp && next == 0 {
+            self.request_page(true);
+        }
+        self.select_cell(next, cols[col], shift);
+        self.scroll_to_row(next);
+    }
+    /// Scroll the grid just enough to show `row`.
+    fn scroll_to_row(&mut self, row: usize) {
+        let tools = &mut self.database.document.tools;
+        tools.scroll_to_cell = true;
+        let stride = tools.row_stride.max(super::grid::ROW_HEIGHT);
+        let y = row as f32 * stride;
+        let current = tools.grid_scroll.y;
+        let next = if y < current {
+            y
+        } else if y + stride > current + tools.grid_height {
+            (y + stride - tools.grid_height).max(0.0)
+        } else {
+            current
+        };
+        if next != current {
+            tools.restore_scroll = Some(egui::vec2(tools.grid_scroll.x, next));
         }
     }
+}
+/// Native integrations send clipboard events instead of Ctrl+C/V key events;
+/// take them so nothing else handles them too.
+fn take_clipboard_events(ctx: &egui::Context) -> (Option<String>, bool) {
+    ctx.input_mut(|i| {
+        let mut paste = None;
+        let mut copy = false;
+        i.events.retain(|event| match event {
+            egui::Event::Paste(text) => {
+                paste = Some(text.clone());
+                false
+            }
+            egui::Event::Copy => {
+                copy = true;
+                false
+            }
+            _ => true,
+        });
+        (paste, copy)
+    })
 }
 
 /// Integer sums/extrema stay exact; mixed-real aggregates are explicitly approximate.

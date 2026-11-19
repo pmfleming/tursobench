@@ -1,5 +1,6 @@
 use super::{App, egui, fixture, frame, key_event, pane, pointer_button, press_key};
-use crate::app::tiling::{Kind, Kind::*, Layout};
+use crate::app::tiling::Kind::{self, Chat, Data, Map, Record, Sql, Structure};
+use crate::app::tiling::Layout;
 
 fn columns(app: &App) -> Vec<Vec<Kind>> {
     let layout = &app.database.workspace.layout;
