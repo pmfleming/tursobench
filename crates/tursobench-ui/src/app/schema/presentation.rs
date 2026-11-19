@@ -327,12 +327,10 @@ impl ColumnRow<'_> {
         text_right_at(ui, type_rect, &c.declared_type, tokens.faint, 11.0);
         right = type_rect.left() - 5.0;
         if !self.indexes.is_empty() {
-            icons::paint(
+            crate::app::presentation::icon_at(
                 ui.painter(),
-                egui::Rect::from_center_size(
-                    egui::pos2(right - 6.0, rect.center().y),
-                    egui::vec2(12.0, 12.0),
-                ),
+                egui::pos2(right - 6.0, rect.center().y),
+                12.0,
                 Icon::Complete,
                 tokens.muted,
             );
@@ -443,12 +441,10 @@ impl ColumnRow<'_> {
             tokens.relationship,
             11.0,
         );
-        icons::paint(
+        crate::app::presentation::icon_at(
             ui.painter(),
-            egui::Rect::from_center_size(
-                link.left_center() + egui::vec2(6.0, 0.0),
-                egui::vec2(11.0, 11.0),
-            ),
+            link.left_center() + egui::vec2(6.0, 0.0),
+            11.0,
             Icon::Next,
             tokens.relationship,
         );
@@ -577,12 +573,10 @@ fn section_tab(
     } else {
         crate::appearance::Tokens::of(ui.ctx()).muted
     };
-    icons::paint(
+    crate::app::presentation::icon_at(
         ui.painter(),
-        egui::Rect::from_center_size(
-            rect.left_center() + egui::vec2(10.0, 0.0),
-            egui::vec2(13.0, 13.0),
-        ),
+        rect.left_center() + egui::vec2(10.0, 0.0),
+        13.0,
         icon,
         color,
     );
@@ -656,12 +650,10 @@ fn definition_row(
         ui.ctx().data_mut(|d| d.insert_temp(id, open));
     }
     if !automatic {
-        icons::paint(
+        crate::app::presentation::icon_at(
             ui.painter(),
-            egui::Rect::from_center_size(
-                rect.left_center() + egui::vec2(9.0, 0.0),
-                egui::vec2(12.0, 12.0),
-            ),
+            rect.left_center() + egui::vec2(9.0, 0.0),
+            12.0,
             if open { Icon::Down } else { Icon::Next },
             tokens.muted,
         );
@@ -672,12 +664,10 @@ fn definition_row(
         (index.is_some_and(|i| i.partial), Icon::Filter),
     ] {
         if show {
-            icons::paint(
+            crate::app::presentation::icon_at(
                 ui.painter(),
-                egui::Rect::from_center_size(
-                    egui::pos2(right - 6.0, rect.center().y),
-                    egui::vec2(12.0, 12.0),
-                ),
+                egui::pos2(right - 6.0, rect.center().y),
+                12.0,
                 icon,
                 tokens.muted,
             );

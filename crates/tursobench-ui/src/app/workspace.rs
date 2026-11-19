@@ -650,12 +650,10 @@ impl App {
                     tokens.primary,
                 );
             }
-            icons::paint(
+            presentation::icon_at(
                 &painter,
-                egui::Rect::from_center_size(
-                    ghost.left_center() + egui::vec2(26.0, 0.0),
-                    egui::vec2(16.0, 16.0),
-                ),
+                ghost.left_center() + egui::vec2(26.0, 0.0),
+                16.0,
                 tile_icon(drag.kind),
                 ui.visuals().text_color(),
             );
@@ -724,12 +722,10 @@ impl App {
                     egui::pos2(right - group_width, rect.top()),
                     egui::pos2(right, rect.bottom()),
                 );
-                icons::paint(
+                presentation::icon_at(
                     ui.painter(),
-                    egui::Rect::from_center_size(
-                        area.left_center() + egui::vec2(7.0, 0.0),
-                        egui::vec2(13.0, 13.0),
-                    ),
+                    area.left_center() + egui::vec2(7.0, 0.0),
+                    13.0,
                     icon,
                     ui.visuals().weak_text_color(),
                 );

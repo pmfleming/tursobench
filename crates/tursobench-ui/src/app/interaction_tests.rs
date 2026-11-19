@@ -119,13 +119,25 @@ fn click_control(app: &mut App, ctx: &egui::Context, label: &str) {
     let output = frame(app, ctx, vec![]);
     click(app, ctx, control(&output, label).center());
 }
+fn label_exists(output: &egui::FullOutput, label: &str) -> bool {
+    super::test_ui::nodes(output)
+        .iter()
+        .any(|(_, node)| node.label() == Some(label))
+}
+/// Click `pos` in a surface that `draw` renders on its own.
+fn click_surface(
+    ctx: &egui::Context,
+    size: egui::Vec2,
+    pos: egui::Pos2,
+    mut draw: impl FnMut(&mut egui::Ui),
+) {
+    for pressed in [true, false] {
+        super::test_ui::render(ctx, size, super::test_ui::pointer(pos, pressed), &mut draw);
+    }
+}
 fn click(app: &mut App, ctx: &egui::Context, pos: egui::Pos2) {
     for pressed in [true, false] {
-        frame(
-            app,
-            ctx,
-            vec![egui::Event::PointerMoved(pos), pointer_button(pos, pressed)],
-        );
+        frame(app, ctx, super::test_ui::pointer(pos, pressed));
     }
 }
 fn press_key(app: &mut App, ctx: &egui::Context, key: egui::Key, modifiers: egui::Modifiers) {
@@ -3130,12 +3142,7 @@ fn sql_result_ribbon_actions_use_the_linked_result_not_the_editor_or_table() {
         let pos = egui::pos2(bounds.center().x, bounds.center().y);
         assert!(app.database.workspace.pane_rects[0].1.contains(pos));
         for pressed in [true, false] {
-            frame_at(
-                app,
-                &ctx,
-                size,
-                vec![egui::Event::PointerMoved(pos), pointer_button(pos, pressed)],
-            );
+            frame_at(app, &ctx, size, super::test_ui::pointer(pos, pressed));
         }
     };
     press(&mut app, "Show all result columns");
@@ -3534,11 +3541,10 @@ fn sidebar_search_loads_parked_columns_and_respects_scopes_and_keyboard() {
     app.sidebar_search.query = "needle_column".into();
     app.sidebar_search.scope = Scope::ThisDatabase;
     let output = frame_at(&mut app, &ctx, egui::vec2(1280.0, 720.0), vec![]);
-    assert!(
-        !crate::app::test_ui::nodes(&output)
-            .iter()
-            .any(|(_, n)| n.label() == Some("second_table.needle_column · column"))
-    );
+    assert!(!label_exists(
+        &output,
+        "second_table.needle_column · column"
+    ));
     assert!(app.parked[&second].ui.diagram.ticket.is_none());
     app.sidebar_search.scope = Scope::AllOpen;
     app.sidebar_search.focus = true;
@@ -3561,20 +3567,12 @@ fn sidebar_search_loads_parked_columns_and_respects_scopes_and_keyboard() {
     app.sidebar_search.query = "first_table".into();
     app.sidebar_search.scope = Scope::Databases;
     let output = frame_at(&mut app, &ctx, egui::vec2(1280.0, 720.0), vec![]);
-    assert!(
-        !crate::app::test_ui::nodes(&output)
-            .iter()
-            .any(|(_, n)| n.label() == Some("first_table · table"))
-    );
+    assert!(!label_exists(&output, "first_table · table"));
     app.sidebar_search.query = "second_table".into();
     app.open_palette();
     app.database.ui.palette_query = "second_table".into();
     let output = frame_at(&mut app, &ctx, egui::vec2(1280.0, 720.0), vec![]);
-    assert!(
-        !crate::app::test_ui::nodes(&output)
-            .iter()
-            .any(|(_, n)| n.label() == Some("second_table · table"))
-    );
+    assert!(!label_exists(&output, "second_table · table"));
     app.database.ui.palette_open = false;
     close_and_wait(&mut app, &ctx);
     app.select_workspace(first);
@@ -3618,9 +3616,7 @@ fn compact_record_rows_align_and_separate_null_composite_parent_links() {
     assert_eq!(id.pos.x, status.pos.x);
     assert!(!texts.iter().any(|t| t.galley.job.text.contains("Parent:")));
     assert!(
-        !super::test_ui::nodes(&output)
-            .iter()
-            .any(|(_, n)| n.label() == Some("Follow parent")),
+        !label_exists(&output, "Follow parent"),
         "navigation must not take space from field values"
     );
     let relationships = super::test_ui::render(&ctx, egui::vec2(396.0, 244.0), vec![], |ui| {
@@ -3643,14 +3639,9 @@ fn compact_record_rows_align_and_separate_null_composite_parent_links() {
         app.record_relationships(ui, 1)
     });
     let follow = control(&relationships, "Follow parent").center();
-    for pressed in [true, false] {
-        super::test_ui::render(
-            &ctx,
-            egui::vec2(396.0, 244.0),
-            super::test_ui::pointer(follow, pressed),
-            |ui| app.record_relationships(ui, 1),
-        );
-    }
+    click_surface(&ctx, egui::vec2(396.0, 244.0), follow, |ui| {
+        app.record_relationships(ui, 1)
+    });
     wait(&mut app, &ctx);
     assert_eq!(app.database.document.table.as_ref().unwrap().name, "parent");
     assert_eq!(
@@ -3678,14 +3669,9 @@ fn record_structure_selection_value_visuals_and_revert_preserve_stored_values() 
         app.record_inspector(ui, 0)
     });
     let pos = control(&output, "Revert body draft").center();
-    for pressed in [true, false] {
-        super::test_ui::render(
-            &ctx,
-            egui::vec2(396.0, 244.0),
-            super::test_ui::pointer(pos, pressed),
-            |ui| app.record_inspector(ui, 0),
-        );
-    }
+    click_surface(&ctx, egui::vec2(396.0, 244.0), pos, |ui| {
+        app.record_inspector(ui, 0)
+    });
     assert!(!app.has_drafts());
     assert_retained(&app, 0, 1, Value::Text("original".into()));
     app.open_cell(0, 3);
@@ -3697,14 +3683,9 @@ fn record_structure_selection_value_visuals_and_revert_preserve_stored_values() 
         app.structure_inspector(ui)
     });
     let pos = control(&output, "priority · INTEGER · ").center();
-    for pressed in [true, false] {
-        super::test_ui::render(
-            &ctx,
-            egui::vec2(396.0, 244.0),
-            super::test_ui::pointer(pos, pressed),
-            |ui| app.structure_inspector(ui),
-        );
-    }
+    click_surface(&ctx, egui::vec2(396.0, 244.0), pos, |ui| {
+        app.structure_inspector(ui)
+    });
     assert_eq!(app.database.document.inspect, Some((0, 2)));
     assert_eq!(
         app.database.document.tools.highlight_column,

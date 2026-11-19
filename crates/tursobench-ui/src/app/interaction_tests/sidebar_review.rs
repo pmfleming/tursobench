@@ -1,6 +1,6 @@
 use super::{
     App, TransactionState, Value, browsing, click, close_and_wait, control, egui, fixture,
-    frame_at, inspect_selected, press_key, shell, wait, wait_closed, wait_until,
+    frame_at, inspect_selected, label_exists, press_key, shell, wait, wait_closed, wait_until,
 };
 const SIZE: egui::Vec2 = egui::vec2(1280.0, 720.0);
 fn second_db(dir: &tempfile::TempDir) -> std::path::PathBuf {
@@ -10,11 +10,6 @@ fn second_db(dir: &tempfile::TempDir) -> std::path::PathBuf {
         &["CREATE TABLE second_table(id INTEGER PRIMARY KEY)"],
     );
     path
-}
-fn label_exists(output: &egui::FullOutput, label: &str) -> bool {
-    crate::app::test_ui::nodes(output)
-        .iter()
-        .any(|(_, node)| node.label() == Some(label))
 }
 #[test]
 fn disconnected_drafts_stay_reachable_and_require_a_close_decision() {

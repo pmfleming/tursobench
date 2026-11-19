@@ -57,9 +57,10 @@ fn join<'a>(
 /// The link icon that starts the related-records line.
 fn related_icon(ui: &mut egui::Ui) {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(14.0, 22.0), egui::Sense::hover());
-    icons::paint(
+    super::presentation::icon_at(
         ui.painter(),
-        egui::Rect::from_center_size(rect.center(), egui::vec2(13.0, 13.0)),
+        rect.center(),
+        13.0,
         Icon::Link,
         crate::appearance::Tokens::of(ui.ctx()).muted,
     );

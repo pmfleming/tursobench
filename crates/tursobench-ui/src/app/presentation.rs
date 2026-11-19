@@ -147,6 +147,17 @@ pub(super) fn footer<R>(
         })
 }
 
+/// An icon `size` points square, centred on `center`.
+pub(super) fn icon_at(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    size: f32,
+    icon: super::icons::Icon,
+    color: egui::Color32,
+) {
+    let rect = egui::Rect::from_center_size(center, egui::vec2(size, size));
+    super::icons::paint(painter, rect, icon, color);
+}
 pub(super) fn text_at(
     ui: &egui::Ui,
     rect: egui::Rect,

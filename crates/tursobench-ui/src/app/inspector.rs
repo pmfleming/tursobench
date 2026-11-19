@@ -59,12 +59,10 @@ impl RecordField<'_> {
         }
         let label_rect = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), 24.0));
         if let Some(icon) = icon {
-            icons::paint(
+            presentation::icon_at(
                 ui.painter(),
-                egui::Rect::from_center_size(
-                    label_rect.left_center() + egui::vec2(10.0, 0.0),
-                    egui::vec2(12.0, 12.0),
-                ),
+                label_rect.left_center() + egui::vec2(10.0, 0.0),
+                12.0,
                 icon,
                 tokens.relationship,
             );
@@ -107,12 +105,10 @@ impl RecordField<'_> {
             _ => None,
         };
         if let Some((icon, caption)) = compact {
-            icons::paint(
+            presentation::icon_at(
                 ui.painter(),
-                egui::Rect::from_center_size(
-                    rect.left_center() + egui::vec2(7.0, 0.0),
-                    egui::vec2(13.0, 13.0),
-                ),
+                rect.left_center() + egui::vec2(7.0, 0.0),
+                13.0,
                 icon,
                 tokens.faint,
             );
