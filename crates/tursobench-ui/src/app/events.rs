@@ -318,26 +318,7 @@ impl App {
         for document in
             std::iter::once(&mut self.database.document).chain(self.database.documents.values_mut())
         {
-            if source_request == 0 {
-                document.external_refresh = document.view == View::Browse;
-                if schema && document.kind == super::tiling::Kind::Structure {
-                    document.needs_load = true;
-                }
-            }
-            document.tools.filtered_count = None;
-            document.tools.context = Default::default();
-            document.tools.pages.pending = None;
-            if schema {
-                document.tools.inspection = None;
-                document.tools.inspection_ticket = None;
-            }
-            if document
-                .result
-                .current
-                .is_some_and(|t| t.request != source_request)
-            {
-                document.stale = true;
-            }
+            document.invalidate(schema, source_request);
         }
         if schema {
             self.refresh_catalog();
@@ -468,24 +449,29 @@ fn completion_summary(c: &Completion) -> String {
 }
 
 impl super::sessions::DatabaseWorkspace {
+    /// Submit `operation` under the next ticket of the current generation;
+    /// `None` when no session is open.
+    pub(super) fn request(&mut self, operation: Operation) -> Option<Result<Ticket, Failure>> {
+        let session = self.session.as_ref()?;
+        self.sequence += 1;
+        let ticket = session.ticket(self.sequence, self.generation);
+        Some(
+            session
+                .submit(Request { ticket, operation })
+                .map(|()| ticket),
+        )
+    }
     pub(super) fn request_diagram(&mut self) {
         if !self.ready || self.closing || self.ui.diagram.ticket.is_some() {
             return;
         }
-        let Some(session) = &self.session else {
-            return;
-        };
-        self.sequence += 1;
-        let ticket = session.ticket(self.sequence, self.generation);
-        match session.submit(Request {
-            ticket,
-            operation: Operation::Diagram,
-        }) {
-            Ok(()) => {
+        match self.request(Operation::Diagram) {
+            Some(Ok(ticket)) => {
                 self.ui.diagram.ticket = Some(ticket);
                 self.ui.diagram.error.clear();
             }
-            Err(e) => self.ui.diagram.error = e.to_string(),
+            Some(Err(e)) => self.ui.diagram.error = e.to_string(),
+            None => {}
         }
     }
 }

@@ -59,3 +59,14 @@ pub(super) struct Tools {
     pub pending_history: BTreeMap<u64, (String, String)>,
     pub database_scope: String,
 }
+impl Tools {
+    /// Push the entry navigation is leaving, keeping the 32 most recent.
+    pub(super) fn remember(&mut self, previous: Option<NavigationEntry>) {
+        if let Some(previous) = previous {
+            self.back.push(previous);
+            if self.back.len() > 32 {
+                self.back.remove(0);
+            }
+        }
+    }
+}

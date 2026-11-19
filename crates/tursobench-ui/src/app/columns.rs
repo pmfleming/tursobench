@@ -359,15 +359,7 @@ impl App {
                 .iter()
                 .enumerate()
                 .map(|(i, col)| {
-                    let header = ui
-                        .painter()
-                        .layout_no_wrap(
-                            col.name.clone(),
-                            crate::appearance::proportional(ui.ctx(), 12.0),
-                            ui.visuals().text_color(),
-                        )
-                        .size()
-                        .x
+                    let header = super::presentation::text_width(ui, col.name.as_str(), 12.0)
                         + 36.0
                         + if key_columns[i] { 15.0 } else { 0.0 };
                     self.database

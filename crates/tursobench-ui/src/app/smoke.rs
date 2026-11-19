@@ -341,7 +341,7 @@ impl App {
     }
     fn prepare_visual_scene(&mut self, ctx: &egui::Context, scene: usize) {
         self.sidebar_search.query.clear();
-        self.preferences.appearance = Some(crate::appearance::Mode::Dark);
+        self.set_dark(ctx, true);
         self.preferences.font_size = 14;
         self.database.ui.sidebar = shell::ToolPanel::Schema;
         self.database.ui.palette_open = false;
@@ -438,7 +438,7 @@ impl App {
                     super::databases::FolderList::Search
                 };
                 if scene == 19 {
-                    self.preferences.appearance = Some(crate::appearance::Mode::Light);
+                    self.set_dark(ctx, false);
                 }
                 if scene == 20 {
                     self.preferences.font_size = 20;
@@ -479,12 +479,12 @@ impl App {
             23 if smoke.capture_pending.is_none() => {
                 self.expand_window(self.database.document.id);
                 self.browse_table(smoke.table.clone());
-                self.preferences.appearance = Some(crate::appearance::Mode::Light);
+                self.set_dark(ctx, false);
                 ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1366.0, 768.0)));
                 smoke.stage = 24;
             }
             25 if smoke.capture_pending.is_none() => {
-                self.preferences.appearance = Some(crate::appearance::Mode::Dark);
+                self.set_dark(ctx, true);
                 smoke.stage = 26;
             }
             27 if smoke.capture_pending.is_none() => {
@@ -648,7 +648,7 @@ impl App {
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1800.0, 1000.0)));
         self.browse_table(smoke.table.clone());
         self.retile();
-        self.preferences.appearance = Some(crate::appearance::Mode::Dark);
+        self.set_dark(ctx, true);
         if std::env::var_os("TURSOBENCH_ASSISTANT_CAPTURE").is_some() {
             90
         } else if smoke.readme {

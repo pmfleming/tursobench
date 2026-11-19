@@ -740,6 +740,9 @@ mod tests {
     };
     use eframe::egui::{Pos2, Rect, pos2, vec2};
     use std::collections::BTreeSet;
+    fn slot(column: usize, index: usize) -> Target {
+        Target::Slot { column, index }
+    }
     fn arranged(columns: &[&[Kind]]) -> Layout {
         Layout {
             columns: columns
@@ -927,10 +930,7 @@ mod tests {
         // Right joins the column immediately to the right; it never starts one between.
         assert_eq!(
             layout.step(Data, Direction::Right, width, &none),
-            Some(Target::Slot {
-                column: 1,
-                index: 1
-            })
+            Some(slot(1, 1))
         );
         assert_eq!(layout.step(Map, Direction::Left, width, &none), None);
         assert_eq!(layout.step(Map, Direction::Up, width, &none), None);
@@ -964,10 +964,7 @@ mod tests {
         assert!(!wide.fits_new_column(Data, width, &none));
         assert_eq!(
             wide.step(Data, Direction::Right, 400.0, &none),
-            Some(Target::Slot {
-                column: 1,
-                index: 1
-            })
+            Some(slot(1, 1))
         );
         assert!(wide.fits_new_column(Data, 1400.0, &none));
     }
@@ -985,13 +982,7 @@ mod tests {
         assert_eq!(minimized, BTreeSet::from([Record, Chat]));
         // A tile that moves away is no longer reopened with its old column.
         layout.fold(1, &mut minimized);
-        assert!(layout.move_tile(
-            Sql,
-            Target::Slot {
-                column: 0,
-                index: 2
-            }
-        ));
+        assert!(layout.move_tile(Sql, slot(0, 2)));
         assert_eq!(layout.columns[1].unfold, [Structure]);
         // With everything minimized nothing folds: the tiles stay as headers.
         minimized.extend(Kind::PANES);
@@ -1008,44 +999,26 @@ mod tests {
         let data = frame.rect(Data).unwrap();
         let chat = frame.rect(Chat).unwrap();
         // Over another column: the slot nearest the pointer.
-        assert_eq!(
-            at(map.center(), Structure),
-            Some(Target::Slot {
-                column: 0,
-                index: 1
-            })
-        );
+        assert_eq!(at(map.center(), Structure), Some(slot(0, 1)));
         assert_eq!(
             at(pos2(map.center().x, map.top() + 4.0), Structure),
-            Some(Target::Slot {
-                column: 0,
-                index: 0
-            })
+            Some(slot(0, 0))
         );
         assert_eq!(
             at(pos2(data.center().x, data.bottom() - 4.0), Structure),
-            Some(Target::Slot {
-                column: 0,
-                index: 2
-            })
+            Some(slot(0, 2))
         );
         // Where it already is, nothing changes.
         assert_eq!(at(map.center(), Map), None);
         assert_eq!(at(data.left_top() + vec2(20.0, 20.0), Map), None);
         assert_eq!(
             at(pos2(data.center().x, data.bottom() - 4.0), Map),
-            Some(Target::Slot {
-                column: 0,
-                index: 2
-            })
+            Some(slot(0, 2))
         );
         // The gaps between columns belong to the nearer column, never to a new one.
         assert_eq!(
             at(pos2(map.right() + 3.0, map.center().y), Sql),
-            Some(Target::Slot {
-                column: 0,
-                index: 1
-            })
+            Some(slot(0, 1))
         );
         // Outside the workspace nothing happens.
         assert_eq!(at(pos2(area.left() - 30.0, 300.0), Sql), None);
@@ -1054,35 +1027,18 @@ mod tests {
         let edge = pos2(area.right() - 5.0, 300.0);
         assert_eq!(at(edge, Sql), Some(Target::NewColumn));
         assert_eq!(at(edge, Chat), None);
-        assert_eq!(
-            at(chat.center(), Sql),
-            Some(Target::Slot {
-                column: 2,
-                index: 1
-            })
-        );
+        assert_eq!(at(chat.center(), Sql), Some(slot(2, 1)));
         let line = marker(Target::NewColumn, &frame, &arrangement, area);
         assert!(line.left() >= area.right() && line.height() == area.height());
-        let slot = marker(
-            Target::Slot {
-                column: 0,
-                index: 1,
-            },
-            &frame,
-            &arrangement,
-            area,
-        );
-        assert!(slot.top() >= map.bottom() && slot.bottom() <= data.top());
-        assert_eq!(slot.x_range(), map.x_range());
+        let gap = marker(slot(0, 1), &frame, &arrangement, area);
+        assert!(gap.top() >= map.bottom() && gap.bottom() <= data.top());
+        assert_eq!(gap.x_range(), map.x_range());
         // A folded column takes the tile at its end.
         let minimized = BTreeSet::from([Record, Structure, Sql]);
         let frame = layout(area, None, &minimized, &arrangement);
         let line = frame.columns[1].rect;
         assert!(frame.columns[1].folded);
-        let join = Target::Slot {
-            column: 1,
-            index: 3,
-        };
+        let join = slot(1, 3);
         assert_eq!(
             drop_target(line.center(), Map, &frame, &arrangement, &minimized, area),
             Some(join)

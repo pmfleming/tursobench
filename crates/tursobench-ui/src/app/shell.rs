@@ -226,10 +226,7 @@ impl App {
 
         if self.database.ui.outcomes {
             let mut open = true;
-            egui::Window::new("Execution outcomes")
-                .frame(crate::app::presentation::window_frame(&ctx))
-                .default_pos(ctx.content_rect().center() - egui::vec2(280.0, 180.0))
-                .open(&mut open)
+            presentation::dialog(&ctx, "Execution outcomes", &mut open)
                 .default_width(580.0)
                 .max_width((ctx.content_rect().width() - 40.0).max(240.0))
                 .max_height(ctx.content_rect().height() * 0.65)
@@ -256,10 +253,7 @@ impl App {
         }
         if self.database.ui.export_open {
             let mut open = true;
-            egui::Window::new("Export retained result")
-                .frame(crate::app::presentation::window_frame(&ctx))
-                .default_pos(ctx.content_rect().center() - egui::vec2(280.0, 180.0))
-                .open(&mut open)
+            presentation::dialog(&ctx, "Export retained result", &mut open)
                 .default_width(600.0)
                 .default_height(200.0)
                 .max_width((ctx.content_rect().width() - 40.0).max(240.0))

@@ -216,6 +216,29 @@ impl Document {
     pub fn has_drafts(&self) -> bool {
         self.drafts.as_ref().is_some_and(|d| !d.edits.is_empty())
     }
+    /// Drop reads a write by `source_request` (0 for another connection) made stale.
+    pub fn invalidate(&mut self, schema: bool, source_request: u64) {
+        if source_request == 0 {
+            self.external_refresh = self.view == View::Browse;
+            if schema && self.kind == super::tiling::Kind::Structure {
+                self.needs_load = true;
+            }
+        }
+        self.tools.filtered_count = None;
+        self.tools.context = Default::default();
+        self.tools.pages.pending = None;
+        if schema {
+            self.tools.inspection = None;
+            self.tools.inspection_ticket = None;
+        }
+        if self
+            .result
+            .current
+            .is_some_and(|t| t.request != source_request)
+        {
+            self.stale = true;
+        }
+    }
 }
 impl App {
     pub(super) fn switch_document(&mut self, id: u64) -> bool {

@@ -2,8 +2,8 @@ use super::{
     App, View,
     columns::CellStyle,
     context, egui, shell,
-    test_ui::{control, control_from, inspect_selected, key_event, pointer_button},
-    tiling, workspace,
+    test_ui::{control, control_from, inspect_selected, key_event, pointer_button, texts},
+    tiling,
 };
 use std::time::{Duration, Instant};
 use tursobench_core::{Budget, Event, EventKind, TransactionState, Value};
@@ -100,6 +100,14 @@ fn fixture(statements: &[&str], writable: bool) -> (tempfile::TempDir, egui::Con
     let (ctx, app) = connected(&path, writable);
     (dir, ctx, app)
 }
+/// A connection to the named local-project fixture database.
+fn project(name: &str, writable: bool) -> (tempfile::TempDir, egui::Context, App) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.db");
+    crate::test_support::run(crate::local_project_fixtures::create(&path, name)).unwrap();
+    let (ctx, app) = connected(&path, writable);
+    (dir, ctx, app)
+}
 /// A fixture holding one table, `CREATE TABLE table(columns)` with `rows`
 /// inserted, browsed and loaded.
 fn browsing(
@@ -124,15 +132,16 @@ fn label_exists(output: &egui::FullOutput, label: &str) -> bool {
         .iter()
         .any(|(_, node)| node.label() == Some(label))
 }
-/// Click `pos` in a surface that `draw` renders on its own.
-fn click_surface(
-    ctx: &egui::Context,
-    size: egui::Vec2,
-    pos: egui::Pos2,
-    mut draw: impl FnMut(&mut egui::Ui),
-) {
+/// The inspector-sized surface a record or structure pane is drawn on alone.
+const PANEL: egui::Vec2 = egui::vec2(396.0, 244.0);
+fn draw_panel(ctx: &egui::Context, draw: impl FnMut(&mut egui::Ui)) -> egui::FullOutput {
+    super::test_ui::render(ctx, PANEL, vec![], draw)
+}
+/// Draw `draw` alone on the panel and click its control named `name`.
+fn click_panel(ctx: &egui::Context, name: &str, mut draw: impl FnMut(&mut egui::Ui)) {
+    let pos = control(&draw_panel(ctx, &mut draw), name).center();
     for pressed in [true, false] {
-        super::test_ui::render(ctx, size, super::test_ui::pointer(pos, pressed), &mut draw);
+        super::test_ui::render(ctx, PANEL, super::test_ui::pointer(pos, pressed), &mut draw);
     }
 }
 fn click(app: &mut App, ctx: &egui::Context, pos: egui::Pos2) {
@@ -153,6 +162,31 @@ fn frame_at(
 }
 fn frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) -> egui::FullOutput {
     frame_at(app, ctx, egui::vec2(1400.0, 900.0), events)
+}
+/// Small, laptop, desktop and ultrawide viewports, and one at 1.5 pixels per point.
+const VIEWPORTS: [(f32, f32, f32); 5] = [
+    (720.0, 480.0, 1.0),
+    (1366.0, 768.0, 1.0),
+    (1920.0, 1080.0, 1.0),
+    (3440.0, 1440.0, 1.0),
+    (1440.0, 960.0, 1.5),
+];
+/// Run `check` with each `(width, height, pixels per point)` viewport in the
+/// dark and then the light theme, returning to one pixel per point.
+fn across_themes(
+    app: &mut App,
+    ctx: &egui::Context,
+    viewports: &[(f32, f32, f32)],
+    mut check: impl FnMut(&mut App, f32, f32),
+) {
+    for dark in [true, false] {
+        app.set_dark(ctx, dark);
+        for &(width, height, scale) in viewports {
+            ctx.set_pixels_per_point(scale);
+            check(app, width, height);
+        }
+    }
+    ctx.set_pixels_per_point(1.0);
 }
 
 #[test]
@@ -768,10 +802,7 @@ fn failed_open_completes_pending_exit_after_any_export() {
 
 #[test]
 fn diagram_preserves_drafts_and_result_ownership_and_chrome_fits_both_themes() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("layout.db");
-    crate::test_support::run(crate::local_project_fixtures::create(&path, "scratchpad")).unwrap();
-    let (ctx, mut app) = connected(&path, true);
+    let (_dir, ctx, mut app) = project("scratchpad", true);
     browse_and_wait(&mut app, &ctx, "buffer_ids");
     let data = app.database.document.id;
     let retained = visible_result(&app).rows.clone();
@@ -786,78 +817,68 @@ fn diagram_preserves_drafts_and_result_ownership_and_chrome_fits_both_themes() {
     let map = app.database.document.id;
     assert!(app.has_drafts());
     assert_eq!(app.database.document.kind, tiling::Kind::Map);
-    for dark in [true, false] {
-        app.preferences.appearance = Some(crate::appearance::Mode::from_dark(dark));
-        app.apply_theme(&ctx);
-        for (width, height, scale) in [
-            (720.0, 480.0, 1.0),
-            (1366.0, 768.0, 1.0),
-            (1920.0, 1080.0, 1.0),
-            (3440.0, 1440.0, 1.0),
-            (1440.0, 960.0, 1.5),
-        ] {
-            ctx.set_pixels_per_point(scale);
-            for _ in 0..2 {
-                frame_at(&mut app, &ctx, egui::vec2(width, height), vec![]);
-            }
-            assert!(app.database.ui.sidebar_rect.right() <= app.database.workspace.area.left());
-            let viewport = ctx.content_rect();
-            assert_eq!(app.database.ui.sidebar_rect.left(), viewport.left());
-            assert_eq!(app.database.ui.sidebar_rect.top(), viewport.top());
-            assert_eq!(app.database.ui.sidebar_rect.bottom(), viewport.bottom());
-            for rect in &app.database.ui.ribbon_actions {
-                assert!(
-                    viewport.contains_rect(*rect),
-                    "ribbon action outside viewport: {rect:?}"
-                );
-                assert!(rect.left() >= app.database.ui.sidebar_rect.right());
-                assert!(rect.height() >= 24.0);
-                assert!(
-                    app.database
-                        .workspace
-                        .pane_rects
-                        .iter()
-                        .any(|(_, tile)| tile.contains_rect(*rect))
-                );
-            }
-            for (_, minimize, expand) in &app.database.workspace.controls {
-                assert!((minimize.center().y - expand.center().y).abs() < 1.0);
-                assert!(
-                    app.database
-                        .workspace
-                        .pane_rects
-                        .iter()
-                        .any(|(_, tile)| tile.contains_rect(*minimize)
-                            && tile.contains_rect(*expand)),
-                    "controls outside tile at {width}x{height}: {minimize:?}, {expand:?}; {:?}",
-                    app.database.workspace.pane_rects
-                );
-                for action in &app.database.ui.ribbon_actions {
-                    if app.database.workspace.pane_rects.iter().any(|(_, tile)| {
-                        tile.contains_rect(*minimize) && tile.contains_rect(*action)
-                    }) {
-                        assert!(
-                            (action.center().y - minimize.center().y).abs() < 1.0,
-                            "header controls must share one horizontal line: {action:?}, {minimize:?}"
-                        );
-                    }
+    across_themes(&mut app, &ctx, &VIEWPORTS, |app, width, height| {
+        for _ in 0..2 {
+            frame_at(app, &ctx, egui::vec2(width, height), vec![]);
+        }
+        assert!(app.database.ui.sidebar_rect.right() <= app.database.workspace.area.left());
+        let viewport = ctx.content_rect();
+        assert_eq!(app.database.ui.sidebar_rect.left(), viewport.left());
+        assert_eq!(app.database.ui.sidebar_rect.top(), viewport.top());
+        assert_eq!(app.database.ui.sidebar_rect.bottom(), viewport.bottom());
+        for rect in &app.database.ui.ribbon_actions {
+            assert!(
+                viewport.contains_rect(*rect),
+                "ribbon action outside viewport: {rect:?}"
+            );
+            assert!(rect.left() >= app.database.ui.sidebar_rect.right());
+            assert!(rect.height() >= 24.0);
+            assert!(
+                app.database
+                    .workspace
+                    .pane_rects
+                    .iter()
+                    .any(|(_, tile)| tile.contains_rect(*rect))
+            );
+        }
+        for (_, minimize, expand) in &app.database.workspace.controls {
+            assert!((minimize.center().y - expand.center().y).abs() < 1.0);
+            assert!(
+                app.database
+                    .workspace
+                    .pane_rects
+                    .iter()
+                    .any(|(_, tile)| tile.contains_rect(*minimize) && tile.contains_rect(*expand)),
+                "controls outside tile at {width}x{height}: {minimize:?}, {expand:?}; {:?}",
+                app.database.workspace.pane_rects
+            );
+            for action in &app.database.ui.ribbon_actions {
+                if app
+                    .database
+                    .workspace
+                    .pane_rects
+                    .iter()
+                    .any(|(_, tile)| tile.contains_rect(*minimize) && tile.contains_rect(*action))
+                {
+                    assert!(
+                        (action.center().y - minimize.center().y).abs() < 1.0,
+                        "header controls must share one horizontal line: {action:?}, {minimize:?}"
+                    );
                 }
             }
-            for (_, rect) in &app.database.workspace.tiles {
-                assert!(app.database.workspace.area.contains_rect(*rect));
-            }
-            let saved = app.database.workspace.minimized.clone();
-            app.expand_window(map);
-            frame_at(&mut app, &ctx, egui::vec2(width, height), vec![]);
-            assert_eq!(app.database.workspace.tiles.len(), 1);
-            assert_eq!(app.database.workspace.tiles[0].0, map);
-            assert!(
-                app.database.ui.sidebar_rect.right() <= app.database.workspace.tiles[0].1.left()
-            );
-            app.expand_window(map);
-            assert_eq!(app.database.workspace.minimized, saved);
         }
-    }
+        for (_, rect) in &app.database.workspace.tiles {
+            assert!(app.database.workspace.area.contains_rect(*rect));
+        }
+        let saved = app.database.workspace.minimized.clone();
+        app.expand_window(map);
+        frame_at(app, &ctx, egui::vec2(width, height), vec![]);
+        assert_eq!(app.database.workspace.tiles.len(), 1);
+        assert_eq!(app.database.workspace.tiles[0].0, map);
+        assert!(app.database.ui.sidebar_rect.right() <= app.database.workspace.tiles[0].1.left());
+        app.expand_window(map);
+        assert_eq!(app.database.workspace.minimized, saved);
+    });
     assert!(app.document_ref(data).unwrap().has_drafts());
     assert_eq!(app.document_ref(data).unwrap().result.rows, retained);
     app.activate_table("buffer_ids".into());
@@ -929,10 +950,7 @@ fn reverted_empty_batch_cannot_carry_identity_to_another_table() {
 #[test]
 fn local_project_pages_and_fts_results_render_and_export() {
     for name in crate::local_project_fixtures::NAMES {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("project.db");
-        crate::test_support::run(crate::local_project_fixtures::create(&path, name)).unwrap();
-        let (ctx, mut app) = connected(&path, false);
+        let (dir, ctx, mut app) = project(name, false);
         let table = match name {
             "scratchpad" => "buffer_ids",
             "agenda" => "items",
@@ -1537,11 +1555,14 @@ fn settings_shortcut_opens_a_window_without_replacing_the_database_tool() {
     ] {
         control(&output, name);
     }
-    app.settings.page = super::settings::Page::Queries;
+    let initial = app.settings.page;
+    click_control(&mut app, &ctx, "Queries and SQL recovery");
+    let chosen = app.settings.page;
+    assert_ne!(chosen, initial);
     press_key(&mut app, &ctx, egui::Key::Escape, egui::Modifiers::NONE);
     assert!(!app.settings.open);
-    app.execute_command(&ctx, super::commands::Command::Settings);
-    assert_eq!(app.settings.page, super::settings::Page::Queries);
+    press_key(&mut app, &ctx, egui::Key::Comma, egui::Modifiers::CTRL);
+    assert_eq!(app.settings.page, chosen);
     assert!(app.settings.open);
     app.open_palette();
     press_key(&mut app, &ctx, egui::Key::Escape, egui::Modifiers::NONE);
@@ -1601,80 +1622,69 @@ fn table_layout_aligns_retained_data_and_keeps_status_navigation_accessible() {
     );
     browse_and_wait(&mut app, &ctx, "alignment_table");
     ctx.enable_accesskit();
-    for dark in [false, true] {
-        crate::appearance::theme(&ctx, dark);
-        for (size, scale, expanded) in [
-            (egui::vec2(900.0, 600.0), 1.0, false),
-            (egui::vec2(1400.0, 900.0), 1.0, true),
-            (egui::vec2(1440.0, 960.0), 1.5, true),
-        ] {
-            ctx.set_pixels_per_point(scale);
-            app.database.workspace.expanded = expanded.then_some(tiling::Kind::Data);
-            frame_at(&mut app, &ctx, size, vec![]);
-            let output = frame_at(&mut app, &ctx, size, vec![]);
-            let pane = pane(&app, tiling::Kind::Data);
-            let text_position = |value: &str| {
-                output
-                    .shapes
-                    .iter()
-                    .find_map(|shape| match &shape.shape {
-                        egui::Shape::Text(text)
-                            if text.galley.job.text == value && pane.contains(text.pos) =>
-                        {
-                            Some(text.pos)
-                        }
-                        _ => None,
-                    })
-                    .unwrap_or_else(|| panic!("Missing tile text {value}"))
-            };
-            let bar = control(&output, "Table data status");
-            assert!(
-                (bar.height() - super::grid::STATUS_HEIGHT).abs() < 0.1,
-                "{bar:?}"
-            );
-            assert!(
-                (bar.bottom() - (pane.bottom() - 4.0)).abs() < 1.1,
-                "bar {bar:?}, pane {pane:?}"
-            );
-            for name in ["Row number", "Go to row", "Count matching rows"] {
-                assert!(bar.contains_rect(control(&output, name)), "{name}: {bar:?}");
-            }
-            let title = text_position("alignment_table");
-            let cell = text_position("aligned-cell");
-            let status = text_position("1–1 · 1 retained");
-            assert!(
-                (title.x - cell.x).abs() < 1.1,
-                "title {title:?}, cell {cell:?}, pane {pane:?}"
-            );
-            assert!(
-                (status.x - cell.x).abs() < 1.1,
-                "status {status:?}, cell {cell:?}"
-            );
-            let expand = app
-                .database
-                .workspace
-                .controls
-                .iter()
-                .find(|(kind, _, _)| *kind == tiling::Kind::Data)
-                .unwrap()
-                .2;
-            let count = control(&output, "Count matching rows");
-            assert!(
-                (expand.right() - count.right()).abs() < 1.1,
-                "expand {expand:?}, count {count:?}"
-            );
-            assert!(
-                output
-                    .shapes
-                    .iter()
-                    .any(|shape| matches!(&shape.shape,egui::Shape::Rect(rect)
-                if (rect.rect.height()-super::grid::HEADER_HEIGHT).abs()<1.1
-                    && rect.rect.width()>=pane.width()-9.0 && pane.contains_rect(rect.rect))),
-                "full-width column header"
-            );
+    let viewports = [
+        (900.0, 600.0, 1.0),
+        (1400.0, 900.0, 1.0),
+        (1440.0, 960.0, 1.5),
+    ];
+    across_themes(&mut app, &ctx, &viewports, |app, width, height| {
+        let size = egui::vec2(width, height);
+        app.database.workspace.expanded = (width > 900.0).then_some(tiling::Kind::Data);
+        frame_at(app, &ctx, size, vec![]);
+        let output = frame_at(app, &ctx, size, vec![]);
+        let pane = pane(app, tiling::Kind::Data);
+        let text_position = |value: &str| {
+            texts(&output)
+                .find(|text| text.galley.job.text == value && pane.contains(text.pos))
+                .map(|text| text.pos)
+                .unwrap_or_else(|| panic!("Missing tile text {value}"))
+        };
+        let bar = control(&output, "Table data status");
+        assert!(
+            (bar.height() - super::grid::STATUS_HEIGHT).abs() < 0.1,
+            "{bar:?}"
+        );
+        assert!(
+            (bar.bottom() - (pane.bottom() - 4.0)).abs() < 1.1,
+            "bar {bar:?}, pane {pane:?}"
+        );
+        for name in ["Row number", "Go to row", "Count matching rows"] {
+            assert!(bar.contains_rect(control(&output, name)), "{name}: {bar:?}");
         }
-    }
-    ctx.set_pixels_per_point(1.0);
+        let title = text_position("alignment_table");
+        let cell = text_position("aligned-cell");
+        let status = text_position("1–1 · 1 retained");
+        assert!(
+            (title.x - cell.x).abs() < 1.1,
+            "title {title:?}, cell {cell:?}, pane {pane:?}"
+        );
+        assert!(
+            (status.x - cell.x).abs() < 1.1,
+            "status {status:?}, cell {cell:?}"
+        );
+        let expand = app
+            .database
+            .workspace
+            .controls
+            .iter()
+            .find(|(kind, _, _)| *kind == tiling::Kind::Data)
+            .unwrap()
+            .2;
+        let count = control(&output, "Count matching rows");
+        assert!(
+            (expand.right() - count.right()).abs() < 1.1,
+            "expand {expand:?}, count {count:?}"
+        );
+        assert!(
+            output
+                .shapes
+                .iter()
+                .any(|shape| matches!(&shape.shape,egui::Shape::Rect(rect)
+            if (rect.rect.height()-super::grid::HEADER_HEIGHT).abs()<1.1
+                && rect.rect.width()>=pane.width()-9.0 && pane.contains_rect(rect.rect))),
+            "full-width column header"
+        );
+    });
     browse_and_wait(&mut app, &ctx, "status_test");
     click_control(&mut app, &ctx, "Count matching rows");
     wait(&mut app, &ctx);
@@ -1701,69 +1711,51 @@ fn table_views_sidebar_and_transactions_fit_themes_and_scaled_viewports() {
     );
     ctx.enable_accesskit();
     browse_and_wait(&mut app, &ctx, name);
-    for dark in [true, false] {
-        app.preferences.appearance = Some(crate::appearance::Mode::from_dark(dark));
-        app.apply_theme(&ctx);
-        for (width, height, scale) in [
-            (1280.0, 720.0, 1.0),
-            (720.0, 480.0, 1.0),
-            (960.0, 640.0, 1.0),
-            (1366.0, 768.0, 1.0),
-            (1920.0, 1080.0, 1.0),
-            (3440.0, 1440.0, 1.0),
-            (1440.0, 960.0, 1.5),
+    let mut viewports = vec![(1280.0, 720.0, 1.0), (960.0, 640.0, 1.0)];
+    viewports.extend(VIEWPORTS);
+    across_themes(&mut app, &ctx, &viewports, |app, width, height| {
+        for (sql, structure, details) in [
+            (false, false, false),
+            (false, false, true),
+            (false, true, false),
+            (true, false, false),
+            (true, true, false),
         ] {
-            ctx.set_pixels_per_point(scale);
-            for (sql, structure, details) in [
-                (false, false, false),
-                (false, false, true),
-                (false, true, false),
-                (true, false, false),
-                (true, true, false),
-            ] {
-                app.database.document.ui.sql_open = sql;
-                app.database.document.ui.table_view = if structure {
-                    shell::TableView::Structure
-                } else {
-                    shell::TableView::Data
-                };
-                app.database.document.ui.inspector_open = details;
-                app.database.document.inspect = Some((0, 0));
-                for _ in 0..2 {
-                    let output = frame_at(&mut app, &ctx, egui::vec2(width, height), vec![]);
-                    let tree = output.platform_output.accesskit_update.as_ref().unwrap();
-                    assert!(
-                        !tree
-                            .nodes
-                            .iter()
-                            .any(|(_, node)| node.label() == Some("Insert row"))
-                    );
-                }
-                assert!(app.database.ui.sidebar_rect.width() >= 180.0);
-                assert_eq!(app.database.workspace.pane_rects.len(), 5);
-                if !structure {
-                    assert!(
-                        app.database
-                            .ui
-                            .workspace_rect
-                            .contains_rect(app.database.ui.grid_rect),
-                        "{width}x{height}: workspace {:?}, grid {:?}, tiles {:?}",
-                        app.database.ui.workspace_rect,
-                        app.database.ui.grid_rect,
-                        app.database.workspace.tiles
-                    );
-                }
-                if width == 1280.0 && !details && !sql && !structure {
-                    assert!(
-                        app.database.ui.visible_rows >= 9,
-                        "{} fully visible rows",
-                        app.database.ui.visible_rows
-                    );
-                }
+            app.database.document.ui.sql_open = sql;
+            app.database.document.ui.table_view = if structure {
+                shell::TableView::Structure
+            } else {
+                shell::TableView::Data
+            };
+            app.database.document.ui.inspector_open = details;
+            app.database.document.inspect = Some((0, 0));
+            for _ in 0..2 {
+                let output = frame_at(app, &ctx, egui::vec2(width, height), vec![]);
+                assert!(!label_exists(&output, "Insert row"));
+            }
+            assert!(app.database.ui.sidebar_rect.width() >= 180.0);
+            assert_eq!(app.database.workspace.pane_rects.len(), 5);
+            if !structure {
+                assert!(
+                    app.database
+                        .ui
+                        .workspace_rect
+                        .contains_rect(app.database.ui.grid_rect),
+                    "{width}x{height}: workspace {:?}, grid {:?}, tiles {:?}",
+                    app.database.ui.workspace_rect,
+                    app.database.ui.grid_rect,
+                    app.database.workspace.tiles
+                );
+            }
+            if width == 1280.0 && !details && !sql && !structure {
+                assert!(
+                    app.database.ui.visible_rows >= 9,
+                    "{} fully visible rows",
+                    app.database.ui.visible_rows
+                );
             }
         }
-    }
-    ctx.set_pixels_per_point(1.0);
+    });
     execute_and_wait(&mut app, &ctx, "BEGIN");
     app.database.document.ui.sql_open = false;
     app.overview();
@@ -2069,15 +2061,9 @@ fn record_prioritizes_values_and_reads_related_rows_only_on_request() {
     for size in [egui::vec2(1280.0, 720.0), egui::vec2(3440.0, 1440.0)] {
         frame_at(&mut app, &ctx, size, vec![]);
         let output = frame_at(&mut app, &ctx, size, vec![]);
-        let fields = output
-            .shapes
-            .iter()
-            .find_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) if text.galley.job.text == "Fields & values" => {
-                    Some(text.pos)
-                }
-                _ => None,
-            })
+        let fields = texts(&output)
+            .find(|text| text.galley.job.text == "Fields & values")
+            .map(|text| text.pos)
             .expect("field section heading");
         let relationships = control(&output, "Relationships");
         let value = control(&output, "a · INTEGER · 7");
@@ -2102,18 +2088,8 @@ fn record_prioritizes_values_and_reads_related_rows_only_on_request() {
     }
     wait(&mut app, &ctx);
     let output = frame(&mut app, &ctx, vec![]);
-    let texts: Vec<_> = output
-        .shapes
-        .iter()
-        .filter_map(|s| {
-            if let egui::Shape::Text(t) = &s.shape {
-                Some(t.galley.job.text.clone())
-            } else {
-                None
-            }
-        })
-        .collect();
-    assert!(texts.iter().any(|t| t.contains("child-only")), "{texts:?}");
+    let shown: Vec<_> = texts(&output).map(|t| t.galley.job.text.as_str()).collect();
+    assert!(shown.iter().any(|t| t.contains("child-only")), "{shown:?}");
     assert_eq!(visible_result(&app).current, owner);
     assert_eq!(visible_result(&app).rows, original);
     assert_eq!(app.database.document.inspect, Some((0, 0)));
@@ -2286,10 +2262,7 @@ fn token_entry_enter_retains_typed_filter_and_empty_clipboard_fields() {
 
 #[test]
 fn clipboard_grid_and_record_share_live_rows_without_overlays() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("clipboard.db");
-    crate::test_support::run(crate::local_project_fixtures::create(&path, "clipboard")).unwrap();
-    let (ctx, mut app) = connected(&path, false);
+    let (_dir, ctx, mut app) = project("clipboard", false);
     browse_and_wait(&mut app, &ctx, "entries");
     for _ in 0..2 {
         frame_at(&mut app, &ctx, egui::vec2(1280.0, 720.0), vec![]);
@@ -2350,19 +2323,13 @@ fn filtered_index_tree_opens_original_ddl_without_replacing_primary_rows() {
     app.sidebar_search.query = "sample_value".into();
     frame(&mut app, &ctx, vec![]);
     let output = frame_at(&mut app, &ctx, egui::vec2(1280.0, 720.0), vec![]);
-    let pos = output
-        .shapes
-        .iter()
+    let pos = texts(&output)
         .rev()
-        .find_map(|s| {
-            if let egui::Shape::Text(t) = &s.shape {
-                (t.galley.job.text == "sample_value · index"
-                    && app.database.ui.sidebar_rect.contains(t.pos))
-                .then_some(t.pos + egui::vec2(8.0, 6.0))
-            } else {
-                None
-            }
+        .find(|t| {
+            t.galley.job.text == "sample_value · index"
+                && app.database.ui.sidebar_rect.contains(t.pos)
         })
+        .map(|t| t.pos + egui::vec2(8.0, 6.0))
         .expect("filtered index row");
     let data_id = app.database.document.id;
     let owner = visible_result(&app).current;
@@ -2608,16 +2575,14 @@ fn workspace_geometry_roundtrips_without_query_data_or_bindings() {
     // two-column splits; both open in the default arrangement.
     let mut legacy: serde_json::Value = serde_json::from_str(&encoded).unwrap();
     legacy.as_object_mut().unwrap().remove("layout");
-    let bare: workspace::Snapshot = serde_json::from_value(legacy.clone()).unwrap();
-    assert!(bare.valid());
-    app.preferences.workspace_layouts = vec![bare];
+    app.preferences.workspace_layouts = vec![serde_json::from_value(legacy.clone()).unwrap()];
+    assert!(app.preferences.workspace_layouts[0].valid());
     app.restore_workspace();
     assert_eq!(app.database.workspace.layout, tiling::Layout::default());
     legacy["splits"] =
         serde_json::json!({"column": 0.48, "rows": [1.0, 2.0, 1.5, 0.8, 1.0], "sql_editor": 0.6});
-    let split: workspace::Snapshot = serde_json::from_value(legacy).unwrap();
-    assert!(split.valid());
-    app.preferences.workspace_layouts = vec![split];
+    app.preferences.workspace_layouts = vec![serde_json::from_value(legacy).unwrap()];
+    assert!(app.preferences.workspace_layouts[0].valid());
     app.restore_workspace();
     assert_eq!(app.database.workspace.layout, tiling::Layout::from(splits));
     for (key, invalid) in [
@@ -2638,11 +2603,8 @@ fn workspace_geometry_roundtrips_without_query_data_or_bindings() {
     ] {
         let mut value: serde_json::Value = serde_json::from_str(&encoded).unwrap();
         value[key] = invalid;
-        assert!(
-            !serde_json::from_value::<workspace::Snapshot>(value)
-                .unwrap()
-                .valid()
-        );
+        app.preferences.workspace_layouts = vec![serde_json::from_value(value).unwrap()];
+        assert!(!app.preferences.workspace_layouts[0].valid());
     }
     app.preferences.workspace_layouts = vec![serde_json::from_str(&encoded).unwrap()];
     app.restore_workspace();
@@ -2666,9 +2628,9 @@ fn workspace_geometry_roundtrips_without_query_data_or_bindings() {
     assert_eq!(app.document_ref(data_id).unwrap().result.rows.len(), 1);
     let mut invalid: serde_json::Value = serde_json::from_str(&encoded).unwrap();
     invalid["focused"] = serde_json::json!(9999);
-    let invalid: workspace::Snapshot = serde_json::from_value(invalid).unwrap();
-    assert!(!invalid.valid());
-    app.preferences.workspace_layouts.push(invalid);
+    let layouts = &mut app.preferences.workspace_layouts;
+    layouts.push(serde_json::from_value(invalid).unwrap());
+    assert!(!layouts.last().unwrap().valid());
     app.preferences.normalize();
     assert_eq!(app.preferences.workspace_layouts.len(), 1);
     close_and_wait(&mut app, &ctx);
@@ -2910,15 +2872,9 @@ fn fixed_panes_preserve_drafts_selection_and_results_through_layout_changes() {
     assert_eq!(app.database.document.inspect, Some((0, 1)));
     let output = frame(&mut app, &ctx, vec![]);
     let data_rect = pane(&app, tiling::Kind::Data);
-    let commit = output
-        .shapes
-        .iter()
-        .find_map(|shape| match &shape.shape {
-            egui::Shape::Text(t) if t.galley.job.text == "Commit" && data_rect.contains(t.pos) => {
-                Some(t.pos + egui::vec2(8.0, 6.0))
-            }
-            _ => None,
-        })
+    let commit = texts(&output)
+        .find(|t| t.galley.job.text == "Commit" && data_rect.contains(t.pos))
+        .map(|t| t.pos + egui::vec2(8.0, 6.0))
         .expect("direct commit action in data dock");
     assert!(!app.database.document.show_preview);
     click(&mut app, &ctx, commit);
@@ -3069,9 +3025,7 @@ fn every_tile_exposes_its_actions_without_an_overflow_menu() {
         // An expanded wide tile should show all commands without opening any popup.
         frame_at(&mut app, &ctx, egui::vec2(3440.0, 1440.0), vec![]);
         let output = frame_at(&mut app, &ctx, egui::vec2(3440.0, 1440.0), vec![]);
-        let tree = output.platform_output.accesskit_update.unwrap();
-        let controls = tree
-            .nodes
+        let controls = super::test_ui::nodes(&output)
             .iter()
             .filter_map(|(_, node)| node.label())
             .collect::<Vec<_>>();
@@ -3100,18 +3054,10 @@ fn every_tile_exposes_its_actions_without_an_overflow_menu() {
     for label in ["Relationships", "SQL"] {
         control(&output, label);
     }
-    assert!(
-        output
-            .platform_output
-            .accesskit_update
-            .as_ref()
-            .unwrap()
-            .nodes
-            .iter()
-            .any(|(_, n)| n
-                .label()
-                .is_some_and(|s| s.starts_with("Restore Structure · ") && s.contains("columns")))
-    );
+    assert!(super::test_ui::nodes(&output).iter().any(|(_, n)| {
+        n.label()
+            .is_some_and(|s| s.starts_with("Restore Structure · ") && s.contains("columns"))
+    }));
     app.close();
 }
 
@@ -3203,8 +3149,7 @@ fn relationship_zoom_buttons_change_scale_and_percentage_resets_it() {
     press(&mut app, "Zoom in");
     assert_eq!(app.database.ui.diagram.camera.zoom, 1.25);
     let output = frame(&mut app, &ctx, vec![]);
-    assert!(output.shapes.iter().any(|s| matches!(&s.shape,
-        egui::Shape::Text(t) if t.galley.job.text == "125%")));
+    assert!(texts(&output).any(|t| t.galley.job.text == "125%"));
     press(&mut app, "Zoom out");
     assert_eq!(app.database.ui.diagram.camera.zoom, 1.0);
     press(&mut app, "Zoom out");
@@ -3231,9 +3176,8 @@ fn redesigned_dialog_actions_remain_visible_at_minimum_and_laptop_sizes() {
             (egui::vec2(720.0, 480.0), 14),
             (egui::vec2(1366.0, 768.0), 20),
         ] {
-            app.preferences.appearance = Some(crate::appearance::Mode::from_dark(dark));
             app.preferences.font_size = font_size;
-            app.apply_theme(&ctx);
+            app.set_dark(&ctx, dark);
             for (scene, label) in [
                 (0, "COMMIT staged edits to database"),
                 (1, "Stage insert (no database write)"),
@@ -3517,7 +3461,6 @@ fn schema_comparison_routes_inactive_snapshots_and_guards_target_drafts() {
 
 #[test]
 fn sidebar_search_loads_parked_columns_and_respects_scopes_and_keyboard() {
-    use super::database_navigation::Scope;
     let (dir, ctx, mut app) = browsing(
         "first_table",
         "id INTEGER PRIMARY KEY, first_value TEXT",
@@ -3538,15 +3481,23 @@ fn sidebar_search_loads_parked_columns_and_respects_scopes_and_keyboard() {
     let second = app.database.id;
     app.select_workspace(first);
     app.parked.get_mut(&second).unwrap().ui.diagram.data = None;
+    click_control(
+        &mut app,
+        &ctx,
+        "This database: tables, columns and schema objects",
+    );
     app.sidebar_search.query = "needle_column".into();
-    app.sidebar_search.scope = Scope::ThisDatabase;
     let output = frame_at(&mut app, &ctx, egui::vec2(1280.0, 720.0), vec![]);
     assert!(!label_exists(
         &output,
         "second_table.needle_column · column"
     ));
     assert!(app.parked[&second].ui.diagram.ticket.is_none());
-    app.sidebar_search.scope = Scope::AllOpen;
+    click_control(
+        &mut app,
+        &ctx,
+        "All open: schema objects and available database files",
+    );
     app.sidebar_search.focus = true;
     frame_at(&mut app, &ctx, egui::vec2(1280.0, 720.0), vec![]);
     assert_eq!(app.database.id, first);
@@ -3564,8 +3515,12 @@ fn sidebar_search_loads_parked_columns_and_respects_scopes_and_keyboard() {
         Some(("second_table".into(), "needle_column".into()))
     );
     assert!(app.sidebar_search.query.is_empty());
+    click_control(
+        &mut app,
+        &ctx,
+        "Databases: names and paths, including unopened files",
+    );
     app.sidebar_search.query = "first_table".into();
-    app.sidebar_search.scope = Scope::Databases;
     let output = frame_at(&mut app, &ctx, egui::vec2(1280.0, 720.0), vec![]);
     assert!(!label_exists(&output, "first_table · table"));
     app.sidebar_search.query = "second_table".into();
@@ -3596,38 +3551,22 @@ fn compact_record_rows_align_and_separate_null_composite_parent_links() {
     browse_and_wait(&mut app, &ctx, "child");
     app.open_record_window(0, 0);
     let sequence = app.database.sequence;
-    let output = super::test_ui::render(&ctx, egui::vec2(396.0, 244.0), vec![], |ui| {
-        app.record_inspector(ui, 0)
-    });
-    let texts: Vec<_> = output
-        .shapes
-        .iter()
-        .filter_map(|s| match &s.shape {
-            egui::Shape::Text(t) => Some(t),
-            _ => None,
-        })
-        .collect();
-    let id = texts.iter().find(|t| t.galley.job.text == "id").unwrap();
-    let status = texts
+    let output = draw_panel(&ctx, |ui| app.record_inspector(ui, 0));
+    let shown: Vec<_> = texts(&output).collect();
+    let id = shown.iter().find(|t| t.galley.job.text == "id").unwrap();
+    let status = shown
         .iter()
         .find(|t| t.galley.job.text == "status")
         .unwrap();
     assert!((status.pos.y - id.pos.y - 72.0).abs() < 1.0);
     assert_eq!(id.pos.x, status.pos.x);
-    assert!(!texts.iter().any(|t| t.galley.job.text.contains("Parent:")));
+    assert!(!shown.iter().any(|t| t.galley.job.text.contains("Parent:")));
     assert!(
         !label_exists(&output, "Follow parent"),
         "navigation must not take space from field values"
     );
-    let relationships = super::test_ui::render(&ctx, egui::vec2(396.0, 244.0), vec![], |ui| {
-        app.record_relationships(ui, 0)
-    });
-    let parents: Vec<_> = relationships
-        .platform_output
-        .accesskit_update
-        .as_ref()
-        .unwrap()
-        .nodes
+    let relationships = draw_panel(&ctx, |ui| app.record_relationships(ui, 0));
+    let parents: Vec<_> = super::test_ui::nodes(&relationships)
         .iter()
         .filter(|(_, n)| n.label() == Some("Follow parent"))
         .collect();
@@ -3635,13 +3574,7 @@ fn compact_record_rows_align_and_separate_null_composite_parent_links() {
     assert!(parents.iter().all(|(_, n)| n.is_disabled()));
     assert_eq!(app.database.sequence, sequence);
     assert!(!app.has_drafts());
-    let relationships = super::test_ui::render(&ctx, egui::vec2(396.0, 244.0), vec![], |ui| {
-        app.record_relationships(ui, 1)
-    });
-    let follow = control(&relationships, "Follow parent").center();
-    click_surface(&ctx, egui::vec2(396.0, 244.0), follow, |ui| {
-        app.record_relationships(ui, 1)
-    });
+    click_panel(&ctx, "Follow parent", |ui| app.record_relationships(ui, 1));
     wait(&mut app, &ctx);
     assert_eq!(app.database.document.table.as_ref().unwrap().name, "parent");
     assert_eq!(
@@ -3665,13 +3598,7 @@ fn record_structure_selection_value_visuals_and_revert_preserve_stored_values() 
     app.open_record_window(0, 0);
     app.stage_cell(0, 1, Value::Text("edited".into()));
     let sequence = app.database.sequence;
-    let output = super::test_ui::render(&ctx, egui::vec2(396.0, 244.0), vec![], |ui| {
-        app.record_inspector(ui, 0)
-    });
-    let pos = control(&output, "Revert body draft").center();
-    click_surface(&ctx, egui::vec2(396.0, 244.0), pos, |ui| {
-        app.record_inspector(ui, 0)
-    });
+    click_panel(&ctx, "Revert body draft", |ui| app.record_inspector(ui, 0));
     assert!(!app.has_drafts());
     assert_retained(&app, 0, 1, Value::Text("original".into()));
     app.open_cell(0, 3);
@@ -3679,11 +3606,7 @@ fn record_structure_selection_value_visuals_and_revert_preserve_stored_values() 
         app.database.document.tools.highlight_column,
         Some(("sample".into(), "progress".into()))
     );
-    let output = super::test_ui::render(&ctx, egui::vec2(396.0, 244.0), vec![], |ui| {
-        app.structure_inspector(ui)
-    });
-    let pos = control(&output, "priority · INTEGER · ").center();
-    click_surface(&ctx, egui::vec2(396.0, 244.0), pos, |ui| {
+    click_panel(&ctx, "priority · INTEGER · ", |ui| {
         app.structure_inspector(ui)
     });
     assert_eq!(app.database.document.inspect, Some((0, 2)));
@@ -3693,15 +3616,8 @@ fn record_structure_selection_value_visuals_and_revert_preserve_stored_values() 
     );
     assert!(app.database.document.tools.scroll_to_column);
     assert_eq!(app.database.sequence, sequence);
-    let output = super::test_ui::render(&ctx, egui::vec2(396.0, 244.0), vec![], |ui| {
-        app.record_inspector(ui, 0)
-    });
-    assert!(
-        output
-            .shapes
-            .iter()
-            .any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.job.text == "2 bytes"))
-    );
+    let output = draw_panel(&ctx, |ui| app.record_inspector(ui, 0));
+    assert!(texts(&output).any(|t| t.galley.job.text == "2 bytes"));
     assert_retained(&app, 0, 4, Value::Blob(vec![0, 255]));
     app.close();
 }

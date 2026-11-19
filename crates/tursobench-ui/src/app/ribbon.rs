@@ -394,16 +394,10 @@ impl App {
             let show_title = matches!(kind, Kind::Data | Kind::Result);
             if show_title {
                 let remaining = (ui.available_width() - controls_width).max(0.0);
-                let title_size = ui
-                    .painter()
-                    .layout_no_wrap(
-                        kind.label().into(),
-                        crate::appearance::proportional(ui.ctx(), icons::RIBBON_TEXT_SIZE),
-                        ui.visuals().text_color(),
-                    )
-                    .size();
+                let label_width =
+                    super::presentation::text_width(ui, kind.label(), icons::RIBBON_TEXT_SIZE);
                 let mut title_width = (remaining * 0.25)
-                    .max(title_size.x + 4.0)
+                    .max(label_width + 4.0)
                     .min(200.0)
                     .min((remaining - 32.0).max(0.0));
                 if kind == Kind::Data {
@@ -548,15 +542,7 @@ impl App {
         } else {
             kind.label().to_owned()
         };
-        let name_width = ui
-            .painter()
-            .layout_no_wrap(
-                kind.label().into(),
-                crate::appearance::proportional(ui.ctx(), icons::RIBBON_TEXT_SIZE),
-                ui.visuals().text_color(),
-            )
-            .size()
-            .x;
+        let name_width = super::presentation::text_width(ui, kind.label(), icons::RIBBON_TEXT_SIZE);
         let visible = if ui.available_width() >= name_width + 64.0 {
             title.as_str()
         } else {

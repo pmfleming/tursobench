@@ -2,7 +2,7 @@
 use super::{App, shell};
 use eframe::egui;
 use tursobench_core::{DeferredCell, EventKind, LargeKind, Ticket, Value};
-use tursobench_db::{Operation, Request};
+use tursobench_db::Operation;
 
 use crate::export::{self, Format};
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -340,15 +340,12 @@ impl App {
         if self.database.document.tools.large.ticket.is_some() {
             return;
         }
-        let Some(session) = &self.database.session else {
-            self.database.document.tools.large.message = "The source session is closed".into();
-            return;
-        };
-        self.database.sequence += 1;
-        let ticket = session.ticket(self.database.sequence, self.database.generation);
-        match session.submit(Request { ticket, operation }) {
-            Ok(()) => self.database.document.tools.large.ticket = Some(ticket),
-            Err(e) => self.database.document.tools.large.message = e.to_string(),
+        let outcome = self.database.request(operation);
+        let large = &mut self.database.document.tools.large;
+        match outcome {
+            Some(Ok(ticket)) => large.ticket = Some(ticket),
+            Some(Err(e)) => large.message = e.to_string(),
+            None => large.message = "The source session is closed".into(),
         }
     }
     fn load_value_chunk(&mut self) {

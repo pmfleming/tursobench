@@ -3,7 +3,7 @@ use super::presentation::{self, Intent};
 use super::{App, View};
 use eframe::egui;
 use tursobench_core::{Delivery, DraftBatch, Edit, Table, TransactionState, Value};
-use tursobench_db::{Operation, Request};
+use tursobench_db::Operation;
 
 #[derive(Clone, Copy, PartialEq)]
 enum InsertMode {
@@ -483,10 +483,7 @@ impl App {
 
     fn insert_window(&mut self, ctx: &egui::Context) {
         let mut open = true;
-        egui::Window::new("Stage insert — typed column values")
-            .frame(crate::app::presentation::window_frame(ctx))
-            .default_pos(ctx.content_rect().center() - egui::vec2(280.0, 180.0))
-            .open(&mut open)
+        presentation::dialog(ctx, "Stage insert — typed column values", &mut open)
             .default_width(580.0)
             .max_width((ctx.content_rect().width() - 40.0).max(280.0))
             .show(ctx, |ui| {
@@ -541,10 +538,7 @@ impl App {
     fn review_window(&mut self, ctx: &egui::Context) {
         self.update_draft_presentation();
         let mut open = true;
-        egui::Window::new("Review staged atomic transaction")
-            .frame(presentation::window_frame(ctx))
-            .default_pos(ctx.content_rect().center()-egui::vec2(280.0,180.0))
-            .open(&mut open).default_width(760.0)
+        presentation::dialog(ctx, "Review staged atomic transaction", &mut open).default_width(760.0)
             .max_width((ctx.content_rect().width()-40.0).max(280.0))
             .show(ctx, |ui| {
                 presentation::notice(ui,super::icons::Icon::ReviewEdits,Intent::Pending,"Dedicated connection · foreign keys enabled · original values checked · atomic batch. Only a confirmed commit clears these drafts.");
@@ -627,23 +621,18 @@ impl App {
         if !self.can_edit() || !self.has_drafts() {
             return;
         }
-        let (Some(s), Some(batch)) = (&self.database.session, &self.database.document.drafts)
-        else {
+        let Some(batch) = self.database.document.drafts.clone() else {
             return;
         };
-        self.database.sequence += 1;
-        let ticket = s.ticket(self.database.sequence, self.database.generation);
-        match s.submit(Request {
-            ticket,
-            operation: Operation::CommitEdits(batch.clone()),
-        }) {
-            Ok(()) => {
+        match self.database.request(Operation::CommitEdits(batch)) {
+            Some(Ok(ticket)) => {
                 self.database.commit_ticket = Some(ticket);
                 self.database.commit_owner = Some(self.database.document.id);
                 self.database.status =
                     "Committing staged edits… do not retry until outcome is known".into();
             }
-            Err(e) => self.database.status = e.to_string(),
+            Some(Err(e)) => self.database.status = e.to_string(),
+            None => {}
         }
     }
 }

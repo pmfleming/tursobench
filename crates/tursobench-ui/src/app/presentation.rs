@@ -110,6 +110,17 @@ pub(super) fn window_frame(ctx: &egui::Context) -> egui::Frame {
         .corner_radius(12)
         .inner_margin(16.0)
 }
+/// A framed window that first opens a little up and left of the screen centre.
+pub(super) fn dialog<'a>(
+    ctx: &egui::Context,
+    title: impl Into<egui::WidgetText>,
+    open: &'a mut bool,
+) -> egui::Window<'a> {
+    egui::Window::new(title)
+        .frame(window_frame(ctx))
+        .default_pos(ctx.content_rect().center() - egui::vec2(280.0, 180.0))
+        .open(open)
+}
 
 pub(super) fn notice(ui: &mut egui::Ui, icon: super::icons::Icon, intent: Intent, text: &str) {
     let color = intent_color(ui, intent);
@@ -147,6 +158,18 @@ pub(super) fn footer<R>(
         })
 }
 
+/// The width of `text` laid out on one line in the proportional font at `size`.
+pub(super) fn text_width(ui: &egui::Ui, text: impl Into<String>, size: f32) -> f32 {
+    let font = crate::appearance::proportional(ui.ctx(), size);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.into(), font, ui.visuals().text_color());
+    galley.size().x
+}
+/// The `width`-wide strip of `rect` that ends at `right`.
+pub(super) fn strip_before(rect: egui::Rect, right: f32, width: f32) -> egui::Rect {
+    egui::Rect::from_x_y_ranges(right - width..=right, rect.y_range())
+}
 /// An icon `size` points square, centred on `center`.
 pub(super) fn icon_at(
     painter: &egui::Painter,

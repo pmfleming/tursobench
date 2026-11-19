@@ -384,8 +384,8 @@ impl App {
         }
         let mut open = true;
         let access = super::icons::access_mode(ctx, !self.database.writable);
-        egui::Window::new(format!("Reopen: {}?", access.name)).frame(crate::app::presentation::window_frame(ctx)).default_pos(ctx.content_rect().center()-egui::vec2(280.0,180.0))
-            .open(&mut open).anchor(egui::Align2::LEFT_BOTTOM, [12.0,-48.0]).max_width((ctx.content_rect().width()-40.0).min(520.0)).collapsible(false).show(ctx, |ui| {
+        presentation::dialog(ctx, format!("Reopen: {}?", access.name), &mut open)
+            .anchor(egui::Align2::LEFT_BOTTOM, [12.0,-48.0]).max_width((ctx.content_rect().width()-40.0).min(520.0)).collapsible(false).show(ctx, |ui| {
                 presentation::notice(ui, access.icon, Intent::Pending,"The current session will close and roll back any open transaction before reopening. Local drafts will be discarded. Committed writes are not undone.");
                 if !self.database.writable { ui.label("Back up the closed database with its WAL state before editing. SQL writes autocommit unless you BEGIN; grid edits are staged for review."); }
                 ui.label("File locks and shared WAL coordination will be checked again when reopening.");
@@ -426,11 +426,8 @@ impl App {
         let mut open = true;
         let mut chosen = None;
         let just_opened = self.database.ui.palette_focus;
-        let shown = egui::Window::new("Commands")
-            .frame(crate::app::presentation::window_frame(ctx))
-            .default_pos(ctx.content_rect().center() - egui::vec2(280.0, 180.0))
+        let shown = presentation::dialog(ctx, "Commands", &mut open)
             .id(egui::Id::unique("command-palette"))
-            .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_TOP, [0.0, 70.0])
@@ -843,7 +840,7 @@ impl App {
             Command::Action(action) => self.dispatch_action(action, ctx),
             Command::Help => self.database.tools.help = true,
             Command::Theme => {
-                self.toggle_theme(ctx);
+                self.set_dark(ctx, !ctx.global_style().visuals.dark_mode);
                 self.store.save(&self.preferences);
             }
         }

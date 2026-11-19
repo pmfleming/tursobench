@@ -596,7 +596,6 @@ impl DiagramDrawing<'_> {
         let canvas = self.canvas;
         let zoom = self.zoom;
         let accent = ui.visuals().selection.stroke.color;
-        let mut clicked = false;
         let is_selected = self.selected == Some(node.name.as_str());
         if is_selected {
             painter.rect_stroke(
@@ -621,9 +620,7 @@ impl DiagramDrawing<'_> {
             ui.scope_id().with(("diagram-node", &node.name)),
             egui::Sense::click(),
         );
-        if response.clicked() {
-            clicked = true;
-        }
+        let mut clicked = response.clicked();
         response.on_hover_text(format!(
             "{}\n{}",
             node.name,
@@ -636,9 +633,7 @@ impl DiagramDrawing<'_> {
             ui.scope_id().with(("diagram-drag", &node.name)),
             egui::Sense::click_and_drag(),
         );
-        if drag.clicked() {
-            clicked = true;
-        }
+        clicked |= drag.clicked();
         let moved = drag.dragged().then(|| world.min + drag.drag_delta() / zoom);
         self.details(ui, &painter, i);
         (clicked, moved)

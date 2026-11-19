@@ -5,7 +5,7 @@ use super::{
 use eframe::egui;
 use std::collections::VecDeque;
 use tursobench_core::{Delivery, Event, EventKind, ForeignKey, ResultSet, Ticket, Value};
-use tursobench_db::{Operation, Request};
+use tursobench_db::Operation;
 
 #[derive(Default)]
 pub(super) struct ContextReads {
@@ -219,13 +219,8 @@ impl App {
         {
             return;
         }
-        let Some(session) = &self.database.session else {
-            return;
-        };
         let (id, operation) = plan.into_operation();
-        self.database.sequence += 1;
-        let ticket = session.ticket(self.database.sequence, self.database.generation);
-        if session.submit(Request { ticket, operation }).is_ok() {
+        if let Some(Ok(ticket)) = self.database.request(operation) {
             let mut result = ResultSet::default();
             result.start(ticket);
             self.database.document.tools.context.pending = Some(Read {

@@ -1,6 +1,6 @@
 //! Fixed visible panes over bounded, independently owned request/result buffers.
 use super::{
-    App, View,
+    App,
     document::Document,
     icons::{self, Icon},
     presentation,
@@ -117,22 +117,23 @@ impl App {
         }
     }
     pub(super) fn focus_pane(&mut self, kind: Kind) {
-        self.release_expanded_chat(kind);
-        self.database.workspace.active = kind.pane();
-        self.database.workspace.minimized.remove(&kind.pane());
-        if self.database.workspace.expanded.is_some() {
-            self.database.workspace.expanded = Some(kind.pane());
-        }
+        self.activate_pane(kind);
         if let Some(id) = self.pane_document(kind) {
             self.switch_document(id);
             self.database.workspace.focused = id;
         }
     }
-    /// Another tile asked for attention, so an expanded chat gives the
-    /// workspace back to the tiles.
-    fn release_expanded_chat(&mut self, kind: Kind) {
-        if kind.pane() != Kind::Chat && self.database.workspace.expanded == Some(Kind::Chat) {
-            self.database.workspace.expanded = None;
+    /// Make `kind`'s pane active and restored. Another tile asking for attention
+    /// makes an expanded chat give the workspace back to the tiles.
+    fn activate_pane(&mut self, kind: Kind) {
+        let workspace = &mut self.database.workspace;
+        if kind.pane() != Kind::Chat && workspace.expanded == Some(Kind::Chat) {
+            workspace.expanded = None;
+        }
+        workspace.active = kind.pane();
+        workspace.minimized.remove(&kind.pane());
+        if workspace.expanded.is_some() {
+            workspace.expanded = Some(kind.pane());
         }
     }
     pub(super) fn focus_window(&mut self, id: u64) {
@@ -154,12 +155,7 @@ impl App {
             self.database.workspace.visible.insert(Kind::Sql, source);
         }
         self.database.workspace.focused = id;
-        self.release_expanded_chat(kind);
-        self.database.workspace.active = kind.pane();
-        self.database.workspace.minimized.remove(&kind.pane());
-        if self.database.workspace.expanded.is_some() {
-            self.database.workspace.expanded = Some(kind.pane());
-        }
+        self.activate_pane(kind);
     }
     pub(super) fn create_window(
         &mut self,
@@ -709,19 +705,8 @@ impl App {
             for (icon, count, label) in counts.into_iter().rev() {
                 description.push_str(&format!(" · {count} {label}"));
                 let text = count.to_string();
-                let size = ui
-                    .painter()
-                    .layout_no_wrap(
-                        text.clone(),
-                        crate::appearance::proportional(ui.ctx(), 11.0),
-                        ui.visuals().weak_text_color(),
-                    )
-                    .size();
-                let group_width = 22.0 + size.x;
-                let area = egui::Rect::from_min_max(
-                    egui::pos2(right - group_width, rect.top()),
-                    egui::pos2(right, rect.bottom()),
-                );
+                let group_width = 22.0 + presentation::text_width(ui, text.as_str(), 11.0);
+                let area = presentation::strip_before(rect, right, group_width);
                 presentation::icon_at(
                     ui.painter(),
                     area.left_center() + egui::vec2(7.0, 0.0),
@@ -1214,19 +1199,7 @@ impl App {
             if self.database.document.kind == Kind::Data
                 && matches!(object.kind.as_str(), "table" | "view")
             {
-                let browse = tursobench_core::Browse {
-                    options: Default::default(),
-                    table: name,
-                    offset: 0,
-                    sort: None,
-                    descending: false,
-                    filters: vec![],
-                };
-                self.database.document.browse = Some(browse.clone());
-                self.database.document.view = View::Browse;
-                self.database.document.needs_load = self
-                    .submit(tursobench_db::Operation::Browse(browse), View::Browse)
-                    .is_none();
+                self.database.document.needs_load = !self.browse_first_page(name);
             } else if matches!(object.kind.as_str(), "index" | "trigger") {
                 self.database.document.tools.ddl = Some(object.clone());
                 self.database.document.needs_load = false;

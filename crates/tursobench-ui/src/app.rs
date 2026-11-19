@@ -53,6 +53,17 @@ enum View {
     Explain,
     Diagnostics,
 }
+/// A browse of `table` from its first row, unsorted and unfiltered.
+fn first_page(table: String) -> Browse {
+    Browse {
+        options: Default::default(),
+        table,
+        offset: 0,
+        sort: None,
+        descending: false,
+        filters: vec![],
+    }
+}
 use sessions::DatabaseWorkspace;
 pub struct App {
     accounts: assistant_accounts::State,
@@ -87,8 +98,7 @@ impl App {
             && self.database.commit_ticket.is_none()
     }
 
-    pub(super) fn toggle_theme(&mut self, ctx: &egui::Context) {
-        let dark = !ctx.global_style().visuals.dark_mode;
+    pub(super) fn set_dark(&mut self, ctx: &egui::Context, dark: bool) {
         self.preferences.appearance = Some(crate::appearance::Mode::from_dark(dark));
         self.apply_theme(ctx);
     }
@@ -328,30 +338,11 @@ impl App {
                 return;
             }
         }
-        let browse = Browse {
-            options: Default::default(),
-            table: name.clone(),
-            offset: 0,
-            sort: None,
-            descending: false,
-            filters: vec![],
-        };
-        self.database.document.browse = Some(browse.clone());
-        self.database.document.view = View::Browse;
-        if self
-            .submit(Operation::Browse(browse.clone()), View::Browse)
-            .is_some()
-        {
-            if let Some(previous) = previous {
-                self.database.tools.back.push(previous);
-                if self.database.tools.back.len() > 32 {
-                    self.database.tools.back.remove(0);
-                }
-            }
+        if self.browse_first_page(name.clone()) {
+            self.database.tools.remember(previous);
             self.database.document.table = None;
             self.database.document.tools.ddl = None;
             self.database.document.tools.related = None;
-            self.database.document.browse = Some(browse);
             self.database.document.tools.highlight_column = None;
             self.database.document.tools.scroll_to_column = false;
             self.database.document.ui.sql_open = false;
@@ -361,6 +352,14 @@ impl App {
                 self.database.ui.diagram.freeze_camera();
             }
         }
+    }
+    /// Show `table` from its first row in the current document; true once queued.
+    fn browse_first_page(&mut self, table: String) -> bool {
+        let browse = first_page(table);
+        self.database.document.browse = Some(browse.clone());
+        self.database.document.view = View::Browse;
+        self.submit(Operation::Browse(browse), View::Browse)
+            .is_some()
     }
     fn reload(&mut self) {
         if let Some(destination) = &self.database.document.tools.related {
@@ -380,21 +379,14 @@ impl App {
         if !self.database.ready || self.database.closing {
             return;
         }
-        let Some(session) = &self.database.session else {
-            return;
-        };
-        self.database.sequence += 1;
-        let ticket = session.ticket(self.database.sequence, self.database.generation);
-        match session.submit(Request {
-            ticket,
-            operation: Operation::Schema,
-        }) {
-            Ok(()) => {
+        match self.database.request(Operation::Schema) {
+            Some(Ok(ticket)) => {
                 self.database.catalog.start(ticket);
                 self.database.catalog_ticket = Some(ticket);
                 self.database.catalog_error.clear();
             }
-            Err(e) => self.database.status = e.to_string(),
+            Some(Err(e)) => self.database.status = e.to_string(),
+            None => {}
         }
     }
     fn poll_active(&mut self, ctx: &egui::Context) {
@@ -633,25 +625,25 @@ mod test_ui {
             .nodes
     }
 
+    /// The text shapes `output` painted, in paint order.
+    pub(super) fn texts(
+        output: &egui::FullOutput,
+    ) -> impl DoubleEndedIterator<Item = &egui::epaint::TextShape> {
+        output.shapes.iter().filter_map(|s| match &s.shape {
+            egui::Shape::Text(text) => Some(text),
+            _ => None,
+        })
+    }
     pub(super) fn control(output: &egui::FullOutput, name: &str) -> egui::Rect {
         control_from(output, name, f32::NEG_INFINITY)
     }
     pub(super) fn control_from(output: &egui::FullOutput, name: &str, left: f32) -> egui::Rect {
-        control_matching(output, name, left, |label| label == name)
-    }
-    fn control_matching(
-        output: &egui::FullOutput,
-        name: &str,
-        left: f32,
-        matches: impl Fn(&str) -> bool,
-    ) -> egui::Rect {
         let bounds = nodes(output)
             .iter()
             .rev()
             .find_map(|(_, node)| {
-                node.bounds().filter(|bounds| {
-                    node.label().is_some_and(&matches) && bounds.x0 >= f64::from(left)
-                })
+                node.bounds()
+                    .filter(|bounds| node.label() == Some(name) && bounds.x0 >= f64::from(left))
             })
             .unwrap_or_else(|| panic!("Missing control: {name}"));
         egui::Rect::from_min_max(

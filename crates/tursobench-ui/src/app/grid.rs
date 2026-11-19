@@ -488,13 +488,7 @@ impl App {
                         .map(|n| format!("{n} total"))
                 })
         });
-        let font = crate::appearance::proportional(ui.ctx(), 12.0);
-        let text_width = |text: String| {
-            ui.painter()
-                .layout_no_wrap(text, font.clone(), ui.visuals().text_color())
-                .size()
-                .x
-        };
+        let text_width = |text: String| super::presentation::text_width(ui, text, 12.0);
         let actions_width = if spec.is_some() {
             text_width(format!("Row {}", self.database.document.tools.jump_row))
                 + 108.0
