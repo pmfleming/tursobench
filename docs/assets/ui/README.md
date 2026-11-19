@@ -17,8 +17,9 @@ retouching. No personal database is opened.
   `navigator.png`: individual tiles/panel cropped from the overview.
 - `sql.png`: expanded SQL tile with a real join and twelve result rows, using
   a second synthetic fixture with 120 snapshots and 120 history records.
-- `assistant.png`: panel cropped from a 1366 × 768 capture, with vendor/model
-  controls, database tools and proposed SQL. The conversation is a seeded
+- `assistant.png`: panel cropped from a 1366 × 768 capture, with the model
+  picker, database tools and proposed SQL. Re-cropped on 2026-11-19 from the
+  `assistant/` conversation capture at `30ceb49`. The conversation is a seeded
   fixture; no agent CLI runs and nothing leaves the machine.
 - `edit-review.png`: retained from the 2026-11-15 capture at `aeb8938`; staged
   update, original-value predicates and typed bindings at 1366 × 768. The edit
@@ -82,7 +83,7 @@ with Image.open(out / 'workspace.png') as image:
 with Image.open(root / 'sql/sql-results.png') as image:
     image.crop((280, 8, 1774, 958)).save(out / 'sql.png', optimize=True)
 with Image.open(root / 'assistant/assistant-conversation.png') as image:
-    image.crop((1027, 0, 1366, 768)).save(out / 'assistant.png', optimize=True)
+    image.crop((995, 0, 1366, 768)).save(out / 'assistant.png', optimize=True)
 PY
 ```
 

@@ -1,5 +1,18 @@
 ![TursoBench](docs/assets/tursobench-banner.png)
 
+I was having an allergic reaction to JSON, and wondered what would happen if I moved to a local database.
+In the spirit of Rust all the way down, I chose Turso.
+
+Initially, I built TursoBench to keep an eye on what the database looked like.
+The initial layout reflects that: relationships and tables in the middle, database details to the right, with the ability to grow any tile to the size of the workspace.
+
+I needed to be able to push some rows into the database, so I added that function. (It's barely tested; it's not a function I need often.)
+
+Then I added a chat interface. Next I will add a more flexible layout: most often now, what I want to see is the chat, the SQL it's generating and the output of that SQL.
+
+The chat drives the agent CLI you are already signed in to (Claude Code over stream-json, Codex over `codex app-server`, others over the Agent Client Protocol); TursoBench never handles credentials.
+The agent reaches the database only through TursoBench's MCP tools, limited to schema or bounded read-only queries by the sharing setting, and any SQL it proposes opens unrun in the SQL tile.
+
 ![Full TursoBench workspace with schema navigation and all five tiles](docs/assets/ui/readme/workspace.png)
 
 Native Linux/Wayland workbench for inspecting, querying and editing local Turso databases.
@@ -75,7 +88,7 @@ Database admission uses a configurable count and estimated memory budget; switch
 ![Assistant panel with a seeded conversation, database tool calls and an unexecuted SQL proposal](docs/assets/ui/readme/assistant.png)
 
 Use Claude Code, Codex or ACP agents to inspect schema, query shared data and propose SQL.
-Provider/model selection and schema/result sharing controls live in the panel; the screenshot uses a seeded conversation.
+One picker chooses the agent, model and reasoning level; sharing controls live in the panel, which expands to the workspace like a tile. The screenshot uses a seeded conversation.
 
 MCP tools expose metadata, bounded reads and SQL proposals according to the selected sharing scope.
 Queries pass parser checks and run on a dedicated `query_only` connection, capped at 200 rows / 256 KiB.
