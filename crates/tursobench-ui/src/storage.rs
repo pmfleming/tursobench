@@ -58,29 +58,31 @@ impl DiscoveryPreferences {
         normalize_paths(&mut self.roots, 32, 32 * 1024, false);
         normalize_paths(&mut self.removed_roots, 128, 512 * 1024, false);
         normalize_paths(&mut self.excluded, 64, 32 * 1024, true);
-        let mut seen = HashSet::new();
-        let mut bytes = 0;
-        self.recent.retain_mut(|entry| {
-            let Some(path) = persistable_path(&entry.path) else {
-                return false;
-            };
-            bytes += path.as_os_str().len();
-            entry.path = path;
-            bytes <= 64 * 1024 && seen.insert(entry.path.clone())
-        });
-        self.recent.truncate(50);
-        seen.clear();
-        bytes = 0;
-        self.cached.retain_mut(|entry| {
-            let Some(path) = persistable_path(&entry.path) else {
-                return false;
-            };
-            bytes += path.as_os_str().len();
-            entry.path = path;
-            bytes <= 256 * 1024 && seen.insert(entry.path.clone())
-        });
-        self.cached.truncate(200);
+        normalize_entries(&mut self.recent, |e| &mut e.path, 50, 64 * 1024);
+        normalize_entries(&mut self.cached, |e| &mut e.path, 200, 256 * 1024);
     }
+}
+
+/// Keep the first `count` entries with distinct persistable paths, within
+/// `bytes` of path text.
+fn normalize_entries<T>(
+    entries: &mut Vec<T>,
+    path: fn(&mut T) -> &mut PathBuf,
+    count: usize,
+    bytes: usize,
+) {
+    let mut seen = HashSet::new();
+    let mut total = 0;
+    entries.retain_mut(|entry| {
+        let path = path(entry);
+        let Some(persisted) = persistable_path(path) else {
+            return false;
+        };
+        total += persisted.as_os_str().len();
+        *path = persisted;
+        total <= bytes && seen.insert(path.clone())
+    });
+    entries.truncate(count);
 }
 
 /// Lexical normalization only: preferences and UI construction never stat paths

@@ -1,5 +1,6 @@
 use super::{App, control, egui, fixture, frame_at, wait_until};
 use crate::app::assistant::Entry;
+use crate::app::test_ui::{nodes, pointer};
 use crate::assistant_tools::{PROPOSE_SQL, RUN_QUERY, Sharing};
 use crate::storage::Provider;
 use std::os::unix::fs::PermissionsExt;
@@ -100,7 +101,7 @@ fn runtime_dir(_: &tempfile::TempDir) {
 }
 
 fn labelled(output: &egui::FullOutput, name: &str) -> bool {
-    crate::app::test_ui::nodes(output).iter().any(|(_, node)| {
+    nodes(output).iter().any(|(_, node)| {
         node.label()
             .or(node.value())
             .is_some_and(|text| text == name)
@@ -110,11 +111,7 @@ fn labelled(output: &egui::FullOutput, name: &str) -> bool {
 /// Click at the size the test measured controls at.
 fn tap(app: &mut App, ctx: &egui::Context, pos: egui::Pos2) {
     for pressed in [true, false] {
-        let events = vec![
-            egui::Event::PointerMoved(pos),
-            super::pointer_button(pos, pressed),
-        ];
-        frame_at(app, ctx, SIZE, events);
+        frame_at(app, ctx, SIZE, pointer(pos, pressed));
     }
 }
 
@@ -126,7 +123,7 @@ fn press(app: &mut App, ctx: &egui::Context, name: &str) {
 
 /// The current value a named control reports.
 fn value_of(output: &egui::FullOutput, name: &str) -> Option<String> {
-    crate::app::test_ui::nodes(output)
+    nodes(output)
         .iter()
         .find(|(_, node)| node.label().is_some_and(|l| l == name))
         .and_then(|(_, node)| node.value().map(str::to_owned))
@@ -401,7 +398,7 @@ fn privacy_is_chosen_per_provider_and_reaches_the_agent() {
         "Telemetry and history follow Copilot CLI's own settings"
     ));
     assert!(!labelled(&output, "Block analytics and telemetry"));
-    tap(&mut app, &ctx, control(&output, "Claude Code").center());
+    press(&mut app, &ctx, "Claude Code");
     app.settings.open = false;
 
     let script = install(&dir, "claude", RECORDING_SCRIPT);
@@ -531,13 +528,8 @@ fn one_picker_changes_agent_model_and_favourites_with_each_agents_sharing() {
         value_of(&output, "Assistant model picker").as_deref(),
         Some("Claude Code")
     );
-    tap(
-        &mut app,
-        &ctx,
-        control(&output, "Assistant model picker").center(),
-    );
-    let output = frame_at(&mut app, &ctx, SIZE, vec![]);
-    tap(&mut app, &ctx, control(&output, "Sonnet").center());
+    press(&mut app, &ctx, "Assistant model picker");
+    press(&mut app, &ctx, "Sonnet");
     assert_eq!(app.preferences.assistant.selected_model(), "sonnet");
     assert!(app.database.assistant.host().is_none());
     // The picker stays open so the reasoning level can follow the model.
@@ -726,14 +718,8 @@ fn copy_buttons_write_the_reply_and_conversation_in_the_chosen_format() {
         frame_at(app, &ctx, SIZE, vec![]);
         let output = frame_at(app, &ctx, SIZE, vec![]);
         let pos = control(&output, name).center();
-        let press = |down| {
-            vec![
-                egui::Event::PointerMoved(pos),
-                super::pointer_button(pos, down),
-            ]
-        };
-        frame_at(app, &ctx, SIZE, press(true));
-        frame_at(app, &ctx, SIZE, press(false))
+        frame_at(app, &ctx, SIZE, pointer(pos, true));
+        frame_at(app, &ctx, SIZE, pointer(pos, false))
             .platform_output
             .commands
             .into_iter()
@@ -777,11 +763,7 @@ fn the_reasoning_level_changes_mid_conversation_and_follows_each_codex_model() {
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
     let level = |output: &egui::FullOutput| value_of(output, "Assistant reasoning level");
     assert_eq!(level(&output).as_deref(), Some("Default"));
-    tap(
-        &mut app,
-        &ctx,
-        control(&output, "Reasoning Extra high").center(),
-    );
+    press(&mut app, &ctx, "Reasoning Extra high");
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
     assert_eq!(
         value_of(&output, "Assistant model picker").as_deref(),
@@ -797,7 +779,7 @@ fn the_reasoning_level_changes_mid_conversation_and_follows_each_codex_model() {
     });
     assert!(sent().contains("get_settings"));
     // Back to the default: the level read at start is restored (unknown here).
-    app.select_assistant_effort(String::new());
+    app.select_effort_for(Provider::Claude, String::new());
     wait_until(&mut app, &ctx, |_| sent().contains(r#""effortLevel":null"#));
 
     // Codex lists levels per model; the default model stands in for none.
@@ -819,13 +801,13 @@ fn the_reasoning_level_changes_mid_conversation_and_follows_each_codex_model() {
     press(&mut app, &ctx, "Codex · Signed in");
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
     assert_eq!(level(&output).as_deref(), Some("Default · Low"));
-    tap(&mut app, &ctx, control(&output, "Reasoning Ultra").center());
+    press(&mut app, &ctx, "Reasoning Ultra");
     assert_eq!(app.preferences.assistant.provider, Provider::Claude);
     assert_eq!(app.preferences.assistant.efforts[&Provider::Codex], "ultra");
     app.select_assistant_provider(Provider::Codex);
     assert_eq!(app.assistant_effort().as_deref(), Some("ultra"));
     // A model without that level falls back to the agent's own.
-    app.select_assistant_model("quick".into());
+    app.choose_assistant_model(Provider::Codex, "quick".into());
     assert_eq!(app.preferences.assistant.selected_effort(), "ultra");
     assert_eq!(app.assistant_effort(), None);
     // Claude keeps its own choice.

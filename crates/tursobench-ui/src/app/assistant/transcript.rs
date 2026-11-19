@@ -21,16 +21,9 @@ pub(super) enum Action {
 
 pub(super) fn entry_ui(ui: &mut egui::Ui, entry: &Entry, actions: &mut Vec<Action>) {
     match entry {
-        Entry::User(text) => {
-            egui::Frame::new()
-                .fill(Tokens::of(ui.ctx()).raised)
-                .corner_radius(8)
-                .inner_margin(8.0)
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.add(egui::Label::new(text).wrap());
-                });
-        }
+        Entry::User(text) => raised(ui, 8, |ui| {
+            ui.add(egui::Label::new(text).wrap());
+        }),
         Entry::Reply(text) => markdown(ui, text, actions),
         Entry::Thought(text) => {
             let short: String = text.chars().take(240).collect();
@@ -187,35 +180,40 @@ fn inline(ui: &mut egui::Ui, text: &str, heading: bool) {
     ui.add(egui::Label::new(job).wrap());
 }
 
-fn code_block(ui: &mut egui::Ui, code: &str, sql: bool, actions: &mut Vec<Action>) {
+/// A full-width box on the raised surface, `radius` round and inset.
+fn raised(ui: &mut egui::Ui, radius: u8, contents: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
         .fill(Tokens::of(ui.ctx()).raised)
-        .corner_radius(6)
-        .inner_margin(6.0)
+        .corner_radius(radius)
+        .inner_margin(f32::from(radius))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                    let mut action = |icon, name, wanted: fn(String) -> Action| {
-                        if icons::control(ui, icon, name, "", false, false).clicked() {
-                            actions.push(wanted(code.into()));
-                        }
-                    };
-                    action(Icon::Copy, "Copy", Action::Copy);
-                    if sql {
-                        action(
-                            Icon::Sql,
-                            "Open in a new SQL editor tile (not run)",
-                            Action::OpenSql,
-                        );
+            contents(ui);
+        });
+}
+
+fn code_block(ui: &mut egui::Ui, code: &str, sql: bool, actions: &mut Vec<Action>) {
+    raised(ui, 6, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                let mut action = |icon, name, wanted: fn(String) -> Action| {
+                    if icons::control(ui, icon, name, "", false, false).clicked() {
+                        actions.push(wanted(code.into()));
                     }
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
-                        ui.add(
-                            egui::Label::new(egui::RichText::new(code).monospace().small()).wrap(),
-                        );
-                    });
+                };
+                action(Icon::Copy, "Copy", Action::Copy);
+                if sql {
+                    action(
+                        Icon::Sql,
+                        "Open in a new SQL editor tile (not run)",
+                        Action::OpenSql,
+                    );
+                }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+                    ui.add(egui::Label::new(egui::RichText::new(code).monospace().small()).wrap());
                 });
             });
         });
+    });
 }

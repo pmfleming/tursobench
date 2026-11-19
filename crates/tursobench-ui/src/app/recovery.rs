@@ -1,6 +1,7 @@
-use super::{App, tiling::Kind};
+use super::{App, document::Document as Editor, tiling::Kind};
 use crate::recovery::Document;
 use eframe::egui;
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 pub(super) struct State {
@@ -19,59 +20,59 @@ impl State {
         }
     }
 }
+/// A workspace's SQL editors, the focused one among them, in recovery order.
+fn editors<'a>(documents: &'a BTreeMap<u64, Editor>, focused: &'a Editor) -> Vec<&'a Editor> {
+    let mut editors: Vec<_> = documents
+        .values()
+        .chain(std::iter::once(focused))
+        .filter(|d| d.kind == Kind::Sql && d.migration.is_none())
+        .collect();
+    // Focus changes move documents between owners, not their recovery order.
+    editors.sort_by_key(|d| d.id);
+    editors
+}
+fn revisions(editors: &[&Editor]) -> Vec<(u64, u64)> {
+    editors.iter().map(|d| (d.id, d.sql_revision)).collect()
+}
+/// Each editor's SQL and cursor, as recovery saves them.
+fn saved(editors: &[&Editor]) -> Vec<Document> {
+    editors
+        .iter()
+        .map(|d| Document {
+            id: d.id,
+            sql: d.sql.clone(),
+            selection: {
+                let n = d.sql.chars().count();
+                d.tools.selection.start.min(n)..d.tools.selection.end.min(n)
+            },
+        })
+        .collect()
+}
 impl App {
-    fn recovery_views(&self) -> Vec<&super::document::Document> {
-        let mut documents: Vec<_> = self
-            .database
-            .documents
-            .values()
-            .chain(std::iter::once(&self.database.document))
-            .filter(|d| d.kind == Kind::Sql && d.migration.is_none())
-            .collect();
-        // Focus changes move documents between owners, not their recovery order.
-        documents.sort_by_key(|d| d.id);
-        documents
-    }
-    fn recovery_revisions(&self) -> Vec<(u64, u64)> {
-        self.recovery_views()
-            .into_iter()
-            .map(|d| (d.id, d.sql_revision))
-            .collect()
+    fn recovery_views(&self) -> Vec<&Editor> {
+        editors(&self.database.documents, &self.database.document)
     }
     fn recovery_unchanged(&self) -> bool {
         let documents = self.recovery_views();
-        documents.len() == self.database.recovery.observed.len()
+        let recovery = &self.database.recovery;
+        documents.len() == recovery.observed.len()
             && documents
                 .iter()
-                .zip(&self.database.recovery.observed)
+                .zip(&recovery.observed)
                 .all(|(current, saved)| {
                     current.id == saved.id
                         && current.sql == saved.sql
-                        && (self.database.recovery.cleared
-                            || current.tools.selection == saved.selection)
+                        && (recovery.cleared || current.tools.selection == saved.selection)
                 })
-    }
-    fn recovery_documents(&self) -> Vec<Document> {
-        self.recovery_views()
-            .into_iter()
-            .map(|d| Document {
-                id: d.id,
-                sql: d.sql.clone(),
-                selection: {
-                    let n = d.sql.chars().count();
-                    d.tools.selection.start.min(n)..d.tools.selection.end.min(n)
-                },
-            })
-            .collect()
     }
     pub(super) fn poll_recovery(&mut self, ctx: &egui::Context) {
         self.recovery_store.poll();
         if !self.database.ready || !self.preferences.sql_recovery {
             return;
         }
-        let revisions = self.recovery_revisions();
-        if revisions != self.database.recovery.revisions {
-            self.database.recovery.revisions = revisions;
+        let current = revisions(&self.recovery_views());
+        if current != self.database.recovery.revisions {
+            self.database.recovery.revisions = current;
             self.database.recovery.changed = Some(Instant::now());
         }
         if let Some(changed) = self.database.recovery.changed {
@@ -90,14 +91,14 @@ impl App {
         {
             return;
         }
-        self.database.recovery.revisions = self.recovery_revisions();
+        self.database.recovery.revisions = revisions(&self.recovery_views());
         self.database.recovery.changed = None;
         if self.recovery_unchanged()
             && (self.database.recovery.cleared || self.recovery_store.error.is_none())
         {
             return;
         }
-        let docs = self.recovery_documents();
+        let docs = saved(&self.recovery_views());
         self.database.recovery.cleared = false;
         self.database.recovery.observed.clone_from(&docs);
         self.recovery_store
@@ -138,8 +139,8 @@ impl App {
             self.database.workspace.minimized = minimized;
             self.database.workspace.visible.extend(visible);
         }
-        self.database.recovery.observed = self.recovery_documents();
-        self.database.recovery.revisions = self.recovery_revisions();
+        self.database.recovery.observed = saved(&self.recovery_views());
+        self.database.recovery.revisions = revisions(&self.recovery_views());
         self.database.recovery.changed = None;
     }
     pub(super) fn recovery_settings(&mut self, ui: &mut egui::Ui) {
@@ -152,40 +153,19 @@ impl App {
         {
             self.store.save(&self.preferences);
             self.database.recovery.observed.clear();
-            self.database.recovery.revisions = self.recovery_revisions();
+            self.database.recovery.revisions = revisions(&self.recovery_views());
             self.database.recovery.changed = self.preferences.sql_recovery.then(Instant::now);
             self.database.recovery.cleared = false;
         }
         ui.small("SQL text may contain sensitive literals. Bindings and results are not saved.");
         if ui.button("Clear saved SQL recovery").clicked() {
             self.recovery_store.clear();
-            self.database.recovery.cleared = true;
-            self.database.recovery.observed = self.recovery_documents();
-            self.database.recovery.revisions = self.recovery_revisions();
-            self.database.recovery.changed = None;
-            for database in self.parked.values_mut() {
+            for database in std::iter::once(&mut self.database).chain(self.parked.values_mut()) {
                 database.recovery.cleared = true;
                 database.recovery.changed = None;
-                database.recovery.observed = database
-                    .documents
-                    .values()
-                    .chain(std::iter::once(&database.document))
-                    .filter(|d| d.kind == Kind::Sql && d.migration.is_none())
-                    .map(|d| Document {
-                        id: d.id,
-                        sql: d.sql.clone(),
-                        selection: d.tools.selection.clone(),
-                    })
-                    .collect();
-                database.recovery.observed.sort_by_key(|d| d.id);
-                database.recovery.revisions = database
-                    .documents
-                    .values()
-                    .chain(std::iter::once(&database.document))
-                    .filter(|d| d.kind == Kind::Sql && d.migration.is_none())
-                    .map(|d| (d.id, d.sql_revision))
-                    .collect();
-                database.recovery.revisions.sort_unstable();
+                let editors = editors(&database.documents, &database.document);
+                database.recovery.observed = saved(&editors);
+                database.recovery.revisions = revisions(&editors);
             }
         }
         if let Some(error) = &self.recovery_store.error {
@@ -218,10 +198,10 @@ mod tests {
         assert!(!app.recovery_unchanged());
         app.save_recovery();
         assert!(app.recovery_unchanged());
-        let before = app.recovery_revisions();
+        let before = super::revisions(&app.recovery_views());
         app.focus_pane(Kind::Map);
         app.poll_recovery(&ctx);
-        assert_eq!(app.recovery_revisions(), before);
+        assert_eq!(super::revisions(&app.recovery_views()), before);
         assert!(app.database.recovery.changed.is_none());
         app.switch_document(editor);
         app.database.recovery.cleared = true;
@@ -297,7 +277,7 @@ mod tests {
                 objects: vec![],
             }));
         assert!(
-            app.recovery_documents()
+            super::saved(&app.recovery_views())
                 .iter()
                 .all(|d| d.sql != app.database.document.sql)
         );
@@ -328,7 +308,7 @@ mod tests {
         assert!(!app.database.writable);
         app.recovery_store.clear();
         app.database.recovery.cleared = true;
-        app.database.recovery.observed = app.recovery_documents();
+        app.database.recovery.observed = super::saved(&app.recovery_views());
         app.save_recovery();
         app.poll_recovery(&ctx);
     }
