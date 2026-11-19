@@ -7,7 +7,7 @@ use super::{
 use eframe::egui;
 use tursobench_core::{Event, EventKind, SchemaObject};
 use tursobench_core::{ForeignKey, Value};
-use tursobench_db::{Operation, Request};
+use tursobench_db::Operation;
 
 use tools::{Destination, NavigationEntry};
 impl App {
@@ -116,33 +116,19 @@ impl App {
         {
             return;
         }
-        let Some(session) = &self.database.session else {
-            return;
-        };
-        self.database.sequence += 1;
-        let ticket = session.ticket(self.database.sequence, self.database.generation);
-        match session.submit(Request {
-            ticket,
-            operation: self
-                .database
-                .document
-                .browse
-                .as_ref()
-                .filter(|b| b.table == name)
-                .map_or_else(
-                    || Operation::Count(name.clone()),
-                    |b| Operation::CountFiltered(b.clone()),
-                ),
-        }) {
-            Ok(()) => {
+        let browse = self.database.document.browse.as_ref();
+        let browse = browse.filter(|b| b.table == name);
+        let filtered = browse.is_some_and(|b| {
+            !b.filters.is_empty() || b.options.predicate.is_some() || b.options.relation.is_some()
+        });
+        let operation = browse.map_or_else(
+            || Operation::Count(name.clone()),
+            |b| Operation::CountFiltered(b.clone()),
+        );
+        match self.database.request(operation) {
+            Some(Ok(ticket)) => {
                 let mut result = tursobench_core::ResultSet::default();
                 result.start(ticket);
-                let filtered = self.database.document.browse.as_ref().is_some_and(|b| {
-                    b.table == name
-                        && (!b.filters.is_empty()
-                            || b.options.predicate.is_some()
-                            || b.options.relation.is_some())
-                });
                 self.database.tools.count_request = Some(tools::CountRequest {
                     name,
                     result,
@@ -154,26 +140,22 @@ impl App {
                 self.database.status =
                     "Counting rows; full scan, discard interrupts SELECT reads; writes finish normally".into();
             }
-            Err(e) => self.database.status = e.to_string(),
+            Some(Err(e)) => self.database.status = e.to_string(),
+            None => {}
         }
     }
     pub(super) fn request_inspection(&mut self, name: String) {
         self.database.document.tools.inspection = None;
         self.database.document.tools.inspection_error.clear();
-        let Some(session) = &self.database.session else {
-            return;
-        };
-        self.database.sequence += 1;
-        let ticket = session.ticket(self.database.sequence, self.database.generation);
-        match session.submit(Request {
-            ticket,
-            operation: Operation::Inspect(name),
-        }) {
-            Ok(()) => self.database.document.tools.inspection_ticket = Some(ticket),
-            Err(e) => {
-                self.database.document.tools.inspection_ticket = None;
-                self.database.document.tools.inspection_error = e.to_string();
+        let outcome = self.database.request(Operation::Inspect(name));
+        let tools = &mut self.database.document.tools;
+        match outcome {
+            Some(Ok(ticket)) => tools.inspection_ticket = Some(ticket),
+            Some(Err(e)) => {
+                tools.inspection_ticket = None;
+                tools.inspection_error = e.to_string();
             }
+            None => {}
         }
     }
     pub(super) fn structure_inspector(&mut self, ui: &mut egui::Ui) {
@@ -352,12 +334,7 @@ impl App {
             )
             .is_some()
         {
-            if let Some(previous) = previous {
-                self.database.tools.back.push(previous);
-                if self.database.tools.back.len() > 32 {
-                    self.database.tools.back.remove(0);
-                }
-            }
+            self.database.tools.remember(previous);
             self.database.document.browse = None;
             self.database.document.table = None;
             self.database.ui.diagram.selected = Some(key.target.clone());
@@ -395,14 +372,7 @@ impl App {
             };
             bound.push(value.clone());
         }
-        let mut browse = tursobench_core::Browse {
-            table: child.clone(),
-            offset: 0,
-            sort: None,
-            descending: false,
-            filters: vec![],
-            options: Default::default(),
-        };
+        let mut browse = super::first_page(child.clone());
         browse.options.relation = Some(Box::new((key, bound)));
         let destination = Destination::Page(browse.clone());
         let previous = self.navigation_entry();
@@ -422,12 +392,7 @@ impl App {
             return;
         }
         if self.submit(destination.operation(), View::Browse).is_some() {
-            if let Some(previous) = previous {
-                self.database.tools.back.push(previous);
-                if self.database.tools.back.len() > 32 {
-                    self.database.tools.back.remove(0);
-                }
-            }
+            self.database.tools.remember(previous);
             self.database.document.browse = Some(browse);
             self.database.document.table = None;
             self.database.document.tools.ddl = None;

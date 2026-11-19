@@ -2,7 +2,7 @@
 use crate::app::{
     editor::sql_view,
     icons::{self, Icon},
-    presentation::{text_at, text_right_at},
+    presentation::{self, text_at, text_right_at},
     shell::StructureSection,
 };
 use StructureSection::{Columns, Ddl, ForeignKeys, Indexes, Triggers};
@@ -320,14 +320,11 @@ impl ColumnRow<'_> {
         self.paint_icon(ui, rect);
         let mut right = rect.right() - 4.0;
         let type_width = (rect.width() * 0.22).clamp(45.0, 110.0);
-        let type_rect = egui::Rect::from_min_max(
-            egui::pos2(right - type_width, rect.top()),
-            egui::pos2(right, rect.bottom()),
-        );
+        let type_rect = presentation::strip_before(rect, right, type_width);
         text_right_at(ui, type_rect, &c.declared_type, tokens.faint, 11.0);
         right = type_rect.left() - 5.0;
         if !self.indexes.is_empty() {
-            crate::app::presentation::icon_at(
+            presentation::icon_at(
                 ui.painter(),
                 egui::pos2(right - 6.0, rect.center().y),
                 12.0,
@@ -338,10 +335,7 @@ impl ColumnRow<'_> {
             if self.indexes.iter().any(|i| i.unique) {
                 text_at(
                     ui,
-                    egui::Rect::from_min_max(
-                        egui::pos2(right - 19.0, rect.top()),
-                        egui::pos2(right, rect.bottom()),
-                    ),
+                    presentation::strip_before(rect, right, 19.0),
                     "UQ",
                     tokens.muted,
                     10.0,
@@ -424,10 +418,7 @@ impl ColumnRow<'_> {
         let c = self.column;
         let tokens = crate::appearance::Tokens::of(ui.ctx());
         let width = (rect.width() * 0.28).clamp(45.0, 160.0);
-        let link = egui::Rect::from_min_max(
-            egui::pos2(right - width, rect.top()),
-            egui::pos2(right, rect.bottom()),
-        );
+        let link = presentation::strip_before(rect, right, width);
         let target = key
             .columns
             .iter()
@@ -441,7 +432,7 @@ impl ColumnRow<'_> {
             tokens.relationship,
             11.0,
         );
-        crate::app::presentation::icon_at(
+        presentation::icon_at(
             ui.painter(),
             link.left_center() + egui::vec2(6.0, 0.0),
             11.0,
@@ -547,16 +538,8 @@ fn section_tab(
         },
         count.map_or(String::new(), |n| n.to_string())
     );
-    let size = ui
-        .painter()
-        .layout_no_wrap(
-            text.clone(),
-            crate::appearance::proportional(ui.ctx(), 11.5),
-            ui.visuals().text_color(),
-        )
-        .size();
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(25.0 + size.x, 22.0), egui::Sense::click());
+    let width = 25.0 + presentation::text_width(ui, text.as_str(), 11.5);
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 22.0), egui::Sense::click());
     if selected || response.hovered() {
         ui.painter().rect_filled(
             rect,
@@ -573,7 +556,7 @@ fn section_tab(
     } else {
         crate::appearance::Tokens::of(ui.ctx()).muted
     };
-    crate::app::presentation::icon_at(
+    presentation::icon_at(
         ui.painter(),
         rect.left_center() + egui::vec2(10.0, 0.0),
         13.0,
@@ -650,7 +633,7 @@ fn definition_row(
         ui.ctx().data_mut(|d| d.insert_temp(id, open));
     }
     if !automatic {
-        crate::app::presentation::icon_at(
+        presentation::icon_at(
             ui.painter(),
             rect.left_center() + egui::vec2(9.0, 0.0),
             12.0,
@@ -664,7 +647,7 @@ fn definition_row(
         (index.is_some_and(|i| i.partial), Icon::Filter),
     ] {
         if show {
-            crate::app::presentation::icon_at(
+            presentation::icon_at(
                 ui.painter(),
                 egui::pos2(right - 6.0, rect.center().y),
                 12.0,
@@ -677,10 +660,7 @@ fn definition_row(
     if index.is_some_and(|i| i.unique) {
         text_at(
             ui,
-            egui::Rect::from_min_max(
-                egui::pos2(right - 20.0, rect.top()),
-                egui::pos2(right, rect.bottom()),
-            ),
+            presentation::strip_before(rect, right, 20.0),
             "UQ",
             tokens.muted,
             11.0,
@@ -775,64 +755,96 @@ mod tests {
         }
     }
     fn texts(output: &egui::FullOutput) -> Vec<&str> {
-        output
-            .shapes
-            .iter()
-            .filter_map(|s| {
-                if let egui::Shape::Text(t) = &s.shape {
-                    Some(t.galley.job.text.as_str())
-                } else {
-                    None
-                }
-            })
-            .collect()
+        let texts = crate::app::test_ui::texts(output);
+        texts.map(|t| t.galley.job.text.as_str()).collect()
+    }
+    fn structure<'a>(
+        info: Option<&'a Inspection>,
+        object: Option<&'a SchemaObject>,
+        schema: &'a [SchemaObject],
+    ) -> Structure<'a> {
+        Structure {
+            info,
+            object,
+            schema,
+            loading: false,
+            graph: None,
+            incomplete: false,
+            selected: None,
+        }
+    }
+    fn trigger(name: &str, table: &str) -> SchemaObject {
+        SchemaObject {
+            kind: "trigger".into(),
+            name: name.into(),
+            table: table.into(),
+            ddl: Some(format!(
+                "CREATE TRIGGER {name} AFTER INSERT ON {table} BEGIN SELECT 1; END"
+            )),
+        }
+    }
+    /// Draw one frame of `structure`, returning the action it chose.
+    fn draw(
+        ctx: &egui::Context,
+        structure: &Structure,
+        section: &mut StructureSection,
+        size: egui::Vec2,
+        events: Vec<egui::Event>,
+    ) -> (egui::FullOutput, Option<Action>) {
+        let mut action = None;
+        let output = crate::app::test_ui::render(ctx, size, events, |ui| {
+            action = structure.show(ui, section);
+        });
+        (output, action)
+    }
+    /// Click the control named `name` at 396 × 300 and return the release frame's action.
+    fn click(
+        ctx: &egui::Context,
+        structure: &Structure,
+        section: &mut StructureSection,
+        name: &str,
+    ) -> Option<Action> {
+        let size = egui::vec2(396.0, 300.0);
+        let (output, _) = draw(ctx, structure, section, size, vec![]);
+        let pos = crate::app::test_ui::control(&output, name).center();
+        draw(
+            ctx,
+            structure,
+            section,
+            size,
+            crate::app::test_ui::pointer(pos, true),
+        );
+        draw(
+            ctx,
+            structure,
+            section,
+            size,
+            crate::app::test_ui::pointer(pos, false),
+        )
+        .1
     }
     #[test]
     fn metadata_states_and_actions() {
         let info = metadata();
-        let schema = [SchemaObject {
-            kind: "trigger".into(),
-            name: "after_insert".into(),
-            table: "child".into(),
-            ddl: Some(
-                "CREATE TRIGGER after_insert AFTER INSERT ON child BEGIN SELECT 1; END".into(),
-            ),
-        }];
+        let schema = [trigger("after_insert", "child")];
+        let info_structure = structure(Some(&info), None, &schema);
         for width in [280.0, 396.0, 562.0, 1100.0] {
             let ctx = egui::Context::default();
             ctx.enable_accesskit();
             let structure = Structure {
-                info: Some(&info),
-                object: None,
-                schema: &schema,
-                loading: false,
-                graph: None,
-                incomplete: false,
                 selected: Some("field_2"),
+                ..info_structure
             };
             let mut section = StructureSection::Columns;
-            let output =
-                crate::app::test_ui::render(&ctx, egui::vec2(width, 232.0), vec![], |ui| {
-                    structure.show(ui, &mut section);
-                });
-            let rows: Vec<_> = output
-                .shapes
-                .iter()
-                .filter_map(|s| {
-                    if let egui::Shape::Text(t) = &s.shape {
-                        if width >= 720.0 && t.pos.x >= width / 2.0 {
-                            return None;
-                        }
-                        t.galley
-                            .job
-                            .text
-                            .strip_prefix("field_")
-                            .is_some_and(|n| n.parse::<usize>().is_ok())
-                            .then_some(t.pos.y)
-                    } else {
-                        None
-                    }
+            let size = egui::vec2(width, 232.0);
+            let (output, _) = draw(&ctx, &structure, &mut section, size, vec![]);
+            let rows: Vec<_> = crate::app::test_ui::texts(&output)
+                .filter(|t| width < 720.0 || t.pos.x < width / 2.0)
+                .filter(|t| {
+                    let field = t.galley.job.text.strip_prefix("field_");
+                    field.is_some_and(|n| n.parse::<usize>().is_ok())
                 })
+                .map(|t| t.pos.y)
                 .collect();
             assert_eq!(rows.len(), 8, "width {width}");
             for pair in rows.windows(2) {
@@ -859,54 +871,30 @@ mod tests {
                         && s.contains("hidden 2")))
             );
         }
-        for (section, expected) in [
+        let size = egui::vec2(396.0, 232.0);
+        for (mut section, expected) in [
             (StructureSection::Indexes, "child_index"),
             (StructureSection::ForeignKeys, "parent"),
             (StructureSection::Triggers, "after_insert"),
             (StructureSection::Ddl, "DDL not retained"),
         ] {
             let ctx = egui::Context::default();
-            let mut section = section;
-            let structure = Structure {
-                info: Some(&info),
-                object: None,
-                schema: &schema,
-                loading: false,
-                graph: None,
-                incomplete: false,
-                selected: None,
-            };
-            let output =
-                crate::app::test_ui::render(&ctx, egui::vec2(396.0, 232.0), vec![], |ui| {
-                    structure.show(ui, &mut section);
-                });
+            let (output, _) = draw(&ctx, &info_structure, &mut section, size, vec![]);
             assert!(
                 texts(&output).iter().any(|s| s.contains(expected)),
                 "missing {expected}"
             );
         }
         let ctx = egui::Context::default();
-        let structure = Structure {
-            info: None,
-            object: None,
-            schema: &[],
-            loading: false,
-            graph: None,
-            incomplete: false,
-            selected: None,
-        };
+        let empty = structure(None, None, &[]);
         let mut section = StructureSection::Columns;
-        let output = crate::app::test_ui::render(&ctx, egui::vec2(396.0, 232.0), vec![], |ui| {
-            structure.show(ui, &mut section);
-        });
+        let (output, _) = draw(&ctx, &empty, &mut section, size, vec![]);
         assert!(texts(&output).contains(&"Load structure"));
-        let structure = Structure {
+        let loading = Structure {
             loading: true,
-            ..structure
+            ..empty
         };
-        let output = crate::app::test_ui::render(&ctx, egui::vec2(396.0, 232.0), vec![], |ui| {
-            structure.show(ui, &mut section);
-        });
+        let (output, _) = draw(&ctx, &loading, &mut section, size, vec![]);
         assert!(texts(&output).is_empty());
     }
 
@@ -920,58 +908,23 @@ mod tests {
             table: "sample".into(),
             ddl: Some("CREATE TABLE sample(id INTEGER)".into()),
         };
-        let schema = [SchemaObject {
-            kind: "trigger".into(),
-            name: "sample_trigger".into(),
-            table: "sample".into(),
-            ddl: Some(
-                "CREATE TRIGGER sample_trigger AFTER INSERT ON sample BEGIN SELECT 1; END".into(),
-            ),
-        }];
-        let structure = Structure {
-            info: None,
-            object: Some(&object),
-            schema: &schema,
-            loading: false,
-            graph: None,
-            incomplete: false,
-            selected: None,
-        };
-        for initial in [
+        let schema = [trigger("sample_trigger", "sample")];
+        let structure = structure(None, Some(&object), &schema);
+        for mut section in [
             StructureSection::Columns,
             StructureSection::Indexes,
             StructureSection::ForeignKeys,
             StructureSection::Triggers,
         ] {
-            let mut section = initial;
-            let mut action = None;
-            let mut render = |events| {
-                crate::app::test_ui::render(&ctx, egui::vec2(396.0, 300.0), events, |ui| {
-                    action = structure.show(ui, &mut section);
-                })
-            };
-            let output = render(vec![]);
-            let pos = crate::app::test_ui::control(&output, "Load structure").center();
-            render(crate::app::test_ui::pointer(pos, true));
-            render(crate::app::test_ui::pointer(pos, false));
+            let action = click(&ctx, &structure, &mut section, "Load structure");
             assert!(matches!(action, Some(Action::Load)));
         }
         let mut section = StructureSection::Columns;
-        let mut render = |events| {
-            crate::app::test_ui::render(&ctx, egui::vec2(396.0, 300.0), events, |ui| {
-                structure.show(ui, &mut section);
-            })
-        };
-        let output = render(vec![]);
-        let pos = crate::app::test_ui::control(&output, "Triggers, 1").center();
-        render(crate::app::test_ui::pointer(pos, true));
-        render(crate::app::test_ui::pointer(pos, false));
-        let output = render(vec![]);
-        let pos = crate::app::test_ui::control(&output, "sample_trigger · ").center();
-        render(crate::app::test_ui::pointer(pos, true));
-        render(crate::app::test_ui::pointer(pos, false));
-        let output = render(vec![]);
-        assert!(output.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.job.text.contains("CREATE TRIGGER"))));
+        click(&ctx, &structure, &mut section, "Triggers, 1");
+        click(&ctx, &structure, &mut section, "sample_trigger · ");
+        let size = egui::vec2(396.0, 300.0);
+        let (output, _) = draw(&ctx, &structure, &mut section, size, vec![]);
+        assert!(texts(&output).iter().any(|t| t.contains("CREATE TRIGGER")));
         assert_eq!(section, StructureSection::Triggers);
     }
 }

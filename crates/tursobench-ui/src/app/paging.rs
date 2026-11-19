@@ -1,7 +1,7 @@
 use super::{App, View, document::Document};
 use std::collections::VecDeque;
 use tursobench_core::{Delivery, Event, EventKind, ResultSet, Ticket};
-use tursobench_db::{Operation, Request};
+use tursobench_db::Operation;
 
 pub(super) const PAGE_BYTES: usize = 512 * 1024;
 pub(super) fn fetch_rows(limit: usize) -> usize {
@@ -66,7 +66,6 @@ impl App {
         }
         let mut spec = self.database.document.browse.clone().unwrap();
         let fetch_rows = fetch_rows(self.preferences.row_limit);
-        let pages = &mut self.database.document.tools.pages;
         let end = spec.offset + self.database.document.result.rows.len();
         if previous {
             spec.offset = spec.offset.saturating_sub(fetch_rows);
@@ -115,28 +114,23 @@ impl App {
         };
         spec.options.reverse = previous && seek;
         let reverse = spec.options.reverse;
-        let Some(session) = &self.database.session else {
+        let offset = spec.offset;
+        let Some(outcome) = self.database.request(Operation::Browse(spec)) else {
             return;
         };
-        self.database.sequence += 1;
-        let ticket = session.ticket(self.database.sequence, self.database.generation);
+        let document = &mut self.database.document;
+        let pages = &mut document.tools.pages;
         pages.retry_previous = previous;
-        let offset = spec.offset;
-        match session.submit(Request {
-            ticket,
-            operation: Operation::Browse(spec),
-        }) {
-            Ok(()) => {
-                if pages.chunks.is_empty() && !self.database.document.result.rows.is_empty() {
-                    pages
-                        .chunks
-                        .push_back(self.database.document.result.rows.len());
+        match outcome {
+            Ok(ticket) => {
+                if pages.chunks.is_empty() && !document.result.rows.is_empty() {
+                    pages.chunks.push_back(document.result.rows.len());
                 }
                 let mut result = ResultSet::default();
                 result.start(ticket);
                 pages.pending = Some(Pending {
                     result,
-                    owner: self.database.document.result.current,
+                    owner: document.result.current,
                     offset,
                     previous,
                     reverse,
@@ -377,14 +371,7 @@ mod tests {
         let mut app = App::new(&egui::Context::default());
         app.database.ready = true;
         app.database.document.view = super::View::Browse;
-        app.database.document.browse = Some(tursobench_core::Browse {
-            table: "t".into(),
-            filters: vec![],
-            sort: None,
-            descending: false,
-            offset: 0,
-            options: Default::default(),
-        });
+        app.database.document.browse = Some(super::super::first_page("t".into()));
         app.database.document.result.rows = vec![vec![Value::Integer(1)]; 1000];
         app.database.document.result.completion = Some(Completion {
             elapsed_ms: 0,

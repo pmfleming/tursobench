@@ -1,4 +1,4 @@
-use super::{App, egui, fixture, frame, key_event, pane, pointer_button, press_key};
+use super::{App, egui, fixture, frame, pane, pointer_button, press_key};
 use crate::app::tiling::Kind::{self, Chat, Data, Map, Record, Sql, Structure};
 use crate::app::tiling::Layout;
 
@@ -13,11 +13,7 @@ fn grip(app: &App, kind: Kind) -> egui::Pos2 {
 /// Press on the tile's grip, move to `to` in two steps, then release unless `hold`.
 fn drag(app: &mut App, ctx: &egui::Context, kind: Kind, to: egui::Pos2, hold: bool) {
     let from = grip(app, kind);
-    frame(
-        app,
-        ctx,
-        vec![egui::Event::PointerMoved(from), pointer_button(from, true)],
-    );
+    frame(app, ctx, crate::app::test_ui::pointer(from, true));
     frame(
         app,
         ctx,
@@ -88,11 +84,7 @@ fn tiles_move_between_columns_by_grip_and_keys_and_each_database_keeps_its_own_l
             .drag
             .is_some_and(|d| d.target.is_some())
     );
-    frame(
-        &mut app,
-        &ctx,
-        vec![key_event(egui::Key::Escape, true, egui::Modifiers::NONE)],
-    );
+    press_key(&mut app, &ctx, egui::Key::Escape, egui::Modifiers::NONE);
     frame(&mut app, &ctx, vec![pointer_button(target, false)]);
     frame(&mut app, &ctx, vec![]);
     assert!(app.database.workspace.drag.is_none());

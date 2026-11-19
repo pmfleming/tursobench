@@ -630,10 +630,7 @@ impl App {
         if self.database.document.ui.inspector_detached && self.database.document.ui.inspector_open
         {
             let mut open = true;
-            egui::Window::new("Cell detail")
-                .frame(crate::app::presentation::window_frame(ctx))
-                .default_pos(ctx.content_rect().center() - egui::vec2(280.0, 180.0))
-                .open(&mut open)
+            presentation::dialog(ctx, "Cell detail", &mut open)
                 .default_size([420.0, 500.0])
                 .default_pos(egui::pos2(
                     (ctx.content_rect().center().x - 210.0).max(104.0),
@@ -672,10 +669,8 @@ impl App {
         }
         if self.database.tools.help {
             let mut open = true;
-            egui::Window::new("Keyboard and safety reference")
-                .frame(crate::app::presentation::window_frame(ctx))
+            presentation::dialog(ctx, "Keyboard and safety reference", &mut open)
                 .default_pos(ctx.content_rect().center() - egui::vec2(300.0, 260.0))
-                .open(&mut open)
                 .default_width(600.0)
                 .default_height((ctx.content_rect().height() - 150.0).clamp(160.0, 560.0))
                 .max_width((ctx.content_rect().width() - 40.0).max(240.0))
