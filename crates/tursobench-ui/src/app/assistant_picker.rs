@@ -63,6 +63,15 @@ pub(super) fn menu_id() -> egui::Id {
     egui::Id::unique("chat-model-menu")
 }
 
+/// A small status dot; `state` is its tooltip and accessible name.
+pub(super) fn status_dot(ui: &mut egui::Ui, intent: Intent, state: &str) {
+    let color = presentation::intent_color(ui, intent);
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+    ui.painter().circle_filled(rect.center(), 3.0, color);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, state));
+    response.on_hover_text(state);
+}
+
 /// A small square standing for an agent: its initials on its own colour.
 /// Not a logo; the agent's name is in every tooltip beside it.
 pub(super) fn paint_badge(ui: &egui::Ui, rect: egui::Rect, provider: Provider, dim: bool) {
@@ -336,14 +345,15 @@ impl App {
             .any(|f| f.provider == choice.provider && f.model == choice.model)
     }
 
-    pub(super) fn toggle_favourite_model(&mut self, choice: &Choice) {
+    /// Star an agent's model, or unstar it; empty is the agent's default.
+    pub(super) fn toggle_favourite_model(&mut self, provider: Provider, model: &str) {
         let favourites = &mut self.preferences.assistant.favourite_models;
         let before = favourites.len();
-        favourites.retain(|f| !(f.provider == choice.provider && f.model == choice.model));
+        favourites.retain(|f| !(f.provider == provider && f.model == model));
         if favourites.len() == before {
             favourites.push(FavouriteModel {
-                provider: choice.provider,
-                model: choice.model.clone(),
+                provider,
+                model: model.into(),
             });
         }
         self.preferences.normalize();
@@ -422,8 +432,30 @@ impl App {
         false
     }
 
+    /// The header's icon, model picker and status dot, narrowed to fit.
+    pub(super) fn assistant_agent_picker(&mut self, ui: &mut egui::Ui) {
+        let provider = self.preferences.assistant.provider;
+        // The status dot, its gap and spacing take 20 points; the title icon
+        // only shows when there is room to spare beside the picker.
+        if ui.available_width() >= 240.0 {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
+            let color = ui.visuals().text_color();
+            icons::paint(ui.painter(), rect, Icon::Assistant, color);
+        }
+        self.assistant_model_menu(ui, ui.available_width() - 20.0);
+        let (state, intent, _) = self.agent_state(provider);
+        status_dot(ui, intent, &format!("{} · {state}", provider.vendor().name));
+        ui.add_space(6.0);
+    }
+
+    /// Open the picker on the chat's agent, as it was first shown.
+    pub(super) fn open_model_menu(&mut self, ctx: &egui::Context) {
+        self.accounts.menu = Menu::default();
+        egui::Popup::open_id(ctx, menu_id());
+    }
+
     /// The header's button: the agent's badge, model and reasoning level.
-    pub(super) fn assistant_model_menu(&mut self, ui: &mut egui::Ui, max_width: f32) {
+    fn assistant_model_menu(&mut self, ui: &mut egui::Ui, max_width: f32) {
         let provider = self.preferences.assistant.provider;
         let vendor = provider.vendor().name;
         let model = self
@@ -622,7 +654,7 @@ impl App {
             .inner;
         self.accounts.menu.more |= more;
         match clicked {
-            Some((RowClick::Star, row)) => self.toggle_favourite_model(row),
+            Some((RowClick::Star, row)) => self.toggle_favourite_model(row.provider, &row.model),
             Some((RowClick::Row, row)) => self.choose_row(row),
             _ => {}
         }

@@ -517,7 +517,7 @@ fn finished(id: &str, update: &Json) -> Option<Update> {
         Some("failed") => false,
         _ => return None,
     };
-    let text = update["content"]
+    let content = update["content"]
         .as_array()
         .into_iter()
         .flatten()
@@ -525,32 +525,13 @@ fn finished(id: &str, update: &Json) -> Option<Update> {
         .filter(|t| !t.is_empty())
         .collect::<Vec<_>>()
         .join("\n");
-    let text = if text.is_empty() {
-        update
-            .get("rawOutput")
-            .filter(|o| !o.is_null())
-            .map(|o| match o {
-                Json::String(s) => s.clone(),
-                other => {
-                    let text = content_text(&other["content"]).trim().to_owned();
-                    if text.is_empty() {
-                        other.to_string()
-                    } else {
-                        text
-                    }
-                }
-            })
-            .filter(|t| !t.is_empty())
-            .unwrap_or_else(|| {
-                if ok {
-                    "Completed; the agent did not include tool output".into()
-                } else {
-                    "Failed; the agent did not include tool output".into()
-                }
-            })
-    } else {
-        text
-    };
+    let text = Some(content)
+        .filter(|t| !t.is_empty())
+        .or_else(|| raw_output(&update["rawOutput"]))
+        .unwrap_or_else(|| {
+            let done = if ok { "Completed" } else { "Failed" };
+            format!("{done}; the agent did not include tool output")
+        });
     Some(Update::ToolResult {
         id: id.to_owned(),
         ok,
@@ -558,9 +539,93 @@ fn finished(id: &str, update: &Json) -> Option<Update> {
     })
 }
 
+/// A tool's raw output as text: a string, its content's text, or its JSON.
+fn raw_output(output: &Json) -> Option<String> {
+    let text = match output {
+        Json::Null => return None,
+        Json::String(s) => s.clone(),
+        other => Some(content_text(&other["content"]).trim().to_owned())
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| other.to_string()),
+    };
+    Some(text).filter(|t| !t.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Update, is_ours, json, session_update, short_title, tool_name};
+    use super::{
+        Json, Link, NEW_SESSION, SET_EFFORT, SET_MODE, SET_MODEL, Spec, State, Update, is_ours,
+        json, response, session_update, short_title, tool_name,
+    };
+
+    #[test]
+    fn replies_to_requests_end_the_turn_or_are_reported() {
+        const PROMPT: u64 = 11;
+        let replied = |id: u64, message: Json| {
+            let (mut link, updates) = Link::detached();
+            let mut state = State {
+                prompt: Some(PROMPT),
+                original_model: Some("small".into()),
+                ..State::default()
+            };
+            response(&Spec::default(), &mut state, &mut link, Some(id), &message);
+            updates.try_iter().collect::<Vec<_>>()
+        };
+        let error = |message: &str| json!({"error": {"code": -1, "message": message}});
+        let ended = |error: Option<&str>| {
+            let error = error.map(str::to_owned);
+            vec![Update::TurnEnded { error }]
+        };
+        let notice = |text: &str| Update::Notice(text.into());
+        let refused = json!({"error": {"code": -32000, "message": "Authentication required",
+            "data": {"details": "no token"}}});
+        for (id, message, expected) in [
+            (
+                NEW_SESSION,
+                refused,
+                ended(Some(
+                    "Authentication required: no token. Sign in with the agent's own CLI in a \
+                     terminal, then try again.",
+                )),
+            ),
+            (NEW_SESSION, error("Bad folder"), ended(Some("Bad folder"))),
+            (
+                SET_MODEL,
+                error("nope"),
+                vec![
+                    Update::Ready {
+                        model: Some("small".into()),
+                    },
+                    notice("The agent kept its default model: nope"),
+                ],
+            ),
+            (
+                SET_EFFORT,
+                error("nope"),
+                vec![notice("The agent kept its reasoning level: nope")],
+            ),
+            (
+                SET_MODE,
+                error("nope"),
+                ended(Some(
+                    "Could not select the agent's default permission mode: nope",
+                )),
+            ),
+            (
+                PROMPT,
+                json!({"result": {"stopReason": "refusal"}}),
+                ended(Some("The agent declined to answer")),
+            ),
+            (
+                PROMPT,
+                json!({"result": {"stopReason": "end_turn"}}),
+                ended(None),
+            ),
+        ] {
+            assert_eq!(replied(id, message), expected, "reply to {id}");
+        }
+    }
+
     #[test]
     fn updates_and_titles_map_to_tursobench_tools() {
         let updates = session_update(&json!({

@@ -148,27 +148,47 @@ fn html(markdown: &str) -> String {
     out.join("\n")
 }
 
-/// `code` and **bold**, as the chat panel draws them.
-fn inline(text: &str) -> String {
-    let mut out = String::new();
+/// How a run of a line's text is set.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Span {
+    Plain,
+    Bold,
+    Code,
+}
+
+/// A line's `code` and **bold** runs, in order; `bold` starts it in bold. Bold
+/// carries on past code until its closing marks.
+pub(super) fn spans(text: &str, mut bold: bool) -> Vec<(Span, &str)> {
+    let mut spans = vec![];
     for (index, part) in text.split('`').enumerate() {
         if index % 2 == 1 {
-            out.push_str(&format!("<code>{}</code>", escape(part)));
+            spans.push((Span::Code, part));
             continue;
         }
         for (piece, segment) in part.split("**").enumerate() {
-            if piece > 0 {
-                out.push_str(if piece % 2 == 1 {
-                    "<strong>"
-                } else {
-                    "</strong>"
-                });
-            }
-            out.push_str(&escape(segment).replace('\n', "<br>"));
+            bold ^= piece > 0;
+            spans.push((if bold { Span::Bold } else { Span::Plain }, segment));
         }
-        if part.split("**").count() % 2 == 0 {
-            out.push_str("</strong>");
+    }
+    spans
+}
+
+/// `code` and **bold**, as the chat panel draws them.
+fn inline(text: &str) -> String {
+    let mut out = String::new();
+    let mut strong = false;
+    for (span, text) in spans(text, false) {
+        if span != Span::Code && strong != (span == Span::Bold) {
+            strong = !strong;
+            out.push_str(if strong { "<strong>" } else { "</strong>" });
         }
+        match span {
+            Span::Code => out.push_str(&format!("<code>{}</code>", escape(text))),
+            _ => out.push_str(&escape(text).replace('\n', "<br>")),
+        }
+    }
+    if strong {
+        out.push_str("</strong>");
     }
     out
 }
@@ -182,7 +202,7 @@ fn escape(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{CopyFormat, Entry, conversation, last_reply, tools};
+    use super::{CopyFormat, Entry, conversation, inline, last_reply, tools};
     use crate::app::presentation::Intent;
     use serde_json::json;
 
@@ -214,6 +234,11 @@ mod tests {
              <ul><li>one</li><li>two</li></ul>"
         );
         assert_eq!(last_reply(&entries[..1], CopyFormat::Markdown), None);
+        // Bold carries past inline code, as the panel draws it.
+        assert_eq!(
+            inline("**a `b` c** d"),
+            "<strong>a <code>b</code> c</strong> d"
+        );
     }
 
     #[test]

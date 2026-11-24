@@ -1,16 +1,20 @@
 //! Claude Code in headless mode, the route Anthropic documents for using the
 //! unmodified `claude` binary with the user's own subscription sign-in.
-use crate::agent::{Input, Link, Privacy, Protocol, Spec, Update, content_text, tool_name};
+use crate::agent::{Input, Link, Spec, Update, content_text, tool_name};
 use serde_json::{Value as Json, json};
-use std::{path::PathBuf, sync::mpsc::Receiver};
+use std::{path::Path, sync::mpsc::Receiver};
 
 /// Environment that stops Claude Code's telemetry, error reports and other
 /// non-essential traffic; only the conversation itself reaches Anthropic.
-pub const QUIET_ENV: &[(&str, &str)] = &[
-    ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"),
-    ("DISABLE_TELEMETRY", "1"),
-    ("DISABLE_ERROR_REPORTING", "1"),
-];
+pub(crate) fn quiet_env() -> impl Iterator<Item = (String, String)> {
+    [
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+        "DISABLE_TELEMETRY",
+        "DISABLE_ERROR_REPORTING",
+    ]
+    .into_iter()
+    .map(|name| (name.into(), "1".into()))
+}
 
 /// The model aliases `claude --model` documents; Claude Code has no command
 /// that lists models, so these stand in for one.
@@ -22,39 +26,34 @@ pub const EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 const SETTINGS_REQUEST: &str = "tursobench-settings";
 
 /// Arguments that start a conversation with every built-in tool removed and no
-/// user or project settings, hooks, slash commands or other MCP servers.
-/// `privacy` decides whether Claude Code saves the session and reports usage.
-pub fn spec(
-    program: PathBuf,
-    cwd: PathBuf,
-    config: &std::path::Path,
-    tools: &[&str],
-    system_prompt: &str,
-    model: Option<&str>,
-    privacy: Privacy,
-) -> Spec {
+/// user or project settings, hooks, slash commands or MCP servers but
+/// `config`'s, of which only `tools` may be used. The spec's privacy decides
+/// whether Claude Code saves the session and reports usage.
+pub(crate) fn serve(spec: &mut Spec, config: &Path, tools: &[&str]) {
     let allowed = tools
         .iter()
         .map(|t| format!("mcp__{}__{t}", crate::relay::SERVER_NAME))
         .collect::<Vec<_>>()
         .join(",");
-    let mut args: Vec<String> = [
-        "-p",
-        "--input-format",
-        "stream-json",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--include-partial-messages",
-        "--restricted",
-        "--tools",
-        "",
-        "--strict-mcp-config",
-        "--disable-slash-commands",
-    ]
-    .map(String::from)
-    .into();
-    if !privacy.keep_history {
+    let args = &mut spec.args;
+    args.extend(
+        [
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--include-partial-messages",
+            "--restricted",
+            "--tools",
+            "",
+            "--strict-mcp-config",
+            "--disable-slash-commands",
+        ]
+        .map(String::from),
+    );
+    if !spec.privacy.keep_history {
         args.push("--no-session-persistence".into());
     }
     args.extend([
@@ -63,29 +62,18 @@ pub fn spec(
         "--allowedTools".into(),
         allowed,
         "--system-prompt".into(),
-        system_prompt.into(),
+        spec.system_prompt.clone(),
     ]);
-    if let Some(model) = model.filter(|m| !m.trim().is_empty()) {
-        args.extend(["--model".into(), model.trim().into()]);
+    if let Some(model) = spec
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+    {
+        args.extend(["--model".into(), model.into()]);
     }
-    Spec {
-        program,
-        args,
-        env: if privacy.telemetry_off {
-            QUIET_ENV
-                .iter()
-                .map(|(k, v)| ((*k).into(), (*v).into()))
-                .collect()
-        } else {
-            vec![]
-        },
-        cwd,
-        protocol: Protocol::ClaudeStream,
-        system_prompt: system_prompt.into(),
-        mcp: None,
-        model: model.map(str::to_owned),
-        effort: None,
-        privacy,
+    if spec.privacy.telemetry_off {
+        spec.env.extend(quiet_env());
     }
 }
 
@@ -258,7 +246,8 @@ fn set_effort(link: &mut Link, changes: &mut u64, level: Option<&str>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Privacy, Update, json, parse, spec};
+    use super::{Path, Spec, Update, json, parse, serve};
+    use crate::agent::Privacy;
     fn parsed(line: &str) -> Vec<Update> {
         parse(&serde_json::from_str(line).unwrap())
     }
@@ -318,13 +307,19 @@ mod tests {
     }
     #[test]
     fn arguments_remove_built_in_tools_and_allow_only_ours() {
-        let spec = spec(
-            "claude".into(),
-            "/tmp".into(),
-            std::path::Path::new("/run/x.json"),
+        let served = |tools: &[&str], model: Option<&str>, privacy: Privacy| {
+            let mut spec = Spec {
+                system_prompt: "Be brief".into(),
+                model: model.map(str::to_owned),
+                privacy,
+                ..Spec::default()
+            };
+            serve(&mut spec, Path::new("/run/x.json"), tools);
+            spec
+        };
+        let spec = served(
             &["run_query", "describe_table"],
-            "Be brief",
-            Some("sonnet"),
+            Some(" sonnet "),
             Privacy::default(),
         );
         let joined = spec.args.join(" ");
@@ -342,12 +337,8 @@ mod tests {
         );
         assert!(joined.ends_with("--model sonnet"));
         assert!(!joined.contains("--bare"));
-        let open = super::spec(
-            "claude".into(),
-            "/tmp".into(),
-            std::path::Path::new("/run/x.json"),
+        let open = served(
             &["run_query"],
-            "Be brief",
             None,
             Privacy {
                 telemetry_off: false,

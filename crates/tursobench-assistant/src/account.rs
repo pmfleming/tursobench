@@ -487,18 +487,8 @@ fn protocol_args(target: &Target) -> Vec<String> {
     if target.provider.vendor().protocol != Protocol::CodexAppServer {
         return target.args.clone();
     }
-    let mut args = vec!["app-server".into()];
-    for feature in crate::codex::DISABLED_FEATURES {
-        args.extend(["--disable".into(), (*feature).into()]);
-    }
-    for config in crate::codex::QUIET_CONFIG
-        .iter()
-        .copied()
-        .chain(["mcp_servers={}", "history.persistence=\"none\""])
-    {
-        args.extend(["-c".into(), config.into()]);
-    }
-    args
+    let config = crate::codex::QUIET_CONFIG.iter().copied();
+    crate::codex::app_server(config.chain(["mcp_servers={}", crate::codex::NO_HISTORY]))
 }
 fn initialize(
     target: &Target,
@@ -544,11 +534,7 @@ fn run(
 fn quiet(target: &Target) -> Target {
     let mut target = target.clone();
     if target.provider == Provider::Claude {
-        target.env.extend(
-            crate::claude::QUIET_ENV
-                .iter()
-                .map(|(k, v)| ((*k).into(), (*v).into())),
-        );
+        target.env.extend(crate::claude::quiet_env());
     }
     target
 }
@@ -896,7 +882,7 @@ fn claude_check(target: &Target, cancel: &AtomicBool) -> Result<Status, String> 
 mod tests {
     use super::{
         CHECK, Effort, Event, Job, Operation, Process, Provider, SignIn, Status, Target,
-        auth_error, claude_login, codex_status, run, terminals,
+        acp_models, auth_error, claude_login, codex_status, run, terminals,
     };
     use serde_json::json;
     use std::{
@@ -1119,6 +1105,11 @@ for line in sys.stdin:
             codex_status(&json!({"account":null,"requiresOpenaiAuth":false})).state,
             SignIn::Unknown
         );
+        // Without a model config option, an ACP session's model list is read.
+        let models = acp_models(&json!({"models": {"availableModels": [
+            {"modelId": "a", "name": "Alpha"}, {"modelId": "b"}, {"name": "no id"}]}}));
+        let named: Vec<_> = models.iter().map(|m| (&*m.id, &*m.name)).collect();
+        assert_eq!(named, [("a", "Alpha"), ("b", "b")]);
     }
 
     #[test]

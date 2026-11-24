@@ -3,9 +3,7 @@
 //! Agent Client Protocol agent) and offers it read-only tools for the database
 //! in this workspace. TursoBench never handles credentials.
 use super::{
-    App,
-    assistant_accounts::{AgentGrid, Column, status_dot},
-    assistant_export,
+    App, assistant_export,
     icons::{self, Icon},
     presentation::{self, Intent},
 };
@@ -16,7 +14,6 @@ use std::sync::{Arc, Mutex, mpsc};
 use transcript::{Action, entry_ui};
 use tursobench_assistant::{
     agent::{Agent, Protocol, Spec, Update, Wake},
-    claude, codex,
     relay::{self, Endpoint},
 };
 
@@ -55,7 +52,7 @@ pub(super) struct Conversation {
     running: Option<Running>,
     pub(super) busy: bool,
     /// The running agent's name, kept for the header while it runs.
-    label: Option<String>,
+    label: Option<&'static str>,
     /// The command that signs this agent in, for error hints.
     sign_in: Option<String>,
     pub(super) model: Option<String>,
@@ -150,7 +147,7 @@ fn sharing_choice(sharing: Sharing) -> (Icon, &'static str, &'static str) {
     }
 }
 
-/// The two default choices; returns one when clicked.
+/// The two default choices; returns a new one when clicked.
 fn default_sharing_ui(ui: &mut egui::Ui, current: Sharing) -> Option<Sharing> {
     let mut default = None;
     ui.horizontal(|ui| {
@@ -165,6 +162,7 @@ fn default_sharing_ui(ui: &mut egui::Ui, current: Sharing) -> Option<Sharing> {
             if icons::control(ui, icon, &name, "", sharing == current, false)
                 .on_hover_text(detail)
                 .clicked()
+                && sharing != current
             {
                 default = Some(sharing);
             }
@@ -181,10 +179,7 @@ fn grant_row(ui: &mut egui::Ui, path: &str, agent: &str, sharing: Sharing) -> bo
         let (rect, response) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
         icons::paint(ui.painter(), rect, icon, ui.visuals().text_color());
         response.on_hover_text(name);
-        let file = std::path::Path::new(path)
-            .file_name()
-            .map_or_else(|| path.to_owned(), |n| n.to_string_lossy().into_owned());
-        ui.label(file).on_hover_text(path);
+        ui.label(file_name(path)).on_hover_text(path);
         ui.weak(format!("{agent} · {name}"));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             icons::control(ui, Icon::Trash, "Forget; use the default", "", false, false).clicked()
@@ -192,6 +187,13 @@ fn grant_row(ui: &mut egui::Ui, path: &str, agent: &str, sharing: Sharing) -> bo
         .inner
     })
     .inner
+}
+
+/// A database's file name, or its whole path when it has none.
+fn file_name(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .map_or_else(|| path.to_owned(), |n| n.to_string_lossy().into_owned())
 }
 
 impl App {
@@ -209,88 +211,60 @@ impl App {
         let Some(database) = self.assistant_database() else {
             return;
         };
-        let previous = self.preferences.assistant.sharing_for(&database);
-        self.preferences
-            .assistant
-            .grants
-            .entry(database)
-            .or_default()
-            .insert(self.preferences.assistant.provider, sharing);
+        self.change_sharing(|app| {
+            let assistant = &mut app.preferences.assistant;
+            let grants = assistant.grants.entry(database).or_default();
+            grants.insert(assistant.provider, sharing);
+        });
+    }
+    /// Change what databases share and save it. Each workspace's agent applies
+    /// what its database now shares at once, and is told with its next prompt.
+    fn change_sharing(&mut self, change: impl FnOnce(&mut Self)) {
+        let before: Vec<_> = std::iter::once(&self.database)
+            .chain(self.parked.values())
+            .map(|d| {
+                self.preferences
+                    .assistant
+                    .sharing_for(&d.tools.database_scope)
+            })
+            .collect();
+        change(self);
         self.preferences.normalize();
         self.store.save(&self.preferences);
-        sharing_changed(&mut self.database.assistant, previous, sharing);
-    }
-    /// Change what databases without their own choice share, in every workspace.
-    fn set_default_assistant_sharing(&mut self, sharing: Sharing) {
-        let previous = self.preferences.assistant.default_sharing;
-        if previous == sharing {
-            return;
-        }
-        self.preferences.assistant.default_sharing = sharing;
-        self.store.save(&self.preferences);
         let assistant = &self.preferences.assistant;
-        for database in std::iter::once(&mut self.database).chain(self.parked.values_mut()) {
-            if assistant
-                .grant_for(&database.tools.database_scope)
-                .is_none()
-            {
-                sharing_changed(&mut database.assistant, previous, sharing);
-            }
-        }
-    }
-    /// How the chat's copy buttons write text.
-    pub(super) fn chat_settings_ui(&mut self, ui: &mut egui::Ui) {
-        let mut format = self.preferences.assistant.copy_format;
-        AgentGrid::new(ui).field(ui, "Copy as", Column::Rest, |ui| {
-            for (choice, name) in assistant_export::FORMATS {
-                ui.selectable_value(&mut format, choice, name)
-                    .on_hover_text("How the chat's copy buttons write a reply or the conversation");
-            }
-        });
-        if format != self.preferences.assistant.copy_format {
-            self.preferences.assistant.copy_format = format;
-            self.store.save(&self.preferences);
+        let databases = std::iter::once(&mut self.database).chain(self.parked.values_mut());
+        for (database, before) in databases.zip(before) {
+            let after = assistant.sharing_for(&database.tools.database_scope);
+            sharing_changed(&mut database.assistant, before, after);
         }
     }
 
-    /// The default sharing, then each database's own choice, which can be forgotten.
+    /// The default sharing, then each database's own choice, which can be
+    /// forgotten so the database shares the default again.
     pub(super) fn sharing_settings_ui(&mut self, ui: &mut egui::Ui) {
-        if let Some(sharing) = default_sharing_ui(ui, self.preferences.assistant.default_sharing) {
-            self.set_default_assistant_sharing(sharing);
+        let assistant = &self.preferences.assistant;
+        if let Some(sharing) = default_sharing_ui(ui, assistant.default_sharing) {
+            self.change_sharing(|app| app.preferences.assistant.default_sharing = sharing);
         }
-        if self.preferences.assistant.grants.is_empty() {
-            return;
+        let grants = &self.preferences.assistant.grants;
+        if !grants.is_empty() {
+            ui.add_space(4.0);
         }
-        ui.add_space(4.0);
         let mut forget = None;
-        for (path, grants) in &self.preferences.assistant.grants {
+        for (path, grants) in grants {
             for (provider, sharing) in grants {
                 if grant_row(ui, path, provider.vendor().name, *sharing) {
                     forget = Some((path.clone(), *provider));
                 }
             }
         }
-        let Some((path, provider)) = forget else {
-            return;
-        };
-        let assistant = &mut self.preferences.assistant;
-        let previous = assistant
-            .grants
-            .get_mut(&path)
-            .and_then(|g| g.remove(&provider));
-        // Conversations with that agent about it go on with the default, and are told so.
-        if let Some(previous) = previous
-            && provider == assistant.provider
-        {
-            let default = assistant.default_sharing;
-            for database in std::iter::once(&mut self.database).chain(self.parked.values_mut()) {
-                if path == database.tools.database_scope {
-                    sharing_changed(&mut database.assistant, previous, default);
+        if let Some((path, provider)) = forget {
+            self.change_sharing(|app| {
+                if let Some(grants) = app.preferences.assistant.grants.get_mut(&path) {
+                    grants.remove(&provider);
                 }
-            }
+            });
         }
-        self.preferences.normalize();
-        self.store.save(&self.preferences);
     }
 
     pub(super) fn reset_assistant_conversations(&mut self) {
@@ -313,12 +287,17 @@ impl App {
             self.assistant_update(update);
         }
         for proposal in proposals {
-            self.load_sql_window(proposal.sql);
-            self.database.assistant.push(Entry::Notice(
-                Intent::Primary,
-                "Opened proposed SQL in an editor tile. Review it before running.".into(),
-            ));
+            self.open_assistant_proposal(proposal.sql);
         }
+    }
+
+    /// Open SQL the agent proposed in a new editor tile, and say so in the chat.
+    pub(super) fn open_assistant_proposal(&mut self, sql: String) {
+        self.load_sql_window(sql);
+        self.database.assistant.push(Entry::Notice(
+            Intent::Primary,
+            "Opened proposed SQL in an editor tile. Review it before running.".into(),
+        ));
     }
 
     fn assistant_update(&mut self, update: Update) {
@@ -354,10 +333,7 @@ impl App {
             Update::Exited { message } => {
                 conversation.running = None;
                 conversation.busy = false;
-                let name = conversation
-                    .label
-                    .clone()
-                    .unwrap_or_else(|| "The agent".into());
+                let name = conversation.label.unwrap_or("The agent");
                 let hint = explain(&message, conversation.sign_in.as_deref());
                 conversation.push(Entry::Notice(
                     Intent::Danger,
@@ -368,11 +344,10 @@ impl App {
     }
 
     fn start_assistant(&mut self, ctx: &egui::Context, sharing: Sharing) -> Result<(), String> {
-        let database = self.database.tools.database_scope.clone();
-        let name = std::path::Path::new(&database)
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| database.clone());
+        let profile = self.assistant_profile()?;
+        let program = profile.program.clone();
+        #[cfg(test)]
+        let program = self.database.assistant.program.clone().unwrap_or(program);
         let wake = ctx.clone();
         let wake: Wake = Arc::new(move || wake.request_repaint());
         let (tx, proposals) = mpsc::channel();
@@ -386,74 +361,37 @@ impl App {
             .map_err(|e| format!("TursoBench could not find its own program: {e}"))?;
         let endpoint = Endpoint::start(host.clone(), relay_program)
             .map_err(|e| format!("Could not start the assistant's tools: {e}"))?;
-        let cwd = relay::private_dir().map_err(|e| e.to_string())?;
-        let profile = self.assistant_profile()?;
-        #[cfg(test)]
-        let program = self
-            .database
-            .assistant
-            .program
-            .clone()
-            .unwrap_or_else(|| profile.program.clone());
-        #[cfg(not(test))]
-        let program = profile.program.clone();
-        let model = self
-            .preferences
-            .assistant
-            .selected_model()
-            .trim()
-            .to_owned();
-        let model = (!model.is_empty()).then_some(model.as_str());
-        let effort = self.assistant_effort();
-        let privacy = self
-            .preferences
-            .assistant
-            .privacy
-            .of(self.preferences.assistant.provider);
-        let prompt =
-            tools::system_prompt(privacy.share_file_name.then_some(name.as_str()), sharing);
-        let mut spec = match profile.protocol {
-            Protocol::ClaudeStream => claude::spec(
-                program,
-                cwd,
-                endpoint.config_path(),
-                &tools::NAMES,
-                &prompt,
-                model,
-                privacy.agent(),
-            ),
-            Protocol::CodexAppServer => codex::spec(
-                program,
-                cwd,
-                endpoint.launch().clone(),
-                &prompt,
-                model,
-                privacy.agent(),
-            ),
-            Protocol::Acp => Spec {
-                program,
-                args: profile.args.clone(),
-                env: profile.env.clone(),
-                cwd,
-                protocol: Protocol::Acp,
-                system_prompt: prompt,
-                mcp: Some(endpoint.launch().clone()),
-                model: model.map(str::to_owned),
-                privacy: privacy.agent(),
-                effort: None,
-            },
+        let assistant = &self.preferences.assistant;
+        let privacy = assistant.privacy.of(assistant.provider);
+        let database = privacy
+            .share_file_name
+            .then(|| file_name(&self.database.tools.database_scope));
+        let model = assistant.selected_model().trim();
+        let spec = Spec {
+            program,
+            args: profile.args,
+            cwd: relay::private_dir().map_err(|e| e.to_string())?,
+            protocol: profile.vendor.protocol,
+            system_prompt: tools::system_prompt(database.as_deref(), sharing),
+            model: (!model.is_empty()).then(|| model.to_owned()),
+            // Every protocol applies the level in its driver, not on the command line.
+            effort: self.assistant_effort(),
+            privacy: privacy.agent(),
+            ..Spec::default()
         };
-        // Every protocol applies the level in its driver, not on the command line.
-        spec.effort = effort;
-        let agent = Agent::spawn(spec, wake).map_err(|e| {
+        let name = profile.vendor.name;
+        let agent = Agent::spawn(spec.serve(&endpoint, &tools::NAMES), wake).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
-                profile.missing.clone()
+                format!(
+                    "{name} was not found. Scan for agents or set its executable in Settings → \
+                     Assistant."
+                )
             } else {
-                format!("Could not start {}: {e}", profile.name)
+                format!("Could not start {name}: {e}")
             }
         })?;
-        self.database.assistant.label = Some(profile.name.clone());
-        self.database.assistant.sign_in = Some(profile.sign_in.clone());
+        self.database.assistant.label = Some(name);
+        self.database.assistant.sign_in = Some(profile.sign_in);
         self.database.assistant.running = Some(Running {
             agent,
             host,
@@ -669,27 +607,6 @@ impl App {
         }
     }
 
-    /// The header's icon, model picker and status dot, narrowed to fit.
-    fn assistant_agent_picker(&mut self, ui: &mut egui::Ui) {
-        let provider = self.preferences.assistant.provider;
-        let name = provider.vendor().name;
-        // The status dot, its gap and spacing take 20 points; the title icon
-        // only shows when there is room to spare beside the picker.
-        if ui.available_width() >= 240.0 {
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
-            icons::paint(
-                ui.painter(),
-                rect,
-                Icon::Assistant,
-                ui.visuals().text_color(),
-            );
-        }
-        self.assistant_model_menu(ui, ui.available_width() - 20.0);
-        let (state, intent, _) = self.agent_state(provider);
-        status_dot(ui, intent, &format!("{name} · {state}"));
-        ui.add_space(6.0);
-    }
-
     /// Who receives what, above an empty conversation: the first time an agent is
     /// used, then once every few sessions. Decided once per session and agent.
     fn assistant_intro(&mut self, ui: &mut egui::Ui) {
@@ -713,9 +630,9 @@ impl App {
                     "The assistant runs your own signed-in {} and uses your plan. What it \
                      reads from this database is sent to {}. It cannot change the \
                      database; it proposes SQL for you to review.",
-                    profile.name, profile.vendor
+                    profile.vendor.name, profile.vendor.company
                 );
-                match profile.protocol {
+                match profile.vendor.protocol {
                     Protocol::Acp => text.push_str(
                         " This agent also has tools of its own: TursoBench declines its \
                          requests to run commands or edit files, but some agents can read \
@@ -860,5 +777,21 @@ fn explain(error: &str, sign_in: Option<&str>) -> String {
         "The agent gave no reason.".into()
     } else {
         error.into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn sign_in_errors_point_to_settings_once() {
+        let claude = Some("claude auth login");
+        let hint = "Sign in in Settings → Assistant, or run `claude auth login` in a terminal";
+        assert!(super::explain("Not logged in · Please run /login", claude).contains(hint));
+        assert!(super::explain("Unauthorized", None).contains("run `the agent's CLI`"));
+        // An agent that already explains how to sign in is not told twice.
+        let told = "Authentication required. Sign in, then try again.";
+        assert_eq!(super::explain(told, claude), told);
+        assert_eq!(super::explain(" ", claude), "The agent gave no reason.");
+        assert_eq!(super::explain("Rate limited", claude), "Rate limited");
     }
 }

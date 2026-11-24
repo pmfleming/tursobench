@@ -17,7 +17,6 @@ use std::{
 };
 use tursobench_assistant::{
     agent::{Agent, Protocol, Spec, Update},
-    claude, codex,
     mcp::{ToolHost, ToolOutput, ToolSpec},
     relay::{self, Endpoint, Launch},
     vendor::{resolve, search_dirs},
@@ -65,53 +64,10 @@ fn relay(launch: &Launch, env: impl FnOnce(&mut Command)) -> Child {
         .unwrap()
 }
 
-const INITIALIZE: &str =
-    r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#;
-
-#[test]
-fn relay_process_carries_mcp_to_the_app_socket() {
-    let (_runtime, endpoint) = endpoint();
-    let launch = endpoint.launch().clone();
-    let mut child = relay(&launch, |c| {
-        c.envs(launch.env.iter().cloned());
-    });
-    let mut stdin = child.stdin.take().unwrap();
-    writeln!(stdin, "{INITIALIZE}").unwrap();
-    writeln!(
-        stdin,
-        r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"upper","arguments":{{"text":"turso"}}}}}}"#
-    )
-    .unwrap();
-    drop(stdin);
-    let lines: Vec<Value> = BufReader::new(child.stdout.take().unwrap())
-        .lines()
-        .map(|l| serde_json::from_str(&l.unwrap()).unwrap())
-        .collect();
-    assert!(child.wait().unwrap().success());
-    assert_eq!(lines[0]["result"]["serverInfo"]["name"], "tursobench");
-    assert_eq!(lines[1]["result"]["content"][0]["text"], "TURSO");
-
-    // Without the token the relay is refused and gets nothing back.
-    let mut refused = relay(&launch, |c| {
-        c.env("TURSOBENCH_MCP_TOKEN", "wrong");
-    });
-    writeln!(
-        refused.stdin.take().unwrap(),
-        r#"{{"jsonrpc":"2.0","id":1,"method":"ping"}}"#
-    )
-    .unwrap();
-    let mut out = String::new();
-    BufReader::new(refused.stdout.take().unwrap())
-        .read_line(&mut out)
-        .unwrap();
-    assert_eq!(out, "");
-    let _ = refused.wait();
-}
-
 /// Agents wait for each reply with their input still open, and start MCP
-/// servers with a bare environment.
+/// servers with a bare environment. Without the token the relay gets nothing.
 #[test]
-fn relay_answers_each_request_while_the_agent_waits() {
+fn relay_process_answers_each_request_on_the_app_socket() {
     let (_runtime, endpoint) = endpoint();
     let launch = endpoint.launch().clone();
     let mut child = relay(&launch, |c| {
@@ -130,36 +86,56 @@ fn relay_answers_each_request_while_the_agent_waits() {
             }
         }
     });
+    let mut send = |message: Value| writeln!(stdin, "{message}").unwrap();
     let reply = |id: u64| -> Value {
         let line = rx
-            .recv_timeout(std::time::Duration::from_secs(5))
+            .recv_timeout(Duration::from_secs(5))
             .unwrap_or_else(|_| panic!("no reply to request {id} while input is open"));
         let value: Value = serde_json::from_str(&line).unwrap();
         assert_eq!(value["id"], id);
         value
     };
-    writeln!(stdin, "{INITIALIZE}").unwrap();
+    let initialize = json!({"protocolVersion": "2025-06-18"});
+    send(json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": initialize}));
     assert_eq!(reply(0)["result"]["serverInfo"]["name"], "tursobench");
-    writeln!(
-        stdin,
-        r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#
-    )
-    .unwrap();
-    writeln!(stdin, r#"{{"jsonrpc":"2.0","id":1,"method":"tools/list"}}"#).unwrap();
+    send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+    send(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}));
     assert_eq!(reply(1)["result"]["tools"][0]["name"], "upper");
+    let call = json!({"name": "upper", "arguments": {"text": "turso"}});
+    send(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": call}));
+    assert_eq!(reply(2)["result"]["content"][0]["text"], "TURSO");
     drop(stdin);
     assert!(child.wait().unwrap().success());
+
+    let mut refused = relay(&launch, |c| {
+        c.env("TURSOBENCH_MCP_TOKEN", "wrong");
+    });
+    writeln!(
+        refused.stdin.take().unwrap(),
+        r#"{{"jsonrpc":"2.0","id":1,"method":"ping"}}"#
+    )
+    .unwrap();
+    let mut out = String::new();
+    BufReader::new(refused.stdout.take().unwrap())
+        .read_line(&mut out)
+        .unwrap();
+    assert_eq!(out, "");
+    let _ = refused.wait();
 }
 
 const INSTRUCTIONS: &str = "You test tools. Do exactly what you are asked.";
 
 /// Serves `upper` from this user's private directory to the agent `spec`
 /// describes, asks for one call, and checks the call, its result and the reply.
-fn assert_calls_upper(spec: impl FnOnce(&Endpoint) -> Spec) {
+fn assert_calls_upper(spec: Spec) {
     let upper = Arc::new(Upper::default());
     let program = env!("CARGO_BIN_EXE_tursobench").into();
     let endpoint = Endpoint::start(upper.clone(), program).unwrap();
-    let agent = Agent::spawn(spec(&endpoint), Arc::new(|| {})).unwrap();
+    let spec = Spec {
+        cwd: relay::private_dir().unwrap(),
+        ..spec
+    };
+    let agent = Agent::spawn(spec.serve(&endpoint, &["upper"]), Arc::new(|| {})).unwrap();
     agent.prompt(
         "Call the upper tool once with the text 'turso bench', then reply with only its output.",
     );
@@ -196,49 +172,35 @@ fn assert_calls_upper(spec: impl FnOnce(&Endpoint) -> Spec) {
 #[test]
 #[ignore = "uses the signed-in claude CLI and its plan"]
 fn signed_in_claude_calls_relay_tools_with_built_in_tools_removed() {
-    assert_calls_upper(|endpoint| Spec {
+    assert_calls_upper(Spec {
+        program: "claude".into(),
+        system_prompt: INSTRUCTIONS.into(),
+        model: Some("haiku".into()),
         effort: Some("low".into()),
-        ..claude::spec(
-            "claude".into(),
-            relay::private_dir().unwrap(),
-            endpoint.config_path(),
-            &["upper"],
-            INSTRUCTIONS,
-            Some("haiku"),
-            Default::default(),
-        )
+        ..Spec::default()
     });
 }
 
 #[test]
 #[ignore = "uses the signed-in codex CLI and its plan"]
 fn signed_in_codex_calls_relay_tools_in_a_read_only_thread() {
-    assert_calls_upper(|endpoint| Spec {
+    assert_calls_upper(Spec {
+        program: "codex".into(),
+        protocol: Protocol::CodexAppServer,
+        system_prompt: INSTRUCTIONS.into(),
         effort: Some("low".into()),
-        ..codex::spec(
-            "codex".into(),
-            relay::private_dir().unwrap(),
-            endpoint.launch().clone(),
-            INSTRUCTIONS,
-            None,
-            Default::default(),
-        )
+        ..Spec::default()
     });
 }
 
 #[test]
 #[ignore = "uses the signed-in Antigravity CLI and its plan"]
 fn signed_in_antigravity_calls_relay_tools() {
-    assert_calls_upper(|endpoint| Spec {
+    assert_calls_upper(Spec {
         program: resolve(std::path::Path::new("agy"), &search_dirs()).unwrap(),
         args: vec!["acp".into(), "--disable-telemetry".into()],
-        env: vec![],
-        cwd: relay::private_dir().unwrap(),
         protocol: Protocol::Acp,
         system_prompt: "You test tools. Use only the supplied TursoBench MCP tool.".into(),
-        mcp: Some(endpoint.launch().clone()),
-        model: None,
-        privacy: Default::default(),
-        effort: None,
+        ..Spec::default()
     });
 }

@@ -1,10 +1,9 @@
 //! Drive scripted stand-ins for each protocol through whole conversations:
 //! handshakes, MCP setup, streaming, declined permissions and refused requests,
 //! models and reasoning levels, interrupts and exits.
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 use tursobench_assistant::{
     agent::{Agent, Protocol, Spec, Update},
-    codex,
     relay::Launch,
 };
 
@@ -15,29 +14,34 @@ fn next(agent: &Agent) -> Update {
         .expect("an update before the timeout")
 }
 
-/// A spec that runs `script` with `interpreter`, with nothing else configured.
-fn scripted(dir: &Path, interpreter: &str, script: &str, protocol: Protocol) -> Spec {
-    let path = dir.join("agent");
+/// Run `script` with `interpreter` as `spec` describes, and send `prompt` at
+/// once: a prompt sent before the conversation exists waits for it.
+fn start(interpreter: &str, script: &str, spec: Spec, prompt: &str) -> (tempfile::TempDir, Agent) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("agent");
     std::fs::write(&path, script).unwrap();
-    Spec {
+    let spec = Spec {
         program: interpreter.into(),
         args: vec![path.to_string_lossy().into_owned()],
-        env: vec![],
-        cwd: dir.into(),
-        protocol,
-        system_prompt: String::new(),
-        mcp: None,
-        model: None,
-        privacy: Default::default(),
-        effort: None,
-    }
+        cwd: dir.path().into(),
+        ..spec
+    };
+    let agent = Agent::spawn(spec, Arc::new(|| {})).unwrap();
+    agent.prompt(prompt);
+    (dir, agent)
 }
 
-fn launch() -> Launch {
-    Launch {
-        command: "/usr/bin/tursobench".into(),
-        args: vec!["--mcp-relay".into(), "/run/x.sock".into()],
-        env: vec![("TURSOBENCH_MCP_TOKEN".into(), "t".into())],
+/// A conversation TursoBench serves its tools to.
+fn served(protocol: Protocol) -> Spec {
+    Spec {
+        protocol,
+        system_prompt: "Be helpful".into(),
+        mcp: Some(Launch {
+            command: "/usr/bin/tursobench".into(),
+            args: vec!["--mcp-relay".into(), "/run/x.sock".into()],
+            env: vec![("TURSOBENCH_MCP_TOKEN".into(), "t".into())],
+        }),
+        ..Spec::default()
     }
 }
 
@@ -90,16 +94,11 @@ done
 
 #[test]
 fn a_scripted_acp_agent_gets_tools_but_no_shell_files_or_other_permissions() {
-    let dir = tempfile::tempdir().unwrap();
     let spec = Spec {
-        system_prompt: "Be helpful".into(),
-        mcp: Some(launch()),
         model: Some("fake-large".into()),
-        ..scripted(dir.path(), "bash", ACP, Protocol::Acp)
+        ..served(Protocol::Acp)
     };
-    let agent = Agent::spawn(spec, Arc::new(|| {})).unwrap();
-    // A prompt sent before the session exists waits for it.
-    agent.prompt("Hello");
+    let (_dir, agent) = start("bash", ACP, spec, "Hello");
     assert_ready(&agent, "fake-large");
     assert_eq!(next(&agent), Update::Text("Hi".into()));
     assert!(
@@ -143,14 +142,13 @@ for line in iter(read_line, ''):
 
 #[test]
 fn acp_applies_permission_mode_grouped_model_and_effort_before_sending_prompts() {
-    let dir = tempfile::tempdir().unwrap();
     let spec = Spec {
+        protocol: Protocol::Acp,
         model: Some("large".into()),
         effort: Some("high".into()),
-        ..scripted(dir.path(), "python3", ACP_SETTINGS, Protocol::Acp)
+        ..Spec::default()
     };
-    let agent = Agent::spawn(spec, Arc::new(|| {})).unwrap();
-    agent.prompt("Hello");
+    let (_dir, agent) = start("python3", ACP_SETTINGS, spec, "Hello");
     assert_ready(&agent, "large");
     assert_eq!(next(&agent), Update::TurnEnded { error: None });
     // Back to the agent's own level: the session's first value is set again.
@@ -187,10 +185,7 @@ exit 0
 
 #[test]
 fn a_scripted_claude_streams_a_turn_accepts_an_interrupt_and_exits() {
-    let dir = tempfile::tempdir().unwrap();
-    let spec = scripted(dir.path(), "bash", CLAUDE, Protocol::ClaudeStream);
-    let agent = Agent::spawn(spec, Arc::new(|| {})).unwrap();
-    agent.prompt("What tables are there?");
+    let (_dir, agent) = start("bash", CLAUDE, Spec::default(), "What tables are there?");
     assert_ready(&agent, "fake-model");
     assert_eq!(next(&agent), Update::Text("Hel".into()));
     assert_eq!(next(&agent), Update::Text("lo".into()));
@@ -215,10 +210,10 @@ fn a_scripted_claude_streams_a_turn_accepts_an_interrupt_and_exits() {
 
 #[test]
 fn a_missing_program_is_reported_at_spawn() {
-    let dir = tempfile::tempdir().unwrap();
     let spec = Spec {
         program: "/nonexistent/claude".into(),
-        ..scripted(dir.path(), "bash", "", Protocol::ClaudeStream)
+        cwd: std::env::temp_dir(),
+        ..Spec::default()
     };
     let error = Agent::spawn(spec, Arc::new(|| {})).err().unwrap();
     assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
@@ -263,20 +258,12 @@ done
 
 #[test]
 fn a_scripted_codex_gets_only_our_tools_and_no_approvals_or_tokens() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut spec = codex::spec(
-        "bash".into(),
-        dir.path().into(),
-        launch(),
-        "Be helpful",
-        Some("gpt-fake"),
-        Default::default(),
-    );
-    spec.effort = Some("high".into());
-    spec.args = scripted(dir.path(), "bash", CODEX, Protocol::CodexAppServer).args;
-    let agent = Agent::spawn(spec, Arc::new(|| {})).unwrap();
-    // A prompt sent before the thread exists waits for it.
-    agent.prompt("Hello");
+    let spec = Spec {
+        model: Some("gpt-fake".into()),
+        effort: Some("high".into()),
+        ..served(Protocol::CodexAppServer)
+    };
+    let (_dir, agent) = start("bash", CODEX, spec, "Hello");
     assert_ready(&agent, "gpt-fake");
     assert_eq!(next(&agent), Update::Text("Hi".into()));
     assert!(matches!(next(&agent), Update::Notice(t) if t.contains("cat /etc/hostname")));

@@ -7,17 +7,15 @@
 //! shell, web search, apps, plugins, browser and computer use are switched off;
 //! its MCP servers are replaced by TursoBench's alone. TursoBench never calls
 //! the login, logout, account or token methods.
-use crate::agent::{
-    Input, Link, Privacy, Protocol, Queue, Spec, Update, content_text, initialize, tool_name,
-};
+use crate::agent::{Input, Link, Queue, Spec, Update, content_text, initialize, tool_name};
 use serde_json::{Value as Json, json};
-use std::{path::PathBuf, sync::mpsc::Receiver};
+use std::sync::mpsc::Receiver;
 
 const INITIALIZE: u64 = 1;
 const START_THREAD: u64 = 2;
 
 /// Codex features that give the agent tools of its own.
-pub const DISABLED_FEATURES: &[&str] = &[
+const DISABLED_FEATURES: &[&str] = &[
     "shell_tool",
     "unified_exec",
     // Copies the user's shell environment to ~/.codex; no shell runs here.
@@ -42,53 +40,37 @@ pub const DISABLED_FEATURES: &[&str] = &[
 
 /// Overrides that stop Codex's analytics, OpenTelemetry export and feedback
 /// uploads; only the conversation itself reaches OpenAI.
-pub const QUIET_CONFIG: &[&str] = &[
+pub(crate) const QUIET_CONFIG: &[&str] = &[
     "analytics.enabled=false",
     "otel.exporter=\"none\"",
     "otel.metrics_exporter=\"none\"",
     "otel.trace_exporter=\"none\"",
     "feedback.enabled=false",
 ];
+pub(crate) const NO_HISTORY: &str = "history.persistence=\"none\"";
 
-/// `codex app-server` with Codex's own tools switched off. The tool relay and
-/// its token travel in `thread/start`, not on the command line. `privacy`
-/// decides whether Codex saves the thread and reports usage.
-pub fn spec(
-    program: PathBuf,
-    cwd: PathBuf,
-    mcp: crate::relay::Launch,
-    system_prompt: &str,
-    model: Option<&str>,
-    privacy: Privacy,
-) -> Spec {
+/// `codex app-server` with Codex's own tools switched off and `config` overrides.
+pub(crate) fn app_server<'a>(config: impl IntoIterator<Item = &'a str>) -> Vec<String> {
     let mut args = vec!["app-server".to_owned()];
     for feature in DISABLED_FEATURES {
         args.extend(["--disable".into(), (*feature).into()]);
     }
-    args.extend(["-c".into(), "web_search=\"disabled\"".into()]);
-    if privacy.telemetry_off {
-        for setting in QUIET_CONFIG {
-            args.extend(["-c".into(), (*setting).into()]);
-        }
+    for setting in config {
+        args.extend(["-c".into(), setting.into()]);
     }
-    if !privacy.keep_history {
-        args.extend(["-c".into(), "history.persistence=\"none\"".into()]);
-    }
-    Spec {
-        program,
-        args,
-        env: vec![],
-        cwd,
-        protocol: Protocol::CodexAppServer,
-        system_prompt: system_prompt.into(),
-        mcp: Some(mcp),
-        model: model
-            .map(str::trim)
-            .filter(|m| !m.is_empty())
-            .map(str::to_owned),
-        effort: None,
-        privacy,
-    }
+    args
+}
+
+/// Run `codex app-server` without web search. The tool relay and its token
+/// travel in `thread/start`, not on the command line. The spec's privacy
+/// decides whether Codex saves the thread and reports usage.
+pub(crate) fn serve(spec: &mut Spec, mcp: crate::relay::Launch) {
+    let privacy = spec.privacy;
+    let quiet = QUIET_CONFIG.iter().filter(|_| privacy.telemetry_off);
+    let history = (!privacy.keep_history).then_some(NO_HISTORY);
+    let config = std::iter::once("web_search=\"disabled\"").chain(quiet.copied());
+    spec.args.extend(app_server(config.chain(history)));
+    spec.mcp = Some(mcp);
 }
 
 #[derive(Default)]
@@ -291,7 +273,12 @@ fn thread_params(spec: &Spec) -> Json {
         "baseInstructions": spec.system_prompt,
         "config": {"mcp_servers": servers},
     });
-    if let Some(model) = &spec.model {
+    if let Some(model) = spec
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+    {
         params["model"] = json!(model);
     }
     params
@@ -509,7 +496,7 @@ fn request(link: &mut Link, method: &str, id: Json, params: &Json) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Json, Privacy, State, Update, json, notification, spec, thread_params};
+    use super::{Json, Spec, State, Update, json, notification, serve, thread_params};
 
     #[test]
     fn deltas_tools_and_turns_become_updates() {
@@ -606,22 +593,39 @@ mod tests {
             ),
             [Update::TurnEnded { error: None }]
         );
+        // Only TursoBench's own relay failing to start is worth a notice.
+        let startup = |name: &str, status: &str| {
+            let params = json!({"name": name, "status": status, "error": "spawn failed"});
+            notification(
+                &mut State::default(),
+                "mcpServer/startupStatus/updated",
+                &params,
+            )
+        };
+        assert!(startup("tursobench", "ready").is_empty());
+        assert!(startup("other", "failed").is_empty());
+        assert_eq!(
+            startup("tursobench", "failed"),
+            [Update::Notice(
+                "TursoBench's tools did not start in Codex (failed): spawn failed".into()
+            )]
+        );
     }
 
     #[test]
     fn the_thread_is_ephemeral_read_only_and_carries_only_our_server() {
-        let spec = spec(
-            "codex".into(),
-            "/run/tb".into(),
-            crate::relay::Launch {
-                command: "/usr/bin/tursobench".into(),
-                args: vec!["--mcp-relay".into(), "/run/tb/s.sock".into()],
-                env: vec![(crate::relay::TOKEN_ENV.into(), "secret".into())],
-            },
-            "Be brief",
-            Some(" gpt-x "),
-            Privacy::default(),
-        );
+        let mut spec = Spec {
+            cwd: "/run/tb".into(),
+            system_prompt: "Be brief".into(),
+            model: Some(" gpt-x ".into()),
+            ..Spec::default()
+        };
+        let launch = crate::relay::Launch {
+            command: "/usr/bin/tursobench".into(),
+            args: vec!["--mcp-relay".into(), "/run/tb/s.sock".into()],
+            env: vec![(crate::relay::TOKEN_ENV.into(), "secret".into())],
+        };
+        serve(&mut spec, launch);
         let joined = spec.args.join(" ");
         assert!(joined.starts_with("app-server "));
         assert!(joined.contains("--disable shell_tool"));
