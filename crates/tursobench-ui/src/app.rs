@@ -598,6 +598,19 @@ mod test_ui {
     pub(super) fn pointer(pos: egui::Pos2, pressed: bool) -> Vec<egui::Event> {
         vec![egui::Event::PointerMoved(pos), pointer_button(pos, pressed)]
     }
+    /// The pointer moved to `pos` and the wheel scrolled down a long way.
+    pub(super) fn scroll_down_at(pos: egui::Pos2) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -2000.0),
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Unknown,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]
+    }
 
     pub(super) fn nodes(
         output: &egui::FullOutput,

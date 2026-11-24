@@ -307,9 +307,11 @@ fn metric(ui: &mut egui::Ui, icon: Icon, count: usize, name: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{request, search_roots, tests::scroll_down_at};
+    use super::super::{request, search_roots};
     use super::{App, FolderList, PathBuf, egui};
-    use crate::app::test_ui::{self, control, key_event, nodes, pointer, render, texts};
+    use crate::app::test_ui::{
+        self, control, key_event, nodes, pointer, render, scroll_down_at, texts,
+    };
     use crate::discovery::Summary;
 
     fn painted(output: &egui::FullOutput, text: &str) -> bool {

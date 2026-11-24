@@ -62,18 +62,8 @@ fn transfer_window_exports_previews_maps_imports_and_checkpoints() {
         "Input scope: complete-table"
     ));
     // The window keeps its size, so the preview below it scrolls into view.
-    let wheel = egui::Event::MouseWheel {
-        unit: egui::MouseWheelUnit::Point,
-        delta: egui::vec2(0.0, -2000.0),
-        phase: egui::TouchPhase::Move,
-        source: egui::MouseWheelSource::Unknown,
-        modifiers: egui::Modifiers::NONE,
-    };
-    frame(
-        &mut app,
-        &ctx,
-        vec![egui::Event::PointerMoved(egui::pos2(300.0, 400.0)), wheel],
-    );
+    let scroll = crate::app::test_ui::scroll_down_at(egui::pos2(300.0, 400.0));
+    frame(&mut app, &ctx, scroll);
     let output = (0..10).fold(frame(&mut app, &ctx, vec![]), |_, _| {
         frame(&mut app, &ctx, vec![])
     });

@@ -223,9 +223,11 @@ mod tests {
     use super::{App, egui};
     use crate::app::databases::{
         Entry, State,
-        tests::{scroll_down_at, turso_file, wait},
+        tests::{turso_file, wait},
     };
-    use crate::app::test_ui::{self, control, inspect_selected as inspect, nodes, pointer, render};
+    use crate::app::test_ui::{
+        self, control, inspect_selected as inspect, nodes, pointer, render, scroll_down_at,
+    };
     use crate::discovery::Availability;
 
     const SIZE: egui::Vec2 = egui::vec2(1280.0, 720.0);

@@ -1,6 +1,6 @@
 use super::{App, control, egui, fixture, frame_at, wait_until};
 use crate::app::assistant::Entry;
-use crate::app::test_ui::{nodes, pointer};
+use crate::app::test_ui::{nodes, pointer, scroll_down_at};
 use crate::assistant_tools::{PROPOSE_SQL, RUN_QUERY, Sharing};
 use crate::storage::Provider;
 use std::os::unix::fs::PermissionsExt;
@@ -153,14 +153,7 @@ fn assistant_settings(app: &mut App, ctx: &egui::Context) -> egui::FullOutput {
 fn scroll_settings_to_end(app: &mut App, ctx: &egui::Context) {
     let output = frame_at(app, ctx, SIZE, vec![]);
     let over = control(&output, "Copilot CLI").center();
-    let wheel = egui::Event::MouseWheel {
-        unit: egui::MouseWheelUnit::Point,
-        delta: egui::vec2(0.0, -2000.0),
-        phase: egui::TouchPhase::Move,
-        source: egui::MouseWheelSource::Unknown,
-        modifiers: egui::Modifiers::NONE,
-    };
-    frame_at(app, ctx, SIZE, vec![egui::Event::PointerMoved(over), wheel]);
+    frame_at(app, ctx, SIZE, scroll_down_at(over));
     frame_at(app, ctx, SIZE, vec![]);
 }
 
