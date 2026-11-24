@@ -226,19 +226,16 @@ fn aligned_text(
 }
 
 /// A collapsed area: a thin strip with a grip. `name` is its tooltip and
-/// accessible name; a click reopens the area.
+/// accessible name; a click reopens the area. One that senses drags can be moved.
 pub(super) fn fold_line(
     ui: &mut egui::Ui,
     rect: egui::Rect,
     id: impl std::hash::Hash + std::fmt::Debug,
     name: &str,
+    sense: egui::Sense,
 ) -> egui::Response {
     let tokens = crate::appearance::Tokens::of(ui.ctx());
-    let response = ui.interact(
-        rect,
-        ui.scope_id().with(("fold-line", id)),
-        egui::Sense::click(),
-    );
+    let response = ui.interact(rect, ui.scope_id().with(("fold-line", id)), sense);
     let hovered = response.hovered();
     let painter = ui.painter_at(rect);
     painter.rect(
@@ -270,7 +267,13 @@ pub(super) fn fold_line(
         painter.circle_filled(middle + egui::vec2(0.0, dy), 1.5, grip);
     }
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name));
-    response
-        .on_hover_text(name)
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
+    if sense.senses_drag() {
+        response
+            .on_hover_text(format!("{name}\nDrag left or right to move it"))
+            .on_hover_cursor(egui::CursorIcon::Grab)
+    } else {
+        response
+            .on_hover_text(name)
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+    }
 }

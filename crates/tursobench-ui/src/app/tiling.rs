@@ -152,6 +152,9 @@ pub(super) enum Target {
     Slot { column: usize, index: usize },
     /// Alone in a new column after the last one. Columns start nowhere else.
     NewColumn,
+    /// With its whole column, folded to a line, before the column now at
+    /// this index (after the last when it is the column count).
+    Column(usize),
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Direction {
@@ -334,6 +337,15 @@ impl Layout {
                 self.columns[from].tiles.remove(at);
                 let index = index - usize::from(column == from && index > at);
                 self.columns[column].tiles.insert(index, kind);
+            }
+            Target::Column(index) => {
+                if index > self.columns.len() || index == from || index == from + 1 {
+                    return false;
+                }
+                let column = self.columns.remove(from);
+                self.columns
+                    .insert(index - usize::from(index > from), column);
+                return true;
             }
             Target::NewColumn => {
                 if from + 1 == self.columns.len() && self.columns[from].tiles.len() == 1 {
@@ -650,6 +662,7 @@ fn stack(
 /// Where a tile dragged to `pointer` would land, or `None` where dropping it
 /// changes nothing. Past the last column it starts a new one; over a column it
 /// joins at the slot nearest the pointer; over a line it joins that column.
+/// A folded column, dragged by its line, moves whole to the nearest gap.
 pub(super) fn drop_target(
     pointer: Pos2,
     kind: Kind,
@@ -665,6 +678,12 @@ pub(super) fn drop_target(
         || !area.y_range().expand(GAP).contains(pointer.y)
     {
         return None;
+    }
+    if frame.columns[from].folded {
+        let index = (frame.columns.iter())
+            .position(|lane| pointer.x < lane.rect.center().x)
+            .unwrap_or(frame.columns.len());
+        return (index != from && index != from + 1).then_some(Target::Column(index));
     }
     if pointer.x > area.right() - EDGE {
         let alone = layout.columns[from].tiles.len() == 1;
@@ -711,6 +730,17 @@ pub(super) fn marker(target: Target, frame: &Frame, layout: &Layout, area: Rect)
             pos2(area.right() + (GAP - THICK) / 2.0, area.top()),
             pos2(area.right() + (GAP + THICK) / 2.0, area.bottom()),
         ),
+        Target::Column(index) => {
+            let left = index.checked_sub(1).map(|i| frame.columns[i].rect.right());
+            let right = frame.columns.get(index).map(|lane| lane.rect.left());
+            let x = match (left, right) {
+                (Some(left), Some(right)) => (left + right) / 2.0,
+                (None, Some(right)) => right - GAP / 2.0,
+                (Some(left), None) => left + GAP / 2.0,
+                (None, None) => area.left(),
+            };
+            Rect::from_x_y_ranges((x - THICK / 2.0)..=(x + THICK / 2.0), area.y_range())
+        }
         Target::Slot { column, index } => {
             let lane = frame.columns[column];
             if lane.folded {
@@ -1044,5 +1074,14 @@ mod tests {
             Some(join)
         );
         assert_eq!(marker(join, &frame, &arrangement, area), line);
+        // Dragged by its line, it moves whole; the marker stands in the gap.
+        let first = frame.columns[0].rect;
+        let before = pos2(first.left() + 5.0, 300.0);
+        let target = drop_target(before, Record, &frame, &arrangement, &minimized, area);
+        assert_eq!(target, Some(Target::Column(0)));
+        let gap = marker(Target::Column(0), &frame, &arrangement, area);
+        assert!(gap.right() <= first.left() && gap.height() == area.height());
+        let gap = marker(Target::Column(2), &frame, &arrangement, area);
+        assert!(gap.left() >= line.right() && gap.right() <= frame.columns[2].rect.left());
     }
 }

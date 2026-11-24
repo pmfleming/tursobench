@@ -12,7 +12,9 @@ fn grip(app: &App, kind: Kind) -> egui::Pos2 {
 }
 /// Press on the tile's grip, move to `to` in two steps, then release unless `hold`.
 fn drag(app: &mut App, ctx: &egui::Context, kind: Kind, to: egui::Pos2, hold: bool) {
-    let from = grip(app, kind);
+    drag_from(app, ctx, grip(app, kind), to, hold);
+}
+fn drag_from(app: &mut App, ctx: &egui::Context, from: egui::Pos2, to: egui::Pos2, hold: bool) {
     frame(app, ctx, crate::app::test_ui::pointer(from, true));
     frame(
         app,
@@ -137,6 +139,20 @@ fn the_assistant_is_a_tile_that_minimizes_folds_and_stacks_like_the_others() {
     frame(&mut app, &ctx, vec![]);
     assert!(!app.assistant_shown());
     assert_eq!(app.database.workspace.pane_rects.len(), 5);
+    // Its line drags left or right; the column moves whole and stays a line.
+    let lanes = app.workspace_frame().columns;
+    let (line, middle) = (lanes[2].rect.center(), lanes[1].rect.left() + 10.0);
+    drag_from(&mut app, &ctx, line, egui::pos2(middle, line.y), false);
+    assert_eq!(
+        columns(&app),
+        [vec![Map, Data], vec![Chat], vec![Record, Structure, Sql]]
+    );
+    assert!(!app.assistant_shown());
+    let lanes = app.workspace_frame().columns;
+    let (line, end) = (lanes[1].rect.center(), lanes[2].rect.right() - 5.0);
+    drag_from(&mut app, &ctx, line, egui::pos2(end, line.y), false);
+    assert_eq!(app.database.workspace.layout, Layout::default());
+    assert!(!app.assistant_shown());
     // Restoring every tile leaves the assistant as it is.
     app.minimize_pane(Map);
     assert!(app.tiles_restorable());

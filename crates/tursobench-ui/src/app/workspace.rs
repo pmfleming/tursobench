@@ -375,7 +375,10 @@ impl App {
     }
     pub(super) fn move_tile(&mut self, kind: Kind, target: tiling::Target) {
         if self.database.workspace.layout.move_tile(kind, target) {
-            self.focus_pane(kind);
+            // A moved line stays folded; focusing its tile would open it.
+            if !matches!(target, tiling::Target::Column(_)) {
+                self.focus_pane(kind);
+            }
             self.save_workspace();
         }
     }
@@ -465,10 +468,21 @@ impl App {
             if !lane.folded {
                 continue;
             }
-            let layout = &self.database.workspace.layout;
-            hidden.extend(layout.columns[column].tiles.iter().copied());
-            let name = format!("Show {}", layout.names(column));
-            if presentation::fold_line(ui, lane.rect, ("column", column), &name).clicked() {
+            let workspace = &mut self.database.workspace;
+            let tiles = &workspace.layout.columns[column].tiles;
+            hidden.extend(tiles.iter().copied());
+            let name = format!("Show {}", workspace.layout.names(column));
+            let sense = egui::Sense::click_and_drag();
+            let line = presentation::fold_line(ui, lane.rect, ("column", column), &name, sense);
+            // Dragging a line moves its column; any of its tiles stands for it.
+            if line.drag_started() {
+                workspace.drag = Some(TileDrag {
+                    kind: tiles[0],
+                    target: None,
+                    cancelled: false,
+                });
+            }
+            if line.clicked() {
                 self.toggle_column(column);
             }
         }
@@ -613,7 +627,11 @@ impl App {
             egui::Order::Tooltip,
             egui::Id::unique("tile-drag"),
         ));
-        if let Some(rect) = frame.rect(drag.kind) {
+        let column = workspace.layout.column_of(drag.kind);
+        let line = column
+            .and_then(|c| frame.columns.get(c))
+            .filter(|lane| lane.folded);
+        if let Some(rect) = line.map(|lane| lane.rect).or_else(|| frame.rect(drag.kind)) {
             painter.rect_filled(rect, 10.0, ui.visuals().panel_fill.gamma_multiply(0.6));
         }
         if let Some(target) = drag.target {
@@ -624,7 +642,10 @@ impl App {
         if let Some(pointer) = pointer {
             // A small copy of the tile's header follows the pointer.
             let label = painter.layout_no_wrap(
-                drag.kind.label().into(),
+                match (line, column) {
+                    (Some(_), Some(column)) => workspace.layout.names(column),
+                    _ => drag.kind.label().into(),
+                },
                 crate::appearance::proportional(ui.ctx(), icons::RIBBON_TEXT_SIZE),
                 ui.visuals().text_color(),
             );

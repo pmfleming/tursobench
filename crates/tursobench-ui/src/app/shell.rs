@@ -406,7 +406,7 @@ impl App {
             )
             .show(ui, |ui| {
                 let rect = ui.available_rect_before_wrap();
-                presentation::fold_line(ui, rect, name, name).clicked()
+                presentation::fold_line(ui, rect, name, name, egui::Sense::click()).clicked()
             })
             .inner
     }
