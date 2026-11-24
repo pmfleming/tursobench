@@ -33,6 +33,26 @@ fn settle_and_click(app: &mut App, ctx: &egui::Context, name: &str) {
     click(app, ctx, control(&output, name).center());
 }
 
+/// Right-click a cell, in schema column order, for its context menu, then
+/// click the entry `name`, which ends with its shortcut.
+fn menu_entry(app: &mut App, ctx: &egui::Context, (row, col): (usize, usize), name: &str) {
+    let first = app.first_cell_rect.unwrap();
+    let widths = &app.database.document.tools.columns.widths;
+    let x = first.left() + widths[..col].iter().sum::<f32>() + widths[col] / 2.0;
+    let pos = egui::pos2(x, first.center().y + row as f32 * first.height());
+    frame(app, ctx, vec![egui::Event::PointerMoved(pos)]);
+    for pressed in [true, false] {
+        let button = egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(app, ctx, vec![egui::Event::PointerMoved(pos), button]);
+    }
+    settle_and_click(app, ctx, name);
+}
+
 #[test]
 fn spreadsheet_paste_respects_visible_order_types_and_atomic_undo() {
     let (_dir, ctx, mut app) = table(&[
@@ -153,6 +173,22 @@ fn spreadsheet_copy_paste_roundtrip_preserves_empty_null_blob_and_literal_marker
         assert_staged(&app, 1, c, value);
     }
     app.database.document.drafts = None;
+    // The cell menu stages the same edits and undoes them, then filters by the stored value.
+    menu_entry(
+        &mut app,
+        &ctx,
+        (1, 1),
+        "Set selected cells to NULL Backspace",
+    );
+    assert_staged(&app, 1, 1, Value::Null);
+    menu_entry(&mut app, &ctx, (1, 1), "Undo last staged edit Ctrl Z");
+    assert!(!app.has_drafts());
+    menu_entry(&mut app, &ctx, (1, 1), "Filter = value Alt click");
+    let filter = &app.database.document.browse.as_ref().unwrap().filters[0];
+    assert_eq!(
+        (filter.column, &filter.value),
+        (1, &Value::Text("other".into()))
+    );
     close_and_wait(&mut app, &ctx);
 }
 

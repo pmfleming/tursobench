@@ -1,11 +1,11 @@
 use super::{
     App, View,
-    document::Document,
+    document::{Document, ViewTools},
     icons::{self, Icon},
 };
 use eframe::egui;
 use std::collections::{BTreeMap, BTreeSet};
-use tursobench_core::Value;
+use tursobench_core::{ResultSet, Value};
 
 #[derive(Default)]
 pub(super) struct Columns {
@@ -95,30 +95,20 @@ impl Header<'_> {
         self.primary_key > 0 || self.foreign
     }
     pub fn describe(&self, response: &egui::Response, enabled: bool) {
-        let tags = format!(
-            "{}{}{}",
-            if self.primary_key > 0 {
-                format!(" PK{}", self.primary_key)
-            } else {
-                String::new()
-            },
-            if self.indexed { " IX" } else { "" },
-            if self.foreign { " FK" } else { "" }
-        );
-        let sorted = match (self.descending, self.sort_level) {
-            (None, _) => String::new(),
-            (Some(true), None) => " descending".into(),
-            (Some(false), None) => " ascending".into(),
-            (Some(true), Some(level)) => format!(" descending, sort level {level}"),
-            (Some(false), Some(level)) => format!(" ascending, sort level {level}"),
+        let key = (self.primary_key > 0).then(|| format!(" PK{}", self.primary_key));
+        let index = if self.indexed { " IX" } else { "" };
+        let foreign = if self.foreign { " FK" } else { "" };
+        let direction = match self.descending {
+            Some(true) => " descending",
+            Some(false) => " ascending",
+            None => "",
         };
-        response.widget_info(|| {
-            egui::WidgetInfo::labeled(
-                egui::Role::Button,
-                enabled,
-                format!("Column {}{tags}{sorted}", self.column.name),
-            )
-        });
+        // A sort level is shown only while several columns are sorted.
+        let level = self.sort_level.map(|level| format!(", sort level {level}"));
+        let (key, level) = (key.unwrap_or_default(), level.unwrap_or_default());
+        let name = &self.column.name;
+        let label = format!("Column {name}{key}{index}{foreign}{direction}{level}");
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, &label));
     }
     pub fn paint(&self, ui: &egui::Ui, rect: egui::Rect, highlighted: bool, hovered: bool) {
         let tokens = crate::appearance::Tokens::of(ui.ctx());
@@ -136,15 +126,11 @@ impl Header<'_> {
             (self.foreign, Icon::Link),
         ] {
             if show {
-                icons::paint(
-                    &painter,
-                    egui::Rect::from_min_size(
-                        egui::pos2(left, rect.top() + 7.0),
-                        egui::vec2(12.0, 12.0),
-                    ),
-                    icon,
-                    tokens.relationship,
+                let at = egui::Rect::from_min_size(
+                    egui::pos2(left, rect.top() + 7.0),
+                    egui::vec2(12.0, 12.0),
                 );
+                icons::paint(&painter, at, icon, tokens.relationship);
                 left += 15.0;
             }
         }
@@ -183,44 +169,34 @@ impl Header<'_> {
             rect.y_range(),
             egui::Stroke::new(1.0, tokens.line),
         );
-        if self.descending.is_some() {
-            painter.hline(
-                rect.x_range(),
-                rect.bottom() - 1.0,
-                egui::Stroke::new(2.0, tokens.primary),
-            );
-            icons::paint(
-                &painter,
-                egui::Rect::from_min_size(
-                    rect.right_top() + egui::vec2(-47.0, 8.0),
-                    egui::vec2(12.0, 12.0),
-                ),
-                if self.descending == Some(true) {
-                    Icon::Down
-                } else {
-                    Icon::Up
-                },
-                ui.visuals().selection.stroke.color,
-            );
-            if let Some(level) = self.sort_level {
-                painter.text(
-                    rect.right_top() + egui::vec2(-31.0, 14.0),
-                    egui::Align2::CENTER_CENTER,
-                    level,
-                    crate::appearance::monospace(ui.ctx(), 9.0),
-                    ui.visuals().selection.stroke.color,
-                );
+        self.paint_sort(ui, &painter, rect, hint);
+    }
+    /// The sort direction and level of a sorted column, underlined; on a
+    /// hovered unsorted one, a faint arrow where the next click's sort will show.
+    fn paint_sort(&self, ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, hint: bool) {
+        let tokens = crate::appearance::Tokens::of(ui.ctx());
+        let arrow = egui::Rect::from_min_size(
+            rect.right_top() + egui::vec2(-47.0, 8.0),
+            egui::vec2(12.0, 12.0),
+        );
+        let Some(descending) = self.descending else {
+            if hint {
+                icons::paint(painter, arrow, Icon::Up, tokens.faint);
             }
-        } else if hint {
-            // The next click sorts ascending; show where the arrow will appear.
-            icons::paint(
-                &painter,
-                egui::Rect::from_min_size(
-                    rect.right_top() + egui::vec2(-47.0, 8.0),
-                    egui::vec2(12.0, 12.0),
-                ),
-                Icon::Up,
-                tokens.faint,
+            return;
+        };
+        let color = ui.visuals().selection.stroke.color;
+        let underline = egui::Stroke::new(2.0, tokens.primary);
+        painter.hline(rect.x_range(), rect.bottom() - 1.0, underline);
+        let icon = if descending { Icon::Down } else { Icon::Up };
+        icons::paint(painter, arrow, icon, color);
+        if let Some(level) = self.sort_level {
+            painter.text(
+                rect.right_top() + egui::vec2(-31.0, 14.0),
+                egui::Align2::CENTER_CENTER,
+                level,
+                crate::appearance::monospace(ui.ctx(), 9.0),
+                color,
             );
         }
     }
@@ -230,12 +206,40 @@ impl Columns {
         self.order
             .iter()
             .copied()
-            .filter(move |c| *c < count && !self.hidden.contains(c))
+            .filter(move |&c| self.shown(c, count))
+    }
+    /// Whether `column`, of `count`, is shown rather than hidden.
+    pub fn shown(&self, column: usize, count: usize) -> bool {
+        column < count && !self.hidden.contains(&column)
+    }
+    /// The presentation chosen for a column; automatic unless the user picked one.
+    pub fn style(&self, column: usize) -> CellStyle {
+        self.visuals.get(&column).copied().unwrap_or_default()
     }
 
     pub fn fit(&mut self, i: usize) {
         self.manual.remove(&i);
         self.refit = true;
+    }
+    /// The handle on a header's right edge: dragging resizes the column and a
+    /// double-click fits it to its contents.
+    pub fn resize_handle(&mut self, ui: &egui::Ui, header: egui::Rect, i: usize) -> egui::Response {
+        let handle = egui::Rect::from_min_max(
+            egui::pos2(header.right() - 6.0, header.top()),
+            header.right_bottom(),
+        );
+        let id = ui.scope_id().with(("resize-column", i));
+        let drag = ui
+            .interact(handle, id, egui::Sense::click_and_drag())
+            .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+        if drag.double_clicked() {
+            self.fit(i);
+        }
+        if drag.dragged() {
+            self.manual.insert(i);
+            self.widths[i] = (self.widths[i] + drag.drag_delta().x).clamp(60.0, 640.0);
+        }
+        drag
     }
     pub fn header_menu(&mut self, ui: &mut egui::Ui, i: usize) {
         ui.menu_button("Cell appearance", |ui| {
@@ -277,124 +281,108 @@ impl Columns {
             self.order.swap(pos, to);
         }
     }
-}
-impl App {
-    pub(super) fn visible_columns(&self) -> Vec<usize> {
-        self.database
-            .document
-            .tools
-            .columns
-            .visible(self.database.document.result.columns.len())
-            .collect()
-    }
-    pub(super) fn prepare_columns(&mut self, ui: &egui::Ui) {
-        if self.database.document.result.columns.is_empty() {
-            return;
-        }
-        let scope = format!(
-            "{}:{}",
-            self.database.tools.database_scope,
-            if self.database.document.view == View::Browse {
-                self.database
-                    .document
-                    .table
-                    .as_ref()
-                    .map_or("browse", |t| t.name.as_str())
-            } else {
-                "query"
-            }
-        );
-        if self.database.document.tools.column_scope != scope {
-            let old = std::mem::take(&mut self.database.document.tools.columns);
-            self.database.document.tools.column_layouts.insert(
-                std::mem::replace(
-                    &mut self.database.document.tools.column_scope,
-                    scope.clone(),
-                ),
-                old,
-            );
-            self.database.document.tools.columns = self
-                .database
-                .document
-                .tools
-                .column_layouts
-                .remove(&scope)
-                .unwrap_or_default();
-            while self.database.document.tools.column_layouts.len() > 32 {
-                self.database.document.tools.column_layouts.pop_first();
-            }
-        }
-        let c = &mut self.database.document.tools.columns;
-        if c.signature != self.database.document.result.columns {
-            *c = Columns {
-                order: (0..self.database.document.result.columns.len()).collect(),
-                signature: self.database.document.result.columns.clone(),
+    /// A fresh layout in schema order when the result's columns changed.
+    fn reset_for(&mut self, columns: &[tursobench_core::Column]) {
+        if self.signature != columns {
+            *self = Columns {
+                order: (0..columns.len()).collect(),
+                signature: columns.to_vec(),
                 refit: true,
                 ..Default::default()
             };
         }
-        if let Some((_, name)) = &self.database.document.tools.highlight_column
-            && self.database.document.tools.scroll_to_column
-            && let Some(i) = self
-                .database
-                .document
-                .result
-                .columns
-                .iter()
-                .position(|c| &c.name == name)
-        {
-            c.hidden.remove(&i);
-        }
-        let sample = self.database.document.result.rows.len().min(200);
-        if c.refit || sample > c.measured_rows {
-            let key_columns: Vec<_> = (0..self.database.document.result.columns.len())
-                .map(|i| self.database.document.column_header(i).has_key())
-                .collect();
-            let c = &mut self.database.document.tools.columns;
-            c.natural = self
-                .database
-                .document
-                .result
-                .columns
-                .iter()
-                .enumerate()
-                .map(|(i, col)| {
-                    let header = super::presentation::text_width(ui, col.name.as_str(), 12.0)
-                        + 36.0
-                        + if key_columns[i] { 15.0 } else { 0.0 };
-                    self.database
-                        .document
-                        .result
-                        .rows
-                        .iter()
-                        .take(200)
-                        .filter_map(|r| r.get(i))
-                        .map(|v| {
-                            ui.painter()
-                                .layout_no_wrap(
-                                    v.preview(),
-                                    crate::appearance::monospace(ui.ctx(), 12.0),
-                                    ui.visuals().text_color(),
-                                )
-                                .size()
-                                .x
-                                + 18.0
-                        })
-                        .fold(header, f32::max)
-                        .clamp(56.0, 300.0)
-                })
-                .collect();
-            c.widths.resize(c.natural.len(), 56.0);
-            for (i, w) in c.natural.iter().enumerate() {
-                if !c.manual.contains(&i) {
-                    c.widths[i] = *w;
-                }
+    }
+    /// Natural widths from each header and up to 200 sampled values. Spare
+    /// space belongs to the workspace, not to an arbitrary TEXT column, and
+    /// widths the user set survive until the column is fitted again.
+    fn measure(&mut self, ui: &egui::Ui, result: &ResultSet, keyed: &[bool]) {
+        let font = crate::appearance::monospace(ui.ctx(), 12.0);
+        let value_width = |v: &Value| {
+            let galley =
+                ui.painter()
+                    .layout_no_wrap(v.preview(), font.clone(), ui.visuals().text_color());
+            galley.size().x + 18.0
+        };
+        self.natural = result
+            .columns
+            .iter()
+            .zip(keyed)
+            .enumerate()
+            .map(|(i, (col, &keyed))| {
+                let header = super::presentation::text_width(ui, col.name.as_str(), 12.0)
+                    + 36.0
+                    + if keyed { 15.0 } else { 0.0 };
+                result
+                    .rows
+                    .iter()
+                    .take(200)
+                    .filter_map(|r| r.get(i))
+                    .map(value_width)
+                    .fold(header, f32::max)
+                    .clamp(56.0, 300.0)
+            })
+            .collect();
+        self.widths.resize(self.natural.len(), 56.0);
+        for (i, w) in self.natural.iter().enumerate() {
+            if !self.manual.contains(&i) {
+                self.widths[i] = *w;
             }
-            c.measured_rows = sample;
-            c.refit = false;
         }
-        // Spare space belongs to the workspace, not to an arbitrary TEXT column.
-        // Explicit user widths survive tile resizes; Fit columns uses sampled content.
+        self.measured_rows = result.rows.len().min(200);
+        self.refit = false;
+    }
+}
+impl ViewTools {
+    /// Keep the column layout under its scope and bring back the one last used for `scope`.
+    fn switch_column_scope(&mut self, scope: String) {
+        if self.column_scope == scope {
+            return;
+        }
+        let previous = std::mem::replace(&mut self.column_scope, scope);
+        let layout = std::mem::take(&mut self.columns);
+        self.column_layouts.insert(previous, layout);
+        self.columns = self
+            .column_layouts
+            .remove(&self.column_scope)
+            .unwrap_or_default();
+        while self.column_layouts.len() > 32 {
+            self.column_layouts.pop_first();
+        }
+    }
+}
+impl App {
+    pub(super) fn visible_columns(&self) -> Vec<usize> {
+        let document = &self.database.document;
+        let count = document.result.columns.len();
+        document.tools.columns.visible(count).collect()
+    }
+    pub(super) fn prepare_columns(&mut self, ui: &egui::Ui) {
+        let document = &mut self.database.document;
+        if document.result.columns.is_empty() {
+            return;
+        }
+        let table = match (document.view, &document.table) {
+            (View::Browse, Some(table)) => table.name.as_str(),
+            (View::Browse, None) => "browse",
+            _ => "query",
+        };
+        let scope = format!("{}:{table}", self.database.tools.database_scope);
+        document.tools.switch_column_scope(scope);
+        document.tools.columns.reset_for(&document.result.columns);
+        // A followed reference or search shows its column even when hidden.
+        if let Some((_, name)) = &document.tools.highlight_column
+            && document.tools.scroll_to_column
+            && let Some(i) = document.result.columns.iter().position(|c| &c.name == name)
+        {
+            document.tools.columns.hidden.remove(&i);
+        }
+        let columns = &document.tools.columns;
+        if columns.refit || document.result.rows.len().min(200) > columns.measured_rows {
+            let keyed: Vec<_> = (0..document.result.columns.len())
+                .map(|i| document.column_header(i).has_key())
+                .collect();
+            document.tools.columns.measure(ui, &document.result, &keyed);
+        }
     }
 }
 
@@ -427,57 +415,52 @@ impl CellStyle {
             _ => Self::Plain,
         }
     }
+    /// Paint the value's presentation; returns whether it replaced the text.
     pub fn paint(self, ui: &egui::Ui, rect: egui::Rect, name: &str, value: &Value) -> bool {
         let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
         let style = self.resolved(name);
-        let tokens = crate::appearance::Tokens::of(ui.ctx());
-        let accent = tokens.primary;
-        match (style, value) {
-            (Self::Status, Value::Text(text)) if !text.is_empty() && text.len() <= 32 => {
-                let color = match text.to_ascii_lowercase().as_str() {
-                    "blocked" | "failed" | "error" => ui.visuals().error_fg_color,
-                    "pending" | "in progress" | "review" => tokens.relationship,
-                    _ => tokens.primary_text,
-                };
-                let galley = painter.layout_no_wrap(
-                    text.clone(),
-                    crate::appearance::proportional(ui.ctx(), 11.5),
-                    color,
-                );
-                let pill = egui::Rect::from_min_size(
-                    rect.left_center() + egui::vec2(5.0, -10.0),
-                    egui::vec2(
-                        (galley.size().x + 26.0).min((rect.width() - 10.0).max(0.0)),
-                        20.0,
-                    ),
-                );
-                painter.rect_filled(pill, 10.0, color.gamma_multiply(0.13));
-                let painter = painter.with_clip_rect(pill.intersect(ui.clip_rect()));
-                painter.circle_filled(pill.left_center() + egui::vec2(8.0, 0.0), 3.0, color);
-                painter.galley(
-                    pill.left_center() + egui::vec2(16.0, -galley.size().y / 2.0),
-                    galley,
-                    color,
-                );
+        let number = match value {
+            Value::Integer(n) => *n as f64,
+            Value::Real(n) => *n,
+            Value::Text(text) if style == Self::Status && !text.is_empty() && text.len() <= 32 => {
+                status_pill(ui, &painter, rect, text);
                 return true;
             }
-            (Self::Priority | Self::Percent, value) => {
-                let number = match value {
-                    Value::Integer(n) => *n as f64,
-                    Value::Real(n) => *n,
-                    _ => return false,
-                };
-                let max = if style == Self::Priority { 5.0 } else { 100.0 };
-                if number.is_finite() && (0.0..=max).contains(&number) {
-                    let bar = egui::Rect::from_min_size(
-                        rect.left_bottom() + egui::vec2(4.0, -4.0),
-                        egui::vec2((rect.width() - 8.0).max(0.0) * (number / max) as f32, 2.0),
-                    );
-                    painter.rect_filled(bar, 1.0, accent);
-                }
-            }
-            _ => {}
+            _ => return false,
+        };
+        let max = match style {
+            Self::Priority => 5.0,
+            Self::Percent => 100.0,
+            _ => return false,
+        };
+        // A bar under the number shows its share of the scale; other numbers get none.
+        if number.is_finite() && (0.0..=max).contains(&number) {
+            let width = (rect.width() - 8.0).max(0.0) * (number / max) as f32;
+            let at = rect.left_bottom() + egui::vec2(4.0, -4.0);
+            let bar = egui::Rect::from_min_size(at, egui::vec2(width, 2.0));
+            painter.rect_filled(bar, 1.0, crate::appearance::Tokens::of(ui.ctx()).primary);
         }
         false
     }
+}
+/// A status as a tinted pill, coloured for failures and for work under way.
+fn status_pill(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, text: &str) {
+    let tokens = crate::appearance::Tokens::of(ui.ctx());
+    let color = match text.to_ascii_lowercase().as_str() {
+        "blocked" | "failed" | "error" => ui.visuals().error_fg_color,
+        "pending" | "in progress" | "review" => tokens.relationship,
+        _ => tokens.primary_text,
+    };
+    let font = crate::appearance::proportional(ui.ctx(), 11.5);
+    let galley = painter.layout_no_wrap(text.to_owned(), font, color);
+    let width = (galley.size().x + 26.0).min((rect.width() - 10.0).max(0.0));
+    let pill = egui::Rect::from_min_size(
+        rect.left_center() + egui::vec2(5.0, -10.0),
+        egui::vec2(width, 20.0),
+    );
+    painter.rect_filled(pill, 10.0, color.gamma_multiply(0.13));
+    let painter = painter.with_clip_rect(pill.intersect(ui.clip_rect()));
+    painter.circle_filled(pill.left_center() + egui::vec2(8.0, 0.0), 3.0, color);
+    let at = pill.left_center() + egui::vec2(16.0, -galley.size().y / 2.0);
+    painter.galley(at, galley, color);
 }

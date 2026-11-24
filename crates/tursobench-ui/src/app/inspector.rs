@@ -7,12 +7,18 @@ use super::{
 use eframe::egui;
 use tursobench_core::Value;
 
-use results::{CellKind, code_view, detail_text};
+use results::{code_view, detail_text};
 enum RecordAction {
     Inspect(usize),
     Edit(usize),
     Stage(usize, Value),
     Revert(usize),
+}
+/// The widths every field of a record shares: its name and, when wide, its declared type.
+#[derive(Clone, Copy)]
+struct FieldLayout {
+    name_width: f32,
+    wide: bool,
 }
 struct RecordField<'a> {
     column: usize,
@@ -23,6 +29,26 @@ struct RecordField<'a> {
     selected: bool,
 }
 impl RecordField<'_> {
+    fn staged(&self) -> bool {
+        self.shown != self.stored
+    }
+    fn describe(&self, ui: &egui::Ui, response: &egui::Response) {
+        let kind = kind_name(self.shown);
+        let text = format!("{} · {kind} · {}", self.name, self.shown.preview());
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), self.selected, &text)
+        });
+    }
+    /// A double-click edits the field and a click inspects it.
+    fn action(&self, response: &egui::Response) -> Option<RecordAction> {
+        if response.double_clicked() {
+            Some(RecordAction::Edit(self.column))
+        } else {
+            response
+                .clicked()
+                .then_some(RecordAction::Inspect(self.column))
+        }
+    }
     fn paint(
         &self,
         ui: &mut egui::Ui,
@@ -31,41 +57,24 @@ impl RecordField<'_> {
         icon: Option<Icon>,
     ) -> egui::Rect {
         let tokens = crate::appearance::Tokens::of(ui.ctx());
+        let (painter, selection) = (ui.painter(), &ui.visuals().selection);
         if self.selected {
-            ui.painter()
-                .rect_filled(rect, 0.0, ui.visuals().selection.bg_fill);
+            painter.rect_filled(rect, 0.0, selection.bg_fill);
         }
-        if self.shown != self.stored {
-            ui.painter()
-                .rect_filled(rect, 0.0, tokens.pending.gamma_multiply(0.08));
-            ui.painter().vline(
-                rect.left() + 1.5,
-                rect.y_range(),
-                egui::Stroke::new(3.0, tokens.pending),
-            );
+        if self.staged() {
+            painter.rect_filled(rect, 0.0, tokens.pending.gamma_multiply(0.08));
+            let bar = egui::Stroke::new(3.0, tokens.pending);
+            painter.vline(rect.left() + 1.5, rect.y_range(), bar);
         }
-        ui.painter().hline(
-            rect.x_range(),
-            rect.bottom(),
-            egui::Stroke::new(1.0, tokens.line_soft),
-        );
+        let line = egui::Stroke::new(1.0, tokens.line_soft);
+        painter.hline(rect.x_range(), rect.bottom(), line);
         if self.selected {
-            ui.painter().rect_stroke(
-                rect,
-                0.0,
-                ui.visuals().selection.stroke,
-                egui::StrokeKind::Inside,
-            );
+            painter.rect_stroke(rect, 0.0, selection.stroke, egui::StrokeKind::Inside);
         }
         let label_rect = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), 24.0));
         if let Some(icon) = icon {
-            presentation::icon_at(
-                ui.painter(),
-                label_rect.left_center() + egui::vec2(10.0, 0.0),
-                12.0,
-                icon,
-                tokens.relationship,
-            );
+            let at = label_rect.left_center() + egui::vec2(10.0, 0.0);
+            presentation::icon_at(painter, at, 12.0, icon, tokens.relationship);
         }
         let name = egui::Rect::from_min_max(
             rect.min + egui::vec2(20.0, 0.0),
@@ -86,17 +95,13 @@ impl RecordField<'_> {
     ) {
         let tokens = crate::appearance::Tokens::of(ui.ctx());
         if let Some(galley) = wrapped {
-            ui.painter()
-                .with_clip_rect(rect.intersect(ui.clip_rect()))
-                .galley(
-                    rect.min + egui::vec2(0.0, 4.0),
-                    galley,
-                    if self.shown != self.stored {
-                        tokens.pending
-                    } else {
-                        ui.visuals().text_color()
-                    },
-                );
+            let color = if self.staged() {
+                tokens.pending
+            } else {
+                ui.visuals().text_color()
+            };
+            let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+            painter.galley(rect.min + egui::vec2(0.0, 4.0), galley, color);
             return;
         }
         let compact = match self.shown {
@@ -105,30 +110,20 @@ impl RecordField<'_> {
             _ => None,
         };
         if let Some((icon, caption)) = compact {
-            presentation::icon_at(
-                ui.painter(),
-                rect.left_center() + egui::vec2(7.0, 0.0),
-                13.0,
-                icon,
-                tokens.faint,
-            );
-            presentation::text_at(
-                ui,
-                egui::Rect::from_min_max(rect.min + egui::vec2(20.0, 0.0), rect.max),
-                &caption,
-                tokens.faint,
-                12.5,
-            );
+            let at = rect.left_center() + egui::vec2(7.0, 0.0);
+            presentation::icon_at(ui.painter(), at, 13.0, icon, tokens.faint);
+            let text = egui::Rect::from_min_max(rect.min + egui::vec2(20.0, 0.0), rect.max);
+            presentation::text_at(ui, text, &caption, tokens.faint, 12.5);
             return;
         }
-        if self.shown == self.stored && style.paint(ui, rect, self.name, self.shown) {
+        if !self.staged() && style.paint(ui, rect, self.name, self.shown) {
             return;
         }
         presentation::text_at(
             ui,
             rect,
             &self.shown.preview(),
-            if self.shown != self.stored {
+            if self.staged() {
                 tokens.pending
             } else if self.foreign {
                 tokens.relationship
@@ -247,27 +242,16 @@ fn typed_text(value: &Value) -> String {
 }
 impl App {
     pub(super) fn cell_inspector(&mut self, ui: &mut egui::Ui, row: usize, col: usize) {
-        let Some(value) = self
-            .database
-            .document
-            .result
-            .rows
-            .get(row)
-            .and_then(|r| r.get(col))
-        else {
+        let document = &self.database.document;
+        let values = document.result.rows.get(row);
+        let Some(value) = values.and_then(|r| r.get(col)) else {
             ui.label("Selection no longer belongs to the retained result");
             return;
         };
-        ui.strong(
-            self.database
-                .document
-                .result
-                .columns
-                .get(col)
-                .map_or("Cell", |c| c.name.as_str()),
-        );
-        if self.database.document.view == View::Browse
-            && let Some(table) = &self.database.document.table
+        let columns = &document.result.columns;
+        ui.strong(columns.get(col).map_or("Cell", |c| c.name.as_str()));
+        if document.view == View::Browse
+            && let Some(table) = &document.table
         {
             ui.label(format!("Table: {}", table.name));
         }
@@ -275,16 +259,10 @@ impl App {
             "Retained row {} · {} budgeted bytes · {:?} result",
             row + 1,
             value.bytes(),
-            self.database.document.view
+            document.view
         ));
-        let staged = self.database.document.drafts.as_ref().and_then(|d| {
-            self.database
-                .document
-                .result
-                .rows
-                .get(row)
-                .and_then(|r| d.displayed(r, col))
-        });
+        let drafts = document.drafts.as_ref();
+        let staged = drafts.zip(values).and_then(|(d, r)| d.displayed(r, col));
         if let Some(value) = staged {
             ui.colored_label(ui.visuals().warn_fg_color, "Staged value — not yet written");
             code_view(ui, &typed_text(value), 3);
@@ -297,22 +275,19 @@ impl App {
             .show(ui, |ui| {
                 code_view(ui, &text, 3);
             });
-        ui.horizontal_wrapped(|ui| {
-            if ui
-                .add(presentation::action(
-                    ui,
-                    "Copy stored value",
-                    Intent::Primary,
-                ))
-                .clicked()
-            {
-                ui.ctx().copy_text(crate::export::cell_text(value));
-            }
-            if ui.button("Record").clicked() {
-                self.database.document.tools.detail = Some(row);
-                self.database.document.ui.inspector = shell::DetailMode::Record;
-            }
-        });
+        let (copy, record) = ui
+            .horizontal_wrapped(|ui| {
+                let copy = presentation::action(ui, "Copy stored value", Intent::Primary);
+                (ui.add(copy).clicked(), ui.button("Record").clicked())
+            })
+            .inner;
+        if copy {
+            self.copy_cell(ui.ctx(), row, col);
+        }
+        if record {
+            self.database.document.tools.detail = Some(row);
+            self.database.document.ui.inspector = shell::DetailMode::Record;
+        }
         if self.can_edit() {
             self.cell_editing(ui, row, col);
         } else {
@@ -326,29 +301,17 @@ impl App {
     fn cell_editing(&mut self, ui: &mut egui::Ui, row: usize, col: usize) {
         ui.separator();
         ui.strong("Change value · staged locally");
-        self.database
-            .document
-            .tools
-            .cell_editor
-            .type_picker(ui, "cell-kind", true);
-        if self.database.document.tools.cell_editor.kind != CellKind::Null {
-            ui.add(
-                egui::TextEdit::multiline(&mut self.database.document.tools.cell_editor.input)
-                    .desired_width(ui.available_width())
-                    .desired_rows(3),
-            );
-        }
-        if presentation::footer(ui, |ui| {
+        let editor = &mut self.database.document.tools.cell_editor;
+        editor.form(ui, "cell-kind");
+        let stage = presentation::footer(ui, |ui| {
             ui.add(presentation::action(
                 ui,
                 "Stage cell change",
                 Intent::Pending,
             ))
-        })
-        .inner
-        .clicked()
-        {
-            match self.database.document.tools.cell_editor.parse() {
+        });
+        if stage.inner.clicked() {
+            match editor.parse() {
                 Ok(value) => self.stage_cell(row, col, value),
                 Err(e) => self.database.status = e,
             }
@@ -418,44 +381,41 @@ impl App {
                 }
             });
         }
-        if let Some(action) = self.record_fields(ui, row, wide) {
-            match action {
-                RecordAction::Revert(col) => {
-                    self.revert_grid_draft(row, Some(col));
-                }
-                RecordAction::Inspect(col) => self.select_cell(row, col, false),
-                RecordAction::Edit(col) => {
-                    self.open_cell(row, col);
-                    self.start_inline(row, col);
-                    if self.database.document.tools.inline.is_none() {
-                        if let Some(Value::Deferred(cell)) = self
-                            .database
-                            .document
-                            .result
-                            .rows
-                            .get(row)
-                            .and_then(|values| values.get(col))
-                        {
-                            self.open_large_value((**cell).clone());
-                        } else {
-                            self.database.document.ui.inspector_detached = true;
-                        }
-                    }
-                }
-                RecordAction::Stage(col, value) => {
-                    self.stage_cell(row, col, value);
-                    self.database.document.tools.inline = None;
-                }
+        match self.record_fields(ui, row, wide) {
+            Some(RecordAction::Revert(col)) => self.revert_grid_draft(row, Some(col)),
+            Some(RecordAction::Inspect(col)) => self.select_cell(row, col, false),
+            Some(RecordAction::Edit(col)) => self.edit_record_field(row, col),
+            Some(RecordAction::Stage(col, value)) => {
+                self.stage_cell(row, col, value);
+                self.database.document.tools.inline = None;
             }
+            None => {}
         }
         if !self.database.workspace.enabled {
             ui.separator();
             self.record_relationships(ui, row);
         }
     }
+    /// A double-clicked field is edited in place; a value too large for that
+    /// opens in full, and any other in the detached cell editor.
+    fn edit_record_field(&mut self, row: usize, col: usize) {
+        self.open_cell(row, col);
+        self.start_inline(row, col);
+        if self.database.document.tools.inline.is_some() {
+            return;
+        }
+        let rows = &self.database.document.result.rows;
+        match rows.get(row).and_then(|values| values.get(col)) {
+            Some(Value::Deferred(cell)) => self.open_large_value((**cell).clone()),
+            _ => self.database.document.ui.inspector_detached = true,
+        }
+    }
+    /// Whether the record tile is the workspace's active tile.
+    pub(super) fn record_tile_active(&self) -> bool {
+        self.database.workspace.active == super::tiling::Kind::Record
+    }
     fn record_keys(&mut self, ctx: &egui::Context, row: usize) {
-        if self.database.workspace.enabled
-            && self.database.workspace.active != super::tiling::Kind::Record
+        if self.database.workspace.enabled && !self.record_tile_active()
             || self.database.document.tools.inline.is_some()
             || ctx.egui_wants_keyboard_input()
             || egui::Popup::is_any_open(ctx)
@@ -468,162 +428,117 @@ impl App {
             self.start_inline(row, column);
             return;
         }
+        let columns = self.database.document.result.columns.len();
         for (key, delta) in [(egui::Key::ArrowUp, -1), (egui::Key::ArrowDown, 1)] {
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key)) {
-                let col = column.saturating_add_signed(delta).min(
-                    self.database
-                        .document
-                        .result
-                        .columns
-                        .len()
-                        .saturating_sub(1),
-                );
+                let col = column
+                    .saturating_add_signed(delta)
+                    .min(columns.saturating_sub(1));
                 self.select_cell(row, col, false);
                 self.database.document.tools.record_scroll_to = Some(col);
                 break;
             }
         }
     }
-    /// A parent link is usable only when every component has a resolved target and a retained non-NULL value.
-    pub(super) fn record_parent_ready(
-        &self,
-        row: usize,
-        key: &tursobench_core::ForeignKey,
-    ) -> bool {
-        !key.columns.is_empty()
-            && key.columns.iter().all(|(source, target)| {
-                target.is_some()
-                    && self
-                        .database
-                        .document
-                        .table
-                        .as_ref()
-                        .and_then(|table| {
-                            table
-                                .columns
-                                .iter()
-                                .position(|c| c.name.eq_ignore_ascii_case(source))
-                        })
-                        .and_then(|col| self.database.document.result.rows.get(row)?.get(col))
-                        .is_some_and(|v| !matches!(v, Value::Null | Value::Deferred(_)))
-            })
-    }
     fn record_fields(&mut self, ui: &mut egui::Ui, row: usize, wide: bool) -> Option<RecordAction> {
-        let values = self.database.document.result.rows.get(row)?;
+        let columns = self.database.document.result.rows.get(row)?.len();
         let scroll_to = self.database.document.tools.record_scroll_to.take();
-        let name_width =
-            (ui.available_width() * 0.32).clamp(48.0, if wide { 180.0 } else { 124.0 });
-        let type_width = if wide { 64.0 } else { 0.0 };
-        let mut action = None;
+        let layout = FieldLayout {
+            name_width: (ui.available_width() * 0.32).clamp(48.0, if wide { 180.0 } else { 124.0 }),
+            wide,
+        };
         let row_spacing = ui.spacing().item_spacing.y;
         ui.spacing_mut().item_spacing.y = 0.0;
-        for (col, value) in values.iter().enumerate() {
-            let header = self.database.document.column_header(col);
-            let field = RecordField {
-                column: col,
-                name: &self.database.document.result.columns[col].name,
-                stored: value,
-                shown: self
-                    .database
-                    .document
-                    .drafts
-                    .as_ref()
-                    .and_then(|d| d.displayed(values, col))
-                    .unwrap_or(value),
-                foreign: header.is_foreign(),
-                selected: self.database.document.inspect == Some((row, col)),
-            };
-            let available_value = (ui.available_width() - name_width - type_width - 12.0).max(16.0);
-            let staged = field.shown != field.stored;
-            let revert_width = if staged { 24.0 } else { 0.0 };
-            let editing = self
-                .database
-                .document
-                .tools
-                .inline
-                .as_ref()
-                .is_some_and(|e| e.row == row && e.column == col);
-            let wrapped = record_wrap(
-                ui,
-                field.shown,
-                available_value - revert_width - 4.0,
-                field.selected && !editing,
-                staged,
-            );
-            let height = wrapped
-                .as_ref()
-                .map_or(24.0, |g| (g.size().y + 8.0).max(24.0));
-            let (rect, response) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width(), height),
-                egui::Sense::click(),
-            );
-            response.widget_info(|| {
-                egui::WidgetInfo::selected(
-                    egui::Role::Button,
-                    ui.is_enabled(),
-                    field.selected,
-                    format!(
-                        "{} · {} · {}",
-                        field.name,
-                        kind_name(field.shown),
-                        field.shown.preview()
-                    ),
-                )
-            });
-            if response.clicked() {
-                response.request_focus();
-            }
-            if scroll_to == Some(col) {
-                response.scroll_to_me(Some(egui::Align::Center));
-            }
-            let mut value_rect = field.paint(ui, rect, name_width, header.key_icon());
-            if wide {
-                let declared = header.declared_type().unwrap_or("VALUE");
-                type_label(ui, rect, declared);
-                value_rect.max.x -= 64.0;
-            }
-            if staged {
-                let enabled =
-                    self.database.commit_ticket.is_none() && !self.database.uncertain_edit;
-                if revert_button(ui, rect, value_rect, col, field.name, enabled) {
-                    action = Some(RecordAction::Revert(col));
-                }
-                value_rect.max.x -= 24.0;
-            }
-            if let Some(inline) = self.database.document.tools.inline.as_mut().filter(|e| {
-                e.row == row
-                    && e.column == col
-                    && (!self.database.workspace.enabled
-                        || self.database.workspace.active == super::tiling::Kind::Record)
-            }) {
-                match inline.record_field(ui, value_rect, col) {
-                    Some(Ok(value)) => action = Some(RecordAction::Stage(col, value)),
-                    Some(Err(error)) => self.database.status = error,
-                    None => {}
-                }
-            } else {
-                let style = self
-                    .database
-                    .document
-                    .tools
-                    .columns
-                    .visuals
-                    .get(&col)
-                    .copied()
-                    .unwrap_or_default();
-                field.value(ui, value_rect, style, wrapped);
-                if response.double_clicked() {
-                    action = Some(RecordAction::Edit(field.column));
-                } else if response.clicked() {
-                    action = Some(RecordAction::Inspect(field.column));
-                }
-                response.on_hover_ui(|ui| {
-                    ui.label(format!("{} · {}", field.name, kind_name(field.shown)));
-                    ui.label(record_tooltip(field.shown));
-                });
-            }
+        let mut action = None;
+        for col in 0..columns {
+            action = self
+                .record_field(ui, row, col, layout, scroll_to == Some(col))
+                .or(action);
         }
         ui.spacing_mut().item_spacing.y = row_spacing;
+        action
+    }
+    /// One field: its name, key icon and type, then its value — wrapped when
+    /// selected — or its inline editor, with a revert button while staged.
+    fn record_field(
+        &mut self,
+        ui: &mut egui::Ui,
+        row: usize,
+        col: usize,
+        layout: FieldLayout,
+        scroll: bool,
+    ) -> Option<RecordAction> {
+        // Field paths keep these borrows apart from the inline editor used below.
+        let values = &self.database.document.result.rows[row];
+        let header = self.database.document.column_header(col);
+        let drafts = self.database.document.drafts.as_ref();
+        let field = RecordField {
+            column: col,
+            name: &self.database.document.result.columns[col].name,
+            stored: &values[col],
+            shown: drafts
+                .and_then(|d| d.displayed(values, col))
+                .unwrap_or(&values[col]),
+            foreign: header.is_foreign(),
+            selected: self.database.document.inspect == Some((row, col)),
+        };
+        let editing = self.editing_at(row, col);
+        let staged = field.staged();
+        let type_width = if layout.wide { 64.0 } else { 0.0 };
+        let value_width = (ui.available_width() - layout.name_width - type_width - 12.0).max(16.0)
+            - if staged { 24.0 } else { 0.0 };
+        let wrapped = record_wrap(
+            ui,
+            field.shown,
+            value_width - 4.0,
+            field.selected && !editing,
+            staged,
+        );
+        let height = wrapped
+            .as_ref()
+            .map_or(24.0, |g| (g.size().y + 8.0).max(24.0));
+        let (rect, response) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), height),
+            egui::Sense::click(),
+        );
+        field.describe(ui, &response);
+        if response.clicked() {
+            response.request_focus();
+        }
+        if scroll {
+            response.scroll_to_me(Some(egui::Align::Center));
+        }
+        let mut value_rect = field.paint(ui, rect, layout.name_width, header.key_icon());
+        if layout.wide {
+            type_label(ui, rect, header.declared_type().unwrap_or("VALUE"));
+            value_rect.max.x -= 64.0;
+        }
+        let mut action = None;
+        if staged {
+            let enabled = self.database.commit_ticket.is_none() && !self.database.uncertain_edit;
+            if revert_button(ui, rect, value_rect, col, field.name, enabled) {
+                action = Some(RecordAction::Revert(col));
+            }
+            value_rect.max.x -= 24.0;
+        }
+        let here = editing && (!self.database.workspace.enabled || self.record_tile_active());
+        if here && let Some(inline) = self.database.document.tools.inline.as_mut() {
+            return match inline.record_field(ui, value_rect, col) {
+                Some(Ok(value)) => Some(RecordAction::Stage(col, value)),
+                Some(Err(error)) => {
+                    self.database.status = error;
+                    action
+                }
+                None => action,
+            };
+        }
+        let style = self.database.document.tools.columns.style(col);
+        field.value(ui, value_rect, style, wrapped);
+        let action = field.action(&response).or(action);
+        response.on_hover_ui(|ui| {
+            ui.label(format!("{} · {}", field.name, kind_name(field.shown)));
+            ui.label(record_tooltip(field.shown));
+        });
         action
     }
     pub(super) fn inspection_surfaces(&mut self, ctx: &egui::Context) {
@@ -641,28 +556,9 @@ impl App {
                     if ui.button("Dock inspector").clicked() {
                         self.database.document.ui.inspector_detached = false;
                     }
-                    ui.horizontal_wrapped(|ui| {
-                        ui.add_enabled_ui(
-                            self.database.document.ui.nav != shell::Nav::Overview,
-                            |ui| {
-                                ui.selectable_value(
-                                    &mut self.database.document.ui.inspector,
-                                    shell::DetailMode::Cell,
-                                    "Cell",
-                                );
-                                ui.selectable_value(
-                                    &mut self.database.document.ui.inspector,
-                                    shell::DetailMode::Record,
-                                    "Record",
-                                );
-                            },
-                        );
-                        ui.selectable_value(
-                            &mut self.database.document.ui.inspector,
-                            shell::DetailMode::Structure,
-                            "Structure",
-                        );
-                    });
+                    let state = &mut self.database.document.ui;
+                    let rows = state.nav != shell::Nav::Overview;
+                    ui.horizontal_wrapped(|ui| detail_modes(ui, &mut state.inspector, rows));
                     egui::ScrollArea::vertical().show(ui, |ui| self.inspector_content(ui));
                 });
             self.database.document.ui.inspector_open = open;
@@ -807,8 +703,19 @@ const HELP: &[(&str, &[HelpRow])] = &[
     ),
 ];
 
+/// The detached inspector's modes; without rows there is no cell or record to show.
+fn detail_modes(ui: &mut egui::Ui, inspector: &mut shell::DetailMode, rows: bool) {
+    for (mode, label, enabled) in [
+        (shell::DetailMode::Cell, "Cell", rows),
+        (shell::DetailMode::Record, "Record", rows),
+        (shell::DetailMode::Structure, "Structure", true),
+    ] {
+        ui.add_enabled_ui(enabled, |ui| ui.selectable_value(inspector, mode, label));
+    }
+}
+/// The width of the keycap column in the keyboard reference.
+const HELP_KEYS: f32 = 160.0;
 fn help_reference(ui: &mut egui::Ui) {
-    const KEYS: f32 = 160.0;
     let tokens = crate::appearance::Tokens::of(ui.ctx());
     for (index, (title, rows)) in HELP.iter().enumerate() {
         if index > 0 {
@@ -821,29 +728,34 @@ fn help_reference(ui: &mut egui::Ui) {
                 .color(tokens.muted),
         );
         for (keys, description) in *rows {
-            ui.horizontal_top(|ui| {
-                let narrow = ui.available_width() < KEYS + 160.0;
-                if !keys.is_empty() {
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(KEYS, 0.0),
-                        egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
-                        |ui| {
-                            if !narrow {
-                                ui.set_min_width(KEYS);
-                            }
-                            ui.spacing_mut().item_spacing = egui::vec2(4.0, 3.0);
-                            for key in *keys {
-                                crate::app::presentation::keycap(ui, key);
-                            }
-                        },
-                    );
-                } else if !narrow {
-                    ui.add_space(KEYS + ui.spacing().item_spacing.x);
-                }
-                ui.add(egui::Label::new(*description).wrap());
-            });
+            ui.horizontal_top(|ui| help_row(ui, keys, description));
         }
     }
+}
+/// Keycaps in their column, then what they do; a note without keys lines up
+/// with the descriptions unless the window is narrow.
+fn help_row(ui: &mut egui::Ui, keys: &[&str], description: &str) {
+    let narrow = ui.available_width() < HELP_KEYS + 160.0;
+    if keys.is_empty() {
+        if !narrow {
+            ui.add_space(HELP_KEYS + ui.spacing().item_spacing.x);
+        }
+    } else {
+        ui.allocate_ui_with_layout(
+            egui::vec2(HELP_KEYS, 0.0),
+            egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
+            |ui| {
+                if !narrow {
+                    ui.set_min_width(HELP_KEYS);
+                }
+                ui.spacing_mut().item_spacing = egui::vec2(4.0, 3.0);
+                for key in keys {
+                    presentation::keycap(ui, key);
+                }
+            },
+        );
+    }
+    ui.add(egui::Label::new(description).wrap());
 }
 
 fn kind_name(value: &Value) -> &'static str {

@@ -2,7 +2,7 @@ use super::icons::{self, Icon};
 use super::presentation::{self, Intent};
 use super::{App, View};
 use eframe::egui;
-use tursobench_core::{Delivery, DraftBatch, Edit, Table, TransactionState, Value};
+use tursobench_core::{Delivery, DraftBatch, Edit, Table, Ticket, TransactionState, Value};
 use tursobench_db::Operation;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -15,30 +15,29 @@ pub(super) struct InsertField {
     mode: InsertMode,
     editor: super::results::CellEditor,
 }
+/// The empty value a new row's editor starts from, by the column's declared type.
+fn zero_value(declared_type: &str) -> Value {
+    let ty = declared_type.to_uppercase();
+    if ty.contains("INT") {
+        Value::Integer(0)
+    } else if ty.contains("REAL") {
+        Value::Real(0.0)
+    } else if ty.contains("BLOB") {
+        Value::Blob(vec![])
+    } else {
+        Value::Text(String::new())
+    }
+}
 impl InsertField {
     fn new(column: &tursobench_core::TableColumn, value: Option<&Value>) -> Self {
-        let mode = match value {
-            None => InsertMode::Default,
-            Some(Value::Null) => InsertMode::Null,
-            _ => InsertMode::Value,
-        };
-        let fallback;
-        let initial = if let Some(value) = value {
-            value
-        } else {
-            fallback = {
-                let ty = column.declared_type.to_uppercase();
-                if ty.contains("INT") {
-                    Value::Integer(0)
-                } else if ty.contains("REAL") {
-                    Value::Real(0.0)
-                } else if ty.contains("BLOB") {
-                    Value::Blob(vec![])
-                } else {
-                    Value::Text(String::new())
-                }
-            };
-            &fallback
+        let zero;
+        let (mode, initial) = match value {
+            None => {
+                zero = zero_value(&column.declared_type);
+                (InsertMode::Default, &zero)
+            }
+            Some(Value::Null) => (InsertMode::Null, &Value::Null),
+            Some(value) => (InsertMode::Value, value),
         };
         Self {
             mode,
@@ -102,7 +101,7 @@ pub(super) struct RowPresentation {
 }
 #[derive(Default)]
 pub(super) struct Presentation {
-    signature: Option<(u64, Option<tursobench_core::Ticket>, usize, usize)>,
+    signature: Option<Signature>,
     pub rows: std::collections::BTreeMap<usize, RowPresentation>,
     review: Option<Result<Vec<tursobench_core::BoundEdit>, tursobench_core::Failure>>,
     selected: usize,
@@ -113,8 +112,54 @@ impl RowPresentation {
     pub(super) fn modified(&self) -> bool {
         !self.updates.is_empty()
     }
+    /// Which of `edits` update or delete this row, compared by its original values.
+    fn of(values: &[Value], edits: &[(usize, &Edit)]) -> Self {
+        let mut row = Self::default();
+        for &(edit, staged) in edits {
+            match staged {
+                Edit::Update { original, changes } if original == values => {
+                    for (change, (col, _)) in changes.iter().enumerate() {
+                        row.updates
+                            .entry(*col)
+                            .or_insert(CellChange { edit, change });
+                    }
+                }
+                Edit::Delete { original } if original == values => row.deleted = true,
+                _ => {}
+            }
+        }
+        row
+    }
 }
+/// What the presentation was built from: draft revision, result, row and edit counts.
+type Signature = (u64, Option<Ticket>, usize, usize);
 impl Presentation {
+    /// Each retained row's staged updates and deletion; edits are matched to
+    /// rows by a hash of their original values, then compared in full.
+    fn build(
+        draft: &DraftBatch,
+        rows: &[Vec<Value>],
+        signature: Signature,
+        selected: usize,
+    ) -> Self {
+        let mut by_original = std::collections::HashMap::<u64, Vec<(usize, &Edit)>>::new();
+        for (index, edit) in draft.edits.iter().enumerate() {
+            if let Edit::Update { original, .. } | Edit::Delete { original } = edit {
+                let entry = by_original.entry(row_hash(original)).or_default();
+                entry.push((index, edit));
+            }
+        }
+        let rows = rows.iter().enumerate().filter_map(|(row, values)| {
+            let presented = RowPresentation::of(values, by_original.get(&row_hash(values))?);
+            (presented.deleted || presented.modified()).then_some((row, presented))
+        });
+        Self {
+            signature: Some(signature),
+            rows: rows.collect(),
+            selected,
+            ..Default::default()
+        }
+    }
     pub(super) fn value<'a>(
         &self,
         draft: Option<&'a DraftBatch>,
@@ -227,55 +272,23 @@ fn row_hash(row: &[Value]) -> u64 {
 }
 impl App {
     pub(super) fn update_draft_presentation(&mut self) {
-        let Some(draft) = &self.database.document.drafts else {
+        let document = &self.database.document;
+        let Some(draft) = &document.drafts else {
             self.database.document.tools.draft_ui = Presentation::default();
             return;
         };
         let signature = (
-            self.database.document.draft_revision,
-            self.database.document.result.current,
-            self.database.document.result.rows.len(),
+            document.draft_revision,
+            document.result.current,
+            document.result.rows.len(),
             draft.edits.len(),
         );
-        if self.database.document.tools.draft_ui.signature == Some(signature) {
+        let presented = &document.tools.draft_ui;
+        if presented.signature == Some(signature) {
             return;
         }
-        let mut edits = std::collections::HashMap::<u64, Vec<(usize, &Edit)>>::new();
-        for (index, edit) in draft.edits.iter().enumerate() {
-            if let Edit::Update { original, .. } | Edit::Delete { original } = edit {
-                edits
-                    .entry(row_hash(original))
-                    .or_default()
-                    .push((index, edit));
-            }
-        }
-        let mut model = Presentation {
-            signature: Some(signature),
-            selected: self.database.document.tools.draft_ui.selected,
-            ..Default::default()
-        };
-        for (row, values) in self.database.document.result.rows.iter().enumerate() {
-            if let Some(edits) = edits.get(&row_hash(values)) {
-                let mut entry = RowPresentation::default();
-                for &(edit_index, edit) in edits {
-                    match edit {
-                        Edit::Update { original, changes } if original == values => {
-                            for (change_index, (col, _)) in changes.iter().enumerate() {
-                                entry.updates.entry(*col).or_insert(CellChange {
-                                    edit: edit_index,
-                                    change: change_index,
-                                });
-                            }
-                        }
-                        Edit::Delete { original } if original == values => entry.deleted = true,
-                        _ => {}
-                    }
-                }
-                if entry.deleted || !entry.updates.is_empty() {
-                    model.rows.insert(row, entry);
-                }
-            }
-        }
+        let rows = &document.result.rows;
+        let model = Presentation::build(draft, rows, signature, presented.selected);
         self.database.document.tools.draft_ui = model;
     }
 
@@ -284,41 +297,34 @@ impl App {
             || self.database.documents.values().any(|d| d.has_drafts())
     }
     pub(super) fn can_edit(&self) -> bool {
-        !self
-            .database
+        let database = &self.database;
+        let document = &database.document;
+        let rows = &document.result.rows;
+        let table = document.table.as_ref();
+        !database
             .documents
             .values()
             .any(|d| d.has_drafts() || d.active.is_some())
-            && !self
-                .database
-                .document
-                .result
-                .rows
+            && !rows
                 .iter()
                 .flatten()
                 .any(|v| matches!(v, Value::Deferred(_)))
-            && !self.database.document.stale
-            && self.database.writable
-            && self.database.ready
-            && !self.database.closing
-            && !self.database.uncertain_edit
-            && self.database.transaction == TransactionState::Autocommit
-            && self.database.commit_ticket.is_none()
-            && self.database.document.active.is_none()
-            && self.database.document.tools.pages.pending.is_none()
-            && self.database.document.view == View::Browse
-            && self
-                .database
-                .document
-                .table
+            && !document.stale
+            && database.writable
+            && database.ready
+            && !database.closing
+            && !database.uncertain_edit
+            && database.transaction == TransactionState::Autocommit
+            && database.commit_ticket.is_none()
+            && document.active.is_none()
+            && document.tools.pages.pending.is_none()
+            && document.view == View::Browse
+            && table.is_some_and(Table::editable)
+            && document
+                .drafts
                 .as_ref()
-                .is_some_and(Table::editable)
-            && self.database.document.drafts.as_ref().is_none_or(|d| {
-                d.edits.is_empty() || Some(&d.table) == self.database.document.table.as_ref()
-            })
-            && self
-                .database
-                .document
+                .is_none_or(|d| d.edits.is_empty() || Some(&d.table) == table)
+            && document
                 .result
                 .completion
                 .as_ref()
@@ -328,14 +334,13 @@ impl App {
         if !self.can_edit() {
             return false;
         }
-        let Some(table) = &self.database.document.table else {
+        let document = &mut self.database.document;
+        let Some(table) = &document.table else {
             return false;
         };
         // Reverting the final operation must not carry the old table identity
         // into a subsequent edit after navigating to another table.
-        let mut draft = self
-            .database
-            .document
+        let mut draft = document
             .drafts
             .as_ref()
             .filter(|d| !d.edits.is_empty())
@@ -345,39 +350,35 @@ impl App {
                 edits: vec![],
             });
         f(&mut draft);
-        let validation = if draft.edits.is_empty() {
-            Ok(())
-        } else {
-            draft.preview().map(|_| ())
-        };
-        match validation {
-            Ok(_) => {
-                super::spreadsheet::State::checkpoint(&mut self.database.document);
-                self.database.document.draft_revision =
-                    self.database.document.draft_revision.wrapping_add(1);
-                self.database.document.drafts = Some(draft);
-                self.database.status =
-                    "Staged locally. Preview and explicitly commit to write.".into();
-                true
-            }
-            Err(e) => {
-                self.database.status = e.to_string();
-                false
-            }
+        if !draft.edits.is_empty()
+            && let Err(e) = draft.preview()
+        {
+            self.database.status = e.to_string();
+            return false;
+        }
+        document.checkpoint_drafts();
+        document.draft_revision = document.draft_revision.wrapping_add(1);
+        document.drafts = Some(draft);
+        self.database.status = "Staged locally. Preview and explicitly commit to write.".into();
+        true
+    }
+    /// Stage a change to a retained row, given its original values.
+    fn stage_row(&mut self, row: usize, f: impl FnOnce(&mut DraftBatch, Vec<Value>)) {
+        if let Some(original) = self.database.document.result.rows.get(row).cloned() {
+            self.stage(|draft| f(draft, original));
         }
     }
     pub(super) fn stage_cell(&mut self, row: usize, column: usize, value: Value) {
-        if let Some(original) = self.database.document.result.rows.get(row).cloned() {
-            self.stage(|d| d.stage_cell(original, column, value));
-        }
+        self.stage_row(row, |d, original| d.stage_cell(original, column, value));
     }
     pub(super) fn revert_grid_draft(&mut self, row: usize, column: Option<usize>) {
-        if let Some(original) = self.database.document.result.rows.get(row).cloned() {
-            self.stage(|draft| match column {
-                Some(c) => draft.revert_cell(&original, c),
-                None => draft.revert_row(&original),
-            });
-        }
+        self.stage_row(row, |draft, original| match column {
+            Some(c) => draft.revert_cell(&original, c),
+            None => draft.revert_row(&original),
+        });
+    }
+    pub(super) fn stage_delete(&mut self, row: usize) {
+        self.stage_row(row, |d, original| d.stage_delete(original));
     }
     pub(super) fn stage_selected_deletions(&mut self) {
         let rows = self
@@ -393,11 +394,6 @@ impl App {
                 d.stage_delete(original);
             }
         });
-    }
-    pub(super) fn stage_delete(&mut self, row: usize) {
-        if let Some(original) = self.database.document.result.rows.get(row).cloned() {
-            self.stage(|d| d.stage_delete(original));
-        }
     }
     pub(super) fn clone_row(&mut self, row: usize) {
         if !self.can_edit() {
@@ -510,112 +506,130 @@ impl App {
                 .inner
                 .clicked()
                 {
-                    let values = if self.database.document.insert_use_json {
-                        serde_json::from_str::<Vec<Option<Value>>>(
-                            &self.database.document.insert_json,
-                        )
-                        .map_err(|e| e.to_string())
-                    } else {
-                        self.database
-                            .document
-                            .insert_fields
-                            .iter()
-                            .map(InsertField::value)
-                            .collect::<Result<Vec<_>, _>>()
-                    };
-                    match values {
+                    match self.insert_values() {
                         Ok(values) => {
                             self.stage(|d| d.edits.push(Edit::Insert { values }));
                         }
-                        Err(e) => self.database.status = e.to_string(),
+                        Err(e) => self.database.status = e,
                     }
                 }
                 ui.label(&self.database.status);
             });
         self.database.document.show_insert = open;
     }
+    /// The new row's values, from the JSON text or the typed fields; `None` omits a column.
+    fn insert_values(&self) -> Result<Vec<Option<Value>>, String> {
+        let document = &self.database.document;
+        if document.insert_use_json {
+            serde_json::from_str(&document.insert_json).map_err(|e| e.to_string())
+        } else {
+            document
+                .insert_fields
+                .iter()
+                .map(InsertField::value)
+                .collect()
+        }
+    }
 
     fn review_window(&mut self, ctx: &egui::Context) {
         self.update_draft_presentation();
         let mut open = true;
-        presentation::dialog(ctx, "Review staged atomic transaction", &mut open).default_width(760.0)
-            .max_width((ctx.content_rect().width()-40.0).max(280.0))
-            .show(ctx, |ui| {
-                presentation::notice(ui,super::icons::Icon::ReviewEdits,Intent::Pending,"Dedicated connection · foreign keys enabled · original values checked · atomic batch. Only a confirmed commit clears these drafts.");
-                let remove = self.database.document.drafts.as_ref().and_then(|draft| {
-                    ui.strong(format!("{} · {} staged operations", draft.table.name, draft.edits.len()));
-                    self.database.document.tools.draft_ui.review_ui(ui, draft, self.database.commit_ticket.is_none())
-                });
-                if let Some(index) = remove {
-                    self.stage(|draft| { draft.edits.remove(index); });
-                }
-                if self.database.uncertain_edit { ui.colored_label(ui.visuals().error_fg_color,"UNKNOWN outcome — close/reopen and inspect; never automatically retry."); }
-                if self.database.commit_ticket.is_some() { ui.label("Committing — awaiting the actual outcome…"); }
-                if presentation::footer(ui, |ui| ui.add_enabled(self.can_edit() && self.has_drafts(),presentation::action(ui,"COMMIT staged edits to database",Intent::Pending))).inner.clicked() { self.commit_drafts(); }
-                ui.label(&self.database.status);
-            });
+        presentation::dialog(ctx, "Review staged atomic transaction", &mut open)
+            .default_width(760.0)
+            .max_width((ctx.content_rect().width() - 40.0).max(280.0))
+            .show(ctx, |ui| self.review_contents(ui));
         self.database.document.show_preview = open;
     }
+    /// Each staged operation with its diff, SQL and bindings, then the commit.
+    fn review_contents(&mut self, ui: &mut egui::Ui) {
+        presentation::notice(
+            ui,
+            Icon::ReviewEdits,
+            Intent::Pending,
+            "Dedicated connection · foreign keys enabled · original values checked · atomic batch. Only a confirmed commit clears these drafts.",
+        );
+        let can_remove = self.database.commit_ticket.is_none();
+        let document = &mut self.database.document;
+        let remove = document.drafts.as_ref().and_then(|draft| {
+            let count = draft.edits.len();
+            ui.strong(format!("{} · {count} staged operations", draft.table.name));
+            document.tools.draft_ui.review_ui(ui, draft, can_remove)
+        });
+        if let Some(index) = remove {
+            self.stage(|draft| {
+                draft.edits.remove(index);
+            });
+        }
+        if self.database.uncertain_edit {
+            ui.colored_label(
+                ui.visuals().error_fg_color,
+                "UNKNOWN outcome — close/reopen and inspect; never automatically retry.",
+            );
+        }
+        if self.database.commit_ticket.is_some() {
+            ui.label("Committing — awaiting the actual outcome…");
+        }
+        let enabled = self.can_edit() && self.has_drafts();
+        let commit = presentation::footer(ui, |ui| {
+            let commit = "COMMIT staged edits to database";
+            ui.add_enabled(enabled, presentation::action(ui, commit, Intent::Pending))
+        });
+        if commit.inner.clicked() {
+            self.commit_drafts();
+        }
+        ui.label(&self.database.status);
+    }
     pub(super) fn staged_edit_dock(&mut self, ui: &mut egui::Ui) {
+        let tokens = crate::appearance::Tokens::of(ui.ctx());
+        egui::Frame::new()
+            .fill(tokens.pending.gamma_multiply(0.08))
+            .inner_margin(egui::Margin::symmetric(4, 2))
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| self.staged_edit_actions(ui, tokens));
+            });
+    }
+    /// The staged count, then commit, review and discard, and the commit's state.
+    fn staged_edit_actions(&mut self, ui: &mut egui::Ui, tokens: crate::appearance::Tokens) {
         let count = self
             .database
             .document
             .drafts
             .as_ref()
             .map_or(0, |d| d.edits.len());
-        let tokens = crate::appearance::Tokens::of(ui.ctx());
-        egui::Frame::new()
-            .fill(tokens.pending.gamma_multiply(0.08))
-            .inner_margin(egui::Margin::symmetric(4, 2))
-            .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.colored_label(tokens.pending, format!("{count} staged"));
-                    if ui
-                        .add_enabled(
-                            self.can_edit() && count > 0,
-                            egui::Button::new(egui::RichText::new("Commit").color(tokens.pending))
-                                .fill(tokens.pending.gamma_multiply(0.13))
-                                .stroke(egui::Stroke::new(
-                                    1.0,
-                                    tokens.pending.gamma_multiply(0.48),
-                                )),
-                        )
-                        .clicked()
-                    {
-                        self.commit_drafts();
-                    }
-                    if icons::button(
-                        ui,
-                        Icon::ReviewEdits,
-                        "Review staged edits · Diff / SQL",
-                        "",
-                    )
-                    .clicked()
-                    {
-                        self.database.document.show_preview = true;
-                    }
-                    if ui
-                        .add_enabled_ui(
-                            self.database.commit_ticket.is_none() && !self.database.uncertain_edit,
-                            |ui| icons::button(ui, Icon::Undo, "Discard staged edits", ""),
-                        )
-                        .inner
-                        .clicked()
-                    {
-                        self.database.document.drafts = None;
-                        self.database.document.tools.spreadsheet = Default::default();
-                    }
-                    if self.database.commit_ticket.is_some() {
-                        ui.small("Committing…");
-                    }
-                    if self.database.uncertain_edit {
-                        ui.colored_label(
-                            ui.visuals().error_fg_color,
-                            "Outcome unknown — inspect before retrying",
-                        );
-                    }
-                });
-            });
+        ui.colored_label(tokens.pending, format!("{count} staged"));
+        let commit = egui::Button::new(egui::RichText::new("Commit").color(tokens.pending))
+            .fill(tokens.pending.gamma_multiply(0.13))
+            .stroke(egui::Stroke::new(1.0, tokens.pending.gamma_multiply(0.48)));
+        if ui
+            .add_enabled(self.can_edit() && count > 0, commit)
+            .clicked()
+        {
+            self.commit_drafts();
+        }
+        let review = "Review staged edits · Diff / SQL";
+        if icons::button(ui, Icon::ReviewEdits, review, "").clicked() {
+            self.database.document.show_preview = true;
+        }
+        let settled = self.database.commit_ticket.is_none() && !self.database.uncertain_edit;
+        if ui
+            .add_enabled_ui(settled, |ui| {
+                icons::button(ui, Icon::Undo, "Discard staged edits", "")
+            })
+            .inner
+            .clicked()
+        {
+            self.database.document.drafts = None;
+            self.database.document.tools.spreadsheet = Default::default();
+        }
+        if self.database.commit_ticket.is_some() {
+            ui.small("Committing…");
+        }
+        if self.database.uncertain_edit {
+            ui.colored_label(
+                ui.visuals().error_fg_color,
+                "Outcome unknown — inspect before retrying",
+            );
+        }
     }
     pub(super) fn commit_drafts(&mut self) {
         if !self.can_edit() || !self.has_drafts() {
