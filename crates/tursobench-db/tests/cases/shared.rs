@@ -205,32 +205,32 @@ fn access_preflight_reports_locks_without_writing_or_interfering_with_shared_wri
     use tursobench_core::{Access, ErrorKind};
     let (dir, path) = fixture();
     let files = common::Files::record(dir.path());
-    assert!(tursobench_db::check_access(&path).is_ok());
+    assert!(tursobench_db::access::check_access(&path).is_ok());
     assert!(!dir.path().join("shared.db-tshm").exists());
     assert!(files.unchanged());
     {
         let (legacy, _) = Peer::start(&path, "legacy");
-        let error = tursobench_db::check_access(&path).unwrap_err();
+        let error = tursobench_db::access::check_access(&path).unwrap_err();
         assert_eq!(error.kind, ErrorKind::Busy);
         assert!(error.message.contains(&legacy.child.id().to_string()));
     }
-    assert!(tursobench_db::check_access(&path).is_ok());
+    assert!(tursobench_db::access::check_access(&path).is_ok());
     {
         let (mut writer, _) = Peer::start(&path, "writer");
         writer.ok("BEGIN IMMEDIATE");
         writer.ok("UPDATE items SET value='pending'");
         for _ in 0..8 {
-            assert!(tursobench_db::check_access(&path).is_ok());
+            assert!(tursobench_db::access::check_access(&path).is_ok());
         }
         writer.ok("ROLLBACK");
     }
     let app = common::Client::open(&path, Access::ReadOnly);
     assert_eq!(
-        tursobench_db::check_access(&path).unwrap_err().kind,
+        tursobench_db::access::check_access(&path).unwrap_err().kind,
         ErrorKind::Busy
     );
     app.close();
-    assert!(tursobench_db::check_access(&path).is_ok());
+    assert!(tursobench_db::access::check_access(&path).is_ok());
 }
 
 #[test]
@@ -238,7 +238,7 @@ fn preflight_preserves_existing_process_owned_posix_locks() {
     let (_dir, path) = fixture();
     let db = common::block_on(turso::Builder::new_local(path.to_str().unwrap()).build()).unwrap();
     assert_eq!(
-        tursobench_db::check_access(&path).unwrap_err().kind,
+        tursobench_db::access::check_access(&path).unwrap_err().kind,
         tursobench_core::ErrorKind::Busy
     );
     let (_legacy, reply) = Peer::start(&path, "legacy");
@@ -247,7 +247,7 @@ fn preflight_preserves_existing_process_owned_posix_locks() {
         "preflight released the existing POSIX lock: {reply}"
     );
     drop(db);
-    assert!(tursobench_db::check_access(&path).is_ok());
+    assert!(tursobench_db::access::check_access(&path).is_ok());
 }
 
 #[test]
@@ -292,7 +292,7 @@ fn application_admission_blocks_legacy_writers_and_reserves_readonly_fallback() 
     let (_dir, path) = fixture();
     {
         let (_legacy, _) = Peer::start(&path, "legacy");
-        let usage = tursobench_db::processes_using(&path);
+        let usage = tursobench_db::access::processes_using(&path);
         assert!(!usage.applications.is_empty() || usage.incomplete);
         for access in [Access::ReadOnly, Access::ReadWrite] {
             let (_session, opened) = common::start(&path, access);

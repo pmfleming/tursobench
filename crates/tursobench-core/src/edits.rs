@@ -276,8 +276,9 @@ fn generate(table: &Table, edit: &Edit) -> Result<BoundEdit, Failure> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{DraftBatch, Edit};
     use crate::TableColumn;
+    use crate::{Table, Value};
     fn table() -> Table {
         Table {
             name: "a\"b".into(),

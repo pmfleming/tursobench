@@ -3,8 +3,19 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     ops::Range,
 };
-use turso_parser::{lexer::Lexer, parser::Parser, token::TokenType};
+use turso_parser::{ast::Cmd, lexer::Lexer, parser::Parser, token::TokenType};
 use tursobench_core::{Bindings, Failure};
+
+/// The first command in `sql`; a parse error is an input failure.
+pub(crate) fn parse_first(sql: &str) -> Result<Option<Cmd>, Failure> {
+    Parser::new(sql.as_bytes())
+        .next_cmd()
+        .map_err(|e| Failure::input(e.to_string()))
+}
+/// The first command in `sql`, if it parses.
+pub(crate) fn first_command(sql: &str) -> Option<Cmd> {
+    Parser::new(sql.as_bytes()).next_cmd().ok().flatten()
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TokenStyle {
@@ -87,24 +98,7 @@ pub fn validate_bindings(sql: &str, bindings: &Bindings) -> Result<(), Failure> 
                     "Use a JSON object with full parameter names for :name, $name or @name",
                 ));
             }
-            let mut count = 0usize;
-            for token in tokens(sql)
-                .into_iter()
-                .filter(|t| t.style == TokenStyle::Parameter)
-            {
-                let p = &sql[token.range];
-                count = if p == "?" {
-                    count
-                        .checked_add(1)
-                        .ok_or_else(|| Failure::input("Too many parameters"))?
-                } else {
-                    count.max(
-                        p[1..]
-                            .parse::<usize>()
-                            .map_err(|_| Failure::input("Invalid positional parameter"))?,
-                    )
-                };
-            }
+            let count = positional_count(sql)?;
             if count != values.len() {
                 return Err(Failure::input(format!(
                     "Expected {count} positional values, received {}",
@@ -114,6 +108,21 @@ pub fn validate_bindings(sql: &str, bindings: &Bindings) -> Result<(), Failure> 
         }
     }
     Ok(())
+}
+/// Values `sql` takes: one per `?`, and at least the highest `?N`.
+fn positional_count(sql: &str) -> Result<usize, Failure> {
+    tokens(sql)
+        .into_iter()
+        .filter(|t| t.style == TokenStyle::Parameter)
+        .try_fold(0usize, |count, token| match &sql[token.range] {
+            "?" => count
+                .checked_add(1)
+                .ok_or_else(|| Failure::input("Too many parameters")),
+            p => p[1..]
+                .parse::<usize>()
+                .map(|n| count.max(n))
+                .map_err(|_| Failure::input("Invalid positional parameter")),
+        })
 }
 /// Bindings that match `sql` and fit the 8 MiB statement parameter budget.
 pub(crate) fn validate_parameters(sql: &str, bindings: &Bindings) -> Result<(), Failure> {
@@ -221,11 +230,7 @@ pub fn script_statements(sql: &str) -> Result<Vec<String>, Failure> {
     let mut statements = Vec::new();
     for range in statement_ranges(sql) {
         let text = &sql[range];
-        if Parser::new(text.as_bytes())
-            .next_cmd()
-            .map_err(|e| Failure::input(e.to_string()))?
-            .is_none()
-        {
+        if parse_first(text)?.is_none() {
             continue;
         }
         validate_single(text)?;
@@ -240,27 +245,24 @@ pub fn script_statements(sql: &str) -> Result<Vec<String>, Failure> {
     Ok(statements)
 }
 pub(crate) fn transaction_control(sql: &str) -> bool {
-    use turso_parser::ast::{Cmd, Stmt};
+    use turso_parser::ast::Stmt;
     matches!(
-        Parser::new(sql.as_bytes()).next_cmd(),
-        Ok(Some(Cmd::Stmt(
+        first_command(sql),
+        Some(Cmd::Stmt(
             Stmt::Begin { .. }
                 | Stmt::Commit { .. }
                 | Stmt::Rollback { .. }
                 | Stmt::Release { .. }
                 | Stmt::Savepoint { .. }
-        )))
+        ))
     )
 }
 
 pub fn explain_sql(sql: &str, bytecode: bool) -> Result<String, Failure> {
     validate_single(sql)?;
-    use turso_parser::ast::{Cmd, Stmt};
-    let command = Parser::new(sql.as_bytes())
-        .next_cmd()
-        .map_err(|e| Failure::input(e.to_string()))?;
+    use turso_parser::ast::Stmt;
     if !matches!(
-        command,
+        parse_first(sql)?,
         Some(Cmd::Stmt(
             Stmt::Select(_) | Stmt::Insert { .. } | Stmt::Update(_) | Stmt::Delete { .. }
         ))
@@ -291,7 +293,7 @@ pub fn validate_single(sql: &str) -> Result<(), Failure> {
     if sql.len() > 1024 * 1024 {
         return Err(Failure::input("SQL exceeds 1 MiB"));
     }
-    let mut parser = turso_parser::parser::Parser::new(sql.as_bytes());
+    let mut parser = Parser::new(sql.as_bytes());
     if parser
         .next_cmd()
         .map_err(|e| Failure::input(e.to_string()))?
@@ -312,12 +314,10 @@ pub fn validate_single(sql: &str) -> Result<(), Failure> {
 }
 
 pub(crate) fn stoppable_read(sql: &str) -> bool {
-    use turso_parser::ast::{Cmd, Stmt};
+    use turso_parser::ast::Stmt;
     matches!(
-        Parser::new(sql.as_bytes()).next_cmd(),
-        Ok(Some(
-            Cmd::Stmt(Stmt::Select(_)) | Cmd::Explain(_) | Cmd::ExplainQueryPlan { .. }
-        ))
+        first_command(sql),
+        Some(Cmd::Stmt(Stmt::Select(_)) | Cmd::Explain(_) | Cmd::ExplainQueryPlan { .. })
     )
 }
 
@@ -335,10 +335,10 @@ impl Effect {
 }
 
 pub(crate) fn effect(sql: &str) -> Effect {
-    use turso_parser::ast::{Cmd, Stmt};
-    match Parser::new(sql.as_bytes()).next_cmd() {
-        Ok(Some(Cmd::Explain(_) | Cmd::ExplainQueryPlan { .. })) => Effect::Read,
-        Ok(Some(Cmd::Stmt(stmt))) => match stmt {
+    use turso_parser::ast::Stmt;
+    match first_command(sql) {
+        Some(Cmd::Explain(_) | Cmd::ExplainQueryPlan { .. }) => Effect::Read,
+        Some(Cmd::Stmt(stmt)) => match stmt {
             Stmt::Select(_)
             | Stmt::Begin { .. }
             | Stmt::Commit { .. }
@@ -358,12 +358,9 @@ pub(crate) fn effect(sql: &str) -> Effect {
 }
 
 pub(crate) fn validate_readonly(sql: &str) -> Result<(), Failure> {
-    use turso_parser::ast::{Cmd, Stmt};
-    let command = Parser::new(sql.as_bytes())
-        .next_cmd()
-        .map_err(|e| Failure::input(e.to_string()))?;
+    use turso_parser::ast::Stmt;
     if matches!(
-        command,
+        parse_first(sql)?,
         Some(Cmd::Stmt(Stmt::Attach { .. } | Stmt::Vacuum { .. }))
     ) {
         return Err(Failure {
@@ -378,11 +375,8 @@ pub(crate) fn validate_readonly(sql: &str) -> Result<(), Failure> {
 
 /// Keep every execution surface inside the qualified shared-WAL model.
 pub(crate) fn validate_coordinated(sql: &str) -> Result<(), Failure> {
-    use turso_parser::ast::{Cmd, Stmt, TransactionType};
-    match Parser::new(sql.as_bytes())
-        .next_cmd()
-        .map_err(|e| Failure::input(e.to_string()))?
-    {
+    use turso_parser::ast::{Stmt, TransactionType};
+    match parse_first(sql)? {
         Some(Cmd::Stmt(Stmt::Pragma {
             name,
             body: Some(_),
@@ -411,13 +405,13 @@ pub(crate) fn validate_coordinated(sql: &str) -> Result<(), Failure> {
 
 /// The inline INTEGER PRIMARY KEY (except DESC) aliases rowid and cannot be NULL.
 pub(crate) fn inline_rowid_key(ddl: &str) -> Option<String> {
-    use turso_parser::ast::{Cmd, ColumnConstraint, CreateTableBody, SortOrder, Stmt};
-    let Ok(Some(Cmd::Stmt(Stmt::CreateTable {
+    use turso_parser::ast::{ColumnConstraint, CreateTableBody, SortOrder, Stmt};
+    let Some(Cmd::Stmt(Stmt::CreateTable {
         body: CreateTableBody::ColumnsAndConstraints {
             columns, options, ..
         },
         ..
-    }))) = Parser::new(ddl.as_bytes()).next_cmd()
+    })) = first_command(ddl)
     else {
         return None;
     };
@@ -445,11 +439,11 @@ pub(crate) fn inline_rowid_key(ddl: &str) -> Option<String> {
 
 /// Conservatively establish physical row identity from the matching engine parser.
 pub(crate) fn has_rowid(ddl: &str) -> bool {
-    use turso_parser::ast::{Cmd, CreateTableBody, Stmt};
-    matches!(Parser::new(ddl.as_bytes()).next_cmd(),
-        Ok(Some(Cmd::Stmt(Stmt::CreateTable {
+    use turso_parser::ast::{CreateTableBody, Stmt};
+    matches!(first_command(ddl),
+        Some(Cmd::Stmt(Stmt::CreateTable {
             body: CreateTableBody::ColumnsAndConstraints { options, .. }, ..
-        }))) if !options.contains_without_rowid())
+        })) if !options.contains_without_rowid())
 }
 
 /// Check the pinned engine's numeric conversion before publishing a supposedly lossless SQL literal.
@@ -471,11 +465,11 @@ pub fn checked_real_literal(n: f64) -> Result<String, Failure> {
     ))
 }
 pub(crate) fn declared_types(ddl: &str) -> BTreeMap<String, String> {
-    use turso_parser::ast::{Cmd, CreateTableBody, Stmt};
-    let Ok(Some(Cmd::Stmt(Stmt::CreateTable {
+    use turso_parser::ast::{CreateTableBody, Stmt};
+    let Some(Cmd::Stmt(Stmt::CreateTable {
         body: CreateTableBody::ColumnsAndConstraints { columns, .. },
         ..
-    }))) = Parser::new(ddl.as_bytes()).next_cmd()
+    })) = first_command(ddl)
     else {
         return BTreeMap::new();
     };

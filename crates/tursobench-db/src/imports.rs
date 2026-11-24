@@ -57,21 +57,8 @@ impl Csv {
             }
             if record.inside {
                 self.quoted(&mut record, b);
-            } else if b == self.delimiter {
-                record.end_field()?;
-            } else if b == b'\n' || b == b'\r' {
-                record.end_field()?;
-                if b == b'\r' {
-                    self.skip(b'\n');
-                }
+            } else if self.unquoted(&mut record, b)? {
                 return Ok(Some(record.fields));
-            } else if b == b'"' && record.field.is_empty() && !record.closed {
-                record.quoted = true;
-                record.inside = true;
-            } else if record.closed || b == b'"' {
-                return Err(error("Unexpected text after CSV closing quote"));
-            } else {
-                record.field.push(b);
             }
         }
         if record.inside {
@@ -93,6 +80,28 @@ impl Csv {
             self.bytes.next();
         }
         found
+    }
+    /// Outside quotes; true when `b` ends the record.
+    fn unquoted(&mut self, record: &mut Record, b: u8) -> Result<bool, Failure> {
+        match b {
+            _ if b == self.delimiter => record.end_field()?,
+            b'\n' | b'\r' => {
+                record.end_field()?;
+                if b == b'\r' {
+                    self.skip(b'\n');
+                }
+                return Ok(true);
+            }
+            b'"' if record.field.is_empty() && !record.closed => {
+                record.quoted = true;
+                record.inside = true;
+            }
+            _ if record.closed || b == b'"' => {
+                return Err(error("Unexpected text after CSV closing quote"));
+            }
+            _ => record.field.push(b),
+        }
+        Ok(false)
     }
     /// Inside quotes, `""` is a literal quote and a lone `"` closes the field.
     fn quoted(&mut self, record: &mut Record, b: u8) {

@@ -1,12 +1,32 @@
 //! Imports, exports and maintenance: each refuses to run after an unconfirmed
 //! outcome and reports the editor's transaction state afterwards.
-use super::Worker;
+use super::{Output, Worker};
 use crate::{sql, transfers};
 use std::path::{Path, PathBuf};
 use tursobench_core::{
-    Access, Bindings, Browse, Completion, ErrorKind, EventKind, Failure, ImportSpec, Ticket,
-    TransactionState, TransferOutcome,
+    Access, Bindings, Browse, Completion, ConnectionSettings, ErrorKind, EventKind, Failure,
+    ImportFormat, ImportSpec, InputKind, Ticket, TransactionState, TransferOutcome,
 };
+
+pub(super) fn preview_import(
+    path: &Path,
+    format: ImportFormat,
+    kinds: Vec<InputKind>,
+    null_marker: String,
+) -> Result<EventKind, Failure> {
+    crate::imports::preview(path, format, kinds, null_marker).map(EventKind::ImportPreview)
+}
+/// Publishes the copy `prepare_backup` readied, once every connection has closed.
+pub(super) async fn publish_backup(
+    output: &Output,
+    (request, destination): (Ticket, PathBuf),
+    source: &Path,
+    settings: ConnectionSettings,
+    cleanup: &Result<(), Failure>,
+) {
+    let outcome = transfers::publish_backup(source, &destination, settings, cleanup).await;
+    output.finish(request, EventKind::TransferFinished(outcome));
+}
 
 impl Worker<'_> {
     pub(super) async fn export(

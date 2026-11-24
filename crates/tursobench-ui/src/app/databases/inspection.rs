@@ -97,7 +97,7 @@ impl App {
                 match std::thread::Builder::new()
                     .name("database-header".into())
                     .spawn(move || {
-                        let access = tursobench_db::check_access(&path);
+                        let access = tursobench_db::access::check_access(&path);
                         let kind = if access.is_ok() {
                             discovery::inspect_kind(&path).map_err(|e| e.to_string())
                         } else {

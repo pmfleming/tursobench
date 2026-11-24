@@ -1,10 +1,9 @@
 //! Read-only schema capture and additive migration drafts for reviewed execution.
 use crate::{connection::failure, sql};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use turso::Connection;
-use turso_parser::{
-    ast::{AlterTableBody, Cmd, ColumnDefinition, CreateTableBody, Name, QualifiedName, Stmt},
-    parser::Parser,
+use turso_parser::ast::{
+    AlterTableBody, Cmd, ColumnDefinition, CreateTableBody, Name, QualifiedName, Stmt,
 };
 use tursobench_core::{Failure, SchemaObject, SchemaSnapshot, quote_identifier};
 
@@ -78,7 +77,7 @@ pub(crate) async fn capture(c: &Connection) -> Result<SchemaSnapshot, Failure> {
 }
 fn statement(ddl: &str) -> Option<Stmt> {
     sql::validate_single(ddl).ok()?;
-    match Parser::new(ddl.as_bytes()).next_cmd().ok()?? {
+    match sql::first_command(ddl)? {
         Cmd::Stmt(s) => Some(s),
         _ => None,
     }
@@ -234,42 +233,46 @@ fn column_differences(desired: &SchemaObject, current: &SchemaObject) -> Vec<Str
     details
 }
 pub fn compare(desired: &SchemaSnapshot, current: &SchemaSnapshot) -> Vec<Difference> {
-    fn map(s: &SchemaSnapshot) -> BTreeMap<(String, String), &SchemaObject> {
+    fn map(s: &SchemaSnapshot) -> BTreeMap<(&str, &str), &SchemaObject> {
         s.objects
             .iter()
-            .map(|o| ((o.kind.clone(), o.name.clone()), o))
+            .map(|o| ((o.kind.as_str(), o.name.as_str()), o))
             .collect()
     }
-    let source = map(desired);
-    let target = map(current);
-    let mut keys: Vec<_> = source.keys().chain(target.keys()).cloned().collect();
-    keys.sort();
-    keys.dedup();
-    keys.into_iter().map(|(kind, name)| {
-        let key = (kind.clone(), name.clone());
-        let (a, b) = (source.get(&key), target.get(&key));
-        let status = match (a, b) {
-            (Some(a), Some(b)) if a.ddl == b.ddl => Status::Identical,
-            (Some(_), Some(_)) => Status::Modified,
-            (Some(_), None) => Status::Added,
-            _ => Status::Removed,
-        };
-        let details = match (kind.as_str(), a, b) {
-            ("table", Some(a), Some(b)) => column_differences(a, b),
-            _ => vec![],
-        };
-        let migration = match (status, a, b) {
-            (Status::Added, Some(a), _) => a.ddl.as_deref().and_then(draft_ddl),
-            (Status::Modified, Some(a), Some(b)) if kind == "table" => additions(a, b),
-            _ => None,
-        };
-        let guidance = (status != Status::Identical && migration.is_none()).then(|| {
-            if status == Status::Removed {
-                "Manual removal: verify dependencies and retained data. Renames are never inferred from added/removed pairs.".into()
-            } else {
-                "Manual rebuild/change: define explicit old-to-new data mapping; validate conversions/defaults and NOT NULL/UNIQUE/CHECK/FK constraints; preserve indexes, views and triggers; copy and verify rows in a reviewed transaction; validate foreign keys before publication. No executable rebuild is inferred.".into()
-            }
-        });
-        Difference { kind, name, status, details, migration, guidance }
-    }).collect()
+    let (source, target) = (map(desired), map(current));
+    let keys: BTreeSet<_> = source.keys().chain(target.keys()).copied().collect();
+    keys.into_iter()
+        .map(|key| difference(key, source.get(&key).copied(), target.get(&key).copied()))
+        .collect()
+}
+/// How one object differs; renames are never inferred.
+fn difference(
+    (kind, name): (&str, &str),
+    desired: Option<&SchemaObject>,
+    current: Option<&SchemaObject>,
+) -> Difference {
+    let (status, details, migration) = match (desired, current) {
+        (Some(a), Some(b)) if a.ddl == b.ddl => (Status::Identical, vec![], None),
+        (Some(a), Some(b)) if kind == "table" => {
+            (Status::Modified, column_differences(a, b), additions(a, b))
+        }
+        (Some(_), Some(_)) => (Status::Modified, vec![], None),
+        (Some(a), None) => (Status::Added, vec![], a.ddl.as_deref().and_then(draft_ddl)),
+        _ => (Status::Removed, vec![], None),
+    };
+    let guidance = (status != Status::Identical && migration.is_none()).then(|| {
+        if status == Status::Removed {
+            "Manual removal: verify dependencies and retained data. Renames are never inferred from added/removed pairs.".into()
+        } else {
+            "Manual rebuild/change: define explicit old-to-new data mapping; validate conversions/defaults and NOT NULL/UNIQUE/CHECK/FK constraints; preserve indexes, views and triggers; copy and verify rows in a reviewed transaction; validate foreign keys before publication. No executable rebuild is inferred.".into()
+        }
+    });
+    Difference {
+        kind: kind.into(),
+        name: name.into(),
+        status,
+        details,
+        migration,
+        guidance,
+    }
 }

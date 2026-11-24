@@ -109,7 +109,8 @@ fn input(e: impl std::fmt::Display) -> Failure {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{CELL, Depot, TOTAL};
+    use tursobench_core::{EventKind, Value};
     fn handle(value: Value) -> u64 {
         let Value::Deferred(cell) = value else {
             panic!("expected deferred value")

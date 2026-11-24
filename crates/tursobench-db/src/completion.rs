@@ -12,6 +12,20 @@ struct Token {
     identifier: bool,
 }
 impl Token {
+    fn new(raw: &str, style: TokenStyle, end: usize, scope: usize) -> Self {
+        let starts_name = raw.starts_with(['"', '`'])
+            || raw
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphabetic() || c == '_');
+        Self {
+            name: identifier(raw),
+            upper: raw.to_uppercase(),
+            end,
+            scope,
+            identifier: style == TokenStyle::Plain && starts_name,
+        }
+    }
     fn declares_table(&self) -> bool {
         matches!(self.upper.as_str(), "FROM" | "JOIN" | "UPDATE" | "INTO")
     }
@@ -65,18 +79,7 @@ fn scoped_tokens(sql: &str, cursor: usize) -> (Vec<Token>, Vec<Scope>, usize) {
         if t.range.start < cursor {
             cursor_scope = current;
         }
-        ts.push(Token {
-            name: identifier(raw),
-            upper: raw.to_uppercase(),
-            end: t.range.end,
-            scope: current,
-            identifier: t.style == TokenStyle::Plain
-                && (raw.starts_with(['"', '`'])
-                    || raw
-                        .chars()
-                        .next()
-                        .is_some_and(|c| c.is_alphabetic() || c == '_')),
-        });
+        ts.push(Token::new(raw, t.style, t.range.end, current));
         if matches!(raw, "(" | ";") {
             scopes.push(Scope {
                 parent: (raw == "(").then_some(current),
@@ -103,25 +106,25 @@ fn collect_aliases(ts: &[Token], scopes: &mut [Scope]) {
             continue;
         }
         table_list.insert(t.scope);
-        let Some(table) = ts.get(i + 1).filter(|n| n.scope == t.scope && n.identifier) else {
-            continue;
-        };
-        let mut next = i + 2;
-        let table = if ts.get(next).is_some_and(|n| n.name == ".") {
-            next += 2;
-            ts.get(next - 1).unwrap_or(table)
-        } else {
-            table
-        };
-        next += usize::from(ts.get(next).is_some_and(|n| n.upper == "AS"));
-        let name = ts
-            .get(next)
-            .filter(|n| n.identifier && n.scope == t.scope)
-            .unwrap_or(table);
-        scopes[t.scope]
-            .aliases
-            .insert(name.name.to_lowercase(), table.name.clone());
+        if let Some((alias, table)) = alias(ts, i) {
+            scopes[t.scope].aliases.insert(alias, table);
+        }
     }
+}
+/// The `(alias, table)` named after the table-declaring token at `i`:
+/// `t`, `s.t`, `t a` or `t AS a`.
+fn alias(ts: &[Token], i: usize) -> Option<(String, String)> {
+    let scope = ts[i].scope;
+    let in_scope = |n: &&Token| n.identifier && n.scope == scope;
+    let mut table = ts.get(i + 1).filter(in_scope)?;
+    let mut next = i + 2;
+    if ts.get(next).is_some_and(|n| n.name == ".") {
+        next += 2;
+        table = ts.get(next - 1).unwrap_or(table);
+    }
+    next += usize::from(ts.get(next).is_some_and(|n| n.upper == "AS"));
+    let name = ts.get(next).filter(in_scope).unwrap_or(table);
+    Some((name.name.to_lowercase(), table.name.clone()))
 }
 fn projection(expr: &[&Token], scopes: &[Scope], scope: usize, catalog: &Catalog) -> Vec<String> {
     if let Some(pos) = expr.iter().position(|t| t.upper == "AS") {
@@ -156,18 +159,15 @@ fn cte_columns(ts: &[Token], i: usize, scopes: &[Scope], catalog: &Catalog) -> O
     if !name.identifier || !matches!(previous.upper.as_str(), "WITH" | "RECURSIVE" | ",") {
         return None;
     }
-    let mut next = i + 1;
-    let mut projected = vec![];
-    if ts.get(next).is_some_and(|t| t.name == "(") {
-        next += 1;
-        while let Some(t) = ts.get(next).filter(|t| t.name != ")") {
-            if t.identifier {
-                projected.push(t.name.clone());
-            }
-            next += 1;
+    // An explicit column list, `name(a, b) AS (…)`, wins over the projection.
+    let (projected, next) = match ts.get(i + 1) {
+        Some(t) if t.name == "(" => {
+            let list: Vec<_> = ts[i + 2..].iter().take_while(|t| t.name != ")").collect();
+            let names = list.iter().filter(|t| t.identifier).map(|t| t.name.clone());
+            (names.collect::<Vec<_>>(), i + 3 + list.len())
         }
-        next += 1;
-    }
+        _ => (vec![], i + 1),
+    };
     if ts.get(next)?.upper != "AS" || ts.get(next + 1)?.name != "(" {
         return None;
     }

@@ -217,7 +217,8 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{MAX_BYTES, Store};
+    use turso::Value;
     #[test]
     fn commits_reopen_and_preserve_previous_snapshot() {
         let dir = tempfile::tempdir().unwrap();

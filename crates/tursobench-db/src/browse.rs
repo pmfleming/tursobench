@@ -151,18 +151,16 @@ impl Predicates<'_> {
                 if parts.is_empty() {
                     return Err(Failure::input("Empty filter group"));
                 }
+                let joiner = if matches!(expr, FilterExpr::All(_)) {
+                    " AND "
+                } else {
+                    " OR "
+                };
                 let parts = parts
                     .iter()
                     .map(|p| self.expression(p, depth + 1))
                     .collect::<Result<Vec<_>, _>>()?;
-                Ok(format!(
-                    "({})",
-                    parts.join(if matches!(expr, FilterExpr::All(_)) {
-                        " AND "
-                    } else {
-                        " OR "
-                    })
-                ))
+                Ok(format!("({})", parts.join(joiner)))
             }
             FilterExpr::In { column, values } => {
                 let col = self.column(*column)?;
@@ -171,51 +169,42 @@ impl Predicates<'_> {
                 }
                 let params = values
                     .iter()
-                    .cloned()
-                    .map(|v| self.bind(v))
+                    .map(|v| self.bind(v.clone()))
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(format!("{col} IN ({})", params.join(",")))
             }
-            FilterExpr::Compare(Filter { column, op, value }) => {
-                let col = self.column(*column)?;
-                let operator = match op {
-                    FilterOp::Equal => "IS",
-                    FilterOp::NotEqual => "IS NOT",
-                    FilterOp::Less => "<",
-                    FilterOp::Greater => ">",
-                    FilterOp::LessOrEqual => "<=",
-                    FilterOp::GreaterOrEqual => ">=",
-                    FilterOp::Contains => "LIKE",
-                    FilterOp::IsNull => "IS NULL",
-                    FilterOp::IsNotNull => "IS NOT NULL",
-                };
-                if op.unary() {
-                    return Ok(format!("{col} {operator}"));
-                }
-                let value = if *op == FilterOp::Contains {
-                    let Value::Text(text) = value else {
-                        return Err(Failure::input("Contains requires a TEXT value"));
-                    };
-                    Value::Text(format!(
-                        "%{}%",
-                        text.replace('\\', "\\\\")
-                            .replace('%', "\\%")
-                            .replace('_', "\\_")
-                    ))
-                } else {
-                    value.clone()
-                };
-                let p = self.bind(value)?;
-                Ok(format!(
-                    "{col} {operator} {p}{}",
-                    if *op == FilterOp::Contains {
-                        " ESCAPE '\\'"
-                    } else {
-                        ""
-                    }
-                ))
-            }
+            FilterExpr::Compare(filter) => self.compare(filter),
         }
+    }
+    fn compare(&mut self, Filter { column, op, value }: &Filter) -> Result<String, Failure> {
+        let col = self.column(*column)?;
+        let operator = match op {
+            FilterOp::Equal => "IS",
+            FilterOp::NotEqual => "IS NOT",
+            FilterOp::Less => "<",
+            FilterOp::Greater => ">",
+            FilterOp::LessOrEqual => "<=",
+            FilterOp::GreaterOrEqual => ">=",
+            FilterOp::Contains => "LIKE",
+            FilterOp::IsNull => "IS NULL",
+            FilterOp::IsNotNull => "IS NOT NULL",
+        };
+        if op.unary() {
+            return Ok(format!("{col} {operator}"));
+        }
+        if *op != FilterOp::Contains {
+            let p = self.bind(value.clone())?;
+            return Ok(format!("{col} {operator} {p}"));
+        }
+        let Value::Text(text) = value else {
+            return Err(Failure::input("Contains requires a TEXT value"));
+        };
+        let pattern = text
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let p = self.bind(Value::Text(format!("%{pattern}%")))?;
+        Ok(format!("{col} LIKE {p} ESCAPE '\\'"))
     }
 }
 pub(crate) fn supports_seek(table: &Table) -> bool {
@@ -478,7 +467,8 @@ async fn relationship(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{browse_sql, describe};
+    use tursobench_core::Browse;
     #[tokio::test]
     async fn indexed_browse_does_not_require_a_temporary_sort() {
         let dir = tempfile::tempdir().unwrap();

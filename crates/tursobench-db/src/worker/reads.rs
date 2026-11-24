@@ -128,6 +128,16 @@ impl<'a> Worker<'a> {
         let sql = crate::profile::query(&table, request, stddev)?;
         Ok(Query::read(self.browse, sql, vec![].into()))
     }
+    pub(super) async fn diagram(&self) -> Result<EventKind, Failure> {
+        inspection::diagram(self.browse)
+            .await
+            .map(EventKind::Diagram)
+    }
+    pub(super) async fn inspect(&self, name: &str) -> Result<EventKind, Failure> {
+        inspection::inspect(self.browse, name)
+            .await
+            .map(EventKind::Inspection)
+    }
     pub(super) fn catalog(&self) -> Query<'a> {
         let budget = Budget {
             rows: 10_000,

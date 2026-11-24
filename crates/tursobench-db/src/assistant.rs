@@ -106,10 +106,7 @@ pub(crate) fn validate(text: &str) -> Result<(), Failure> {
     {
         return Err(location_error());
     }
-    let command = turso_parser::parser::Parser::new(text.as_bytes())
-        .next_cmd()
-        .map_err(|e| Failure::input(e.to_string()))?;
-    match command {
+    match sql::parse_first(text)? {
         Some(Cmd::Stmt(Stmt::Select(_)))
         | Some(Cmd::Explain(Stmt::Select(_)))
         | Some(Cmd::ExplainQueryPlan {
@@ -207,7 +204,7 @@ async fn validate_views(c: &Connection, text: &str) -> Result<(), Failure> {
     Ok(())
 }
 
-pub(crate) async fn connect(
+async fn connect(
     db: &turso::Database,
     settings: tursobench_core::ConnectionSettings,
 ) -> Result<Connection, Failure> {
@@ -225,19 +222,28 @@ pub(crate) async fn connect(
     Ok(c)
 }
 
-pub(crate) async fn run(
-    c: &Connection,
-    tool: Tool,
-    request: u64,
-    discard: &crate::DeliveryControl,
-) -> Reply {
-    match tool {
-        Tool::ListTables => list(c).await,
-        Tool::Describe(name) => describe(c, &name).await,
-        Tool::Query(text) => {
-            validate(&text)?;
-            let _read = discard.interruptible(request, c);
-            query(c, &text, request, discard).await
+impl Tool {
+    /// Runs on the session's `assistant` connection, opening it on first use.
+    pub(crate) async fn run(
+        self,
+        assistant: &mut Option<Connection>,
+        db: &turso::Database,
+        settings: tursobench_core::ConnectionSettings,
+        request: u64,
+        discard: &crate::DeliveryControl,
+    ) -> Reply {
+        let c = match assistant {
+            Some(c) => c,
+            None => assistant.insert(connect(db, settings).await?),
+        };
+        match self {
+            Tool::ListTables => list(c).await,
+            Tool::Describe(name) => describe(c, &name).await,
+            Tool::Query(text) => {
+                validate(&text)?;
+                let _read = discard.interruptible(request, c);
+                query(c, &text, request, discard).await
+            }
         }
     }
 }

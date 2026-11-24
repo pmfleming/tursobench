@@ -4,7 +4,7 @@ use tursobench_core::{
     Access, Browse, BrowseOptions, Budget, ConnectionSettings, Delivery, ErrorKind, EventKind,
     ResultSet, Ticket, Value,
 };
-use tursobench_db::{Operation, Request, Session, validate_single};
+use tursobench_db::{Operation, Request, Session, sql::validate_single};
 
 const BILLION_SUM: &str = "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<100000000) SELECT sum(x) FROM n";
 fn fixture() -> (tempfile::TempDir, PathBuf) {

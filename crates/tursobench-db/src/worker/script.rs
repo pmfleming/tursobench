@@ -193,9 +193,9 @@ impl Worker<'_> {
         }
         sql::validate_bindings(text, parameters)?;
         if self.access == Access::ReadOnly {
-            for s in &statements {
-                sql::validate_readonly(s)?;
-            }
+            statements
+                .iter()
+                .try_for_each(|s| sql::validate_readonly(s))?;
         }
         Ok(statements)
     }
