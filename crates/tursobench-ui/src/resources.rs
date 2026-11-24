@@ -145,6 +145,8 @@ mod tests {
         assert!(memory.process_limited);
         memory.constrain(1024 * MIB, 2048 * MIB);
         assert_eq!(memory.available_mib, Some(0));
+        let detected = MemorySnapshot::detect();
+        assert!(detected.total_mib.is_some() && detected.available_mib <= detected.total_mib);
     }
 
     #[test]

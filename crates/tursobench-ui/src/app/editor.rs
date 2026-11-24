@@ -66,6 +66,34 @@ fn completions_and_highlighting_preserve_unicode_and_quoted_text() {
             assert_eq!(values, sql::named_template(sql));
         }
     }
+    // Completion offers cached schema names at the cursor and replaces the word.
+    app.database.schema = vec![tursobench_core::SchemaObject {
+        kind: "table".into(),
+        name: "users".into(),
+        table: "users".into(),
+        ddl: None,
+    }];
+    app.database.document.tools.complete = true;
+    app.database.document.sql = "SELECT 'na".into();
+    app.database.document.tools.selection = 10..10;
+    let output = draw(&mut app, vec![]);
+    assert!(
+        super::test_ui::texts(&output).any(|t| t
+            .galley
+            .job
+            .text
+            .starts_with("Completion unavailable"))
+    );
+    app.database.document.sql = "SELECT * FROM us".into();
+    app.database.document.tools.selection = 16..16;
+    draw(&mut app, vec![]);
+    let pos = control(&draw(&mut app, vec![]), "\"users\"").center();
+    for pressed in [true, false] {
+        draw(&mut app, pointer(pos, pressed));
+    }
+    assert_eq!(app.database.document.sql, "SELECT * FROM \"users\"");
+    assert_eq!(app.database.document.tools.selection, 21..21);
+    assert!(!app.database.document.tools.complete);
 }
 fn completion_span(text: &str, cursor: usize) -> Option<std::ops::Range<usize>> {
     if text.len() > 64 * 1024 || cursor > text.len() || !text.is_char_boundary(cursor) {
