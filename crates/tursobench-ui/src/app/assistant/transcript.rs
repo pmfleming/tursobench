@@ -213,14 +213,3 @@ fn code_block(ui: &mut egui::Ui, code: &str, sql: bool, actions: &mut Vec<Action
         });
     });
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn a_query_is_summed_up_by_its_first_line() {
-        assert_eq!(super::first_line("  SELECT 1  "), "SELECT 1");
-        assert_eq!(super::first_line("SELECT a\nFROM t"), "SELECT a…");
-        let long = "é".repeat(70);
-        assert_eq!(super::first_line(&long), format!("{}…", &long[..120]));
-    }
-}

@@ -423,8 +423,7 @@ impl App {
         for (index, key) in NUMBER_KEYS.into_iter().enumerate() {
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, key)) {
                 if let Some(row) = self.menu_rows().0.get(index) {
-                    let row = row.clone();
-                    self.choose_row(&row);
+                    self.choose_row(row);
                 }
                 return true;
             }
@@ -509,7 +508,7 @@ impl App {
             Icon::Down,
             visuals.text_color(),
         );
-        let level = effort.clone().unwrap_or_else(|| "Default".into());
+        let level = effort.as_deref().unwrap_or("Default");
         response.widget_info(|| {
             let mut info =
                 egui::WidgetInfo::labeled(egui::Role::ComboBox, true, "Assistant model picker");

@@ -21,8 +21,8 @@ fn installed_agents_report_status_and_models() {
                 provider,
                 program,
                 args,
-                env: vec![],
                 cwd: cwd.path().into(),
+                ..Target::default()
             },
             Operation::Check,
             Arc::new(|| {}),

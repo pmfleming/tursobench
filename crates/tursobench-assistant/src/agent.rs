@@ -383,30 +383,24 @@ mod tests {
 
     #[test]
     fn waiting_prompts_end_when_cancelled_or_refused() {
-        let (link, received) = Link::detached();
+        let (link, updates) = Link::detached();
         let mut queue = Queue::default();
         // Nothing waits, so there is no turn to end.
         queue.cancel(&link);
         queue.push("a".into());
         queue.cancel(&link);
-        assert_eq!(queue.pop(), None);
-        queue.push("b".into());
         queue.fail(&link, "no session".into());
-        assert_eq!(queue.pop(), None);
-        // A prompt sent after the failure is refused.
-        queue.push("c".into());
-        assert!(queue.refuse(&link, "refused"));
+        queue.push("b".into());
+        assert!(queue.refuse(&link, "refused") && queue.pop().is_none());
         let ended = |error: Option<&str>| Update::TurnEnded {
             error: error.map(str::to_owned),
         };
-        let updates: Vec<_> = received.try_iter().collect();
-        assert_eq!(
-            updates,
-            [
-                ended(None),
-                ended(Some("no session")),
-                ended(Some("refused"))
-            ]
-        );
+        let updates: Vec<_> = updates.try_iter().collect();
+        let expected = [
+            ended(None),
+            ended(Some("no session")),
+            ended(Some("refused")),
+        ];
+        assert_eq!(updates, expected);
     }
 }

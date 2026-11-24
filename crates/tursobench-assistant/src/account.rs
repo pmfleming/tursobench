@@ -60,7 +60,7 @@ pub struct Status {
     pub auth_methods: Vec<AuthMethod>,
     pub issue: Option<String>,
 }
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Target {
     pub provider: Provider,
     pub program: PathBuf,
@@ -443,13 +443,14 @@ fn option_values(option: &Json, limit: usize) -> Vec<(String, String)> {
             if option["options"].is_array() {
                 collect(&option["options"], limit, found);
             } else if let Some(id) = field(&option["value"]) {
-                found.push((name_or(&option["name"], &id), id));
+                let name = name_or(&option["name"], &id);
+                found.push((id, name));
             }
         }
     }
     let mut found = vec![];
     collect(&option["options"], limit, &mut found);
-    found.into_iter().map(|(name, id)| (id, name)).collect()
+    found
 }
 /// The levels of an ACP session's `thought_level` config option.
 pub fn acp_efforts(result: &Json) -> Vec<Effort> {
@@ -910,12 +911,12 @@ mod tests {
                  def send(v): print(json.dumps(v),flush=True)\n{body}"
             ),
         );
+        let cwd = dir.path().into();
         let target = Target {
             provider,
             program,
-            args: vec![],
-            env: vec![],
-            cwd: dir.path().into(),
+            cwd,
+            ..Target::default()
         };
         (dir, target)
     }
@@ -1166,12 +1167,11 @@ for line in sys.stdin:
              'auth status') if [[ -e $marker ]]; then echo '{\"loggedIn\":true}'; else echo '{\"loggedIn\":false}'; fi;;\n\
              esac\n",
         );
+        let cwd = dir.path().into();
         let target = Target {
-            provider: Provider::Claude,
             program,
-            args: vec![],
-            env: vec![],
-            cwd: dir.path().into(),
+            cwd,
+            ..Target::default()
         };
         let script = dir.path().join("term");
         executable(&script, terminal);

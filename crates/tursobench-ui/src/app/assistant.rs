@@ -345,7 +345,7 @@ impl App {
 
     fn start_assistant(&mut self, ctx: &egui::Context, sharing: Sharing) -> Result<(), String> {
         let profile = self.assistant_profile()?;
-        let program = profile.program.clone();
+        let program = profile.program;
         #[cfg(test)]
         let program = self.database.assistant.program.clone().unwrap_or(program);
         let wake = ctx.clone();
@@ -447,7 +447,7 @@ impl App {
     pub(super) fn assistant_body(&mut self, ui: &mut egui::Ui) {
         self.poll_assistant();
         self.check_selected_assistant(ui.ctx());
-        let Some(_) = self.assistant_database() else {
+        let Some(sharing) = self.assistant_sharing() else {
             icons::empty_state(
                 ui,
                 Icon::Assistant,
@@ -455,43 +455,46 @@ impl App {
             );
             return;
         };
-        let Some(sharing) = self.assistant_sharing() else {
-            return;
-        };
         egui::Panel::bottom("assistant-input")
             .resizable(false)
             .show(ui, |ui| self.assistant_input(ui));
-        let mut actions = vec![];
-        egui::ScrollArea::vertical()
+        let actions = egui::ScrollArea::vertical()
             .id_salt("assistant-conversation")
             .auto_shrink([false, false])
             .stick_to_bottom(true)
-            .show(ui, |ui| {
-                if self.database.assistant.entries.is_empty() {
-                    self.assistant_intro(ui);
-                    let hint = match sharing {
-                        Sharing::Schema => "Ask about tables, keys or how to write a query",
-                        Sharing::Rows => "Ask about the schema or the data",
-                    };
-                    icons::empty_state(ui, Icon::Assistant, hint);
-                }
-                for (index, entry) in self.database.assistant.entries.iter().enumerate() {
-                    ui.push_id(index, |ui| entry_ui(ui, entry, &mut actions));
-                    ui.add_space(6.0);
-                }
-                if self.database.assistant.busy {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.weak("Working…");
-                    });
-                }
-            });
+            .show(ui, |ui| self.assistant_conversation(ui, sharing))
+            .inner;
         for action in actions {
             match action {
                 Action::OpenSql(sql) => self.load_sql_window(sql),
                 Action::Copy(text) => ui.ctx().copy_text(text),
             }
         }
+    }
+
+    /// The messages, or before the first one who receives what and what to ask;
+    /// returns what their clicks ask for.
+    fn assistant_conversation(&mut self, ui: &mut egui::Ui, sharing: Sharing) -> Vec<Action> {
+        if self.database.assistant.entries.is_empty() {
+            self.assistant_intro(ui);
+            let hint = match sharing {
+                Sharing::Schema => "Ask about tables, keys or how to write a query",
+                Sharing::Rows => "Ask about the schema or the data",
+            };
+            icons::empty_state(ui, Icon::Assistant, hint);
+        }
+        let mut actions = vec![];
+        for (index, entry) in self.database.assistant.entries.iter().enumerate() {
+            ui.push_id(index, |ui| entry_ui(ui, entry, &mut actions));
+            ui.add_space(6.0);
+        }
+        if self.database.assistant.busy {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.weak("Working…");
+            });
+        }
+        actions
     }
 
     /// `tile`: the header of the assistant tile, which minimizes and leaves
@@ -672,7 +675,7 @@ impl App {
         ui.add_space(4.0);
         let id = ui.make_persistent_id("assistant-input");
         // Enter sends; Shift Enter keeps its newline.
-        let send = ui.memory(|m| m.has_focus(id))
+        let enter = ui.memory(|m| m.has_focus(id))
             && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
         let busy = self.database.assistant.busy;
         let account_pending = self.assistant_account_pending();
@@ -695,18 +698,17 @@ impl App {
             response.rect.right_bottom() - egui::vec2(BUTTON + 5.0, BUTTON + 5.0),
             egui::vec2(BUTTON, BUTTON),
         );
-        if busy {
+        let send = if busy {
             if stop_button(ui, corner, id.with("stop"))
                 && let Some(running) = &self.database.assistant.running
             {
                 running.agent.cancel();
             }
+            false
         } else {
-            let empty = self.database.assistant.draft.trim().is_empty();
-            if send_button(ui, corner, !empty && !account_pending) {
-                self.send_assistant(ui.ctx());
-            }
-        }
+            let ready = !self.database.assistant.draft.trim().is_empty() && !account_pending;
+            send_button(ui, corner, ready) || enter
+        };
         response.widget_info(|| {
             egui::WidgetInfo::labeled(
                 egui::Role::MultilineTextInput,
@@ -720,7 +722,7 @@ impl App {
         if account_pending {
             ui.small("Finish or cancel the account change in Settings to send a message.");
         }
-        if send && !busy {
+        if send {
             self.send_assistant(ui.ctx());
         }
     }

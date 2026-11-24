@@ -100,9 +100,9 @@ impl App {
             provider,
             program: profile.program,
             args: profile.args,
-            env: vec![],
             cwd: tursobench_assistant::relay::private_dir()
                 .map_err(|_| "Could not create the private agent directory")?,
+            ..Target::default()
         })
     }
     pub(super) fn agent_account_job(
@@ -342,51 +342,40 @@ impl App {
 
     /// The command line of a custom ACP agent; a new one forgets its grants.
     fn custom_command_ui(&mut self, ui: &mut egui::Ui, grid: AgentGrid) {
-        let before = self.preferences.assistant.custom_command.clone();
-        let response = text_setting(
-            ui,
-            grid,
-            ("Command", "Agent command"),
-            "opencode acp",
-            &mut self.preferences.assistant.custom_command,
-        );
-        if before != self.preferences.assistant.custom_command {
+        let command = &mut self.preferences.assistant.custom_command;
+        let name = ("Command", "Agent command");
+        let Some(response) = text_setting(ui, grid, name, "opencode acp", command) else {
+            return;
+        };
+        if response.changed() {
             self.preferences.assistant.clear_custom_grants();
             if self.preferences.assistant.provider == Provider::Custom {
                 self.reset_assistant_conversations();
             }
             self.accounts.rows.remove(&Provider::Custom);
         }
-        if let Some(response) = response {
-            self.setting_response(response);
-        }
+        self.setting_response(response);
     }
 
     /// A model typed for the agent; changing the chat agent's starts afresh.
     fn agent_model_ui(&mut self, ui: &mut egui::Ui, grid: AgentGrid, provider: Provider) {
-        let previous = self.preferences.assistant.selected_model().to_owned();
         let model = self
             .preferences
             .assistant
             .models
             .entry(provider)
             .or_default();
-        let response = text_setting(
-            ui,
-            grid,
-            ("Model", "Assistant model"),
-            "Agent default",
-            model,
-        );
-        if let Some(response) = response {
-            self.setting_response(response.on_hover_text(
-                "Passed to the agent; leave empty for its own default. Applies to the \
-                 next conversation.",
-            ));
-        }
-        if previous != self.preferences.assistant.selected_model() {
+        let name = ("Model", "Assistant model");
+        let Some(response) = text_setting(ui, grid, name, "Agent default", model) else {
+            return;
+        };
+        if response.changed() && provider == self.preferences.assistant.provider {
             self.reset_assistant_conversations();
         }
+        self.setting_response(response.on_hover_text(
+            "Passed to the agent; leave empty for its own default. Applies to the next \
+             conversation.",
+        ));
     }
 
     /// The configured agent's sign-in problems and choices, in its settings area.
@@ -609,7 +598,7 @@ fn agent_row(
         cell(ui, Column::Status, &mut |ui| {
             status_dot(ui, intent, label);
             ui.add(egui::Label::new(egui::RichText::new(label).small()).truncate())
-                .on_hover_text(row.error.clone().unwrap_or_else(|| details.clone()));
+                .on_hover_text(row.error.as_deref().unwrap_or(&details));
         });
         if row.job.is_none() && state != SignIn::Missing {
             cell(ui, Column::Check, &mut |ui| {

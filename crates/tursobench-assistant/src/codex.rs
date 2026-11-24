@@ -179,7 +179,7 @@ fn flush(state: &mut State, link: &mut Link) {
 fn handle(spec: &Spec, state: &mut State, link: &mut Link, message: &Json) {
     let method = message.get("method").and_then(Json::as_str);
     match (method, message.get("id")) {
-        (Some(method), Some(id)) => request(link, method, id.clone(), &message["params"]),
+        (Some(method), Some(id)) => request(link, method, id, &message["params"]),
         (Some(method), None) => {
             for update in notification(state, method, &message["params"]) {
                 link.emit(update);
@@ -452,7 +452,7 @@ fn describe(kind: &str) -> &'static str {
 }
 
 /// Approvals are declined; Codex's other requests are refused.
-fn request(link: &mut Link, method: &str, id: Json, params: &Json) {
+fn request(link: &mut Link, method: &str, id: &Json, params: &Json) {
     let declined = |what: &str| {
         Update::Notice(format!(
             "Declined Codex's request to {what}; only TursoBench's read-only tools are allowed"

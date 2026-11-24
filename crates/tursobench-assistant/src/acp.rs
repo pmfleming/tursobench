@@ -132,7 +132,7 @@ fn handle(spec: &Spec, state: &mut State, link: &mut Link, message: &Json) {
     let method = message.get("method").and_then(Json::as_str);
     let id = message.get("id");
     match (method, id) {
-        (Some(method), Some(id)) => request(link, method, id.clone(), &message["params"]),
+        (Some(method), Some(id)) => request(link, method, id, &message["params"]),
         (Some("session/update"), None) => {
             for update in session_update(&message["params"]["update"]) {
                 link.emit(update);
@@ -326,10 +326,10 @@ fn set_config(
 /// Set the session's `thought_level` to the chosen level, or back to the one
 /// it started with.
 fn apply_effort(state: &mut State, link: &mut Link) {
-    let Some(session) = state.session.clone() else {
+    let Some(session) = &state.session else {
         return;
     };
-    let Some(config) = state.effort_option.clone() else {
+    let Some(config) = &state.effort_option else {
         if state.effort.is_some() {
             link.emit(Update::Notice(
                 "The agent does not offer reasoning levels".into(),
@@ -337,27 +337,23 @@ fn apply_effort(state: &mut State, link: &mut Link) {
         }
         return;
     };
-    let Some(value) = state
-        .effort
-        .clone()
-        .or_else(|| state.original_effort.clone())
-    else {
+    let Some(value) = state.effort.as_ref().or(state.original_effort.as_ref()) else {
         return;
     };
-    if !state.effort_values.contains(&value) {
+    if !state.effort_values.contains(value) {
         link.emit(Update::Notice(format!(
             "The agent does not offer the reasoning level {value}"
         )));
         return;
     }
+    let _ = set_config(link, SET_EFFORT, session, config, value);
     state.effort_pending = true;
-    let _ = set_config(link, SET_EFFORT, &session, &config, &value);
 }
 
 /// Apply the preferred model through config options or the model list; return
 /// the name of the model in use when the agent says.
 fn choose_model(spec: &Spec, state: &mut State, link: &mut Link, result: &Json) -> Option<String> {
-    let session = state.session.clone()?;
+    let session = state.session.as_deref()?;
     let option = config_option(result, "model");
     let current = option
         .map_or(&result["models"]["currentModelId"], |o| &o["currentValue"])
@@ -404,11 +400,11 @@ fn choose_model(spec: &Spec, state: &mut State, link: &mut Link, result: &Json) 
     Some(model)
 }
 
-fn request(link: &mut Link, method: &str, id: Json, params: &Json) {
+fn request(link: &mut Link, method: &str, id: &Json, params: &Json) {
     let reply = match method {
         "session/request_permission" => {
             let ours = is_ours(&params["toolCall"]);
-            let options = params["options"].as_array().cloned().unwrap_or_default();
+            let options = params["options"].as_array().map_or(&[][..], Vec::as_slice);
             let pick = |kinds: &[&str]| {
                 options
                     .iter()
@@ -480,14 +476,14 @@ fn session_update(update: &Json) -> Vec<Update> {
         Some("agent_message_chunk") => text(update).map(Update::Text).into_iter().collect(),
         Some("agent_thought_chunk") => text(update).map(Update::Thought).into_iter().collect(),
         Some("tool_call") => {
-            let id = update["toolCallId"].as_str().unwrap_or_default().to_owned();
+            let id = update["toolCallId"].as_str().unwrap_or_default();
             let title = update["title"].as_str().unwrap_or("tool");
             let mut updates = vec![Update::ToolCall {
-                id: id.clone(),
+                id: id.to_owned(),
                 name: tool_name(&short_title(title)),
                 input: update.get("rawInput").cloned().unwrap_or(Json::Null),
             }];
-            updates.extend(finished(&id, update));
+            updates.extend(finished(id, update));
             updates
         }
         Some("tool_call_update") => {
@@ -571,57 +567,34 @@ mod tests {
             response(&Spec::default(), &mut state, &mut link, Some(id), &message);
             updates.try_iter().collect::<Vec<_>>()
         };
-        let error = |message: &str| json!({"error": {"code": -1, "message": message}});
-        let ended = |error: Option<&str>| {
-            let error = error.map(str::to_owned);
-            vec![Update::TurnEnded { error }]
+        let failed = |code: i64, details: &str| json!({"error": {"code": code, "message": "Refused", "data": {"details": details}}});
+        let ended = |error: &str| Update::TurnEnded {
+            error: Some(error.into()),
         };
         let notice = |text: &str| Update::Notice(text.into());
-        let refused = json!({"error": {"code": -32000, "message": "Authentication required",
-            "data": {"details": "no token"}}});
-        for (id, message, expected) in [
-            (
-                NEW_SESSION,
-                refused,
-                ended(Some(
-                    "Authentication required: no token. Sign in with the agent's own CLI in a \
-                     terminal, then try again.",
-                )),
-            ),
-            (NEW_SESSION, error("Bad folder"), ended(Some("Bad folder"))),
-            (
-                SET_MODEL,
-                error("nope"),
-                vec![
-                    Update::Ready {
-                        model: Some("small".into()),
-                    },
-                    notice("The agent kept its default model: nope"),
-                ],
-            ),
-            (
-                SET_EFFORT,
-                error("nope"),
-                vec![notice("The agent kept its reasoning level: nope")],
-            ),
-            (
-                SET_MODE,
-                error("nope"),
-                ended(Some(
-                    "Could not select the agent's default permission mode: nope",
-                )),
-            ),
+        let hint = "Refused: no token. Sign in with the agent's own CLI in a terminal, then \
+                    try again.";
+        let mode = "Could not select the agent's default permission mode: Refused";
+        let model = notice("The agent kept its default model: Refused");
+        let ready = Update::Ready {
+            model: Some("small".into()),
+        };
+        let effort = notice("The agent kept its reasoning level: Refused");
+        let refusal = json!({"result": {"stopReason": "refusal"}});
+        let cases = [
+            (NEW_SESSION, failed(-32000, "no token"), vec![ended(hint)]),
+            (NEW_SESSION, failed(-1, ""), vec![ended("Refused")]),
+            (SET_MODEL, failed(-1, ""), vec![ready, model]),
+            (SET_EFFORT, failed(-1, ""), vec![effort]),
+            (SET_MODE, failed(-1, ""), vec![ended(mode)]),
+            (PROMPT, refusal, vec![ended("The agent declined to answer")]),
             (
                 PROMPT,
-                json!({"result": {"stopReason": "refusal"}}),
-                ended(Some("The agent declined to answer")),
+                json!({"result": {}}),
+                vec![Update::TurnEnded { error: None }],
             ),
-            (
-                PROMPT,
-                json!({"result": {"stopReason": "end_turn"}}),
-                ended(None),
-            ),
-        ] {
+        ];
+        for (id, message, expected) in cases {
             assert_eq!(replied(id, message), expected, "reply to {id}");
         }
     }
