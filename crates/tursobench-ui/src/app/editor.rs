@@ -66,7 +66,17 @@ fn completions_and_highlighting_preserve_unicode_and_quoted_text() {
             assert_eq!(values, sql::named_template(sql));
         }
     }
-    // Completion offers cached schema names at the cursor and replaces the word.
+}
+#[cfg(test)]
+#[test]
+fn completion_replaces_the_word_at_the_cursor_with_a_cached_schema_name() {
+    use super::test_ui::{app, control, pointer, render, texts};
+    let (ctx, mut app) = app();
+    let draw = |app: &mut App, events| {
+        render(&ctx, egui::vec2(800.0, 500.0), events, |ui| {
+            app.editor_ui(ui)
+        })
+    };
     app.database.schema = vec![tursobench_core::SchemaObject {
         kind: "table".into(),
         name: "users".into(),
@@ -77,13 +87,7 @@ fn completions_and_highlighting_preserve_unicode_and_quoted_text() {
     app.database.document.sql = "SELECT 'na".into();
     app.database.document.tools.selection = 10..10;
     let output = draw(&mut app, vec![]);
-    assert!(
-        super::test_ui::texts(&output).any(|t| t
-            .galley
-            .job
-            .text
-            .starts_with("Completion unavailable"))
-    );
+    assert!(texts(&output).any(|t| t.galley.job.text.starts_with("Completion unavailable")));
     app.database.document.sql = "SELECT * FROM us".into();
     app.database.document.tools.selection = 16..16;
     draw(&mut app, vec![]);

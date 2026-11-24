@@ -324,7 +324,7 @@ mod tests {
             .collect()
     }
     #[test]
-    fn formats_preserve_types_scope_budget_and_atomic_publication() {
+    fn formats_preserve_types_scope_and_atomic_publication() {
         let dir = tempfile::tempdir().unwrap();
         let rows = vec![vec![
             Value::Text("001".into()),
@@ -426,31 +426,6 @@ mod tests {
             )
             .is_err()
         );
-        assert!(
-            clipboard(
-                Format::Json,
-                "test",
-                &columns(1),
-                &[vec![Value::Text("x".repeat(3 * 1024 * 1024))]],
-                ""
-            )
-            .is_err()
-        );
-        let empty = tempfile::tempdir().unwrap();
-        let mut duplicates = columns(2);
-        duplicates[1].name = duplicates[0].name.to_uppercase();
-        for (cols, rows, table) in [
-            (columns(1), vec![vec![Value::Real(f64::NAN)]], "t"),
-            (columns(1), vec![vec![]], "t"),
-            (columns(1), vec![], ""),
-            (vec![], vec![], "t"),
-            (duplicates, vec![], "t"),
-        ] {
-            let path = empty.path().join("bad.sql");
-            assert!(write_result_as(&path, Format::Sql, "test", &cols, &rows, table).is_err());
-            assert!(!path.exists());
-            assert_eq!(std::fs::read_dir(empty.path()).unwrap().count(), 0);
-        }
     }
     #[test]
     fn sql_export_round_trips_through_turso_with_quoted_names_and_nul_text() {
@@ -510,5 +485,33 @@ mod tests {
             }
             assert!(rows.next().await.unwrap().is_none());
         });
+    }
+    #[test]
+    fn clipboard_budget_and_failed_export_do_not_publish() {
+        assert!(
+            clipboard(
+                Format::Json,
+                "test",
+                &columns(1),
+                &[vec![Value::Text("x".repeat(3 * 1024 * 1024))]],
+                ""
+            )
+            .is_err()
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let mut duplicates = columns(2);
+        duplicates[1].name = duplicates[0].name.to_uppercase();
+        for (cols, rows, table) in [
+            (columns(1), vec![vec![Value::Real(f64::NAN)]], "t"),
+            (columns(1), vec![vec![]], "t"),
+            (columns(1), vec![], ""),
+            (vec![], vec![], "t"),
+            (duplicates, vec![], "t"),
+        ] {
+            let path = dir.path().join("bad.sql");
+            assert!(write_result_as(&path, Format::Sql, "test", &cols, &rows, table).is_err());
+            assert!(!path.exists());
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        }
     }
 }
