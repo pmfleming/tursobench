@@ -1,23 +1,12 @@
 use super::{
     App, View,
     icons::{self, Icon},
-    shell::{Nav, TableView, ToolPanel},
+    shell::{Nav, ToolPanel},
 };
 use eframe::egui;
 use tursobench_core::Inspection;
 
 impl App {
-    pub(super) fn overview(&mut self) {
-        if self.database.workspace.enabled {
-            self.create_window(super::tiling::Kind::Map, None, None, false);
-        }
-        self.database.document.ui.nav = Nav::Overview;
-        self.database.document.ui.inspector_open = false;
-        if self.database.ui.diagram.data.is_none() {
-            self.load_diagram();
-        }
-    }
-
     pub(super) fn activate_table(&mut self, name: String) {
         if self.database.workspace.enabled {
             self.browse_table(name);
@@ -64,22 +53,18 @@ impl App {
     }
 
     pub(super) fn related_tables(&self, name: &str) -> std::collections::BTreeSet<String> {
-        let mut related = std::collections::BTreeSet::new();
-        if let Some(graph) = &self.database.ui.diagram.data {
-            for node in &graph.tables {
-                if let Some(info) = &node.inspection {
-                    for fk in &info.foreign_keys {
-                        if node.name == name {
-                            related.insert(fk.target.clone());
-                        }
-                        if fk.target == name {
-                            related.insert(node.name.clone());
-                        }
-                    }
+        let graph = self.database.ui.diagram.data.iter().flat_map(|g| &g.tables);
+        let keys = graph.filter_map(|node| Some((node, &node.inspection.as_ref()?.foreign_keys)));
+        keys.flat_map(|(node, keys)| {
+            keys.iter().filter_map(move |fk| {
+                if node.name == name {
+                    Some(fk.target.clone())
+                } else {
+                    (fk.target == name).then(|| node.name.clone())
                 }
-            }
-        }
-        related
+            })
+        })
+        .collect()
     }
 
     pub(super) fn navigation_sidebar(&mut self, ui: &mut egui::Ui) {
@@ -124,8 +109,7 @@ impl App {
         {
             ui.colored_label(ui.visuals().warn_fg_color,"Catalog incomplete").on_hover_text("Retained metadata budget reached or catalog failed. Use SQL to inspect omitted objects.");
         }
-        let filter = if self.sidebar_search.scope == super::database_navigation::Scope::ThisDatabase
-        {
+        let filter = if self.sidebar_search.filters_tree() {
             self.sidebar_search.query.trim().to_lowercase()
         } else {
             String::new()
@@ -145,25 +129,7 @@ impl App {
             ("index", "Indexes", Icon::Columns),
             ("trigger", "Triggers", Icon::System),
         ] {
-            let objects: Vec<_> = self
-                .database
-                .schema
-                .iter()
-                .filter(|o| {
-                    let system = o.name.starts_with("__turso_internal_");
-                    (if kind == "system" {
-                        o.kind == "table" && system
-                    } else {
-                        o.kind == kind && !system
-                    }) && (super::commands::fuzzy(&o.name, &filter)
-                        || self.loaded_inspection(&o.name).is_some_and(|i| {
-                            i.table.columns.iter().any(|c| {
-                                super::commands::fuzzy(&format!("{}.{}", o.name, c.name), &filter)
-                            })
-                        }))
-                })
-                .map(|o| o.name.clone())
-                .collect();
+            let objects = self.tree_objects(kind, &filter);
             if !filter.is_empty() && objects.is_empty() {
                 continue;
             }
@@ -193,6 +159,33 @@ impl App {
         self.database.ui.hover_table = hovered;
     }
 
+    /// The names in one tree group whose name, or a loaded column, matches `filter`.
+    fn tree_objects(&self, group: &str, filter: &str) -> Vec<String> {
+        let matches = |name: &str| {
+            super::commands::fuzzy(name, filter)
+                || self.loaded_inspection(name).is_some_and(|i| {
+                    i.table
+                        .columns
+                        .iter()
+                        .any(|c| super::commands::fuzzy(&format!("{name}.{}", c.name), filter))
+                })
+        };
+        self.database
+            .schema
+            .iter()
+            .filter(|o| {
+                let system = o.name.starts_with("__turso_internal_");
+                let in_group = if group == "system" {
+                    o.kind == "table" && system
+                } else {
+                    o.kind == group && !system
+                };
+                in_group && matches(&o.name)
+            })
+            .map(|o| o.name.clone())
+            .collect()
+    }
+
     fn sidebar_object(
         &mut self,
         ui: &mut egui::Ui,
@@ -204,21 +197,7 @@ impl App {
         if kind == "index" || kind == "trigger" {
             return self.sidebar_definition(ui, name, icon);
         }
-        let highlighted = self.filtering_tree();
-        let keyboard = self
-            .sidebar_search
-            .tree_highlight
-            .as_ref()
-            .filter(|(table, _)| table == name);
-        let selected = highlighted && keyboard.is_some_and(|(_, column)| column.is_none())
-            || self.database.document.view == View::Browse
-                && self.database.document.ui.nav == Nav::Table
-                && self.database.ui.diagram.selected.as_deref() == Some(name);
-        let unfolded = self.database.ui.unfolded.as_deref() == Some(name)
-            || highlighted
-                && (keyboard.is_some_and(|(_, column)| column.is_some())
-                    || !super::commands::fuzzy(name, &self.sidebar_search.query)
-                        && self.loaded_inspection(name).is_some());
+        let (selected, unfolded) = self.tree_object_state(name);
         let counted = self.database.tools.counts.get(name);
         let count = counted.map_or("—".into(), |n| n.to_string());
         let response = tree_row(ui, name, &count, icon, selected, related, (26.0, 22.0))
@@ -269,6 +248,29 @@ impl App {
         }
         response.hovered()
     }
+    /// Whether table `name`'s row is selected and its columns unfolded, by
+    /// browsing, the disclosure arrow or a search of this database.
+    fn tree_object_state(&self, name: &str) -> (bool, bool) {
+        let search = &self.sidebar_search;
+        let filtering = search.filters_tree();
+        let keyboard = search
+            .tree_highlight
+            .as_ref()
+            .filter(|(table, _)| filtering && table == name)
+            .map(|(_, column)| column.is_some());
+        let browsed = self.database.document.view == View::Browse
+            && self.database.document.ui.nav == Nav::Table
+            && self.database.ui.diagram.selected.as_deref() == Some(name);
+        let matched_by_column = filtering
+            && !super::commands::fuzzy(name, &search.query)
+            && self.loaded_inspection(name).is_some();
+        (
+            keyboard == Some(false) || browsed,
+            self.database.ui.unfolded.as_deref() == Some(name)
+                || keyboard == Some(true)
+                || matched_by_column,
+        )
+    }
     /// An index or trigger: a row that shows its definition in Structure.
     fn sidebar_definition(&mut self, ui: &mut egui::Ui, name: &str, icon: Icon) -> bool {
         let tools = &self.database.document.tools;
@@ -279,65 +281,31 @@ impl App {
             self.database.tools.tree_focus = Some(response.id);
         }
         if response.clicked() || focused_key(ui, &response, egui::Key::Enter) {
-            self.execute_command(ui.ctx(), super::commands::Command::Definition(name.into()));
+            self.show_definition(name);
         }
         response.hovered()
     }
-    /// Whether a search of this database is filtering the schema tree.
-    fn filtering_tree(&self) -> bool {
-        self.sidebar_search.scope == super::database_navigation::Scope::ThisDatabase
-            && !self.sidebar_search.query.trim().is_empty()
-    }
-
     fn sidebar_table(&mut self, ui: &mut egui::Ui, name: &str) {
         let Some(info) = self.loaded_inspection(name) else {
-            if self.database.document.tools.inspection_ticket.is_some() {
+            let tools = &self.database.document.tools;
+            if tools.inspection_ticket.is_some() {
                 ui.small("Loading columns…");
-            } else if !self.database.document.tools.inspection_error.is_empty() {
-                ui.colored_label(
-                    ui.visuals().warn_fg_color,
-                    &self.database.document.tools.inspection_error,
-                );
+            } else if !tools.inspection_error.is_empty() {
+                ui.colored_label(ui.visuals().warn_fg_color, &tools.inspection_error);
             } else if ui.small_button("Load columns").clicked() {
                 self.request_inspection(name.into());
             }
             return;
         };
-        let mut column = None;
+        let search = &self.sidebar_search;
+        let filter = search.filters_tree().then_some(search.query.as_str());
+        let highlight = filter
+            .and(search.tree_highlight.as_ref())
+            .filter(|(table, _)| table == name)
+            .and_then(|(_, column)| column.as_deref());
         let mut table = None;
-        let filtering = self.filtering_tree();
-        let query = &self.sidebar_search.query;
-        let highlight = self.sidebar_search.tree_highlight.as_ref();
-        ui.indent(("columns", name), |ui| {
-            for c in &info.table.columns {
-                if filtering
-                    && !super::commands::fuzzy(name, query)
-                    && !super::commands::fuzzy(&format!("{name}.{}", c.name), query)
-                {
-                    continue;
-                }
-                let selected = filtering
-                    && highlight.is_some_and(|(table, column)| {
-                        table == name && column.as_deref() == Some(c.name.as_str())
-                    });
-                let fk = info
-                    .foreign_keys
-                    .iter()
-                    .any(|k| k.columns.iter().any(|(n, _)| n == &c.name));
-                let icon = if c.primary_key > 0 {
-                    Icon::Key
-                } else if fk {
-                    Icon::Link
-                } else {
-                    Icon::Columns
-                };
-                if tree_row(ui, &c.name, &c.declared_type, icon, selected, fk, (22.0, 0.0))
-                    .on_hover_text("Click to find this column in Table data")
-                    .clicked()
-                {
-                    column = Some(c.name.clone());
-                }
-            }
+        let column = ui.indent(("columns", name), |ui| {
+            let column = column_rows(ui, info, name, filter, highlight);
             let color = crate::appearance::Tokens::of(ui.ctx()).relationship;
             for (target, label) in table_links(info, self.database.ui.diagram.data.as_ref(), name) {
                 if ui
@@ -350,34 +318,14 @@ impl App {
                     table = Some(target.to_owned());
                 }
             }
+            column
         });
-        if let Some(column) = column {
-            self.highlight_sidebar_column(name, &column);
+        if let Some(column) = column.inner {
+            self.show_table(name.to_owned(), Some(column));
         }
         if let Some(table) = table {
             self.browse_table(table);
         }
-    }
-
-    fn highlight_sidebar_column(&mut self, name: &str, column: &str) {
-        if self
-            .database
-            .document
-            .table
-            .as_ref()
-            .is_none_or(|t| t.name != name)
-            || self.database.document.view != View::Browse
-        {
-            let ticket = self.database.document.result.current;
-            self.browse_table(name.into());
-            if ticket == self.database.document.result.current {
-                return;
-            }
-        }
-        self.database.document.ui.nav = Nav::Table;
-        self.database.document.ui.table_view = TableView::Data;
-        self.database.document.tools.highlight_column = Some((name.into(), column.into()));
-        self.database.document.tools.scroll_to_column = true;
     }
 
     pub(super) fn select_tool(&mut self, panel: ToolPanel) {
@@ -457,6 +405,52 @@ impl App {
 /// Whether the focused row's key was pressed, consuming it.
 fn focused_key(ui: &egui::Ui, response: &egui::Response, key: egui::Key) -> bool {
     response.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key))
+}
+/// A row for each of table `name`'s columns that `filter` keeps, with
+/// `highlight` selected; returns the clicked column.
+fn column_rows(
+    ui: &mut egui::Ui,
+    info: &Inspection,
+    name: &str,
+    filter: Option<&str>,
+    highlight: Option<&str>,
+) -> Option<String> {
+    let mut clicked = None;
+    for c in &info.table.columns {
+        let full = format!("{name}.{}", c.name);
+        if filter
+            .is_some_and(|q| !super::commands::fuzzy(name, q) && !super::commands::fuzzy(&full, q))
+        {
+            continue;
+        }
+        let fk = info
+            .foreign_keys
+            .iter()
+            .any(|k| k.columns.iter().any(|(n, _)| n == &c.name));
+        let icon = if c.primary_key > 0 {
+            Icon::Key
+        } else if fk {
+            Icon::Link
+        } else {
+            Icon::Columns
+        };
+        let selected = highlight == Some(c.name.as_str());
+        if tree_row(
+            ui,
+            &c.name,
+            &c.declared_type,
+            icon,
+            selected,
+            fk,
+            (22.0, 0.0),
+        )
+        .on_hover_text("Click to find this column in Table data")
+        .clicked()
+        {
+            clicked = Some(c.name.clone());
+        }
+    }
+    clicked
 }
 /// The tables a table links to: its parents, then the tables that reference it.
 fn table_links<'a>(

@@ -325,18 +325,12 @@ impl App {
             return;
         }
         let previous = self.navigation_entry();
-        if self.database.workspace.enabled {
-            if let Some(id) = self.find_window(tiling::Kind::Data, Some(&name), None) {
-                self.focus_window(id);
-                self.database.workspace.expanded = None;
-                return;
-            }
-            if self
+        if self.database.workspace.enabled
+            && self
                 .create_window(tiling::Kind::Data, Some(name.clone()), None, false)
                 .is_none()
-            {
-                return;
-            }
+        {
+            return;
         }
         if self.browse_first_page(name.clone()) {
             self.database.tools.remember(previous);
@@ -409,20 +403,15 @@ impl App {
             }
         }
         let mut events = Vec::new();
-        let mut disconnected = false;
         let polled_session = self.database.session.as_ref().map(|s| s.id);
-        if let Some(s) = &self.database.session {
+        let disconnected = self.database.session.as_ref().is_some_and(|s| {
             loop {
                 match s.events.try_recv() {
                     Ok(e) => events.push(e),
-                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        disconnected = true;
-                        break;
-                    }
+                    Err(e) => break e == std::sync::mpsc::TryRecvError::Disconnected,
                 }
             }
-        }
+        });
         for event in events {
             self.handle_event(ctx, event);
         }
@@ -438,9 +427,6 @@ impl App {
             self.database.tools.count_request = None;
             self.database.catalog_ticket = None;
             self.database.uncertain_edit |= self.database.commit_ticket.take().is_some();
-            self.log_outcome(
-                "Worker disconnected unexpectedly; execution and rollback outcome UNKNOWN".into(),
-            );
             self.database.session = None;
             self.database.ready = false;
             self.database.closing = false;
@@ -451,8 +437,9 @@ impl App {
             self.database.document.tools.inspection_ticket = None;
             self.database.ui.diagram.ticket = None;
             self.database.ui.diagram.stale = true;
-            self.database.status =
-                "Worker disconnected unexpectedly; execution and rollback outcome UNKNOWN".into();
+            let lost = "Worker disconnected unexpectedly; execution and rollback outcome UNKNOWN";
+            self.database.status = lost.into();
+            self.log_outcome(lost.into());
         }
         if self.database.session.is_none() {
             for document in self
@@ -509,14 +496,12 @@ impl App {
             self.store.save(&self.preferences);
         }
         self.database.confirm_close = false;
-        for document in self.database.documents.values_mut() {
+        let open = std::iter::once(&mut self.database.document);
+        for document in open.chain(self.database.documents.values_mut()) {
             document.drafts = None;
             document.show_preview = false;
             document.show_insert = false;
         }
-        self.database.document.drafts = None;
-        self.database.document.show_preview = false;
-        self.database.document.show_insert = false;
         if let Some(s) = &self.database.session {
             s.close();
             self.database.closing = true;

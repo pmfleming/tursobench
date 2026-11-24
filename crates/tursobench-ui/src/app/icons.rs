@@ -144,8 +144,39 @@ fn named_image(ui: &egui::Ui, rect: egui::Rect, salt: &str, enabled: bool, name:
     response.on_hover_text(name);
 }
 
+/// A glyph that explains itself on hover, such as a read-only lock.
+pub(super) fn hint(ui: &mut egui::Ui, icon: Icon, size: f32, tooltip: &str) {
+    let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(size), egui::Sense::hover());
+    paint(ui.painter(), rect, icon, ui.visuals().weak_text_color());
+    response.on_hover_text(tooltip);
+}
+
 pub(super) const RIBBON_BUTTON_SIZE: f32 = 30.0;
 pub(super) const RIBBON_TEXT_SIZE: f32 = 13.5;
+
+/// Ribbon text and button height for the rest of `ui`.
+pub(super) fn ribbon_style(ui: &mut egui::Ui) {
+    ui.style_mut().override_font_id =
+        Some(crate::appearance::proportional(ui.ctx(), RIBBON_TEXT_SIZE));
+    ui.spacing_mut().interact_size.y = RIBBON_BUTTON_SIZE;
+}
+
+/// The map's zoom as a percentage; clicking it resets to 100%.
+pub(super) fn zoom_button(ui: &mut egui::Ui, zoom: f32, label: &str) -> egui::Response {
+    let percent = zoom * 100.0;
+    let text = if percent < 1.0 {
+        format!("{percent:.2}%")
+    } else {
+        format!("{percent:.0}%")
+    };
+    let size = crate::appearance::text_size(ui.ctx(), RIBBON_TEXT_SIZE);
+    let response = ui.add(
+        egui::Button::new(egui::RichText::new(text).size(size))
+            .min_size(egui::Vec2::splat(RIBBON_BUTTON_SIZE)),
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
+    response.on_hover_text("Current zoom · click to reset to 100%")
+}
 
 /// A quiet, accessible placeholder that stays centered in the visible tile body.
 pub(super) fn empty_state(ui: &mut egui::Ui, icon: Icon, description: &str) {
@@ -646,30 +677,18 @@ mod tests {
             .accesskit_update
             .as_ref()
             .expect("accessibility tree");
-        assert!(
-            update
-                .nodes
-                .iter()
-                .any(|(_, n)| n.label() == Some("Ribbon columns")
-                    && n.toggled() == Some(egui::accesskit::Toggled::True))
-        );
         assert!(output.shapes.iter().any(|shape| match &shape.shape {
             egui::Shape::Rect(rect) => (rect.stroke.width - 1.575).abs() < 0.01,
             _ => false,
         }));
-        assert!(
-            update
-                .nodes
-                .iter()
-                .any(|(_, n)| n.label() == Some("Structure")
-                    && n.toggled() == Some(egui::accesskit::Toggled::True))
-        );
-        assert!(
-            update
-                .nodes
-                .iter()
-                .any(|(_, n)| n.label() == Some("Export retained rows") && n.toggled().is_none())
-        );
-        output.textures_delta.clear();
+        let on = Some(egui::accesskit::Toggled::True);
+        for (name, toggled) in [
+            ("Ribbon columns", on),
+            ("Structure", on),
+            ("Export retained rows", None),
+        ] {
+            let node = update.nodes.iter().find(|(_, n)| n.label() == Some(name));
+            assert_eq!(node.map(|(_, n)| n.toggled()), Some(toggled), "{name}");
+        }
     }
 }

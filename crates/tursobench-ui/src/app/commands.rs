@@ -1,4 +1,4 @@
-use super::presentation::{self, Intent};
+use super::presentation;
 use super::{
     App, View,
     ribbon::Action,
@@ -181,18 +181,8 @@ impl App {
             }
             return;
         }
-        if self.database.document.tools.inline.take().is_some() {
-            return;
-        }
-        if self
-            .database
-            .document
-            .tools
-            .spreadsheet
-            .dialog
-            .take()
-            .is_some()
-        {
+        let tools = &mut self.database.document.tools;
+        if tools.inline.take().is_some() || tools.spreadsheet.dialog.take().is_some() {
             return;
         }
         if egui::Popup::is_any_open(ctx) {
@@ -254,17 +244,14 @@ impl App {
             self.refresh_focused(ctx);
         }
         const MOVE: Modifiers = Modifiers::ALT.plus(Modifiers::SHIFT);
+        const COPY: Modifiers = Modifiers::CTRL.plus(Modifiers::SHIFT);
         for (modifiers, key, command) in [
             (Modifiers::CTRL, Key::J, Command::Sql),
             (Modifiers::CTRL, Key::E, Command::Action(Action::Export)),
             (Modifiers::CTRL, Key::F, Command::Filter),
             (Modifiers::CTRL, Key::Num1, Command::Data),
             (Modifiers::CTRL, Key::Num2, Command::Structure),
-            (
-                Modifiers::CTRL | Modifiers::SHIFT,
-                Key::C,
-                Command::CopyResults,
-            ),
+            (COPY, Key::C, Command::CopyResults),
             (Modifiers::CTRL, Key::O, Command::Open),
             (Modifiers::CTRL, Key::T, Command::Theme),
             (Modifiers::CTRL, Key::Comma, Command::Settings),
@@ -330,8 +317,12 @@ impl App {
             self.database.document.tools.complete = true;
         }
         if saved {
-            self.database.ui.sidebar = ToolPanel::Saved;
+            self.show_saved_queries();
         }
+    }
+    pub(super) fn show_saved_queries(&mut self) {
+        self.show_sidebar();
+        self.database.ui.sidebar = ToolPanel::Saved;
     }
     /// F5 runs the focused SQL, refreshes the schema from the tree or the
     /// map, and otherwise reloads the open table.
@@ -377,26 +368,6 @@ impl App {
             b.offset = b.offset.saturating_add_signed(delta).min(1_000_000);
             self.reload();
         }
-    }
-    pub(super) fn access_dialog(&mut self, ctx: &egui::Context) {
-        if !self.database.ui.access_dialog {
-            return;
-        }
-        let mut open = true;
-        let access = super::icons::access_mode(ctx, !self.database.writable);
-        presentation::dialog(ctx, format!("Reopen: {}?", access.name), &mut open)
-            .anchor(egui::Align2::LEFT_BOTTOM, [12.0,-48.0]).max_width((ctx.content_rect().width()-40.0).min(520.0)).collapsible(false).show(ctx, |ui| {
-                presentation::notice(ui, access.icon, Intent::Pending,"The current session will close and roll back any open transaction before reopening. Local drafts will be discarded. Committed writes are not undone.");
-                if !self.database.writable { ui.label("Back up the closed database with its WAL state before editing. SQL writes autocommit unless you BEGIN; grid edits are staged for review."); }
-                ui.label("File locks and shared WAL coordination will be checked again when reopening.");
-                if presentation::footer(ui, |ui| ui.add_enabled(self.database.ready && !self.database.closing && self.database.commit_ticket.is_none() && !self.database.uncertain_edit,
-                    presentation::action(ui,"Close cleanly and reopen",Intent::Pending))).inner.clicked() {
-                    self.database.pending_access = Some(!self.database.writable);
-                    self.database.ui.access_dialog = false;
-                    self.close();
-                }
-            });
-        self.database.ui.access_dialog &= open;
     }
     /// Ctrl K and the Commands button close the palette they opened.
     pub(super) fn toggle_palette(&mut self) {
@@ -694,17 +665,9 @@ impl App {
 
     /// Why a palette command cannot run now, or `None` when it can.
     fn unavailable(&self, command: &Command) -> Option<&'static str> {
-        use tursobench_core::TransactionState;
         let open = self.database.session.is_some() && self.database.ready;
         let table = self.database.document.view == View::Browse
             && self.database.document.ui.nav == Nav::Table;
-        let busy = || {
-            if self.has_drafts() {
-                Some("Commit or discard staged edits first")
-            } else {
-                Some("Wait for the running statement to finish")
-            }
-        };
         match command {
             Command::Open
             | Command::Settings
@@ -718,52 +681,58 @@ impl App {
             _ if !open => Some("Open a database first"),
             // Same rule as Ctrl F; otherwise the filter flag is set with nothing to show.
             Command::RefreshTable | Command::Filter if !table => Some("Open a table first"),
-            Command::Action(Action::Review) if !self.has_drafts() => {
-                Some("No staged edits to review")
-            }
             Command::Inspector if self.database.document.inspect.is_none() => {
                 Some("Select a cell first")
             }
             Command::CopySelection if self.selected_cells().next().is_none() => {
                 Some("Select cells first")
             }
-            Command::Begin if self.database.transaction != TransactionState::Autocommit => {
+            Command::Begin => self.action_unavailable(Action::Begin, table),
+            Command::Action(action) => self.action_unavailable(*action, table),
+            _ => None,
+        }
+    }
+    /// Why a ribbon action offered in the palette cannot run on the open database.
+    fn action_unavailable(&self, action: Action, table: bool) -> Option<&'static str> {
+        use tursobench_core::TransactionState::{Active, Autocommit};
+        let transaction = self.database.transaction;
+        let busy = || {
+            Some(if self.has_drafts() {
+                "Commit or discard staged edits first"
+            } else {
+                "Wait for the running statement to finish"
+            })
+        };
+        let columns = &self.database.document.tools.columns;
+        match action {
+            Action::Review if !self.has_drafts() => Some("No staged edits to review"),
+            Action::Begin if transaction != Autocommit => {
                 Some("An editor transaction is already open")
             }
-            Command::Action(Action::Commit | Action::Rollback)
-                if self.database.transaction != TransactionState::Active =>
-            {
+            Action::Commit | Action::Rollback if transaction != Active => {
                 Some("No editor transaction is open")
             }
-            Command::Begin | Command::Action(Action::Commit | Action::Rollback)
+            Action::Begin | Action::Commit | Action::Rollback
                 if !self.action_enabled(Action::Begin) =>
             {
                 busy()
             }
-            Command::Action(Action::Insert) if !self.can_edit() => {
+            Action::Insert if !self.can_edit() => {
                 if !self.database.writable {
                     Some("The database is open read-only")
                 } else if !table {
                     Some("Open a table first")
-                } else if self.database.transaction != TransactionState::Autocommit {
+                } else if transaction != Autocommit {
                     Some("Finish the editor transaction first")
                 } else {
                     busy()
                 }
             }
-            Command::Action(Action::FitColumns)
-                if self.database.document.result.columns.is_empty() =>
-            {
+            Action::FitColumns if self.database.document.result.columns.is_empty() => {
                 Some("Open a table first")
             }
-            Command::Action(Action::ShowColumns)
-                if self.database.document.tools.columns.hidden.is_empty() =>
-            {
-                Some("No columns are hidden")
-            }
-            Command::Action(Action::Export) if !self.action_enabled(Action::Export) => {
-                Some("Nothing to export yet")
-            }
+            Action::ShowColumns if columns.hidden.is_empty() => Some("No columns are hidden"),
+            Action::Export if !self.action_enabled(Action::Export) => Some("Nothing to export yet"),
             _ => None,
         }
     }
@@ -775,9 +744,6 @@ impl App {
             Command::Map => {
                 self.overview();
                 self.database.ui.sidebar = ToolPanel::Schema;
-                if self.database.ui.diagram.data.is_none() {
-                    self.load_diagram();
-                }
             }
             Command::Data => {
                 if self.database.workspace.enabled
@@ -845,8 +811,19 @@ impl App {
             }
         }
     }
+    pub(super) fn overview(&mut self) {
+        if self.database.workspace.enabled {
+            self.create_window(Kind::Map, None, None, false);
+        }
+        self.database.document.ui.nav = Nav::Overview;
+        self.database.document.ui.inspector_open = false;
+        if self.database.ui.diagram.data.is_none() {
+            self.load_diagram();
+        }
+    }
+
     /// A schema object's definition, in a Structure tile when tiles are on.
-    fn show_definition(&mut self, name: &str) {
+    pub(super) fn show_definition(&mut self, name: &str) {
         let Some(object) = self
             .database
             .schema
@@ -869,7 +846,7 @@ impl App {
         self.database.document.ui.table_view = TableView::Structure;
     }
     /// A table's rows, scrolled to and highlighting `column` when given.
-    fn show_table(&mut self, name: String, column: Option<String>) {
+    pub(super) fn show_table(&mut self, name: String, column: Option<String>) {
         let before = self.database.document.result.current;
         self.activate_table(name.clone());
         let document = &mut self.database.document;

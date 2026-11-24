@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 const WIDTH: f32 = 320.0;
 const LINE: f32 = 22.0;
 const KEY_LABEL_ZOOM: f32 = 0.5;
-pub(super) const MIN_ZOOM: f32 = 0.0001;
-pub(super) const MAX_ZOOM: f32 = 2.5;
+const MIN_ZOOM: f32 = 0.0001;
+const MAX_ZOOM: f32 = 2.5;
 #[derive(Default)]
 pub(super) struct DiagramState {
     pub ticket: Option<Ticket>,
@@ -505,6 +505,14 @@ impl Camera {
         self.requested_zoom
             .unwrap_or(if self.zoom > 0.0 { self.zoom } else { 1.0 })
     }
+    /// Whether zooming in, or out, has room before its limit.
+    pub fn can_zoom(&self, zoom_in: bool) -> bool {
+        if zoom_in {
+            self.zoom() < MAX_ZOOM
+        } else {
+            self.zoom() > MIN_ZOOM
+        }
+    }
     pub fn step_zoom(&mut self, factor: f32) {
         self.request_zoom(self.zoom() * factor);
     }
@@ -687,17 +695,10 @@ impl DiagramDrawing<'_> {
         );
     }
     fn links(&self, ui: &egui::Ui, painter: &egui::Painter) -> usize {
-        let Self {
-            graph,
-            layout,
-            canvas,
-            zoom,
-            ..
-        } = *self;
         let accent = crate::appearance::Tokens::of(ui.ctx()).relationship;
-        let index = graph.positions();
+        let index = self.graph.positions();
         let mut unresolved = 0;
-        for (source, node) in graph.tables.iter().enumerate() {
+        for (source, node) in self.graph.tables.iter().enumerate() {
             let Some(info) = &node.inspection else {
                 continue;
             };
@@ -706,58 +707,66 @@ impl DiagramDrawing<'_> {
                     unresolved += fk.columns.len();
                     continue;
                 };
+                let highlighted = self
+                    .selected
+                    .is_some_and(|n| n == node.name || n.eq_ignore_ascii_case(&fk.target));
+                let color = if highlighted {
+                    accent
+                } else {
+                    accent.gamma_multiply(0.55)
+                };
+                let columns = self.graph.tables[target]
+                    .inspection
+                    .as_ref()
+                    .map_or(&[][..], |i| &i.table.columns);
                 for (part, (from, to)) in fk.columns.iter().enumerate() {
-                    if !graph.tables[target].inspection.as_ref().is_some_and(|i| {
-                        to.as_ref().is_some_and(|name| {
-                            i.table
-                                .columns
-                                .iter()
-                                .any(|c| c.name.eq_ignore_ascii_case(name))
-                        })
-                    }) {
+                    let to = to.as_deref();
+                    if !to.is_some_and(|to| columns.iter().any(|c| c.name.eq_ignore_ascii_case(to)))
+                    {
                         unresolved += 1;
                     }
-                    let (path, end_side) = route(
-                        layout[source].0,
-                        layout[target].0,
-                        self.row_y(source, Some(from)),
-                        self.row_y(target, to.as_deref()),
-                        part,
-                    );
-                    let points: Vec<_> = path.into_iter().map(|p| self.point(p)).collect();
-                    let start = points[0];
-                    let Some(&end) = points.last() else {
-                        continue;
-                    };
-                    if !egui::Rect::from_two_pos(start, end)
-                        .expand(100.0 * zoom)
-                        .intersects(canvas)
-                    {
-                        continue;
-                    }
-                    let highlighted = self
-                        .selected
-                        .as_ref()
-                        .is_some_and(|n| n == &node.name || n.eq_ignore_ascii_case(&fk.target));
-                    let color = if highlighted {
-                        accent
-                    } else {
-                        accent.gamma_multiply(0.55)
-                    };
-                    painter.add(egui::Shape::line(points, egui::Stroke::new(1.6, color)));
-                    painter.circle_filled(start, 2.5, color);
-                    painter.circle_filled(end, 2.5, color);
-                    if zoom >= 0.25 {
-                        painter.arrow(
-                            end + egui::vec2(end_side * 10.0, 0.0),
-                            egui::vec2(-end_side * 10.0, 0.0),
-                            egui::Stroke::new(1.5, color),
-                        );
-                    }
+                    self.link(painter, (source, Some(from)), (target, to), part, color);
                 }
             }
         }
         unresolved
+    }
+    /// One foreign-key column's line, from its row in `from` to its row in `to`.
+    fn link(
+        &self,
+        painter: &egui::Painter,
+        from: (usize, Option<&str>),
+        to: (usize, Option<&str>),
+        part: usize,
+        color: egui::Color32,
+    ) {
+        let (path, end_side) = route(
+            self.layout[from.0].0,
+            self.layout[to.0].0,
+            self.row_y(from.0, from.1),
+            self.row_y(to.0, to.1),
+            part,
+        );
+        let points: Vec<_> = path.into_iter().map(|p| self.point(p)).collect();
+        let (Some(&start), Some(&end)) = (points.first(), points.last()) else {
+            return;
+        };
+        if !egui::Rect::from_two_pos(start, end)
+            .expand(100.0 * self.zoom)
+            .intersects(self.canvas)
+        {
+            return;
+        }
+        painter.add(egui::Shape::line(points, egui::Stroke::new(1.6, color)));
+        painter.circle_filled(start, 2.5, color);
+        painter.circle_filled(end, 2.5, color);
+        if self.zoom >= 0.25 {
+            painter.arrow(
+                end + egui::vec2(end_side * 10.0, 0.0),
+                egui::vec2(-end_side * 10.0, 0.0),
+                egui::Stroke::new(1.5, color),
+            );
+        }
     }
 }
 impl DiagramState {
@@ -776,20 +785,19 @@ impl DiagramState {
         if !self.error.is_empty() {
             ui.colored_label(ui.visuals().error_fg_color, &self.error);
         }
-        let Some(data) = self.data.as_ref() else {
+        let graph = self
+            .data
+            .as_ref()
+            .map(|data| Graph::new(data, self.show_system));
+        if let Some(graph) = &graph {
+            graph.notices(ui, self.stale);
+        }
+        let Some(graph) = graph.filter(|graph| !graph.tables.is_empty()) else {
             if self.ticket.is_none() && self.error.is_empty() {
                 icons::empty_state(ui, Icon::Map, "No relationships to display");
             }
             return None;
         };
-        let graph = Graph::new(data, self.show_system);
-        graph.notices(ui, self.stale);
-        if graph.tables.is_empty() {
-            if self.ticket.is_none() && self.error.is_empty() {
-                icons::empty_state(ui, Icon::Map, "No relationships to display");
-            }
-            return None;
-        }
         if self.pack_width <= 0.0
             || (self.camera.auto_fit && self.camera.last_canvas_size != ui.available_size())
         {
@@ -931,28 +939,21 @@ mod tests {
             builds() > initial,
             "packing-width changes must rebuild layout"
         );
-        let before = builds();
-        state.toggle_columns();
-        draw(&mut state, size);
-        assert!(builds() > before);
+        let rebuilds = |state: &mut super::DiagramState,
+                        change: &dyn Fn(&mut super::DiagramState)| {
+            let before = builds();
+            change(state);
+            draw(state, size);
+            builds() > before
+        };
+        assert!(rebuilds(&mut state, &|s| s.toggle_columns()));
         assert!(state.positions.is_empty());
-        let before = builds();
-        state.toggle_system();
-        draw(&mut state, size);
-        assert!(builds() > before);
+        assert!(rebuilds(&mut state, &|s| s.toggle_system()));
         assert_eq!(state.layout.as_ref().unwrap().cards.len(), 33);
-        let before = builds();
-        state.loaded(graph());
-        draw(&mut state, size);
-        assert!(builds() > before);
-        let before = builds();
+        assert!(rebuilds(&mut state, &|s| s.loaded(graph())));
         let saved = state.snapshot("db").unwrap();
-        state.restore(&saved);
-        draw(&mut state, size);
-        assert!(builds() > before);
-        let before = builds();
-        draw(&mut state, size);
-        assert_eq!(builds(), before);
+        assert!(rebuilds(&mut state, &|s| s.restore(&saved)));
+        assert!(!rebuilds(&mut state, &|_| {}));
     }
     #[test]
     fn button_zoom_preserves_the_canvas_center_and_respects_limits() {

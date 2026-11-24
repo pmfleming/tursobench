@@ -607,24 +607,16 @@ fn definition_row(
         ui.painter()
             .rect_filled(rect, 0.0, ui.visuals().widgets.hovered.bg_fill);
     }
-    let description = format!(
-        "{name} · {summary}{}{}{}",
-        if index.is_some_and(|i| i.unique) {
-            " · UNIQUE"
-        } else {
-            ""
-        },
-        if index.is_some_and(|i| i.partial) {
-            " · partial index"
-        } else {
-            ""
-        },
-        if automatic {
-            " · Created automatically for a key"
-        } else {
-            ""
-        }
-    );
+    let (unique, partial) = index.map_or((false, false), |i| (i.unique, i.partial));
+    let badges: String = [
+        (unique, " · UNIQUE"),
+        (partial, " · partial index"),
+        (automatic, " · Created automatically for a key"),
+    ]
+    .into_iter()
+    .filter_map(|(shown, badge)| shown.then_some(badge))
+    .collect();
+    let description = format!("{name} · {summary}{badges}");
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), open, &description)
     });
@@ -642,10 +634,7 @@ fn definition_row(
         );
     }
     let mut right = rect.right() - 5.0;
-    for (show, icon) in [
-        (automatic, Icon::System),
-        (index.is_some_and(|i| i.partial), Icon::Filter),
-    ] {
+    for (show, icon) in [(automatic, Icon::System), (partial, Icon::Filter)] {
         if show {
             presentation::icon_at(
                 ui.painter(),
@@ -657,7 +646,7 @@ fn definition_row(
             right -= 17.0;
         }
     }
-    if index.is_some_and(|i| i.unique) {
+    if unique {
         text_at(
             ui,
             presentation::strip_before(rect, right, 20.0),
@@ -699,17 +688,27 @@ fn definition_row(
         );
     }
     if open {
-        if let Some(ddl) = object.and_then(|o| o.ddl.as_deref()) {
-            sql_view(ui, ddl);
-        } else if automatic {
-            ui.weak("Created automatically for a key. No CREATE statement.");
-        } else {
-            ui.weak("DDL not retained; load it on demand.");
-            if let Some(object) = object
-                && ui.button("Load complete DDL").clicked()
-            {
-                return Some(Action::Definition(object.name.clone()));
-            }
+        definition_body(ui, object, automatic)
+    } else {
+        None
+    }
+}
+/// An unfolded definition: its DDL, or why there is none and how to load it.
+fn definition_body(
+    ui: &mut egui::Ui,
+    object: Option<&SchemaObject>,
+    automatic: bool,
+) -> Option<Action> {
+    if let Some(ddl) = object.and_then(|o| o.ddl.as_deref()) {
+        sql_view(ui, ddl);
+    } else if automatic {
+        ui.weak("Created automatically for a key. No CREATE statement.");
+    } else {
+        ui.weak("DDL not retained; load it on demand.");
+        if let Some(object) = object
+            && ui.button("Load complete DDL").clicked()
+        {
+            return Some(Action::Definition(object.name.clone()));
         }
     }
     None
@@ -718,6 +717,7 @@ fn definition_row(
 #[cfg(test)]
 mod tests {
     use super::{Action, IndexInfo, Inspection, SchemaObject, Structure, StructureSection};
+    use crate::app::test_ui::{control, pointer};
     use eframe::egui;
     use tursobench_core::{ForeignKey, Table, TableColumn};
 
@@ -806,22 +806,9 @@ mod tests {
     ) -> Option<Action> {
         let size = egui::vec2(396.0, 300.0);
         let (output, _) = draw(ctx, structure, section, size, vec![]);
-        let pos = crate::app::test_ui::control(&output, name).center();
-        draw(
-            ctx,
-            structure,
-            section,
-            size,
-            crate::app::test_ui::pointer(pos, true),
-        );
-        draw(
-            ctx,
-            structure,
-            section,
-            size,
-            crate::app::test_ui::pointer(pos, false),
-        )
-        .1
+        let pos = control(&output, name).center();
+        draw(ctx, structure, section, size, pointer(pos, true));
+        draw(ctx, structure, section, size, pointer(pos, false)).1
     }
     #[test]
     fn metadata_states_and_actions() {
