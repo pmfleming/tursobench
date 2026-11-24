@@ -7,17 +7,15 @@
 //! shell, web search, apps, plugins, browser and computer use are switched off;
 //! its MCP servers are replaced by TursoBench's alone. TursoBench never calls
 //! the login, logout, account or token methods.
-use crate::agent::{
-    Input, Link, Privacy, Protocol, Queue, Spec, Update, content_text, initialize, tool_name,
-};
+use crate::agent::{Input, Link, Queue, Spec, Update, content_text, initialize, tool_name};
 use serde_json::{Value as Json, json};
-use std::{path::PathBuf, sync::mpsc::Receiver};
+use std::sync::mpsc::Receiver;
 
 const INITIALIZE: u64 = 1;
 const START_THREAD: u64 = 2;
 
 /// Codex features that give the agent tools of its own.
-pub const DISABLED_FEATURES: &[&str] = &[
+const DISABLED_FEATURES: &[&str] = &[
     "shell_tool",
     "unified_exec",
     // Copies the user's shell environment to ~/.codex; no shell runs here.
@@ -42,53 +40,37 @@ pub const DISABLED_FEATURES: &[&str] = &[
 
 /// Overrides that stop Codex's analytics, OpenTelemetry export and feedback
 /// uploads; only the conversation itself reaches OpenAI.
-pub const QUIET_CONFIG: &[&str] = &[
+pub(crate) const QUIET_CONFIG: &[&str] = &[
     "analytics.enabled=false",
     "otel.exporter=\"none\"",
     "otel.metrics_exporter=\"none\"",
     "otel.trace_exporter=\"none\"",
     "feedback.enabled=false",
 ];
+pub(crate) const NO_HISTORY: &str = "history.persistence=\"none\"";
 
-/// `codex app-server` with Codex's own tools switched off. The tool relay and
-/// its token travel in `thread/start`, not on the command line. `privacy`
-/// decides whether Codex saves the thread and reports usage.
-pub fn spec(
-    program: PathBuf,
-    cwd: PathBuf,
-    mcp: crate::relay::Launch,
-    system_prompt: &str,
-    model: Option<&str>,
-    privacy: Privacy,
-) -> Spec {
+/// `codex app-server` with Codex's own tools switched off and `config` overrides.
+pub(crate) fn app_server<'a>(config: impl IntoIterator<Item = &'a str>) -> Vec<String> {
     let mut args = vec!["app-server".to_owned()];
     for feature in DISABLED_FEATURES {
         args.extend(["--disable".into(), (*feature).into()]);
     }
-    args.extend(["-c".into(), "web_search=\"disabled\"".into()]);
-    if privacy.telemetry_off {
-        for setting in QUIET_CONFIG {
-            args.extend(["-c".into(), (*setting).into()]);
-        }
+    for setting in config {
+        args.extend(["-c".into(), setting.into()]);
     }
-    if !privacy.keep_history {
-        args.extend(["-c".into(), "history.persistence=\"none\"".into()]);
-    }
-    Spec {
-        program,
-        args,
-        env: vec![],
-        cwd,
-        protocol: Protocol::CodexAppServer,
-        system_prompt: system_prompt.into(),
-        mcp: Some(mcp),
-        model: model
-            .map(str::trim)
-            .filter(|m| !m.is_empty())
-            .map(str::to_owned),
-        effort: None,
-        privacy,
-    }
+    args
+}
+
+/// Run `codex app-server` without web search. The tool relay and its token
+/// travel in `thread/start`, not on the command line. The spec's privacy
+/// decides whether Codex saves the thread and reports usage.
+pub(crate) fn serve(spec: &mut Spec, mcp: crate::relay::Launch) {
+    let privacy = spec.privacy;
+    let quiet = QUIET_CONFIG.iter().filter(|_| privacy.telemetry_off);
+    let history = (!privacy.keep_history).then_some(NO_HISTORY);
+    let config = std::iter::once("web_search=\"disabled\"").chain(quiet.copied());
+    spec.args.extend(app_server(config.chain(history)));
+    spec.mcp = Some(mcp);
 }
 
 #[derive(Default)]
@@ -197,7 +179,7 @@ fn flush(state: &mut State, link: &mut Link) {
 fn handle(spec: &Spec, state: &mut State, link: &mut Link, message: &Json) {
     let method = message.get("method").and_then(Json::as_str);
     match (method, message.get("id")) {
-        (Some(method), Some(id)) => request(link, method, id.clone(), &message["params"]),
+        (Some(method), Some(id)) => request(link, method, id, &message["params"]),
         (Some(method), None) => {
             for update in notification(state, method, &message["params"]) {
                 link.emit(update);
@@ -291,7 +273,12 @@ fn thread_params(spec: &Spec) -> Json {
         "baseInstructions": spec.system_prompt,
         "config": {"mcp_servers": servers},
     });
-    if let Some(model) = &spec.model {
+    if let Some(model) = spec
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+    {
         params["model"] = json!(model);
     }
     params
@@ -465,7 +452,7 @@ fn describe(kind: &str) -> &'static str {
 }
 
 /// Approvals are declined; Codex's other requests are refused.
-fn request(link: &mut Link, method: &str, id: Json, params: &Json) {
+fn request(link: &mut Link, method: &str, id: &Json, params: &Json) {
     let declined = |what: &str| {
         Update::Notice(format!(
             "Declined Codex's request to {what}; only TursoBench's read-only tools are allowed"
@@ -509,119 +496,119 @@ fn request(link: &mut Link, method: &str, id: Json, params: &Json) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Json, Privacy, State, Update, json, notification, spec, thread_params};
+    use super::{Spec, State, Update, json, notification, serve, thread_params};
 
     #[test]
     fn deltas_tools_and_turns_become_updates() {
         let mut state = State::default();
-        let n =
-            |state: &mut State, method: &str, params: Json| notification(state, method, &params);
-        assert!(n(&mut state, "turn/started", json!({"turn": {"id": "t1"}})).is_empty());
+        let started = json!({"turn": {"id": "t1"}});
+        assert!(notification(&mut state, "turn/started", &started).is_empty());
         assert_eq!(state.turn.as_deref(), Some("t1"));
-        assert_eq!(
-            n(
-                &mut state,
+        let text = |text: &str| Update::Text(text.into());
+        let ended = |error: Option<&str>| Update::TurnEnded {
+            error: error.map(str::to_owned),
+        };
+        let call = Update::ToolCall {
+            id: "c1".into(),
+            name: "run_query".into(),
+            input: json!({"sql": "SELECT 1"}),
+        };
+        let result = Update::ToolResult {
+            id: "c1".into(),
+            ok: true,
+            text: "[]".into(),
+        };
+        let relay_failed = "TursoBench's tools did not start in Codex (failed): spawn failed";
+        let steps = [
+            (
                 "item/agentMessage/delta",
-                json!({"itemId": "m1", "delta": "Hi"})
+                json!({"itemId": "m1", "delta": "Hi"}),
+                vec![text("Hi")],
             ),
-            [Update::Text("Hi".into())]
-        );
-        // A second message in the same turn starts a new paragraph.
-        assert_eq!(
-            n(
-                &mut state,
+            // A second message in the same turn starts a new paragraph.
+            (
                 "item/agentMessage/delta",
-                json!({"itemId": "m2", "delta": "Then"})
+                json!({"itemId": "m2", "delta": "Then"}),
+                vec![text("\n\n"), text("Then")],
             ),
-            [Update::Text("\n\n".into()), Update::Text("Then".into())]
-        );
-        assert!(
-            n(
-                &mut state,
+            (
                 "item/completed",
-                json!({"item": {"type": "agentMessage", "id": "m2", "text": "Then"}})
-            )
-            .is_empty()
-        );
-        assert_eq!(
-            n(
-                &mut state,
+                json!({"item": {"type": "agentMessage", "id": "m2", "text": "Then"}}),
+                vec![],
+            ),
+            (
                 "item/started",
-                json!({"item": {"type": "mcpToolCall", "id": "c1", "server": "tursobench", "tool": "run_query", "arguments": {"sql": "SELECT 1"}}})
+                json!({"item": {"type": "mcpToolCall", "id": "c1", "server": "tursobench", "tool": "run_query", "arguments": {"sql": "SELECT 1"}}}),
+                vec![call],
             ),
-            [Update::ToolCall {
-                id: "c1".into(),
-                name: "run_query".into(),
-                input: json!({"sql": "SELECT 1"})
-            }]
-        );
-        assert_eq!(
-            n(
-                &mut state,
+            (
                 "item/completed",
-                json!({"item": {"type": "mcpToolCall", "id": "c1", "server": "tursobench", "tool": "run_query", "status": "completed", "result": {"content": [{"type": "text", "text": "[]"}], "isError": false}, "error": null}})
+                json!({"item": {"type": "mcpToolCall", "id": "c1", "server": "tursobench", "tool": "run_query", "status": "completed", "result": {"content": [{"type": "text", "text": "[]"}], "isError": false}, "error": null}}),
+                vec![result],
             ),
-            [Update::ToolResult {
-                id: "c1".into(),
-                ok: true,
-                text: "[]".into()
-            }]
-        );
-        assert_eq!(
-            n(
-                &mut state,
+            (
                 "item/completed",
-                json!({"item": {"type": "agentMessage", "id": "m3", "text": "Done"}})
+                json!({"item": {"type": "agentMessage", "id": "m3", "text": "Done"}}),
+                vec![text("Done")],
             ),
-            [Update::Text("Done".into())]
-        );
-        assert!(matches!(
-            &n(&mut state, "item/started", json!({"item": {"type": "commandExecution", "id": "x"}}))[..],
-            [Update::Notice(t)] if t.contains("command")
-        ));
-        assert!(
-            n(
-                &mut state,
+            (
+                "item/started",
+                json!({"item": {"type": "commandExecution", "id": "x"}}),
+                vec![Update::Notice("Codex started its own command".into())],
+            ),
+            (
                 "error",
-                json!({"error": {"message": "unauthorized"}, "willRetry": false})
-            )
-            .is_empty()
-        );
-        assert_eq!(
-            n(
-                &mut state,
-                "turn/completed",
-                json!({"turn": {"id": "t1", "status": "failed", "error": null}})
+                json!({"error": {"message": "unauthorized"}, "willRetry": false}),
+                vec![],
             ),
-            [Update::TurnEnded {
-                error: Some("unauthorized".into())
-            }]
-        );
+            (
+                "turn/completed",
+                json!({"turn": {"id": "t1", "status": "failed", "error": null}}),
+                vec![ended(Some("unauthorized"))],
+            ),
+            (
+                "turn/completed",
+                json!({"turn": {"id": "t2", "status": "interrupted", "error": null}}),
+                vec![ended(None)],
+            ),
+            // Only TursoBench's own relay failing to start is worth a notice.
+            (
+                "mcpServer/startupStatus/updated",
+                json!({"name": "tursobench", "status": "ready"}),
+                vec![],
+            ),
+            (
+                "mcpServer/startupStatus/updated",
+                json!({"name": "other", "status": "failed"}),
+                vec![],
+            ),
+            (
+                "mcpServer/startupStatus/updated",
+                json!({"name": "tursobench", "status": "failed", "error": "spawn failed"}),
+                vec![Update::Notice(relay_failed.into())],
+            ),
+        ];
+        for (method, params, expected) in steps {
+            let updates = notification(&mut state, method, &params);
+            assert_eq!(updates, expected, "{method} {params}");
+        }
         assert_eq!(state.turn, None);
-        assert_eq!(
-            n(
-                &mut state,
-                "turn/completed",
-                json!({"turn": {"id": "t2", "status": "interrupted", "error": null}})
-            ),
-            [Update::TurnEnded { error: None }]
-        );
     }
 
     #[test]
     fn the_thread_is_ephemeral_read_only_and_carries_only_our_server() {
-        let spec = spec(
-            "codex".into(),
-            "/run/tb".into(),
-            crate::relay::Launch {
-                command: "/usr/bin/tursobench".into(),
-                args: vec!["--mcp-relay".into(), "/run/tb/s.sock".into()],
-                env: vec![(crate::relay::TOKEN_ENV.into(), "secret".into())],
-            },
-            "Be brief",
-            Some(" gpt-x "),
-            Privacy::default(),
-        );
+        let mut spec = Spec {
+            cwd: "/run/tb".into(),
+            system_prompt: "Be brief".into(),
+            model: Some(" gpt-x ".into()),
+            ..Spec::default()
+        };
+        let launch = crate::relay::Launch {
+            command: "/usr/bin/tursobench".into(),
+            args: vec!["--mcp-relay".into(), "/run/tb/s.sock".into()],
+            env: vec![(crate::relay::TOKEN_ENV.into(), "secret".into())],
+        };
+        serve(&mut spec, launch);
         let joined = spec.args.join(" ");
         assert!(joined.starts_with("app-server "));
         assert!(joined.contains("--disable shell_tool"));

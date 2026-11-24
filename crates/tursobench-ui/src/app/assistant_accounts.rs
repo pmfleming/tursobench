@@ -2,7 +2,8 @@
 //! conversation's tool host, and Settings → Assistant's agent rows, settings
 //! and privacy switches.
 use super::{
-    App,
+    App, assistant_export,
+    assistant_picker::{Menu, status_dot},
     icons::{self, Icon},
     presentation::{self, Intent},
 };
@@ -11,7 +12,6 @@ use eframe::egui;
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 use tursobench_assistant::{
     account::{Event, Job, Operation, SignIn, Status, Target},
-    agent::Protocol,
     vendor::{self, VENDORS, Vendor, command_words, locate},
 };
 
@@ -46,14 +46,6 @@ impl Row {
         })
     }
 }
-/// A small status dot; `state` is its tooltip and accessible name.
-pub(super) fn status_dot(ui: &mut egui::Ui, intent: Intent, state: &str) {
-    let color = presentation::intent_color(ui, intent);
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
-    ui.painter().circle_filled(rect.center(), 3.0, color);
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, state));
-    response.on_hover_text(state);
-}
 #[derive(Default)]
 pub(super) struct State {
     pub rows: BTreeMap<Provider, Row>,
@@ -69,34 +61,28 @@ pub(super) struct State {
     /// for the selected vendor when the panel first needs its status.
     pub automatic: bool,
     /// The chat's model picker while it is open.
-    pub menu: super::assistant_picker::Menu,
+    pub menu: Menu,
 }
 impl App {
     pub(super) fn scan_assistant(&mut self, ctx: &egui::Context) {
         for vendor in VENDORS {
-            if vendor.id != Provider::Custom
-                || !self.preferences.assistant.custom_command.trim().is_empty()
-            {
-                // Never replace a sign-in with an automatic status check.
-                if self
-                    .accounts
-                    .rows
-                    .get(&vendor.id)
-                    .is_none_or(|row| row.job.is_none())
-                {
-                    self.agent_account_job(ctx, vendor.id, Operation::Check);
-                }
+            // Never replace a sign-in with an automatic status check.
+            let row = self.accounts.rows.get(&vendor.id);
+            let busy = row.is_some_and(|row| row.job.is_some());
+            if self.has_command(vendor.id) && !busy {
+                self.agent_account_job(ctx, vendor.id, Operation::Check);
             }
         }
+    }
+    /// Every agent but a custom one without its command can be started.
+    fn has_command(&self, provider: Provider) -> bool {
+        provider != Provider::Custom || !self.preferences.assistant.custom_command.trim().is_empty()
     }
     /// The panel's pickers need the selected vendor's status and models; check
     /// it once when nothing is known yet, without opening Settings.
     pub(super) fn check_selected_assistant(&mut self, ctx: &egui::Context) {
         let provider = self.preferences.assistant.provider;
-        if !self.accounts.automatic
-            || (provider == Provider::Custom
-                && self.preferences.assistant.custom_command.trim().is_empty())
-        {
+        if !self.accounts.automatic || !self.has_command(provider) {
             return;
         }
         let unknown = self
@@ -114,9 +100,9 @@ impl App {
             provider,
             program: profile.program,
             args: profile.args,
-            env: profile.env,
             cwd: tursobench_assistant::relay::private_dir()
                 .map_err(|_| "Could not create the private agent directory")?,
+            ..Target::default()
         })
     }
     pub(super) fn agent_account_job(
@@ -164,28 +150,24 @@ impl App {
                 .map(|job| job.events.try_iter().collect())
                 .unwrap_or_default();
             for event in events {
-                match event {
+                // Cancelling or failing tells nothing new about the account,
+                // so the last status and models stay.
+                let (status, error) = match event {
                     Event::Browser(url) => {
                         ctx.open_url(egui::OpenUrl::new_tab(&url));
                         row.browser = Some(url);
+                        continue;
                     }
-                    Event::Finished(_) | Event::Cancelled => {
-                        row.changing_account = false;
-                        row.job = None;
-                        row.activity = None;
-                        row.browser = None;
-                        // Cancelling or failing tells nothing new about the
-                        // account, so the last status and models stay.
-                        match event {
-                            Event::Finished(Ok(status)) => {
-                                row.error = None;
-                                row.status = Some(status);
-                            }
-                            Event::Finished(Err(error)) => row.error = Some(error),
-                            _ => row.error = None,
-                        }
-                    }
-                }
+                    Event::Finished(Ok(status)) => (Some(status), None),
+                    Event::Finished(Err(error)) => (None, Some(error)),
+                    Event::Cancelled => (None, None),
+                };
+                row.changing_account = false;
+                row.job = None;
+                row.activity = None;
+                row.browser = None;
+                row.error = error;
+                row.status = status.or(row.status.take());
             }
         }
     }
@@ -211,35 +193,26 @@ impl App {
         let mut words: Vec<String> = if provider == Provider::Custom {
             command_words(&preferences.custom_command)?
         } else {
-            std::iter::once(vendor.command.to_owned())
-                .chain(vendor.args.iter().map(|s| (*s).to_owned()))
+            std::iter::once(vendor.command)
+                .chain(vendor.args.iter().copied())
+                .map(str::to_owned)
                 .collect()
         };
         let command = words.remove(0);
-        let requested = preferences
-            .executables
-            .get(&provider)
-            .cloned()
-            .unwrap_or_else(|| command.clone().into());
+        let requested = match preferences.executables.get(&provider) {
+            Some(path) => path.clone(),
+            None => command.as_str().into(),
+        };
         let program = locate(&requested).unwrap_or(requested);
         if provider == Provider::Antigravity && preferences.privacy.of(provider).telemetry_off {
             words.push("--disable-telemetry".into());
         }
+        let sign_in = std::iter::once(command.as_str()).chain(vendor.login.iter().copied());
         Ok(Profile {
-            name: vendor.name.into(),
-            vendor: vendor.company,
+            vendor,
             program,
             args: words,
-            env: vec![],
-            protocol: vendor.protocol,
-            missing: format!(
-                "{} was not found. Scan for agents or set its executable in Settings → Assistant.",
-                vendor.name
-            ),
-            sign_in: std::iter::once(command.as_str())
-                .chain(vendor.login.iter().copied())
-                .collect::<Vec<_>>()
-                .join(" "),
+            sign_in: sign_in.collect::<Vec<_>>().join(" "),
         })
     }
     /// How the chat's agent would be started.
@@ -252,22 +225,9 @@ impl App {
         let row = self.accounts.rows.get(&provider);
         let installed = match row.and_then(|r| r.status.as_ref()) {
             Some(status) => status.state != SignIn::Missing,
-            None if provider == Provider::Custom => {
-                command_words(&self.preferences.assistant.custom_command)
-                    .ok()
-                    .and_then(|words| locate(std::path::Path::new(&words[0])))
-                    .is_some()
-            }
-            None => {
-                let program = self
-                    .preferences
-                    .assistant
-                    .executables
-                    .get(&provider)
-                    .cloned()
-                    .unwrap_or_else(|| provider.vendor().command.into());
-                locate(&program).is_some()
-            }
+            None => self
+                .profile_for(provider)
+                .is_ok_and(|profile| locate(&profile.program).is_some()),
         };
         let (state, intent) = row.and_then(|r| r.describe()).unwrap_or(if installed {
             ("Installed", Intent::Neutral)
@@ -275,6 +235,21 @@ impl App {
             ("Not installed", Intent::Neutral)
         });
         (state, intent, installed)
+    }
+
+    /// How the chat's copy buttons write text.
+    pub(super) fn chat_settings_ui(&mut self, ui: &mut egui::Ui) {
+        let format = &mut self.preferences.assistant.copy_format;
+        let before = *format;
+        AgentGrid::new(ui).field(ui, "Copy as", Column::Rest, |ui| {
+            for (choice, name) in assistant_export::FORMATS {
+                ui.selectable_value(format, choice, name)
+                    .on_hover_text("How the chat's copy buttons write a reply or the conversation");
+            }
+        });
+        if before != self.preferences.assistant.copy_format {
+            self.store.save(&self.preferences);
+        }
     }
 
     /// Every agent with its status, a check, and its sign-in action.
@@ -367,51 +342,40 @@ impl App {
 
     /// The command line of a custom ACP agent; a new one forgets its grants.
     fn custom_command_ui(&mut self, ui: &mut egui::Ui, grid: AgentGrid) {
-        let before = self.preferences.assistant.custom_command.clone();
-        let response = text_setting(
-            ui,
-            grid,
-            ("Command", "Agent command"),
-            "opencode acp",
-            &mut self.preferences.assistant.custom_command,
-        );
-        if before != self.preferences.assistant.custom_command {
+        let command = &mut self.preferences.assistant.custom_command;
+        let name = ("Command", "Agent command");
+        let Some(response) = text_setting(ui, grid, name, "opencode acp", command) else {
+            return;
+        };
+        if response.changed() {
             self.preferences.assistant.clear_custom_grants();
             if self.preferences.assistant.provider == Provider::Custom {
                 self.reset_assistant_conversations();
             }
             self.accounts.rows.remove(&Provider::Custom);
         }
-        if let Some(response) = response {
-            self.setting_response(response);
-        }
+        self.setting_response(response);
     }
 
     /// A model typed for the agent; changing the chat agent's starts afresh.
     fn agent_model_ui(&mut self, ui: &mut egui::Ui, grid: AgentGrid, provider: Provider) {
-        let previous = self.preferences.assistant.selected_model().to_owned();
         let model = self
             .preferences
             .assistant
             .models
             .entry(provider)
             .or_default();
-        let response = text_setting(
-            ui,
-            grid,
-            ("Model", "Assistant model"),
-            "Agent default",
-            model,
-        );
-        if let Some(response) = response {
-            self.setting_response(response.on_hover_text(
-                "Passed to the agent; leave empty for its own default. Applies to the \
-                 next conversation.",
-            ));
-        }
-        if previous != self.preferences.assistant.selected_model() {
+        let name = ("Model", "Assistant model");
+        let Some(response) = text_setting(ui, grid, name, "Agent default", model) else {
+            return;
+        };
+        if response.changed() && provider == self.preferences.assistant.provider {
             self.reset_assistant_conversations();
         }
+        self.setting_response(response.on_hover_text(
+            "Passed to the agent; leave empty for its own default. Applies to the next \
+             conversation.",
+        ));
     }
 
     /// The configured agent's sign-in problems and choices, in its settings area.
@@ -568,9 +532,8 @@ impl App {
                 "ACP does not offer a per-conversation history switch. Empty status sessions may appear in CLI history.",
             ),
             (None, None) => {
-                let name = self
-                    .profile_for(provider)
-                    .map_or_else(|_| "The agent".into(), |profile| profile.name);
+                let profile = self.profile_for(provider);
+                let name = profile.map_or("The agent", |profile| profile.vendor.name);
                 note(
                     ui,
                     next(),
@@ -598,17 +561,11 @@ impl App {
 
 /// How to start one kind of agent and what to tell the user about it.
 pub(super) struct Profile {
-    pub name: String,
-    /// Who receives what the agent reads.
-    pub vendor: &'static str,
-    pub(super) program: PathBuf,
-    pub(super) args: Vec<String>,
-    pub(super) env: Vec<(String, String)>,
-    pub(super) protocol: Protocol,
-    /// Shown when the program is not installed.
-    pub(super) missing: String,
+    pub vendor: &'static Vendor,
+    pub program: PathBuf,
+    pub args: Vec<String>,
     /// The command that signs in, for error hints.
-    pub(super) sign_in: String,
+    pub sign_in: String,
 }
 
 /// One agent's row: choose it, its status, a check, and its account action.
@@ -641,7 +598,7 @@ fn agent_row(
         cell(ui, Column::Status, &mut |ui| {
             status_dot(ui, intent, label);
             ui.add(egui::Label::new(egui::RichText::new(label).small()).truncate())
-                .on_hover_text(row.error.clone().unwrap_or_else(|| details.clone()));
+                .on_hover_text(row.error.as_deref().unwrap_or(&details));
         });
         if row.job.is_none() && state != SignIn::Missing {
             cell(ui, Column::Check, &mut |ui| {

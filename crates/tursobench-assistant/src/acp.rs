@@ -132,7 +132,7 @@ fn handle(spec: &Spec, state: &mut State, link: &mut Link, message: &Json) {
     let method = message.get("method").and_then(Json::as_str);
     let id = message.get("id");
     match (method, id) {
-        (Some(method), Some(id)) => request(link, method, id.clone(), &message["params"]),
+        (Some(method), Some(id)) => request(link, method, id, &message["params"]),
         (Some("session/update"), None) => {
             for update in session_update(&message["params"]["update"]) {
                 link.emit(update);
@@ -326,10 +326,10 @@ fn set_config(
 /// Set the session's `thought_level` to the chosen level, or back to the one
 /// it started with.
 fn apply_effort(state: &mut State, link: &mut Link) {
-    let Some(session) = state.session.clone() else {
+    let Some(session) = &state.session else {
         return;
     };
-    let Some(config) = state.effort_option.clone() else {
+    let Some(config) = &state.effort_option else {
         if state.effort.is_some() {
             link.emit(Update::Notice(
                 "The agent does not offer reasoning levels".into(),
@@ -337,27 +337,23 @@ fn apply_effort(state: &mut State, link: &mut Link) {
         }
         return;
     };
-    let Some(value) = state
-        .effort
-        .clone()
-        .or_else(|| state.original_effort.clone())
-    else {
+    let Some(value) = state.effort.as_ref().or(state.original_effort.as_ref()) else {
         return;
     };
-    if !state.effort_values.contains(&value) {
+    if !state.effort_values.contains(value) {
         link.emit(Update::Notice(format!(
             "The agent does not offer the reasoning level {value}"
         )));
         return;
     }
+    let _ = set_config(link, SET_EFFORT, session, config, value);
     state.effort_pending = true;
-    let _ = set_config(link, SET_EFFORT, &session, &config, &value);
 }
 
 /// Apply the preferred model through config options or the model list; return
 /// the name of the model in use when the agent says.
 fn choose_model(spec: &Spec, state: &mut State, link: &mut Link, result: &Json) -> Option<String> {
-    let session = state.session.clone()?;
+    let session = state.session.as_deref()?;
     let option = config_option(result, "model");
     let current = option
         .map_or(&result["models"]["currentModelId"], |o| &o["currentValue"])
@@ -404,11 +400,11 @@ fn choose_model(spec: &Spec, state: &mut State, link: &mut Link, result: &Json) 
     Some(model)
 }
 
-fn request(link: &mut Link, method: &str, id: Json, params: &Json) {
+fn request(link: &mut Link, method: &str, id: &Json, params: &Json) {
     let reply = match method {
         "session/request_permission" => {
             let ours = is_ours(&params["toolCall"]);
-            let options = params["options"].as_array().cloned().unwrap_or_default();
+            let options = params["options"].as_array().map_or(&[][..], Vec::as_slice);
             let pick = |kinds: &[&str]| {
                 options
                     .iter()
@@ -480,14 +476,14 @@ fn session_update(update: &Json) -> Vec<Update> {
         Some("agent_message_chunk") => text(update).map(Update::Text).into_iter().collect(),
         Some("agent_thought_chunk") => text(update).map(Update::Thought).into_iter().collect(),
         Some("tool_call") => {
-            let id = update["toolCallId"].as_str().unwrap_or_default().to_owned();
+            let id = update["toolCallId"].as_str().unwrap_or_default();
             let title = update["title"].as_str().unwrap_or("tool");
             let mut updates = vec![Update::ToolCall {
-                id: id.clone(),
+                id: id.to_owned(),
                 name: tool_name(&short_title(title)),
                 input: update.get("rawInput").cloned().unwrap_or(Json::Null),
             }];
-            updates.extend(finished(&id, update));
+            updates.extend(finished(id, update));
             updates
         }
         Some("tool_call_update") => {
@@ -517,7 +513,7 @@ fn finished(id: &str, update: &Json) -> Option<Update> {
         Some("failed") => false,
         _ => return None,
     };
-    let text = update["content"]
+    let content = update["content"]
         .as_array()
         .into_iter()
         .flatten()
@@ -525,32 +521,13 @@ fn finished(id: &str, update: &Json) -> Option<Update> {
         .filter(|t| !t.is_empty())
         .collect::<Vec<_>>()
         .join("\n");
-    let text = if text.is_empty() {
-        update
-            .get("rawOutput")
-            .filter(|o| !o.is_null())
-            .map(|o| match o {
-                Json::String(s) => s.clone(),
-                other => {
-                    let text = content_text(&other["content"]).trim().to_owned();
-                    if text.is_empty() {
-                        other.to_string()
-                    } else {
-                        text
-                    }
-                }
-            })
-            .filter(|t| !t.is_empty())
-            .unwrap_or_else(|| {
-                if ok {
-                    "Completed; the agent did not include tool output".into()
-                } else {
-                    "Failed; the agent did not include tool output".into()
-                }
-            })
-    } else {
-        text
-    };
+    let text = Some(content)
+        .filter(|t| !t.is_empty())
+        .or_else(|| raw_output(&update["rawOutput"]))
+        .unwrap_or_else(|| {
+            let done = if ok { "Completed" } else { "Failed" };
+            format!("{done}; the agent did not include tool output")
+        });
     Some(Update::ToolResult {
         id: id.to_owned(),
         ok,
@@ -558,9 +535,70 @@ fn finished(id: &str, update: &Json) -> Option<Update> {
     })
 }
 
+/// A tool's raw output as text: a string, its content's text, or its JSON.
+fn raw_output(output: &Json) -> Option<String> {
+    let text = match output {
+        Json::Null => return None,
+        Json::String(s) => s.clone(),
+        other => Some(content_text(&other["content"]).trim().to_owned())
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| other.to_string()),
+    };
+    Some(text).filter(|t| !t.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Update, is_ours, json, session_update, short_title, tool_name};
+    use super::{
+        Json, Link, NEW_SESSION, SET_EFFORT, SET_MODE, SET_MODEL, Spec, State, Update, is_ours,
+        json, response, session_update, short_title, tool_name,
+    };
+
+    #[test]
+    fn replies_to_requests_end_the_turn_or_are_reported() {
+        const PROMPT: u64 = 11;
+        let replied = |id: u64, message: Json| {
+            let (mut link, updates) = Link::detached();
+            let mut state = State {
+                prompt: Some(PROMPT),
+                original_model: Some("small".into()),
+                ..State::default()
+            };
+            response(&Spec::default(), &mut state, &mut link, Some(id), &message);
+            updates.try_iter().collect::<Vec<_>>()
+        };
+        let failed = |code: i64, details: &str| json!({"error": {"code": code, "message": "Refused", "data": {"details": details}}});
+        let ended = |error: &str| Update::TurnEnded {
+            error: Some(error.into()),
+        };
+        let notice = |text: &str| Update::Notice(text.into());
+        let hint = "Refused: no token. Sign in with the agent's own CLI in a terminal, then \
+                    try again.";
+        let mode = "Could not select the agent's default permission mode: Refused";
+        let model = notice("The agent kept its default model: Refused");
+        let ready = Update::Ready {
+            model: Some("small".into()),
+        };
+        let effort = notice("The agent kept its reasoning level: Refused");
+        let refusal = json!({"result": {"stopReason": "refusal"}});
+        let cases = [
+            (NEW_SESSION, failed(-32000, "no token"), vec![ended(hint)]),
+            (NEW_SESSION, failed(-1, ""), vec![ended("Refused")]),
+            (SET_MODEL, failed(-1, ""), vec![ready, model]),
+            (SET_EFFORT, failed(-1, ""), vec![effort]),
+            (SET_MODE, failed(-1, ""), vec![ended(mode)]),
+            (PROMPT, refusal, vec![ended("The agent declined to answer")]),
+            (
+                PROMPT,
+                json!({"result": {}}),
+                vec![Update::TurnEnded { error: None }],
+            ),
+        ];
+        for (id, message, expected) in cases {
+            assert_eq!(replied(id, message), expected, "reply to {id}");
+        }
+    }
+
     #[test]
     fn updates_and_titles_map_to_tursobench_tools() {
         let updates = session_update(&json!({
@@ -638,37 +676,28 @@ mod tests {
             ),
             [Update::Text("Hi".into())]
         );
-        assert!(is_ours(
-            &json!({"title": "Tool: tursobench.describe_table"})
-        ));
-        assert!(!is_ours(&json!({"title": "Run shell command: rm -rf ~"})));
-        for title in [
-            "Run shell: touch /tmp/tursobench-probe",
-            "Edit file /tmp/tursobench/config",
-            "tursobench/run_query; rm -rf ~",
-            "other_tursobench/run_query",
-            "tursobench/unknown",
+        // Only a complete qualified name of one of TursoBench's tools is ours.
+        for call in [
+            json!({"title": "Tool: tursobench.describe_table"}),
+            json!({"toolName": "run_query", "rawInput": {"server": "tursobench"}}),
+            json!({"name": "mcp_tursobench_list_tables", "title": "Run mcp_tursobench_list_tables"}),
         ] {
-            assert!(!is_ours(&json!({"title": title})), "{title}");
+            assert!(is_ours(&call), "{call}");
         }
-        assert!(!is_ours(
-            &json!({"title": "tursobench/run_query", "toolName": "shell"})
-        ));
-        assert!(!is_ours(
-            &json!({"title": "shell", "rawInput": {"server": "tursobench"}})
-        ));
-        assert!(is_ours(
-            &json!({"toolName": "run_query", "rawInput": {"server": "tursobench"}})
-        ));
-        assert!(is_ours(
-            &json!({"name":"mcp_tursobench_list_tables","title":"Run mcp_tursobench_list_tables"})
-        ));
-        assert!(!is_ours(
-            &json!({"name":"mcp_tursobench_list_tables; touch /tmp/probe"})
-        ));
-        assert!(!is_ours(
-            &json!({"name":"shell","title":"Run mcp_tursobench_list_tables"})
-        ));
+        for call in [
+            json!({"title": "Run shell command: rm -rf ~"}),
+            json!({"title": "Run shell: touch /tmp/tursobench-probe"}),
+            json!({"title": "Edit file /tmp/tursobench/config"}),
+            json!({"title": "tursobench/run_query; rm -rf ~"}),
+            json!({"title": "other_tursobench/run_query"}),
+            json!({"title": "tursobench/unknown"}),
+            json!({"title": "tursobench/run_query", "toolName": "shell"}),
+            json!({"title": "shell", "rawInput": {"server": "tursobench"}}),
+            json!({"name": "mcp_tursobench_list_tables; touch /tmp/probe"}),
+            json!({"name": "shell", "title": "Run mcp_tursobench_list_tables"}),
+        ] {
+            assert!(!is_ours(&call), "{call}");
+        }
         assert_eq!(
             tool_name(&short_title("Run mcp_tursobench_list_tables")),
             "list_tables"

@@ -10,15 +10,22 @@ use tursobench_assistant::mcp::ToolHost;
 const SIZE: egui::Vec2 = egui::vec2(1280.0, 720.0);
 const TABLE: &[&str] = &["CREATE TABLE t(id INTEGER PRIMARY KEY)"];
 
-/// A stand-in for `claude -p`: answer each prompt with a short streamed turn.
+/// A stand-in for `claude -p` that records how it was started in `$0.log` and
+/// what it is sent in `$0.sent`. It answers each prompt with a short streamed
+/// turn, except "Wait", which runs until it is interrupted.
 const SCRIPT: &str = r#"#!/usr/bin/env bash
 case " $* " in *" --tools  "*) ;; *) echo "built-in tools were not removed: $*" >&2; exit 5;; esac
+printf 'ARGS %s\nQUIET %s\n' "$*" "${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-unset}" > "$0.log"
 echo '{"type":"system","subtype":"init","model":"fake-model"}'
 while read -r line; do
+  printf '%s\n' "$line" >> "$0.sent"
   case "$line" in
+    *'"subtype":"interrupt"'*)
+      echo '{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"interrupted"}';;
+    *'Wait"'*) ;;
     *'"type":"user"'*)
-      echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"mcp__tursobench__list_tables","input":{}}]},"parent_tool_use_id":null}'
-      echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"{\"objects\":[]}"}]},"parent_tool_use_id":null}'
+      echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"mcp__tursobench__run_query","input":{"sql":"SELECT count(*)\nFROM t"}}]},"parent_tool_use_id":null}'
+      echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"[[2]]"}]},"parent_tool_use_id":null}'
       echo '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Use:\n```sql\nSELECT * FROM t;\n```"}},"parent_tool_use_id":null}'
       echo '{"type":"result","subtype":"success","is_error":false,"result":"done"}'
       ;;
@@ -37,6 +44,7 @@ fn install(dir: &tempfile::TempDir, name: &str, script: &str) -> PathBuf {
     path
 }
 
+/// Start the scripted Claude Code in place of `claude`, at `dir/claude`.
 fn scripted(app: &mut App, dir: &tempfile::TempDir) {
     app.database.assistant.program = Some(install(dir, "claude", SCRIPT));
 }
@@ -90,7 +98,7 @@ fn codex_signed_in(app: &mut App, models: Vec<Model>) {
 
 /// One private runtime directory for every test in this process: tests run in
 /// parallel, and a per-test directory could vanish under another test.
-fn runtime_dir(_: &tempfile::TempDir) {
+fn runtime_dir() {
     static RUNTIME: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
     RUNTIME.get_or_init(|| {
         let runtime = tempfile::tempdir().unwrap();
@@ -129,29 +137,16 @@ fn value_of(output: &egui::FullOutput, name: &str) -> Option<String> {
         .and_then(|(_, node)| node.value().map(str::to_owned))
 }
 
+/// What the header's model picker shows.
+fn picked(output: &egui::FullOutput) -> Option<String> {
+    value_of(output, "Assistant model picker")
+}
+
 /// Settings → Assistant, laid out.
 fn assistant_settings(app: &mut App, ctx: &egui::Context) -> egui::FullOutput {
     app.open_assistant_settings();
     frame_at(app, ctx, SIZE, vec![]);
     frame_at(app, ctx, SIZE, vec![])
-}
-
-/// Choose an agent in Settings, then have a stand-in for it answer one
-/// schema-only turn.
-fn choose_and_converse(
-    app: &mut App,
-    ctx: &egui::Context,
-    dir: &tempfile::TempDir,
-    (name, provider): (&str, Provider),
-    script: &str,
-) {
-    assistant_settings(app, ctx);
-    press(app, ctx, name);
-    assert_eq!(app.preferences.assistant.provider, provider);
-    app.settings.open = false;
-    app.database.assistant.program = Some(install(dir, "agent", script));
-    app.set_assistant_sharing(Sharing::Schema);
-    converse(app, ctx, "Hi");
 }
 
 /// Scroll the open settings to their end, where each database's choices are.
@@ -178,8 +173,7 @@ fn a_conversation_shares_results_by_default_streams_tools_and_proposes_sql_witho
         ],
         true,
     );
-    runtime_dir(&dir);
-    scripted(&mut app, &dir);
+    runtime_dir();
     app.set_assistant_shown(true);
     let database = app.database.tools.database_scope.clone();
     frame_at(&mut app, &ctx, SIZE, vec![]);
@@ -189,6 +183,7 @@ fn a_conversation_shares_results_by_default_streams_tools_and_proposes_sql_witho
         Sharing::Rows
     );
 
+    scripted(&mut app, &dir);
     app.database.assistant.draft = "What is in t?".into();
     app.send_assistant(&ctx);
     assert!(app.database.assistant.busy);
@@ -196,9 +191,12 @@ fn a_conversation_shares_results_by_default_streams_tools_and_proposes_sql_witho
     let entries = &app.database.assistant.entries;
     assert!(matches!(&entries[0], Entry::User(text) if text == "What is in t?"));
     assert!(
-        matches!(&entries[1], Entry::Tool { name, result: Some((true, _)), .. } if name == "list_tables")
+        matches!(&entries[1], Entry::Tool { name, result: Some((true, _)), .. } if name == RUN_QUERY)
     );
     assert!(matches!(&entries[2], Entry::Reply(text) if text.contains("SELECT * FROM t;")));
+    // A tool call folds out to show its result.
+    press(&mut app, &ctx, "SELECT count(*)…");
+    assert!(labelled(&frame_at(&mut app, &ctx, SIZE, vec![]), "[[2]]"));
 
     // The reply's SQL block opens in an editor tile without running.
     press(&mut app, &ctx, "Open in a new SQL editor tile (not run)");
@@ -236,16 +234,24 @@ fn a_conversation_shares_results_by_default_streams_tools_and_proposes_sql_witho
 }
 
 #[test]
-fn a_missing_agent_is_explained() {
+fn a_missing_agent_is_explained_and_stop_ends_a_running_turn() {
     let (dir, ctx, mut app) = fixture(TABLE, false);
-    runtime_dir(&dir);
-    app.database.assistant.draft = "hello".into();
+    runtime_dir();
+    app.set_assistant_shown(true);
+    app.database.assistant.draft = "Wait".into();
     app.database.assistant.program = Some(dir.path().join("no-such-claude"));
     app.send_assistant(&ctx);
-    assert!(
-        last_notice(&app.database.assistant).is_some_and(|text| text.contains("was not found"))
-    );
+    let missing = last_notice(&app.database.assistant);
+    assert!(missing.is_some_and(|text| text.contains("was not found")));
     assert!(!app.database.assistant.busy);
+    // The draft waits to be sent again; stopping is not a failure to report.
+    scripted(&mut app, &dir);
+    app.send_assistant(&ctx);
+    assert!(app.database.assistant.busy);
+    press(&mut app, &ctx, "Stop");
+    wait_until(&mut app, &ctx, |a| !a.database.assistant.busy);
+    let last = app.database.assistant.entries.last();
+    assert!(matches!(last, Some(Entry::User(text)) if text == "Wait"));
     app.close();
 }
 
@@ -281,11 +287,17 @@ fn declined_then_replied(app: &App, change: &str, reply: &str) {
 }
 
 #[test]
-fn an_acp_agent_declines_its_own_edits_and_forgetting_its_sharing_reaches_every_conversation() {
+fn agents_decline_their_own_edits_and_forgetting_sharing_reaches_every_conversation() {
     let (dir, ctx, mut app) = fixture(TABLE, false);
-    runtime_dir(&dir);
-    let copilot = ("Copilot CLI", Provider::Copilot);
-    choose_and_converse(&mut app, &ctx, &dir, copilot, ACP_SCRIPT);
+    runtime_dir();
+    // An ACP agent chosen in Settings.
+    assistant_settings(&mut app, &ctx);
+    press(&mut app, &ctx, "Copilot CLI");
+    assert_eq!(app.preferences.assistant.provider, Provider::Copilot);
+    app.settings.open = false;
+    app.database.assistant.program = Some(install(&dir, "agent", ACP_SCRIPT));
+    app.set_assistant_sharing(Sharing::Schema);
+    converse(&mut app, &ctx, "Hi");
     declined_then_replied(&app, "/etc/hosts", "ACP reply");
     // In the background, the conversation still hears of sharing changes.
     let id = app.database.id;
@@ -311,6 +323,12 @@ fn an_acp_agent_declines_its_own_edits_and_forgetting_its_sharing_reaches_every_
         last_notice(&app.database.assistant),
         Some("Now sharing only the schema")
     );
+    // Codex's own edits are declined too.
+    app.select_assistant_provider(Provider::Codex);
+    app.database.assistant.program = Some(install(&dir, "agent", CODEX_SCRIPT));
+    converse(&mut app, &ctx, "Hi");
+    assert_eq!(app.database.assistant.model.as_deref(), Some("gpt-fake"));
+    declined_then_replied(&app, "change files", "Codex reply");
     app.close();
 }
 
@@ -337,40 +355,17 @@ done
 "#;
 
 #[test]
-fn codex_can_be_chosen_in_settings_and_its_own_edits_are_declined() {
-    let (dir, ctx, mut app) = fixture(TABLE, false);
-    runtime_dir(&dir);
-    let codex = ("Codex", Provider::Codex);
-    choose_and_converse(&mut app, &ctx, &dir, codex, CODEX_SCRIPT);
-    assert_eq!(app.database.assistant.model.as_deref(), Some("gpt-fake"));
-    declined_then_replied(&app, "change files", "Codex reply");
-    app.close();
-}
-
-/// A stand-in for `claude -p` that records how it was started.
-const RECORDING_SCRIPT: &str = r#"#!/usr/bin/env bash
-{ printf 'ARGS %s\n' "$*"; printf 'QUIET %s\n' "${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-unset}"; } > "$0.log"
-echo '{"type":"system","subtype":"init","model":"fake-model"}'
-while read -r line; do
-  echo '{"type":"result","subtype":"success","is_error":false,"result":"done"}'
-done
-"#;
-
-#[test]
 fn privacy_is_chosen_per_provider_and_reaches_the_agent() {
     let (dir, ctx, mut app) = fixture(TABLE, false);
-    runtime_dir(&dir);
+    runtime_dir();
     let output = assistant_settings(&mut app, &ctx);
     assert!(labelled(&output, "AGENT SETTINGS") && labelled(&output, "Privacy"));
     // Fixed promises live in the docs, not the settings area.
     assert!(!labelled(&output, "Credentials stay with the CLI"));
-    press(
-        &mut app,
-        &ctx,
-        "Save conversations in Claude Code's history",
-    );
+    let history = "Save conversations in Claude Code's history";
+    press(&mut app, &ctx, history);
     press(&mut app, &ctx, "Tell the agent the database's file name");
-    let privacy = app.preferences.assistant.privacy.clone();
+    let privacy = &app.preferences.assistant.privacy;
     let claude = privacy.of(Provider::Claude);
     assert!(claude.keep_history && !claude.share_file_name);
     assert!(claude.telemetry_off);
@@ -384,28 +379,20 @@ fn privacy_is_chosen_per_provider_and_reaches_the_agent() {
     press(&mut app, &ctx, "Codex");
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
     assert_eq!(app.preferences.assistant.provider, Provider::Codex);
-    assert!(labelled(
-        &output,
-        "Save conversations in Claude Code's history"
-    ));
+    assert!(labelled(&output, history));
     // The "Settings for" choice switches it, and leaves the chat's agent alone.
     app.accounts.configuring = Some(Provider::Copilot);
     frame_at(&mut app, &ctx, SIZE, vec![]);
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
     assert_eq!(app.preferences.assistant.provider, Provider::Codex);
-    assert!(labelled(
-        &output,
-        "Telemetry and history follow Copilot CLI's own settings"
-    ));
+    let note = "Telemetry and history follow Copilot CLI's own settings";
+    assert!(labelled(&output, note));
     assert!(!labelled(&output, "Block analytics and telemetry"));
     press(&mut app, &ctx, "Claude Code");
     app.settings.open = false;
 
-    let script = install(&dir, "claude", RECORDING_SCRIPT);
-    app.database.assistant.program = Some(script.clone());
-    app.set_assistant_sharing(Sharing::Schema);
-    converse(&mut app, &ctx, "Hi");
-    let log = std::fs::read_to_string(script.with_extension("log")).unwrap();
+    scripted_turn(&mut app, &ctx, &dir);
+    let log = std::fs::read_to_string(dir.path().join("claude.log")).unwrap();
     assert!(!log.contains("--no-session-persistence"), "{log}");
     assert!(log.contains("QUIET 1"), "{log}");
     assert!(
@@ -419,8 +406,8 @@ fn privacy_is_chosen_per_provider_and_reaches_the_agent() {
 #[test]
 fn each_agents_notice_shows_on_first_use_then_every_few_sessions_and_links_to_its_privacy() {
     use crate::storage::AssistantPreferences;
-    let (dir, ctx, mut app) = fixture(TABLE, false);
-    runtime_dir(&dir);
+    let (_dir, ctx, mut app) = fixture(TABLE, false);
+    runtime_dir();
     app.set_assistant_shown(true);
     let notice = "Privacy settings";
     let session = |app: &mut App| {
@@ -457,83 +444,35 @@ fn each_agents_notice_shows_on_first_use_then_every_few_sessions_and_links_to_it
 }
 
 #[test]
-fn switching_vendor_keeps_each_vendors_sharing_and_model() {
+fn one_picker_changes_agent_model_and_favourites_with_each_agents_sharing() {
+    use crate::storage::FavouriteModel;
     let (dir, ctx, mut app) = fixture(TABLE, false);
-    runtime_dir(&dir);
-    app.preferences
-        .assistant
-        .models
-        .insert(Provider::Claude, "sonnet".into());
+    runtime_dir();
+    app.set_assistant_shown(true);
     scripted_turn(&mut app, &ctx, &dir);
     let sharing = |app: &App| {
-        app.preferences
-            .assistant
-            .sharing_for(&app.database.tools.database_scope)
+        let database = &app.database.tools.database_scope;
+        app.preferences.assistant.sharing_for(database)
     };
-    assert!(app.database.assistant.host().is_some());
+    // Another agent starts afresh, with its own sharing.
     app.select_assistant_provider(Provider::Codex);
     assert!(app.database.assistant.host().is_none());
     assert!(app.database.assistant.entries.is_empty());
     assert_eq!(sharing(&app), Sharing::Rows);
-    assert_eq!(app.preferences.assistant.selected_model(), "");
     app.select_assistant_provider(Provider::Claude);
-    assert_eq!(app.preferences.assistant.selected_model(), "sonnet");
     assert_eq!(sharing(&app), Sharing::Schema);
-    app.close();
-}
-
-#[test]
-fn agent_scan_reports_status_and_missing_executables_without_starting_a_conversation() {
-    use tursobench_assistant::vendor::VENDORS;
-    let (dir, ctx, mut app) = fixture(TABLE, false);
-    runtime_dir(&dir);
-    let executables = &mut app.preferences.assistant.executables;
-    for vendor in VENDORS {
-        executables.insert(vendor.id, dir.path().join("not-installed"));
-    }
-    let script = install(
-        &dir,
-        "my claude",
-        "#!/usr/bin/env bash\nif [[ $1 == --version ]]; then echo 'Claude test'; else echo '{\"loggedIn\":true,\"authMethod\":\"claude.ai\",\"email\":\"private@example.com\"}'; fi\n",
-    );
-    executables.insert(Provider::Claude, script);
-    app.scan_assistant(&ctx);
-    wait_until(&mut app, &ctx, |a| {
-        a.accounts.rows.values().all(|row| row.job.is_none())
-    });
-    let claude = status(&app, Provider::Claude);
-    assert_eq!(claude.state, SignIn::SignedIn);
-    assert_eq!(claude.version.as_deref(), Some("Claude test"));
-    assert_eq!(status(&app, Provider::Codex).state, SignIn::Missing);
-    assert!(app.database.assistant.host().is_none());
-    assert!(app.preferences.assistant.grants.is_empty());
-    assert!(
-        !serde_json::to_string(&app.preferences)
-            .unwrap()
-            .contains("private@example.com")
-    );
-    app.close();
-}
-
-#[test]
-fn one_picker_changes_agent_model_and_favourites_with_each_agents_sharing() {
-    use crate::app::assistant_picker::menu_id;
-    use crate::storage::FavouriteModel;
-    let (dir, ctx, mut app) = fixture(TABLE, false);
-    runtime_dir(&dir);
-    app.set_assistant_shown(true);
-    scripted_turn(&mut app, &ctx, &dir);
+    converse(&mut app, &ctx, "Hello");
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
-    assert_eq!(
-        value_of(&output, "Assistant model picker").as_deref(),
-        Some("Claude Code")
-    );
+    assert_eq!(picked(&output).as_deref(), Some("Claude Code"));
     press(&mut app, &ctx, "Assistant model picker");
     press(&mut app, &ctx, "Sonnet");
     assert_eq!(app.preferences.assistant.selected_model(), "sonnet");
     assert!(app.database.assistant.host().is_none());
     // The picker stays open so the reasoning level can follow the model.
-    assert!(egui::Popup::is_id_open(&ctx, menu_id()));
+    assert!(labelled(
+        &frame_at(&mut app, &ctx, SIZE, vec![]),
+        "Favourites"
+    ));
     let ctrl_3 = super::key_event(egui::Key::Num3, true, egui::Modifiers::CTRL);
     frame_at(&mut app, &ctx, SIZE, vec![ctrl_3]);
     assert_eq!(app.preferences.assistant.selected_model(), "opus");
@@ -554,54 +493,53 @@ fn one_picker_changes_agent_model_and_favourites_with_each_agents_sharing() {
     press(&mut app, &ctx, "Test model");
     assert_eq!(app.preferences.assistant.provider, Provider::Codex);
     assert_eq!(app.preferences.assistant.selected_model(), "gpt-test");
-    assert_eq!(
-        app.preferences
-            .assistant
-            .sharing_for(&app.database.tools.database_scope),
-        Sharing::Rows
-    );
+    assert_eq!(sharing(&app), Sharing::Rows);
     let escape = super::key_event(egui::Key::Escape, true, egui::Modifiers::NONE);
     frame_at(&mut app, &ctx, SIZE, vec![escape]);
-    assert!(!egui::Popup::is_id_open(&ctx, menu_id()));
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
+    assert!(!labelled(&output, "Favourites"));
     assert!(labelled(&output, "Share the schema and query results"));
-    assert_eq!(
-        value_of(&output, "Assistant model picker").as_deref(),
-        Some("Test model")
-    );
+    assert_eq!(picked(&output).as_deref(), Some("Test model"));
     app.select_assistant_provider(Provider::Claude);
     assert_eq!(app.preferences.assistant.selected_model(), "opus");
+    assert_eq!(sharing(&app), Sharing::Schema);
     app.close();
+}
+
+/// Start signing in to `provider` with `program` in place of its CLI.
+fn sign_in(app: &mut App, ctx: &egui::Context, provider: Provider, program: PathBuf) {
+    app.preferences
+        .assistant
+        .executables
+        .insert(provider, program);
+    app.agent_account_job(ctx, provider, Operation::Login { method: None });
+}
+
+fn cancel(app: &App, provider: Provider) {
+    app.accounts.rows[&provider].job.as_ref().unwrap().cancel();
 }
 
 #[test]
 fn only_the_selected_vendors_account_change_stops_chat_and_blocks_new_turns() {
     let (dir, ctx, mut app) = fixture(TABLE, false);
-    runtime_dir(&dir);
+    runtime_dir();
     scripted_turn(&mut app, &ctx, &dir);
     let helper = install(&dir, "waiting-helper", WAITING);
-    for provider in [Provider::Codex, Provider::Claude] {
-        app.preferences
-            .assistant
-            .executables
-            .insert(provider, helper.clone());
-    }
-    let cancel = |app: &mut App, provider| {
-        app.accounts.rows[&provider].job.as_ref().unwrap().cancel();
-    };
 
     // Signing in to another vendor leaves the Claude Code chat running.
-    app.agent_account_job(&ctx, Provider::Codex, Operation::Login { method: None });
+    sign_in(&mut app, &ctx, Provider::Codex, helper.clone());
     assert!(!app.assistant_account_pending());
     assert!(app.database.assistant.host().is_some());
     let entries = app.database.assistant.entries.len();
     converse(&mut app, &ctx, "Still here");
     assert!(app.database.assistant.entries.len() > entries);
-    cancel(&mut app, Provider::Codex);
+    cancel(&app, Provider::Codex);
     wait_for_account(&mut app, &ctx, Provider::Codex);
     assert!(app.database.assistant.host().is_some());
 
     // Signing out of the selected vendor ends its chat and holds new turns.
+    let executables = &mut app.preferences.assistant.executables;
+    executables.insert(Provider::Claude, helper);
     app.agent_account_job(&ctx, Provider::Claude, Operation::Logout);
     assert!(app.assistant_account_pending());
     assert!(app.database.assistant.host().is_none());
@@ -609,16 +547,49 @@ fn only_the_selected_vendors_account_change_stops_chat_and_blocks_new_turns() {
     app.send_assistant(&ctx);
     assert!(app.database.assistant.host().is_none());
     assert!(app.database.assistant.entries.is_empty());
-    cancel(&mut app, Provider::Claude);
+    cancel(&app, Provider::Claude);
     wait_until(&mut app, &ctx, |a| !a.assistant_account_pending());
     assert_eq!(app.database.assistant.draft, "Wait for account change");
     app.close();
 }
 
 #[test]
+fn cancelling_or_failing_a_sign_in_keeps_the_last_status_and_models() {
+    use crate::app::presentation::Intent;
+    let (dir, ctx, mut app) = fixture(TABLE, false);
+    runtime_dir();
+    app.accounts.rows.entry(Provider::Codex).or_default().status = Some(Status {
+        state: SignIn::SignedOut,
+        models: vec![model("gpt-test", "Test model")],
+        ..Default::default()
+    });
+    let still_known = |app: &App, described| {
+        let status = status(app, Provider::Codex);
+        assert_eq!(status.state, SignIn::SignedOut);
+        assert_eq!(status.models[0].id, "gpt-test");
+        let row = &app.accounts.rows[&Provider::Codex];
+        assert_eq!(row.describe(), Some(described));
+    };
+    sign_in(
+        &mut app,
+        &ctx,
+        Provider::Codex,
+        install(&dir, "waiting", WAITING),
+    );
+    cancel(&app, Provider::Codex);
+    wait_for_account(&mut app, &ctx, Provider::Codex);
+    still_known(&app, ("Signed out", Intent::Pending));
+    let failing = install(&dir, "failing", "#!/bin/sh\nexit 3\n");
+    sign_in(&mut app, &ctx, Provider::Codex, failing);
+    wait_for_account(&mut app, &ctx, Provider::Codex);
+    still_known(&app, ("Sign-in failed", Intent::Danger));
+    app.close();
+}
+
+#[test]
 fn the_panel_checks_the_selected_vendor_once_without_opening_settings() {
     let (dir, ctx, mut app) = fixture(TABLE, false);
-    runtime_dir(&dir);
+    runtime_dir();
     // A stand-in for `codex app-server` that answers only status calls.
     let codex = install(
         &dir,
@@ -666,45 +637,49 @@ done
 }
 
 #[test]
-fn cancelling_or_failing_a_sign_in_keeps_the_last_status_and_models() {
-    use crate::app::presentation::Intent;
+fn agent_scan_reports_status_and_missing_executables_without_starting_a_conversation() {
+    use tursobench_assistant::vendor::VENDORS;
     let (dir, ctx, mut app) = fixture(TABLE, false);
-    runtime_dir(&dir);
-    let waiting = install(&dir, "waiting-codex", WAITING);
-    let failing = install(&dir, "failing-codex", "#!/bin/sh\nexit 3\n");
-    app.accounts.rows.entry(Provider::Codex).or_default().status = Some(Status {
-        state: SignIn::SignedOut,
-        models: vec![model("gpt-test", "Test model")],
-        ..Default::default()
+    runtime_dir();
+    let script = install(
+        &dir,
+        "my claude",
+        "#!/usr/bin/env bash\nif [[ $1 == --version ]]; then echo 'Claude test'; else echo '{\"loggedIn\":true,\"authMethod\":\"claude.ai\",\"email\":\"private@example.com\"}'; fi\n",
+    );
+    let executables = &mut app.preferences.assistant.executables;
+    for vendor in VENDORS {
+        executables.insert(vendor.id, dir.path().join("not-installed"));
+    }
+    executables.insert(Provider::Claude, script);
+    app.scan_assistant(&ctx);
+    wait_until(&mut app, &ctx, |a| {
+        a.accounts.rows.values().all(|row| row.job.is_none())
     });
-    let sign_in = |app: &mut App, program: PathBuf| {
-        let executables = &mut app.preferences.assistant.executables;
-        executables.insert(Provider::Codex, program);
-        app.agent_account_job(&ctx, Provider::Codex, Operation::Login { method: None });
-    };
-    let still_known = |app: &App, described| {
-        let status = status(app, Provider::Codex);
-        assert_eq!(status.state, SignIn::SignedOut);
-        assert_eq!(status.models[0].id, "gpt-test");
-        assert_eq!(
-            app.accounts.rows[&Provider::Codex].describe(),
-            Some(described)
-        );
-    };
-
-    sign_in(&mut app, waiting);
-    app.accounts.rows[&Provider::Codex]
-        .job
-        .as_ref()
-        .unwrap()
-        .cancel();
-    wait_for_account(&mut app, &ctx, Provider::Codex);
-    still_known(&app, ("Signed out", Intent::Pending));
-
-    sign_in(&mut app, failing);
-    wait_for_account(&mut app, &ctx, Provider::Codex);
-    still_known(&app, ("Sign-in failed", Intent::Danger));
+    let claude = status(&app, Provider::Claude);
+    assert_eq!(claude.state, SignIn::SignedIn);
+    assert_eq!(claude.version.as_deref(), Some("Claude test"));
+    assert_eq!(status(&app, Provider::Codex).state, SignIn::Missing);
+    assert!(app.database.assistant.host().is_none());
+    assert!(app.preferences.assistant.grants.is_empty());
+    let saved = serde_json::to_string(&app.preferences).unwrap();
+    assert!(!saved.contains("private@example.com"));
     app.close();
+}
+
+/// Click the control called `name` and return the text it copied.
+fn copied(app: &mut App, ctx: &egui::Context, name: &str) -> Vec<String> {
+    frame_at(app, ctx, SIZE, vec![]);
+    let output = frame_at(app, ctx, SIZE, vec![]);
+    let pos = control(&output, name).center();
+    frame_at(app, ctx, SIZE, pointer(pos, true));
+    let output = frame_at(app, ctx, SIZE, pointer(pos, false));
+    let commands = output.platform_output.commands.into_iter();
+    commands
+        .filter_map(|c| match c {
+            egui::OutputCommand::CopyText(text) => Some(text),
+            _ => None,
+        })
+        .collect()
 }
 
 #[test]
@@ -714,49 +689,81 @@ fn copy_buttons_write_the_reply_and_conversation_in_the_chosen_format() {
     app.set_assistant_shown(true);
     app.database.assistant.entries =
         vec![Entry::User("Hi".into()), Entry::Reply("**Done**".into())];
-    let copied = |app: &mut App, name: &str| -> Vec<String> {
-        frame_at(app, &ctx, SIZE, vec![]);
-        let output = frame_at(app, &ctx, SIZE, vec![]);
-        let pos = control(&output, name).center();
-        frame_at(app, &ctx, SIZE, pointer(pos, true));
-        frame_at(app, &ctx, SIZE, pointer(pos, false))
-            .platform_output
-            .commands
-            .into_iter()
-            .filter_map(|c| match c {
-                egui::OutputCommand::CopyText(text) => Some(text),
-                _ => None,
-            })
-            .collect()
-    };
-    assert_eq!(copied(&mut app, "Copy last reply"), ["**Done**"]);
+    assert_eq!(copied(&mut app, &ctx, "Copy last reply"), ["**Done**"]);
     assert_eq!(
-        copied(&mut app, "Copy conversation"),
+        copied(&mut app, &ctx, "Copy conversation"),
         ["## You\n\nHi\n\n## Claude Code\n\n**Done**"]
     );
     app.preferences.assistant.copy_format = CopyFormat::Html;
     assert_eq!(
-        copied(&mut app, "Copy last reply"),
+        copied(&mut app, &ctx, "Copy last reply"),
         ["<p><strong>Done</strong></p>"]
     );
     assert_eq!(
-        copied(&mut app, "Copy conversation"),
+        copied(&mut app, &ctx, "Copy conversation"),
         ["<h2>You</h2>\n<p>Hi</p>\n<h2>Claude Code</h2>\n<p><strong>Done</strong></p>"]
     );
     app.close();
 }
 
 #[test]
+fn a_custom_agents_command_executable_and_sign_in_method_are_set_in_settings() {
+    use tursobench_assistant::account::AuthMethod;
+    let (dir, ctx, mut app) = fixture(TABLE, false);
+    runtime_dir();
+    let custom = Provider::Custom;
+    let grants = app.preferences.assistant.grants.entry("a.db".into());
+    grants.or_default().insert(custom, Sharing::Schema);
+    app.accounts.configuring = Some(custom);
+    assistant_settings(&mut app, &ctx);
+    let typed = |app: &mut App, name: &str, text: &str| {
+        press(app, &ctx, name);
+        frame_at(app, &ctx, SIZE, vec![egui::Event::Text(text.into())]);
+    };
+    // A new command forgets the custom agent's grants.
+    typed(&mut app, "Agent command", "my-agent acp");
+    assert_eq!(app.preferences.assistant.custom_command, "my-agent acp");
+    assert!(app.preferences.assistant.grants.is_empty());
+    assert!(!app.agent_state(custom).2, "not on PATH");
+
+    press(&mut app, &ctx, "Choose executable");
+    typed(&mut app, "Executable path", "relative/agent");
+    press(&mut app, &ctx, "Apply");
+    let error = app.accounts.rows[&custom].error.as_deref();
+    assert_eq!(error, Some("Use an absolute executable path"));
+    let program = install(&dir, "it's agent", "#!/bin/sh\nexit 0\n");
+    app.accounts.executable = program.to_string_lossy().into();
+    press(&mut app, &ctx, "Apply");
+    assert_eq!(app.preferences.assistant.executables[&custom], program);
+    // The path decides, not the command's first word.
+    assert!(app.agent_state(custom).2);
+    wait_for_account(&mut app, &ctx, custom);
+    let quoted = format!("'{}'", program.display()).replace("it's", r"it'\''s");
+    assert_eq!(copied(&mut app, &ctx, "Copy sign-in command"), [quoted]);
+
+    let method = |id: &str| AuthMethod {
+        id: id.into(),
+        name: id.to_uppercase(),
+    };
+    app.accounts.rows.get_mut(&custom).unwrap().status = Some(Status {
+        state: SignIn::SignedOut,
+        auth_methods: vec![method("a"), method("b")],
+        ..Default::default()
+    });
+    assert!(labelled(
+        &frame_at(&mut app, &ctx, SIZE, vec![]),
+        "Sign in with"
+    ));
+    assert_eq!(app.accounts.rows[&custom].method.as_deref(), Some("a"));
+    app.close();
+}
+
+#[test]
 fn the_reasoning_level_changes_mid_conversation_and_follows_each_codex_model() {
     let (dir, ctx, mut app) = fixture(TABLE, false);
-    runtime_dir(&dir);
-    // A Claude stand-in that records what it is sent.
-    let log = dir.path().join("sent.log");
-    let script = format!(
-        "#!/usr/bin/env bash\nwhile read -r line; do\n  printf '%s\\n' \"$line\" >> '{}'\n  case \"$line\" in *'\"type\":\"user\"'*) echo '{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"ok\"}}';; esac\ndone\n",
-        log.display()
-    );
-    app.database.assistant.program = Some(install(&dir, "claude", &script));
+    runtime_dir();
+    scripted(&mut app, &dir);
+    let log = dir.path().join("claude.sent");
     app.set_assistant_shown(true);
     converse(&mut app, &ctx, "Hello");
     press(&mut app, &ctx, "Assistant model picker");
@@ -765,10 +772,7 @@ fn the_reasoning_level_changes_mid_conversation_and_follows_each_codex_model() {
     assert_eq!(level(&output).as_deref(), Some("Default"));
     press(&mut app, &ctx, "Reasoning Extra high");
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
-    assert_eq!(
-        value_of(&output, "Assistant model picker").as_deref(),
-        Some("Claude Code · Extra high")
-    );
+    assert_eq!(picked(&output).as_deref(), Some("Claude Code · Extra high"));
     assert_eq!(app.preferences.assistant.selected_effort(), "xhigh");
     // Unlike a model change, the conversation and its agent carry on.
     assert!(app.database.assistant.host().is_some());

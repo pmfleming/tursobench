@@ -6,7 +6,7 @@ use serde_json::{Value as Json, json};
 use std::{
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicBool, Ordering},
         mpsc::Sender,
     },
     time::Duration,
@@ -38,7 +38,8 @@ pub struct Proposal {
 
 pub struct Host {
     pub session: Arc<Mutex<Option<Handle>>>,
-    sharing: AtomicU8,
+    /// Whether the user shares query results; otherwise only the schema.
+    rows: AtomicBool,
     proposals: Sender<Proposal>,
     wake: Arc<dyn Fn() + Send + Sync>,
 }
@@ -49,26 +50,15 @@ impl Host {
         proposals: Sender<Proposal>,
         wake: Arc<dyn Fn() + Send + Sync>,
     ) -> Self {
-        let host = Self {
+        Self {
             session,
-            sharing: AtomicU8::new(0),
+            rows: AtomicBool::new(sharing == Sharing::Rows),
             proposals,
             wake,
-        };
-        host.set_sharing(sharing);
-        host
+        }
     }
     pub fn set_sharing(&self, sharing: Sharing) {
-        self.sharing.store(
-            match sharing {
-                Sharing::Schema => 0,
-                Sharing::Rows => 1,
-            },
-            Ordering::Release,
-        );
-    }
-    fn rows_shared(&self) -> bool {
-        self.sharing.load(Ordering::Acquire) == 1
+        self.rows.store(sharing == Sharing::Rows, Ordering::Release);
     }
     fn database(&self, tool: Tool) -> ToolOutput {
         let Some(handle) = self.session.lock().unwrap().clone() else {
@@ -142,7 +132,7 @@ impl ToolHost for Host {
                 LIST_TABLES => Ok(self.database(Tool::ListTables)),
                 DESCRIBE_TABLE => text_argument(arguments, "name")
                     .map(|n| self.database(Tool::Describe(n.into()))),
-                RUN_QUERY if !self.rows_shared() => Ok(ToolOutput::error(
+                RUN_QUERY if !self.rows.load(Ordering::Acquire) => Ok(ToolOutput::error(
                     "The user shares only the schema with you, not row data. Describe the \
                  query instead, or use propose_sql so they can run it.",
                 )),

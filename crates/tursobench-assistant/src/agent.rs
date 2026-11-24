@@ -47,9 +47,10 @@ pub enum Update {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Protocol {
     /// Claude Code headless: `claude -p` with stream-json input and output.
+    #[default]
     ClaudeStream,
     /// The Agent Client Protocol over stdio.
     Acp,
@@ -75,7 +76,7 @@ impl Default for Privacy {
 }
 
 /// Everything needed to start and talk to one agent.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Spec {
     pub program: PathBuf,
     pub args: Vec<String>,
@@ -91,6 +92,21 @@ pub struct Spec {
     pub effort: Option<String>,
     /// History and telemetry choices, for protocols that set them per conversation.
     pub privacy: Privacy,
+}
+impl Spec {
+    /// Offer `endpoint`'s tools as the protocol takes them: Claude Code reads
+    /// its config file and may use only `tools`; Codex and ACP agents receive
+    /// the relay with their conversation.
+    pub fn serve(mut self, endpoint: &crate::relay::Endpoint, tools: &[&str]) -> Self {
+        match self.protocol {
+            Protocol::ClaudeStream => {
+                crate::claude::serve(&mut self, endpoint.config_path(), tools);
+            }
+            Protocol::CodexAppServer => crate::codex::serve(&mut self, endpoint.launch().clone()),
+            Protocol::Acp => self.mcp = Some(endpoint.launch().clone()),
+        }
+        self
+    }
 }
 
 pub(crate) enum Input {
@@ -109,6 +125,18 @@ pub(crate) struct Link {
     pub wake: Wake,
 }
 impl Link {
+    /// A link with no agent behind it, and the updates it reports.
+    #[cfg(test)]
+    pub fn detached() -> (Self, Receiver<Update>) {
+        let (updates, received) = mpsc::channel();
+        let wake = Arc::new(|| {});
+        let link = Self {
+            stdin: None,
+            updates,
+            wake,
+        };
+        (link, received)
+    }
     pub fn emit(&self, update: Update) {
         if self.updates.send(update).is_ok() {
             (self.wake)();
@@ -205,20 +233,10 @@ impl Agent {
                 .name("agent-stderr".into())
                 .spawn(move || collect_tail(stderr, &tail))?;
         }
-        {
-            let inbox = inbox.clone();
-            std::thread::Builder::new()
-                .name("agent-stdout".into())
-                .spawn(move || {
-                    for line in BufReader::new(stdout).lines() {
-                        let Ok(line) = line else { break };
-                        if inbox.send(Input::Line(line)).is_err() {
-                            return;
-                        }
-                    }
-                    let _ = inbox.send(Input::Eof);
-                })?;
-        }
+        let lines = inbox.clone();
+        std::thread::Builder::new()
+            .name("agent-stdout".into())
+            .spawn(move || read_lines(stdout, &lines))?;
         let link = Link {
             stdin,
             updates: sender,
@@ -236,12 +254,7 @@ impl Agent {
                 }
                 link.stdin = None;
                 let status = reap(&exit);
-                let detail = tail.lock().unwrap().trim().to_owned();
-                let message = match status {
-                    Ok(s) if s.success() && detail.is_empty() => "The agent ended".into(),
-                    Ok(s) if detail.is_empty() => format!("The agent ended ({s})"),
-                    Ok(_) | Err(_) => detail,
-                };
+                let message = exit_message(status, tail.lock().unwrap().trim());
                 link.emit(Update::Exited { message });
             })?;
         Ok(Self {
@@ -283,6 +296,26 @@ fn reap(child: &Mutex<Child>) -> io::Result<std::process::ExitStatus> {
             let _ = child.lock().unwrap().kill();
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// Pass each line of the agent's output to its driver, then the end of it.
+fn read_lines(stdout: impl Read, inbox: &Sender<Input>) {
+    for line in BufReader::new(stdout).lines() {
+        let Ok(line) = line else { break };
+        if inbox.send(Input::Line(line)).is_err() {
+            return;
+        }
+    }
+    let _ = inbox.send(Input::Eof);
+}
+
+/// Why the agent ended: the last of its error output, or its exit status.
+fn exit_message(status: io::Result<std::process::ExitStatus>, detail: &str) -> String {
+    match status {
+        Ok(s) if s.success() && detail.is_empty() => "The agent ended".into(),
+        Ok(s) if detail.is_empty() => format!("The agent ended ({s})"),
+        Ok(_) | Err(_) => detail.to_owned(),
     }
 }
 
@@ -342,4 +375,32 @@ pub(crate) fn initialize(id: u64, mut params: Json) -> Json {
         "version": env!("CARGO_PKG_VERSION"),
     });
     serde_json::json!({"jsonrpc": "2.0", "id": id, "method": "initialize", "params": params})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Link, Queue, Update};
+
+    #[test]
+    fn waiting_prompts_end_when_cancelled_or_refused() {
+        let (link, updates) = Link::detached();
+        let mut queue = Queue::default();
+        // Nothing waits, so there is no turn to end.
+        queue.cancel(&link);
+        queue.push("a".into());
+        queue.cancel(&link);
+        queue.fail(&link, "no session".into());
+        queue.push("b".into());
+        assert!(queue.refuse(&link, "refused") && queue.pop().is_none());
+        let ended = |error: Option<&str>| Update::TurnEnded {
+            error: error.map(str::to_owned),
+        };
+        let updates: Vec<_> = updates.try_iter().collect();
+        let expected = [
+            ended(None),
+            ended(Some("no session")),
+            ended(Some("refused")),
+        ];
+        assert_eq!(updates, expected);
+    }
 }

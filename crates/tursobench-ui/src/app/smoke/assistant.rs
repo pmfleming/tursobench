@@ -2,8 +2,6 @@
 //! agent runs and nothing leaves the machine.
 use super::{App, Smoke};
 use crate::app::assistant::Entry;
-use crate::app::assistant_picker::{Choice, menu_id};
-use crate::app::presentation::Intent;
 use crate::assistant_tools::Sharing;
 use crate::storage::Provider;
 use eframe::egui;
@@ -139,19 +137,15 @@ impl App {
                     .efforts
                     .insert(Provider::Claude, "high".into());
                 self.preferences.assistant.favourite_models.clear();
-                self.toggle_favourite_model(&Choice {
-                    provider: Provider::Claude,
-                    model: "opus".into(),
-                    name: String::new(),
-                    default: false,
-                });
-                self.accounts.menu = Default::default();
-                egui::Popup::open_id(ctx, menu_id());
+                self.toggle_favourite_model(Provider::Claude, "opus");
+                self.open_model_menu(ctx);
             }
         }
     }
 
     fn seed_assistant_conversation(&mut self) {
+        const UPDATE: &str =
+            "UPDATE items SET status = 'pending'\nWHERE status = 'blocked' AND project_id = 1;";
         let conversation = &mut self.database.assistant;
         let tool = |id: &str, name: &str, input, result: &str| Entry::Tool {
             id: id.into(),
@@ -181,22 +175,15 @@ impl App {
             tool(
                 "4",
                 "propose_sql",
-                json!({"sql": "UPDATE items SET status = 'pending'\nWHERE status = 'blocked' AND project_id = 1;"}),
+                json!({"sql": UPDATE}),
                 "Opened in a new SQL editor tile.",
             ),
-            Entry::Notice(
-                Intent::Primary,
-                "Opened proposed SQL in an editor tile. Review it before running.".into(),
-            ),
-            Entry::Reply(
-                "I opened an `UPDATE` in a new SQL editor tile. It has not been run; \
-                 review it and run it if it looks right."
-                    .into(),
-            ),
         ];
-        self.load_sql_window(
-            "UPDATE items SET status = 'pending'\nWHERE status = 'blocked' AND project_id = 1;"
+        self.open_assistant_proposal(UPDATE.into());
+        self.database.assistant.entries.push(Entry::Reply(
+            "I opened an `UPDATE` in a new SQL editor tile. It has not been run; review it \
+             and run it if it looks right."
                 .into(),
-        );
+        ));
     }
 }

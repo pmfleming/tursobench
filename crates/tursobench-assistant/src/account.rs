@@ -60,7 +60,7 @@ pub struct Status {
     pub auth_methods: Vec<AuthMethod>,
     pub issue: Option<String>,
 }
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Target {
     pub provider: Provider,
     pub program: PathBuf,
@@ -443,13 +443,14 @@ fn option_values(option: &Json, limit: usize) -> Vec<(String, String)> {
             if option["options"].is_array() {
                 collect(&option["options"], limit, found);
             } else if let Some(id) = field(&option["value"]) {
-                found.push((name_or(&option["name"], &id), id));
+                let name = name_or(&option["name"], &id);
+                found.push((id, name));
             }
         }
     }
     let mut found = vec![];
     collect(&option["options"], limit, &mut found);
-    found.into_iter().map(|(name, id)| (id, name)).collect()
+    found
 }
 /// The levels of an ACP session's `thought_level` config option.
 pub fn acp_efforts(result: &Json) -> Vec<Effort> {
@@ -487,18 +488,8 @@ fn protocol_args(target: &Target) -> Vec<String> {
     if target.provider.vendor().protocol != Protocol::CodexAppServer {
         return target.args.clone();
     }
-    let mut args = vec!["app-server".into()];
-    for feature in crate::codex::DISABLED_FEATURES {
-        args.extend(["--disable".into(), (*feature).into()]);
-    }
-    for config in crate::codex::QUIET_CONFIG
-        .iter()
-        .copied()
-        .chain(["mcp_servers={}", "history.persistence=\"none\""])
-    {
-        args.extend(["-c".into(), config.into()]);
-    }
-    args
+    let config = crate::codex::QUIET_CONFIG.iter().copied();
+    crate::codex::app_server(config.chain(["mcp_servers={}", crate::codex::NO_HISTORY]))
 }
 fn initialize(
     target: &Target,
@@ -544,11 +535,7 @@ fn run(
 fn quiet(target: &Target) -> Target {
     let mut target = target.clone();
     if target.provider == Provider::Claude {
-        target.env.extend(
-            crate::claude::QUIET_ENV
-                .iter()
-                .map(|(k, v)| ((*k).into(), (*v).into())),
-        );
+        target.env.extend(crate::claude::quiet_env());
     }
     target
 }
@@ -896,7 +883,7 @@ fn claude_check(target: &Target, cancel: &AtomicBool) -> Result<Status, String> 
 mod tests {
     use super::{
         CHECK, Effort, Event, Job, Operation, Process, Provider, SignIn, Status, Target,
-        auth_error, claude_login, codex_status, run, terminals,
+        acp_models, auth_error, claude_login, codex_status, run, terminals,
     };
     use serde_json::json;
     use std::{
@@ -924,12 +911,12 @@ mod tests {
                  def send(v): print(json.dumps(v),flush=True)\n{body}"
             ),
         );
+        let cwd = dir.path().into();
         let target = Target {
             provider,
             program,
-            args: vec![],
-            env: vec![],
-            cwd: dir.path().into(),
+            cwd,
+            ..Target::default()
         };
         (dir, target)
     }
@@ -1119,6 +1106,11 @@ for line in sys.stdin:
             codex_status(&json!({"account":null,"requiresOpenaiAuth":false})).state,
             SignIn::Unknown
         );
+        // Without a model config option, an ACP session's model list is read.
+        let models = acp_models(&json!({"models": {"availableModels": [
+            {"modelId": "a", "name": "Alpha"}, {"modelId": "b"}, {"name": "no id"}]}}));
+        let named: Vec<_> = models.iter().map(|m| (&*m.id, &*m.name)).collect();
+        assert_eq!(named, [("a", "Alpha"), ("b", "b")]);
     }
 
     #[test]
@@ -1175,12 +1167,11 @@ for line in sys.stdin:
              'auth status') if [[ -e $marker ]]; then echo '{\"loggedIn\":true}'; else echo '{\"loggedIn\":false}'; fi;;\n\
              esac\n",
         );
+        let cwd = dir.path().into();
         let target = Target {
-            provider: Provider::Claude,
             program,
-            args: vec![],
-            env: vec![],
-            cwd: dir.path().into(),
+            cwd,
+            ..Target::default()
         };
         let script = dir.path().join("term");
         executable(&script, terminal);

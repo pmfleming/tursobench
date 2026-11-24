@@ -2,7 +2,7 @@
 //! replies in the chat's Markdown subset, with actions on their SQL.
 use super::Entry;
 use crate::app::{
-    assistant_export::{Block, blocks},
+    assistant_export::{Block, Span, blocks, spans},
     icons::{self, Icon},
     presentation,
 };
@@ -164,17 +164,13 @@ fn inline(ui: &mut egui::Ui, text: &str, heading: bool) {
         color: ui.visuals().strong_text_color(),
         ..plain.clone()
     };
-    let mut bold = heading;
-    for (index, part) in text.split('`').enumerate() {
-        if index % 2 == 1 {
-            job.append(part, 0.0, code.clone());
-            continue;
-        }
-        for (piece, segment) in part.split("**").enumerate() {
-            bold ^= piece > 0;
-            let format = if bold { &strong } else { &plain };
-            job.append(segment, 0.0, format.clone());
-        }
+    for (span, text) in spans(text, heading) {
+        let format = match span {
+            Span::Plain => &plain,
+            Span::Bold => &strong,
+            Span::Code => &code,
+        };
+        job.append(text, 0.0, format.clone());
     }
     job.wrap.max_width = ui.available_width();
     ui.add(egui::Label::new(job).wrap());
