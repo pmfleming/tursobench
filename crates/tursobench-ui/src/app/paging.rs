@@ -1,11 +1,17 @@
 use super::{App, View, document::Document};
 use std::collections::VecDeque;
-use tursobench_core::{Delivery, Event, EventKind, ResultSet, Ticket};
+use tursobench_core::{Delivery, Event, EventKind, ResultSet, Table, Ticket, Value};
 use tursobench_db::Operation;
 
 pub(super) const PAGE_BYTES: usize = 512 * 1024;
+/// Retained table rows stay under this many bytes as pages load.
+const RETAINED_BYTES: usize = 4 * 1024 * 1024;
 pub(super) fn fetch_rows(limit: usize) -> usize {
-    ((limit.clamp(200, 10000) - 100) / 3).clamp(1, 100)
+    (keep_rows(limit) / 3).clamp(1, 100)
+}
+/// The most rows a table view retains as pages load.
+fn keep_rows(limit: usize) -> usize {
+    limit.clamp(200, 10_000) - 100
 }
 #[derive(Default)]
 pub(super) struct Pages {
@@ -26,95 +32,134 @@ pub(super) struct Pending {
     tail: bool,
     error: String,
 }
-impl App {
-    fn page_available(&self, previous: bool) -> bool {
-        if self.database.document.stale
-            || self.database.document.view != View::Browse
-            || self.database.document.active.is_some()
-            || self.database.document.tools.pages.pending.is_some()
-            || !self.requests_enabled()
-        {
-            return false;
+impl Pages {
+    /// Forget the sizes of `rows` evicted rows, from the back or the front.
+    fn forget(&mut self, mut rows: usize, from_back: bool) {
+        while rows > 0 {
+            let chunk = if from_back {
+                self.chunks.pop_back()
+            } else {
+                self.chunks.pop_front()
+            };
+            let Some(chunk) = chunk else {
+                break;
+            };
+            if chunk > rows {
+                let rest = chunk - rows;
+                if from_back {
+                    self.chunks.push_back(rest);
+                } else {
+                    self.chunks.push_front(rest);
+                }
+                break;
+            }
+            rows -= chunk;
         }
-        if !self
-            .database
-            .document
+    }
+}
+/// Whether a table can be read by keyset from a boundary row: it has a
+/// non-NULL key of at most eight columns.
+fn seekable(table: &Table) -> bool {
+    let keys = table.keys();
+    table.is_table
+        && !keys.is_empty()
+        && keys.len() <= 8
+        && keys.iter().all(|i| table.columns[*i].not_null)
+}
+/// What a page event reports went wrong: the table's schema changed, the read
+/// failed, or the page arrived incomplete.
+fn page_failure(kind: &EventKind, table: Option<&Table>) -> Option<String> {
+    match kind {
+        EventKind::Table(changed) if table != Some(changed) => {
+            Some("Schema changed while loading; refresh the table".into())
+        }
+        EventKind::Failed(e) => Some(e.to_string()),
+        EventKind::Finished(c) if c.error.is_some() || c.delivery != Delivery::Complete => {
+            Some("Page delivery incomplete; refresh or retry".into())
+        }
+        _ => None,
+    }
+}
+impl App {
+    /// Nothing loads, pages or commits, and no edit is staged, so the
+    /// retained rows can be replaced or extended.
+    pub(super) fn paging_idle(&self) -> bool {
+        let document = &self.database.document;
+        !document.stale
+            && document.active.is_none()
+            && document.tools.pages.pending.is_none()
+            && self.requests_enabled()
+    }
+    fn page_available(&self, previous: bool) -> bool {
+        let document = &self.database.document;
+        let complete = document
             .result
             .completion
             .as_ref()
-            .is_some_and(|c| c.delivery == Delivery::Complete && c.error.is_none())
-        {
-            return false;
-        }
-        let Some(spec) = &self.database.document.browse else {
+            .is_some_and(|c| c.delivery == Delivery::Complete && c.error.is_none());
+        let Some(spec) = document
+            .browse
+            .as_ref()
+            .filter(|_| complete && document.view == View::Browse && self.paging_idle())
+        else {
             return false;
         };
         if previous {
             spec.offset > 0
         } else {
-            self.database
-                .document
-                .tools
-                .pages
-                .end
-                .is_none_or(|last| spec.offset + self.database.document.result.rows.len() < last)
+            let retained = spec.offset + document.result.rows.len();
+            document.tools.pages.end.is_none_or(|last| retained < last)
+        }
+    }
+    /// Browse from the row number typed in the status bar.
+    pub(super) fn jump_to_row(&mut self) {
+        let Some(mut next) = self.database.document.browse.clone() else {
+            return;
+        };
+        next.offset = self.database.document.tools.jump_row.saturating_sub(1);
+        next.options.cursor = None;
+        next.options.reverse = false;
+        next.options.tail = false;
+        if self
+            .submit(Operation::Browse(next.clone()), View::Browse)
+            .is_some()
+        {
+            self.database.document.browse = Some(next);
         }
     }
     pub(super) fn request_page(&mut self, previous: bool) {
         if !self.page_available(previous) {
             return;
         }
-        let mut spec = self.database.document.browse.clone().unwrap();
-        let fetch_rows = fetch_rows(self.preferences.row_limit);
-        let end = spec.offset + self.database.document.result.rows.len();
-        if previous {
-            spec.offset = spec.offset.saturating_sub(fetch_rows);
-        } else {
-            spec.offset = end;
-        }
-        let seek = self.database.document.table.as_ref().is_some_and(|table| {
-            let keys = table.keys();
-            table.is_table
-                && !keys.is_empty()
-                && keys.len() <= 8
-                && keys.iter().all(|i| table.columns[*i].not_null)
-        });
-        let cursor = if previous {
-            self.database.document.result.rows.first()
-        } else {
-            self.database.document.result.rows.last()
+        let document = &self.database.document;
+        let Some(mut spec) = document.browse.clone() else {
+            return;
         };
-        let seek = seek
-            && cursor.is_some_and(|row| {
-                !row.iter()
-                    .any(|v| matches!(v, tursobench_core::Value::Deferred(_)))
-            });
-        spec.options.tail = previous && !seek;
-        spec.options.page_rows = if spec.options.tail {
-            self.database
-                .document
-                .browse
-                .as_ref()
-                .unwrap()
-                .offset
-                .min(fetch_rows)
+        let fetch_rows = fetch_rows(self.preferences.row_limit);
+        let start = spec.offset;
+        let rows = &document.result.rows;
+        // A keyed table continues from its boundary row, once that row is fully loaded.
+        let edge = if previous { rows.first() } else { rows.last() };
+        let cursor = edge.filter(|row| {
+            document.table.as_ref().is_some_and(seekable)
+                && !row.iter().any(|v| matches!(v, Value::Deferred(_)))
+        });
+        spec.offset = if previous {
+            start.saturating_sub(fetch_rows)
+        } else {
+            start + rows.len()
+        };
+        let options = &mut spec.options;
+        options.tail = previous && cursor.is_none();
+        options.reverse = previous && cursor.is_some();
+        options.page_rows = if options.tail {
+            start.min(fetch_rows)
         } else {
             fetch_rows
         };
-        spec.options.page_bytes = PAGE_BYTES;
-        let tail = spec.options.tail;
-        spec.options.cursor = if seek {
-            if previous {
-                self.database.document.result.rows.first().cloned()
-            } else {
-                self.database.document.result.rows.last().cloned()
-            }
-        } else {
-            None
-        };
-        spec.options.reverse = previous && seek;
-        let reverse = spec.options.reverse;
-        let offset = spec.offset;
+        options.page_bytes = PAGE_BYTES;
+        options.cursor = cursor.cloned();
+        let (offset, reverse, tail) = (spec.offset, options.reverse, options.tail);
         let Some(outcome) = self.database.request(Operation::Browse(spec)) else {
             return;
         };
@@ -143,72 +188,68 @@ impl App {
         }
     }
     pub(super) fn maybe_page(&mut self, start: usize, end: usize, delta: f32) {
-        if !self.database.document.tools.pages.error.is_empty() {
+        let pages = &self.database.document.tools.pages;
+        let rows = self.database.document.result.rows.len();
+        if !pages.error.is_empty() {
             return;
         }
-        if self.database.document.tools.pages.restore_rows
-            > self.database.document.result.rows.len()
-        {
+        if pages.restore_rows > rows {
             self.request_page(false);
         } else if start <= 20 && delta > 0.0 {
             self.request_page(true);
-        } else if end + 20 >= self.database.document.result.rows.len() && delta <= 0.0 {
-            // Repaints at EOF, during a fetch, or with drafts need no cell scans.
-            if !self.page_available(false) {
-                return;
-            }
-            let keep = self.preferences.row_limit.clamp(200, 10000) - 100;
-            let rows_needed = (self.database.document.result.rows.len()
-                + fetch_rows(self.preferences.row_limit))
-            .saturating_sub(keep);
-            if start < rows_needed {
-                return;
-            }
-            let bytes_needed = retained_bytes(&self.database.document.result)
-                .saturating_add(PAGE_BYTES)
-                .saturating_sub(4 * 1024 * 1024);
-            let before = self
-                .database
-                .document
-                .result
-                .rows
-                .iter()
-                .take(start)
-                .flatten()
-                .map(tursobench_core::Value::bytes)
-                .sum::<usize>();
-            if before >= bytes_needed {
-                self.request_page(false);
-            }
+        } else if end + 20 >= rows && delta <= 0.0 && self.next_page_fits(start) {
+            self.request_page(false);
         }
     }
+    /// Whether the next page fits by evicting only rows above the view, both
+    /// in row count and in retained bytes.
+    fn next_page_fits(&self, start: usize) -> bool {
+        // Repaints at EOF, during a fetch, or with drafts need no cell scans.
+        if !self.page_available(false) {
+            return false;
+        }
+        let limit = self.preferences.row_limit;
+        let result = &self.database.document.result;
+        let rows_needed = (result.rows.len() + fetch_rows(limit)).saturating_sub(keep_rows(limit));
+        if start < rows_needed {
+            return false;
+        }
+        let bytes_needed = retained_bytes(result)
+            .saturating_add(PAGE_BYTES)
+            .saturating_sub(RETAINED_BYTES);
+        let above: usize = result
+            .rows
+            .iter()
+            .take(start)
+            .flatten()
+            .map(Value::bytes)
+            .sum();
+        above >= bytes_needed
+    }
     pub(super) fn page_event(&mut self, event: Event) {
-        let done = matches!(event.kind, EventKind::Finished(_) | EventKind::Failed(_));
-        let Some(mut page) = self.database.document.tools.pages.pending.take() else {
+        let pages = &mut self.database.document.tools.pages;
+        let Some(page) = pages
+            .pending
+            .as_mut()
+            .filter(|p| p.result.current == Some(event.ticket))
+        else {
             return;
         };
-        if page.result.current != Some(event.ticket) {
-            self.database.document.tools.pages.pending = Some(page);
-            return;
+        if let EventKind::Finished(c) = &event.kind {
+            self.database.transaction = c.transaction;
         }
-        match &event.kind {
-            EventKind::Table(table) if self.database.document.table.as_ref() != Some(table) => {
-                page.error = "Schema changed while loading; refresh the table".into()
-            }
-            EventKind::Failed(e) => page.error = e.to_string(),
-            EventKind::Finished(c) => {
-                self.database.transaction = c.transaction;
-                if c.error.is_some() || c.delivery != Delivery::Complete {
-                    page.error = "Page delivery incomplete; refresh or retry".into();
-                }
-            }
-            _ => {}
+        if let Some(error) = page_failure(&event.kind, self.database.document.table.as_ref()) {
+            page.error = error;
         }
+        let done = matches!(event.kind, EventKind::Finished(_) | EventKind::Failed(_));
         page.result.apply(event);
-        if !done {
-            self.database.document.tools.pages.pending = Some(page);
-            return;
+        if let Some(page) = pages.pending.take_if(|_| done) {
+            self.accept_page(page);
         }
+    }
+    /// Join a delivered page to the rows it continues, unless the view moved
+    /// on, drafts are staged, or the page failed.
+    fn accept_page(&mut self, mut page: Pending) {
         if page.owner != self.database.document.result.current
             || self.has_drafts()
             || self.database.closing
@@ -231,9 +272,8 @@ impl App {
         {
             page.offset = browse.offset.saturating_sub(page.result.rows.len());
         }
-        self.database
-            .document
-            .append_page(page, self.preferences.row_limit.clamp(200, 10_000) - 100);
+        let keep = keep_rows(self.preferences.row_limit);
+        self.database.document.append_page(page, keep);
         self.restore_browse_selection();
     }
 }
@@ -274,54 +314,18 @@ impl Document {
         }
         self.trim_pages(page.previous, keep);
     }
+    /// Evict rows from the end away from the page just added, down to `keep`
+    /// rows and the retained byte budget.
     fn trim_pages(&mut self, previous: bool, keep: usize) {
-        let row_excess = self.result.rows.len().saturating_sub(keep);
-        let byte_excess = retained_bytes(&self.result).saturating_sub(4 * 1024 * 1024);
-        let mut count = 0;
-        let mut bytes = 0;
-        for i in 0..self.result.rows.len() {
-            if count >= row_excess && bytes >= byte_excess {
-                break;
-            }
-            let row = if previous {
-                self.result.rows.len() - 1 - i
-            } else {
-                i
-            };
-            bytes += self.result.rows[row]
-                .iter()
-                .map(tursobench_core::Value::bytes)
-                .sum::<usize>();
-            count += 1;
-        }
+        let count = self.excess_rows(previous, keep);
         if count == 0 {
             return;
         }
         self.tools.pages.capacity_reached = true;
-        let mut remaining = count;
-        while remaining > 0 {
-            let chunk = if previous {
-                self.tools.pages.chunks.back_mut()
-            } else {
-                self.tools.pages.chunks.front_mut()
-            };
-            let Some(chunk) = chunk else {
-                break;
-            };
-            let n = remaining.min(*chunk);
-            *chunk -= n;
-            remaining -= n;
-            if *chunk == 0 {
-                if previous {
-                    self.tools.pages.chunks.pop_back();
-                } else {
-                    self.tools.pages.chunks.pop_front();
-                }
-            }
-        }
+        self.tools.pages.forget(count, previous);
         if previous {
-            self.result.rows.truncate(self.result.rows.len() - count);
-            let len = self.result.rows.len();
+            let len = self.result.rows.len() - count;
+            self.result.rows.truncate(len);
             self.inspect = self.inspect.filter(|(r, _)| *r < len);
             self.tools.detail = self.tools.detail.filter(|r| *r < len);
             self.tools.grid_selection = self
@@ -335,6 +339,23 @@ impl Document {
             }
             self.rebase_rows(-(count as isize));
         }
+    }
+    /// How many rows, counted from the far end, exceed `keep` rows or the byte budget.
+    fn excess_rows(&self, previous: bool, keep: usize) -> usize {
+        let rows = &self.result.rows;
+        let row_excess = rows.len().saturating_sub(keep);
+        let byte_excess = retained_bytes(&self.result).saturating_sub(RETAINED_BYTES);
+        let (mut count, mut bytes) = (0, 0);
+        while count < rows.len() && (count < row_excess || bytes < byte_excess) {
+            let row = if previous {
+                &rows[rows.len() - 1 - count]
+            } else {
+                &rows[count]
+            };
+            bytes += row.iter().map(Value::bytes).sum::<usize>();
+            count += 1;
+        }
+        count
     }
     fn rebase_rows(&mut self, delta: isize) {
         self.inspect = self
@@ -362,123 +383,118 @@ fn retained_bytes(result: &ResultSet) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{App, Delivery, Event, EventKind, Pending, ResultSet, Ticket};
+    use super::{App, BYTE_SCANS, Delivery, Event, EventKind, Pending, ResultSet, Ticket};
     use eframe::egui;
     use tursobench_core::{Column, Completion, Failure, Table, TransactionState, Value};
+
+    fn ticket(request: u64) -> Ticket {
+        Ticket {
+            database: 1,
+            session: 1,
+            request,
+            generation: 0,
+        }
+    }
+    fn pending(result: ResultSet, owner: Option<Ticket>, offset: usize) -> Pending {
+        Pending {
+            result,
+            owner,
+            offset,
+            previous: false,
+            reverse: false,
+            tail: false,
+            error: String::new(),
+        }
+    }
+    fn completion(delivery: Delivery, error: Option<Failure>) -> Completion {
+        Completion {
+            delivery,
+            error,
+            ..Completion::new(TransactionState::Autocommit)
+        }
+    }
 
     #[test]
     fn repaints_do_not_scan_cells_when_paging_is_blocked_or_at_eof() {
         let mut app = App::new(&egui::Context::default());
         app.database.ready = true;
-        app.database.document.view = super::View::Browse;
-        app.database.document.browse = Some(super::super::first_page("t".into()));
-        app.database.document.result.rows = vec![vec![Value::Integer(1)]; 1000];
-        app.database.document.result.completion = Some(Completion {
-            elapsed_ms: 0,
-            delivery: Delivery::Complete,
-            rows_seen: 1000,
+        let document = &mut app.database.document;
+        document.view = super::View::Browse;
+        document.browse = Some(super::super::first_page("t".into()));
+        document.result.rows = vec![vec![Value::Integer(1)]; 1000];
+        document.result.completion = Some(Completion {
             page_has_more: Some(true),
-            changed: 0,
-            transaction: TransactionState::Autocommit,
-            error: None,
+            ..completion(Delivery::Complete, None)
         });
+        let scans = || BYTE_SCANS.with(|count| count.get());
         for blocked in 0..5 {
-            app.database.document.tools.pages.end = (blocked == 0).then_some(1000);
-            app.database.document.stale = blocked == 1;
+            let document = &mut app.database.document;
+            document.tools.pages.end = (blocked == 0).then_some(1000);
+            document.stale = blocked == 1;
+            document.active = (blocked == 3).then_some(ticket(1));
+            document.tools.pages.pending =
+                (blocked == 4).then(|| pending(ResultSet::default(), None, 1000));
             app.database.closing = blocked == 2;
-            app.database.document.active = (blocked == 3).then_some(Ticket {
-                database: 1,
-                session: 1,
-                request: 1,
-                generation: 0,
-            });
-            app.database.document.tools.pages.pending = (blocked == 4).then(|| Pending {
-                result: ResultSet::default(),
-                owner: None,
-                offset: 1000,
-                previous: false,
-                reverse: false,
-                tail: false,
-                error: String::new(),
-            });
-            super::BYTE_SCANS.with(|count| count.set(0));
+            BYTE_SCANS.with(|count| count.set(0));
             app.maybe_page(980, 1000, 0.0);
-            assert_eq!(
-                super::BYTE_SCANS.with(|count| count.get()),
-                0,
-                "blocked case {blocked}"
-            );
+            assert_eq!(scans(), 0, "blocked case {blocked}");
         }
         app.database.document.tools.pages.pending = None;
         // An eligible fetch sizes its buffer; a viewport that cannot evict rows does not.
         app.maybe_page(0, 1000, 0.0);
-        assert_eq!(super::BYTE_SCANS.with(|count| count.get()), 0);
+        assert_eq!(scans(), 0);
         app.maybe_page(980, 1000, 0.0);
-        assert_eq!(super::BYTE_SCANS.with(|count| count.get()), 1);
+        assert_eq!(scans(), 1);
     }
 
     #[test]
     fn evicted_rows_use_the_rendered_stride_including_spacing() {
         let mut app = App::new(&egui::Context::default());
-        app.database.document.tools.row_stride = 37.0;
-        app.database.document.tools.grid_scroll.y = 4000.0;
-        app.database.document.inspect = Some((120, 0));
-        app.database.document.rebase_rows(-100);
-        assert_eq!(app.database.document.tools.grid_scroll.y, 300.0);
-        assert_eq!(app.database.document.inspect, Some((20, 0)));
-        app.database.document.rebase_rows(100);
-        assert_eq!(app.database.document.tools.grid_scroll.y, 4000.0);
+        let document = &mut app.database.document;
+        document.tools.row_stride = 37.0;
+        document.tools.grid_scroll.y = 4000.0;
+        document.inspect = Some((120, 0));
+        document.rebase_rows(-100);
+        assert_eq!(document.tools.grid_scroll.y, 300.0);
+        assert_eq!(document.inspect, Some((20, 0)));
+        document.rebase_rows(100);
+        assert_eq!(document.tools.grid_scroll.y, 4000.0);
     }
 
     #[test]
     fn rejected_pages_preserve_rows_owner_and_unknown_end() {
-        let ticket = Ticket {
-            database: 1,
-            session: 1,
-            request: 2,
-            generation: 0,
-        };
-        let owner = Ticket {
-            request: 1,
-            ..ticket
-        };
-        let completion = |delivery, error| {
-            EventKind::Finished(Completion {
-                elapsed_ms: 1,
-                delivery,
-                rows_seen: 100,
-                page_has_more: None,
-                changed: 0,
-                transaction: TransactionState::Autocommit,
-                error,
-            })
-        };
+        let (owner, ticket) = (ticket(1), ticket(2));
+        let finished = |delivery, error| EventKind::Finished(completion(delivery, error));
         let column = |name: &str, declared_type| Column {
             name: name.into(),
             declared_type,
         };
+        let rows = |result, n| ResultSet {
+            current: Some(result),
+            columns: vec![column("id", None)],
+            rows: vec![vec![Value::Integer(n)]],
+            ..Default::default()
+        };
+        let changed = Table {
+            name: "changed".into(),
+            columns: vec![],
+            is_table: true,
+            has_rowid: true,
+            binary_collations: true,
+        };
         let mut app = App::new(&egui::Context::default());
         for (kind, expected) in [
-            (completion(Delivery::Limited, None), "incomplete"),
-            (completion(Delivery::Discarded, None), "incomplete"),
+            (finished(Delivery::Limited, None), "incomplete"),
+            (finished(Delivery::Discarded, None), "incomplete"),
             (
-                completion(Delivery::Complete, Some(Failure::input("failed"))),
+                finished(Delivery::Complete, Some(Failure::input("x"))),
                 "incomplete",
             ),
             (
                 EventKind::Failed(Failure::input("engine failure")),
                 "engine failure",
             ),
-            (
-                EventKind::Table(Table {
-                    name: "changed".into(),
-                    columns: vec![],
-                    is_table: true,
-                    has_rowid: true,
-                    binary_collations: true,
-                }),
-                "Schema changed",
-            ),
+            (EventKind::Table(changed), "Schema changed"),
             (EventKind::Columns(vec![]), "Column metadata"),
             (
                 EventKind::Columns(vec![column("renamed", None)]),
@@ -489,50 +505,30 @@ mod tests {
                 "Column metadata",
             ),
         ] {
-            app.database.document.result = ResultSet {
-                current: Some(owner),
-                columns: vec![column("id", None)],
-                rows: vec![vec![Value::Integer(7)]],
-                ..Default::default()
-            };
-            app.database.document.tools.pages = Default::default();
-            app.database.document.tools.pages.pending = Some(Pending {
-                result: ResultSet {
-                    current: Some(ticket),
-                    columns: vec![column("id", None)],
-                    rows: vec![vec![Value::Integer(8)]],
-                    ..Default::default()
-                },
-                owner: Some(owner),
-                offset: 1,
-                previous: false,
-                reverse: false,
-                tail: false,
-                error: String::new(),
-            });
+            let document = &mut app.database.document;
+            document.result = rows(owner, 7);
+            document.tools.pages = Default::default();
+            document.tools.pages.pending = Some(pending(rows(ticket, 8), Some(owner), 1));
             // A late completion cannot consume or alter the current pending page.
+            let late = finished(Delivery::Complete, None);
             app.page_event(Event {
                 ticket: owner,
-                kind: completion(Delivery::Complete, None),
+                kind: late,
             });
             assert!(app.database.document.tools.pages.pending.is_some());
             app.page_event(Event { ticket, kind });
-            app.page_event(Event {
-                ticket,
-                kind: completion(Delivery::Complete, None),
-            });
-            assert!(app.database.document.tools.pages.pending.is_none());
+            let kind = finished(Delivery::Complete, None);
+            app.page_event(Event { ticket, kind });
+            let document = &app.database.document;
+            let pages = &document.tools.pages;
+            assert!(pages.pending.is_none());
             assert!(
-                app.database.document.tools.pages.error.contains(expected),
+                pages.error.contains(expected),
                 "{expected}: {}",
-                app.database.document.tools.pages.error
+                pages.error
             );
-            assert_eq!(
-                app.database.document.result.rows,
-                vec![vec![Value::Integer(7)]]
-            );
-            assert_eq!(app.database.document.result.current, Some(owner));
-            assert_eq!(app.database.document.tools.pages.end, None);
+            assert_eq!(document.result.rows, vec![vec![Value::Integer(7)]]);
+            assert_eq!((document.result.current, pages.end), (Some(owner), None));
         }
     }
 }

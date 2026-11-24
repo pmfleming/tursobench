@@ -197,43 +197,25 @@ fn cell_value(field: &Field, kind: CellKind) -> Result<Value, String> {
     }
     kind.parse(&field.text)
 }
+/// What an undo checkpoint of the drafts retains, with an allowance for each
+/// edit and column descriptor.
 fn draft_bytes(draft: &Option<DraftBatch>) -> usize {
     draft.as_ref().map_or(0, |draft| {
-        draft
-            .edits
-            .iter()
-            .map(|edit| match edit {
-                Edit::Insert { values } => values.iter().flatten().map(Value::bytes).sum::<usize>(),
-                Edit::Update { original, changes } => {
-                    original.iter().map(Value::bytes).sum::<usize>()
-                        + changes.iter().map(|(_, v)| v.bytes()).sum::<usize>()
-                }
-                Edit::Delete { original } => original.iter().map(Value::bytes).sum::<usize>(),
-            })
-            .sum::<usize>()
-            + draft.edits.len() * 128
-            + draft.table.name.len()
-            + draft
-                .table
-                .columns
-                .iter()
-                .map(|column| {
-                    std::mem::size_of_val(column)
-                        + column.name.len()
-                        + column.declared_type.len()
-                        + column.default_sql.as_ref().map_or(0, String::len)
-                })
-                .sum::<usize>()
+        let column = std::mem::size_of::<tursobench_core::TableColumn>();
+        draft.bytes() + draft.edits.len() * 128 + draft.table.columns.len() * column
     })
 }
 impl State {
     fn matches(&self, document: &Document) -> bool {
         self.revision == document.draft_revision && self.ticket == document.result.current
     }
-    pub fn checkpoint(document: &mut Document) {
-        let valid = document.tools.spreadsheet.matches(document);
-        let bytes = draft_bytes(&document.drafts);
-        let state = &mut document.tools.spreadsheet;
+}
+impl Document {
+    /// Remember the drafts as they are before a staged change, for undo.
+    pub(super) fn checkpoint_drafts(&mut self) {
+        let valid = self.tools.spreadsheet.matches(self);
+        let bytes = draft_bytes(&self.drafts);
+        let state = &mut self.tools.spreadsheet;
         if !valid {
             state.undo.clear();
             state.undo_bytes = 0;
@@ -246,13 +228,13 @@ impl State {
         }
         if bytes <= UNDO_BYTES {
             state.undo.push_back(Checkpoint {
-                draft: document.drafts.clone(),
+                draft: self.drafts.clone(),
                 bytes,
             });
             state.undo_bytes += bytes;
         }
-        state.ticket = document.result.current;
-        state.revision = document.draft_revision.wrapping_add(1);
+        state.ticket = self.result.current;
+        state.revision = self.draft_revision.wrapping_add(1);
     }
 }
 impl App {
@@ -296,109 +278,93 @@ impl App {
         let Some((r, c)) = self.selected_cells().next() else {
             return;
         };
-        let original = &self.database.document.result.rows[r];
-        let value = self
-            .database
-            .document
-            .drafts
-            .as_ref()
-            .and_then(|d| d.displayed(original, c))
-            .unwrap_or(&original[c]);
+        let document = &self.database.document;
+        let original = &document.result.rows[r];
+        let drafts = document.drafts.as_ref();
+        let staged = drafts.and_then(|d| d.displayed(original, c));
+        let value = staged.unwrap_or(&original[c]);
         self.database.document.tools.spreadsheet.dialog =
             Some(Dialog::Fill(CellEditor::new(value)));
     }
-    fn clipboard_updates(&self, sheet: &Sheet) -> Result<Vec<Edit>, String> {
-        let document = &self.database.document;
-        let selection = document
-            .tools
-            .grid_selection
-            .filter(|s| s.ticket == document.result.current)
+    /// Where a pasted sheet lands: its first row and the visible columns from
+    /// the selection's left, checked against the selection and the result.
+    fn paste_target(&self, sheet: &Sheet) -> Result<(usize, Vec<usize>), String> {
+        let selection = self
+            .current_selection()
             .ok_or("Select a destination cell first")?;
-        let columns = self.visible_columns();
-        let selected: Vec<_> = self.selected_cells().collect();
-        if selected.is_empty() {
+        let selected = self.selected_cells().count();
+        if selected == 0 {
             return Err("Select a destination cell first".into());
         }
+        let columns = self.visible_columns();
+        let position = |column| {
+            let position = columns.iter().position(|&c| c == column);
+            position.ok_or("Selected column is hidden")
+        };
+        let start = position(selection.anchor.1)?.min(position(selection.cursor.1)?);
         let row = selection.anchor.0.min(selection.cursor.0);
-        let start = columns
-            .iter()
-            .position(|c| *c == selection.anchor.1)
-            .ok_or("Selected column is hidden")?
-            .min(
-                columns
-                    .iter()
-                    .position(|c| *c == selection.cursor.1)
-                    .ok_or("Selected column is hidden")?,
-            );
         let height = selection.anchor.0.abs_diff(selection.cursor.0) + 1;
-        let width = selected.len() / height;
-        if selected.len() > 1 && (height != sheet.rows.len() || width != sheet.width()) {
+        if selected > 1 && (height != sheet.rows.len() || selected / height != sheet.width()) {
             return Err("Clipboard dimensions must match the selected rectangle, or select a single starting cell".into());
         }
-        if row + sheet.rows.len() > document.result.rows.len()
+        if row + sheet.rows.len() > self.database.document.result.rows.len()
             || start + sheet.width() > columns.len()
         {
             return Err(
                 "Clipboard extends beyond retained rows or visible columns; nothing staged".into(),
             );
         }
+        Ok((row, columns[start..start + sheet.width()].to_vec()))
+    }
+    /// The sheet as updates of the rows and visible columns it covers, each
+    /// field typed like the value it replaces.
+    fn clipboard_updates(&self, sheet: &Sheet) -> Result<Vec<Edit>, String> {
+        let (first, columns) = self.paste_target(sheet)?;
+        let document = &self.database.document;
         let table = document.table.as_ref().ok_or("No editable table")?;
-        sheet
-            .rows
-            .iter()
-            .enumerate()
-            .map(|(r, fields)| {
-                let original = &document.result.rows[row + r];
-                if document
-                    .drafts
-                    .as_ref()
-                    .is_some_and(|d| d.deleted(original))
-                {
-                    return Err(format!(
-                        "Row {} is staged for deletion; revert it before pasting",
-                        row + r + 1
-                    ));
-                }
-                let changes = fields
-                    .iter()
-                    .enumerate()
-                    .map(|(c, field)| {
-                        let column = columns[start + c];
-                        let displayed = document
-                            .drafts
-                            .as_ref()
-                            .and_then(|d| d.displayed(original, column))
-                            .unwrap_or(&original[column]);
-                        let kind = if matches!(displayed, Value::Null) {
-                            declared_kind(&table.columns[column])
-                        } else {
-                            CellEditor::new(displayed).kind
-                        };
-                        cell_value(field, kind)
-                            .map(|value| (column, value))
-                            .map_err(|e| {
-                                format!("Row {}, {}: {e}", row + r + 1, table.columns[column].name)
-                            })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(Edit::Update {
-                    original: original.clone(),
-                    changes,
-                })
+        let drafts = document.drafts.as_ref();
+        let update = |(fields, r): (&Vec<Field>, usize)| {
+            let original = &document.result.rows[r];
+            if drafts.is_some_and(|d| d.deleted(original)) {
+                let row = r + 1;
+                return Err(format!(
+                    "Row {row} is staged for deletion; revert it before pasting"
+                ));
+            }
+            let change = |(field, &column): (&Field, &usize)| {
+                let shown = drafts
+                    .and_then(|d| d.displayed(original, column))
+                    .unwrap_or(&original[column]);
+                // A NULL takes its column's declared type; any other value keeps its own.
+                let kind = match shown {
+                    Value::Null => declared_kind(&table.columns[column]),
+                    _ => CellKind::of(shown),
+                };
+                let name = &table.columns[column].name;
+                let value =
+                    cell_value(field, kind).map_err(|e| format!("Row {}, {name}: {e}", r + 1));
+                Ok((column, value?))
+            };
+            let changes = fields
+                .iter()
+                .zip(&columns)
+                .map(change)
+                .collect::<Result<_, String>>()?;
+            Ok(Edit::Update {
+                original: original.clone(),
+                changes,
             })
-            .collect()
+        };
+        sheet.rows.iter().zip(first..).map(update).collect()
     }
     pub(super) fn clipboard_inserts(
         &self,
         sheet: &Sheet,
         mapping: &[Mapping],
     ) -> Result<Vec<Edit>, String> {
-        let table = self
-            .database
-            .document
-            .table
-            .as_ref()
-            .ok_or("No editable table")?;
+        let Some(table) = &self.database.document.table else {
+            return Err("No editable table".into());
+        };
         if mapping.len() != sheet.width() {
             return Err("Map every clipboard column or choose Skip".into());
         }
@@ -470,13 +436,12 @@ impl App {
             self.database.status = "Fill exceeds the 8 MiB edit budget; nothing staged".into();
             return false;
         }
-        if cells.iter().any(|(r, _)| {
-            self.database
-                .document
-                .drafts
-                .as_ref()
-                .is_some_and(|d| d.deleted(&self.database.document.result.rows[*r]))
-        }) {
+        let document = &self.database.document;
+        let drafts = document.drafts.as_ref();
+        if cells
+            .iter()
+            .any(|&(r, _)| drafts.is_some_and(|d| d.deleted(&document.result.rows[r])))
+        {
             self.database.status =
                 "Selection includes a row staged for deletion; revert it before filling".into();
             return false;
@@ -516,22 +481,15 @@ impl App {
         match Sheet::parse(&paste.text) {
             Ok(sheet) => {
                 if paste.mapping.len() != sheet.width() {
+                    // Columns map in visible order, each typed as its column is declared.
                     let visible = self.visible_columns();
+                    let table = self.database.document.table.as_ref();
+                    let declared = |c: usize| table.map(|t| declared_kind(&t.columns[c]));
                     paste.mapping = (0..sheet.width())
                         .map(|i| {
                             let column = visible.get(i).copied();
-                            Mapping {
-                                column,
-                                kind: column
-                                    .and_then(|c| {
-                                        self.database
-                                            .document
-                                            .table
-                                            .as_ref()
-                                            .map(|t| declared_kind(&t.columns[c]))
-                                    })
-                                    .unwrap_or(CellKind::Text),
-                            }
+                            let kind = column.and_then(declared).unwrap_or(CellKind::Text);
+                            Mapping { column, kind }
                         })
                         .collect();
                 }
@@ -563,29 +521,40 @@ impl App {
             self.preview_clipboard(paste);
         }
         if let Some(sheet) = &paste.sheet {
-            ui.label(format!(
-                "{} rows × {} columns · preview shows up to 10 rows",
-                sheet.rows.len(),
-                sheet.width()
-            ));
-            if paste.new_rows {
-                ui.small(
-                    "Unmapped table columns use their defaults. Constraints are checked on commit.",
-                );
-                if let Some(table) = &self.database.document.table {
-                    for (i, mapping) in paste.mapping.iter_mut().enumerate() {
-                        ui.horizontal(|ui| mapping_ui(ui, table, i, mapping));
-                    }
-                }
-            }
-            let mappings = paste.new_rows.then_some(paste.mapping.as_slice());
-            egui::ScrollArea::horizontal()
-                .id_salt("paste-preview")
-                .show(ui, |ui| preview_grid(ui, sheet, mappings));
+            self.sheet_preview(ui, sheet, paste.new_rows, &mut paste.mapping);
         }
         if !paste.error.is_empty() {
             ui.colored_label(ui.visuals().error_fg_color, &paste.error);
         }
+    }
+    /// The parsed sheet's size, where each column goes when pasting new rows,
+    /// and up to ten rows as they would be staged.
+    fn sheet_preview(
+        &self,
+        ui: &mut egui::Ui,
+        sheet: &Sheet,
+        new_rows: bool,
+        mapping: &mut [Mapping],
+    ) {
+        let (rows, columns) = (sheet.rows.len(), sheet.width());
+        ui.label(format!(
+            "{rows} rows × {columns} columns · preview shows up to 10 rows"
+        ));
+        if new_rows {
+            ui.small(
+                "Unmapped table columns use their defaults. Constraints are checked on commit.",
+            );
+            if let Some(table) = &self.database.document.table {
+                for (i, mapping) in mapping.iter_mut().enumerate() {
+                    ui.horizontal(|ui| mapping_ui(ui, table, i, mapping));
+                }
+            }
+        }
+        egui::ScrollArea::horizontal()
+            .id_salt("paste-preview")
+            .show(ui, |ui| {
+                preview_grid(ui, sheet, new_rows.then_some(&*mapping))
+            });
     }
     pub(super) fn spreadsheet_window(&mut self, ctx: &egui::Context) {
         let Some(mut dialog) = self.database.document.tools.spreadsheet.dialog.take() else {
@@ -602,13 +571,8 @@ impl App {
             .max_width((ctx.content_rect().width() - 32.0).max(240.0))
             .max_height(ctx.content_rect().height() * 0.85)
             .show(ctx, |ui| {
-                ui.label(
-                    self.database
-                        .document
-                        .table
-                        .as_ref()
-                        .map_or("No table", |t| t.name.as_str()),
-                );
+                let table = self.database.document.table.as_ref();
+                ui.label(table.map_or("No table", |t| t.name.as_str()));
                 ui.small("Changes are staged locally. Commit explicitly to write.");
                 egui::ScrollArea::vertical()
                     .id_salt("spreadsheet-body")
@@ -616,14 +580,7 @@ impl App {
                     .show(ui, |ui| match &mut dialog {
                         Dialog::Fill(editor) => {
                             ui.label(format!("{} selected cells", self.selected_cells().count()));
-                            editor.type_picker(ui, "fill-type", true);
-                            if editor.kind != CellKind::Null {
-                                ui.add(
-                                    egui::TextEdit::multiline(&mut editor.input)
-                                        .desired_rows(3)
-                                        .desired_width(f32::INFINITY),
-                                );
-                            }
+                            editor.form(ui, "fill-type");
                         }
                         Dialog::Paste(paste) => self.paste_dialog_ui(ui, paste),
                     });
@@ -789,18 +746,13 @@ mod tests {
         assert_eq!(sheet.rows[0][0].text, "a\tb");
         assert_eq!(sheet.rows[0][1].text, "line\nλ");
         assert_eq!(sheet.rows[0][2].text, "a\"b");
-        assert_eq!(
-            cell_value(&sheet.rows[0][3], CellKind::Integer).unwrap(),
-            Value::Text(String::new())
-        );
-        assert_eq!(
-            cell_value(&sheet.rows[0][4], CellKind::Text).unwrap(),
-            Value::Null
-        );
-        assert_eq!(
-            cell_value(&sheet.rows[0][5], CellKind::Text).unwrap(),
-            Value::Text("\\N".into())
-        );
+        for (i, kind, expected) in [
+            (3, CellKind::Integer, Value::Text(String::new())),
+            (4, CellKind::Text, Value::Null),
+            (5, CellKind::Text, Value::Text("\\N".into())),
+        ] {
+            assert_eq!(cell_value(&sheet.rows[0][i], kind), Ok(expected));
+        }
         assert_eq!(
             Sheet::parse("a\tb\n\n").unwrap_err(),
             "Clipboard rows must all have the same number of columns"
@@ -824,18 +776,17 @@ mod tests {
             text: text.into(),
             quoted: false,
         };
-        assert_eq!(
-            cell_value(&field("9007199254740993"), CellKind::Integer).unwrap(),
-            Value::Integer(9007199254740993)
-        );
-        assert_eq!(
-            cell_value(&field("00ff"), CellKind::Blob).unwrap(),
-            Value::Blob(vec![0, 255])
-        );
-        assert_eq!(
-            cell_value(&field("001"), CellKind::Text).unwrap(),
-            Value::Text("001".into())
-        );
+        for (text, kind, expected) in [
+            (
+                "9007199254740993",
+                CellKind::Integer,
+                Value::Integer(9007199254740993),
+            ),
+            ("00ff", CellKind::Blob, Value::Blob(vec![0, 255])),
+            ("001", CellKind::Text, Value::Text("001".into())),
+        ] {
+            assert_eq!(cell_value(&field(text), kind), Ok(expected));
+        }
         for (text, kind) in [
             ("9223372036854775808", CellKind::Integer),
             ("1.5", CellKind::Integer),

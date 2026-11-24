@@ -12,8 +12,13 @@ pub(super) struct Selection {
     pub anchor: (usize, usize),
     pub cursor: (usize, usize),
 }
-/// A key the grid handles, and what it does.
-type GridShortcut = (egui::Modifiers, egui::Key, fn(&mut App));
+/// A key the grid handles, whether it acts on the cursor cell, and what it does.
+type GridShortcut = (
+    bool,
+    egui::Modifiers,
+    egui::Key,
+    fn(&mut App, &egui::Context),
+);
 pub(super) struct SummaryCache {
     selection: Selection,
     visible: Vec<usize>,
@@ -71,24 +76,20 @@ impl InlineEdit {
     }
 }
 impl App {
+    /// The grid selection, while it still belongs to the retained result.
+    pub(super) fn current_selection(&self) -> Option<Selection> {
+        let document = &self.database.document;
+        let selection = document.tools.grid_selection;
+        selection.filter(|s| s.ticket == document.result.current)
+    }
     pub(super) fn select_cell(&mut self, row: usize, column: usize, extend: bool) {
-        if self
-            .database
-            .document
-            .result
-            .rows
-            .get(row)
-            .and_then(|r| r.get(column))
-            .is_none()
-        {
+        let rows = &self.database.document.result.rows;
+        if rows.get(row).and_then(|r| r.get(column)).is_none() {
             return;
         }
         let anchor = self
-            .database
-            .document
-            .tools
-            .grid_selection
-            .filter(|s| extend && s.ticket == self.database.document.result.current)
+            .current_selection()
+            .filter(|_| extend)
             .map_or((row, column), |s| s.anchor);
         self.database.document.tools.grid_selection = Some(Selection {
             ticket: self.database.document.result.current,
@@ -102,46 +103,37 @@ impl App {
         self.database.document.ui.inspector = shell::DetailMode::Record;
     }
     fn selection_bounds(&self) -> Option<(std::ops::Range<usize>, &[usize])> {
-        let s = self
-            .database
-            .document
-            .tools
-            .grid_selection
-            .filter(|s| s.ticket == self.database.document.result.current)?;
-        let rows = s.anchor.0.min(s.cursor.0)
-            ..s.anchor
-                .0
-                .max(s.cursor.0)
-                .saturating_add(1)
-                .min(self.database.document.result.rows.len());
+        let s = self.current_selection()?;
+        let document = &self.database.document;
+        let last = s.anchor.0.max(s.cursor.0).saturating_add(1);
+        let rows = s.anchor.0.min(s.cursor.0)..last.min(document.result.rows.len());
         if rows.is_empty() {
             return None;
         }
-        let columns = &self.database.document.tools.columns;
+        let columns = &document.tools.columns;
         let position = |column| {
-            (column < self.database.document.result.columns.len()
-                && !columns.hidden.contains(&column))
-            .then(|| columns.order.iter().position(|&c| c == column))
-            .flatten()
+            columns
+                .shown(column, document.result.columns.len())
+                .then(|| columns.order.iter().position(|&c| c == column))
+                .flatten()
         };
         let (a, b) = (position(s.anchor.1)?, position(s.cursor.1)?);
         Some((rows, &columns.order[a.min(b)..=a.max(b)]))
     }
     pub(super) fn cell_selected(&self, row: usize, column: usize) -> bool {
-        self.selection_bounds().is_some_and(|(rows, cols)| {
-            rows.contains(&row)
-                && cols.contains(&column)
-                && column < self.database.document.result.columns.len()
-                && !self
-                    .database
-                    .document
-                    .tools
-                    .columns
-                    .hidden
-                    .contains(&column)
-        })
+        let document = &self.database.document;
+        let shown = document
+            .tools
+            .columns
+            .shown(column, document.result.columns.len());
+        shown
+            && self
+                .selection_bounds()
+                .is_some_and(|(rows, cols)| rows.contains(&row) && cols.contains(&column))
     }
     pub(super) fn selected_cells(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        let document = &self.database.document;
+        let count = document.result.columns.len();
         self.selection_bounds()
             .into_iter()
             .flat_map(move |(rows, columns)| {
@@ -149,42 +141,27 @@ impl App {
                     columns
                         .iter()
                         .copied()
-                        .filter(move |c| {
-                            *c < self.database.document.result.columns.len()
-                                && !self.database.document.tools.columns.hidden.contains(c)
-                        })
+                        .filter(move |&c| document.tools.columns.shown(c, count))
                         .map(move |c| (row, c))
                 })
             })
     }
     pub(super) fn selection_tsv(&self) -> Result<String, String> {
+        let rows = &self.database.document.result.rows;
         let mut text = String::new();
         let mut last = None;
         for (r, c) in self.selected_cells() {
-            if let Some(previous) = last {
-                text.push(if previous == r { '\t' } else { '\n' });
-            }
-            last = Some(r);
-            if matches!(self.database.document.result.rows[r][c], Value::Deferred(_)) {
+            let value = &rows[r][c];
+            if matches!(value, Value::Deferred(_)) {
                 return Err(
                     "Selection contains deferred cells; save the full value instead".into(),
                 );
             }
-            let value = &self.database.document.result.rows[r][c];
-            let cell = match value {
-                Value::Null => "\\N".into(),
-                Value::Blob(bytes) => crate::export::hex(bytes),
-                _ => crate::export::cell_text(value),
-            };
-            if cell.contains(['\t', '\n', '\r', '"'])
-                || matches!(value, Value::Text(text) if text.is_empty() || text == "\\N")
-            {
-                text.push('"');
-                text.push_str(&cell.replace('"', "\"\""));
-                text.push('"');
-            } else {
-                text.push_str(&cell);
+            if let Some(previous) = last {
+                text.push(if previous == r { '\t' } else { '\n' });
             }
+            last = Some(r);
+            text.push_str(&tsv_field(value));
             if text.len() > 2 * 1024 * 1024 {
                 return Err("Selection exceeds 2 MiB clipboard budget; export instead".into());
             }
@@ -192,37 +169,23 @@ impl App {
         Ok(text)
     }
     pub(super) fn selection_summary(&mut self) -> &str {
-        let Some(selection) = self
-            .database
-            .document
-            .tools
-            .grid_selection
-            .filter(|s| s.ticket == self.database.document.result.current)
-        else {
+        let Some(selection) = self.current_selection() else {
             return "";
         };
-        let rows = self.database.document.result.rows.len();
-        let cached = self
-            .database
-            .document
+        let document = &self.database.document;
+        let rows = document.result.rows.len();
+        let visible = document
             .tools
-            .summary_cache
-            .as_ref()
-            .is_some_and(|c| {
-                c.selection == selection
-                    && c.rows == rows
-                    && c.visible.iter().copied().eq(self
-                        .database
-                        .document
-                        .tools
-                        .columns
-                        .visible(self.database.document.result.columns.len()))
-            });
+            .columns
+            .visible(document.result.columns.len());
+        let cached = document.tools.summary_cache.as_ref().is_some_and(|c| {
+            c.selection == selection && c.rows == rows && c.visible.iter().copied().eq(visible)
+        });
         if !cached {
-            let text = summarize(
-                self.selected_cells()
-                    .filter_map(|(r, c)| self.database.document.result.rows.get(r)?.get(c)),
-            );
+            let values = self
+                .selected_cells()
+                .filter_map(|(r, c)| self.database.document.result.rows.get(r)?.get(c));
+            let text = summarize(values);
             self.database.document.tools.summary_cache = Some(SummaryCache {
                 selection,
                 visible: self.visible_columns(),
@@ -230,12 +193,13 @@ impl App {
                 text,
             });
         }
-        self.database
-            .document
-            .tools
-            .summary_cache
-            .as_ref()
-            .map_or("", |c| c.text.as_str())
+        let cache = self.database.document.tools.summary_cache.as_ref();
+        cache.map_or("", |c| c.text.as_str())
+    }
+    /// Whether the cell is being edited in place.
+    pub(super) fn editing_at(&self, row: usize, column: usize) -> bool {
+        let inline = self.database.document.tools.inline.as_ref();
+        inline.is_some_and(|e| e.row == row && e.column == column)
     }
     pub(super) fn start_inline(&mut self, row: usize, column: usize) {
         if !self.can_edit() {
@@ -296,54 +260,54 @@ impl App {
             self.copy_selection(ctx);
             return;
         }
-        let edits: [GridShortcut; 3] = [
+        use egui::{Key, Modifiers};
+        // Edits apply to the selection; the rest act on its cursor, in a shown column.
+        let cursor = self.current_selection().map(|s| s.cursor);
+        let cols = self.visible_columns();
+        let c = cursor.and_then(|(_, col)| cols.iter().position(|&c| c == col));
+        let shortcuts: [GridShortcut; 6] = [
             (
-                egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
-                egui::Key::V,
-                |app| app.open_paste(true, String::new()),
+                false,
+                Modifiers::CTRL | Modifiers::SHIFT,
+                Key::V,
+                |app, _| app.open_paste(true, String::new()),
             ),
-            (egui::Modifiers::CTRL, egui::Key::Z, Self::undo_grid_edit),
-            (egui::Modifiers::NONE, egui::Key::Backspace, |app| {
+            (false, Modifiers::CTRL, Key::Z, |app, _| {
+                app.undo_grid_edit()
+            }),
+            (false, Modifiers::NONE, Key::Backspace, |app, _| {
                 app.fill_selection(Value::Null);
             }),
+            (true, Modifiers::CTRL, Key::C, Self::copy_selection),
+            (true, Modifiers::NONE, Key::Enter, |app, _| {
+                app.activate_cursor()
+            }),
+            (true, Modifiers::NONE, Key::Space, |app, _| {
+                app.toggle_inspector()
+            }),
         ];
-        for (modifiers, key, edit) in edits {
-            if ctx.input_mut(|i| i.consume_key(modifiers, key)) {
-                edit(self);
-                return;
-            }
+        let pressed = shortcuts.iter().find(|(on_cursor, modifiers, key, _)| {
+            (!on_cursor || c.is_some()) && ctx.input_mut(|i| i.consume_key(*modifiers, *key))
+        });
+        match (pressed, cursor, c) {
+            (Some((.., act)), ..) => act(self, ctx),
+            (None, Some((row, _)), Some(c)) => self.move_cursor(ctx, row, &cols, c),
+            _ => {}
         }
-        let Some(s) = self
-            .database
-            .document
-            .tools
-            .grid_selection
-            .filter(|s| s.ticket == self.database.document.result.current)
-        else {
+    }
+    /// Enter follows the cursor cell's only reference, or else edits the cell in place.
+    fn activate_cursor(&mut self) {
+        let Some((row, col)) = self.current_selection().map(|s| s.cursor) else {
             return;
         };
-        let cols = self.visible_columns();
-        let Some(c) = cols.iter().position(|&c| c == s.cursor.1) else {
-            return;
+        let only = match self.cell_references(row, col).as_slice() {
+            [key] => Some((*key).clone()),
+            _ => None,
         };
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::C)) {
-            self.copy_selection(ctx);
-            return;
+        match only {
+            Some(key) => self.follow_key(row, key),
+            None => self.start_inline(row, col),
         }
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
-            let keys = self.cell_references(s.cursor.0, s.cursor.1);
-            if keys.len() == 1 {
-                self.follow_key(s.cursor.0, (*keys[0]).clone());
-            } else {
-                self.start_inline(s.cursor.0, s.cursor.1);
-            }
-            return;
-        }
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Space)) {
-            self.toggle_inspector();
-            return;
-        }
-        self.move_cursor(ctx, s.cursor.0, &cols, c);
     }
     fn copy_selection(&mut self, ctx: &egui::Context) {
         match self.selection_tsv() {
@@ -401,6 +365,21 @@ impl App {
         if next != current {
             tools.restore_scroll = Some(egui::vec2(tools.grid_scroll.x, next));
         }
+    }
+}
+/// A cell as a clipboard field: NULL as `\N` and blobs as hex, quoted when it
+/// holds separators or quotes or would otherwise read back as NULL or nothing.
+fn tsv_field(value: &Value) -> String {
+    let cell = match value {
+        Value::Null => "\\N".into(),
+        Value::Blob(bytes) => crate::export::hex(bytes),
+        _ => crate::export::cell_text(value),
+    };
+    let ambiguous = matches!(value, Value::Text(text) if text.is_empty() || text == "\\N");
+    if ambiguous || cell.contains(['\t', '\n', '\r', '"']) {
+        format!("\"{}\"", cell.replace('"', "\"\""))
+    } else {
+        cell
     }
 }
 /// Native integrations send clipboard events instead of Ctrl+C/V key events;
