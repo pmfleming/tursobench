@@ -1,7 +1,6 @@
 use super::{
     App,
     icons::{self, Icon},
-    shell::ToolPanel,
     tiling::Kind,
 };
 use eframe::egui;
@@ -55,8 +54,8 @@ impl App {
     }
     pub(super) fn action_enabled(&self, action: Action) -> bool {
         match action {
-            Action::ZoomOut => self.database.ui.diagram.camera.zoom() > super::diagram::MIN_ZOOM,
-            Action::ZoomIn => self.database.ui.diagram.camera.zoom() < super::diagram::MAX_ZOOM,
+            Action::ZoomOut => self.database.ui.diagram.camera.can_zoom(false),
+            Action::ZoomIn => self.database.ui.diagram.camera.can_zoom(true),
             Action::Run
             | Action::RunAll
             | Action::Explain
@@ -128,10 +127,7 @@ impl App {
             Action::ArrangeMap => diagram.arrange_nodes(),
             Action::MapColumns => diagram.toggle_columns(),
             Action::SystemTables => diagram.toggle_system(),
-            Action::Find => {
-                self.sidebar_search.focus = true;
-                self.database.ui.sidebar = ToolPanel::Schema;
-            }
+            Action::Find => self.find_in_sidebar(),
             Action::Zoom100 => diagram.camera.reset_zoom(),
             Action::ZoomOut => diagram.camera.step_zoom(1.0 / 1.25),
             Action::ZoomIn => diagram.camera.step_zoom(1.25),
@@ -141,7 +137,7 @@ impl App {
             Action::Bytecode => self.run_current(Some(true)),
             Action::Parameters => document.ui.params_open = !document.ui.params_open,
             Action::Completion => document.tools.complete = !document.tools.complete,
-            Action::SaveSql => self.database.ui.sidebar = ToolPanel::Saved,
+            Action::SaveSql => self.show_saved_queries(),
             Action::CopyDdl => {
                 if let Some(ddl) = self.shown_ddl() {
                     ctx.copy_text(ddl);
@@ -270,7 +266,9 @@ impl App {
         let response = ui
             .add_enabled_ui(self.action_enabled(action), |ui| match action {
                 Action::RunAll => self.run_all_menu(ui, true),
-                Action::Zoom100 => zoom_button(ui, self.database.ui.diagram.camera.zoom(), label),
+                Action::Zoom100 => {
+                    icons::zoom_button(ui, self.database.ui.diagram.camera.zoom(), label)
+                }
                 Action::Run => icons::ribbon_button(ui, icon, label, action.shortcut(), selected)
                     .on_hover_text("Selection or current statement · Ctrl Shift Enter"),
                 _ => icons::ribbon_button(ui, icon, label, action.shortcut(), selected),
@@ -369,11 +367,7 @@ impl App {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = super::presentation::BAR_SPACING;
             ui.spacing_mut().button_padding.x = super::presentation::BAR_INSET;
-            ui.style_mut().override_font_id = Some(crate::appearance::proportional(
-                ui.ctx(),
-                icons::RIBBON_TEXT_SIZE,
-            ));
-            ui.spacing_mut().interact_size.y = icons::RIBBON_BUTTON_SIZE;
+            icons::ribbon_style(ui);
             let show_restore = self.tiles_restorable();
             let controls_width = 2.0 * icons::RIBBON_BUTTON_SIZE
                 + 20.0
@@ -556,18 +550,8 @@ impl App {
         let count = self.database.document.result.rows.len();
         let (row, column) = self.database.document.inspect.unwrap_or((0, 0));
         let mut position = if count == 0 { 0 } else { (row + 1).min(count) };
-        let previous = ui.add_enabled(
-            position > 1,
-            egui::Button::new("‹").min_size(egui::vec2(20.0, icons::RIBBON_BUTTON_SIZE)),
-        );
-        previous.widget_info(|| {
-            egui::WidgetInfo::labeled(
-                egui::Role::Button,
-                position > 1 && ui.is_enabled(),
-                "Previous record",
-            )
-        });
-        let mut changed = previous.on_hover_text("Previous loaded record").clicked();
+        let previous = ("‹", "Previous record", "Previous loaded record");
+        let mut changed = step_button(ui, position > 1, previous);
         if changed {
             position -= 1;
         }
@@ -597,18 +581,11 @@ impl App {
         }
         changed |= response.changed();
         response.on_hover_text("Click to enter a loaded record number");
-        let next = ui.add_enabled(
+        if step_button(
+            ui,
             position < count,
-            egui::Button::new("›").min_size(egui::vec2(20.0, icons::RIBBON_BUTTON_SIZE)),
-        );
-        next.widget_info(|| {
-            egui::WidgetInfo::labeled(
-                egui::Role::Button,
-                position < count && ui.is_enabled(),
-                "Next record",
-            )
-        });
-        if next.on_hover_text("Next loaded record").clicked() {
+            ("›", "Next record", "Next loaded record"),
+        ) {
             position += 1;
             changed = true;
         }
@@ -655,6 +632,16 @@ impl App {
             self.browse_table(name.to_owned());
         }
     }
+}
+
+/// A narrow record-stepper arrow: its glyph, accessible name and tooltip.
+fn step_button(ui: &mut egui::Ui, enabled: bool, (glyph, name, hover): (&str, &str, &str)) -> bool {
+    let size = egui::vec2(20.0, icons::RIBBON_BUTTON_SIZE);
+    let response = ui.add_enabled(enabled, egui::Button::new(glyph).min_size(size));
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::Role::Button, enabled && ui.is_enabled(), name)
+    });
+    response.on_hover_text(hover).clicked()
 }
 
 impl Action {
@@ -778,25 +765,6 @@ impl Kind {
             ],
         }
     }
-}
-
-/// The map's zoom as a percentage; clicking it resets to 100%.
-fn zoom_button(ui: &mut egui::Ui, zoom: f32, label: &str) -> egui::Response {
-    let percent = zoom * 100.0;
-    let text = if percent < 1.0 {
-        format!("{percent:.2}%")
-    } else {
-        format!("{percent:.0}%")
-    };
-    let response = ui.add(
-        egui::Button::new(egui::RichText::new(text).size(crate::appearance::text_size(
-            ui.ctx(),
-            icons::RIBBON_TEXT_SIZE,
-        )))
-        .min_size(egui::Vec2::splat(icons::RIBBON_BUTTON_SIZE)),
-    );
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
-    response.on_hover_text("Current zoom · click to reset to 100%")
 }
 
 #[cfg(test)]

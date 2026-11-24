@@ -40,6 +40,16 @@ fn port(rows: &mut Vec<String>, name: &str) -> usize {
     rows.push(name.into());
     rows.len() - 1
 }
+/// A key column's tooltip: which table and column it references, and its actions.
+fn reference(
+    (table, from): (&str, &str),
+    (target, to): (&str, Option<&str>),
+    key: &ForeignKey,
+) -> String {
+    let to = to.unwrap_or("unresolved PK");
+    let actions = format!("ON UPDATE {} · ON DELETE {}", key.on_update, key.on_delete);
+    format!("{table}.{from} references {target}.{to} · {actions}")
+}
 impl<'a> ForeignMap<'a> {
     pub fn count(&self) -> usize {
         self.info.foreign_keys.len()
@@ -84,14 +94,10 @@ impl<'a> ForeignMap<'a> {
                     target_row: part,
                     key,
                     part,
-                    label: format!(
-                        "{}.{} references {}.{} · ON UPDATE {} · ON DELETE {}",
-                        self.info.table.name,
-                        from,
-                        key.target,
-                        to.as_deref().unwrap_or("unresolved PK"),
-                        key.on_update,
-                        key.on_delete
+                    label: reference(
+                        (&self.info.table.name, from),
+                        (&key.target, to.as_deref()),
+                        key,
                     ),
                 });
             }
@@ -120,14 +126,10 @@ impl<'a> ForeignMap<'a> {
                         target_row,
                         key,
                         part,
-                        label: format!(
-                            "{}.{} references {}.{} · ON UPDATE {} · ON DELETE {}",
-                            table.name,
-                            from,
-                            self.info.table.name,
-                            to.as_deref().unwrap_or("unresolved PK"),
-                            key.on_update,
-                            key.on_delete
+                        label: reference(
+                            (&table.name, from),
+                            (&self.info.table.name, to.as_deref()),
+                            key,
                         ),
                     });
                 }

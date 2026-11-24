@@ -1,6 +1,8 @@
 use super::{
     App, browse_and_wait, browsing, click, close_and_wait, control, egui, fixture, frame,
-    inspect_selected, press_key, shell, wait,
+    press_key, shell,
+    sidebar_review::{open_second, second_db},
+    wait,
 };
 
 /// Type `query` into the palette and let its results settle.
@@ -98,41 +100,6 @@ fn database_tools_sit_under_the_open_database_and_application_controls_at_the_fo
 }
 
 #[test]
-fn palette_runs_the_best_match_not_the_first_listed() {
-    let (ctx, mut app) = crate::app::test_ui::app();
-    frame(&mut app, &ctx, vec![]);
-    for (query, opened) in [
-        ("set", (|a: &App| a.settings.open) as fn(&App) -> bool),
-        ("help", |a: &App| a.database.tools.help),
-    ] {
-        choose(&mut app, &ctx, query);
-        assert!(opened(&app), "{query}");
-        assert!(
-            !app.database.document.ui.sql_open,
-            "{query} ran the SQL editor"
-        );
-        app.settings.open = false;
-        app.database.tools.help = false;
-    }
-}
-
-#[test]
-fn palette_copy_with_nothing_selected_leaves_the_clipboard_alone() {
-    let (ctx, mut app) = crate::app::test_ui::app();
-    frame(&mut app, &ctx, vec![]);
-    app.execute_command(&ctx, super::super::commands::Command::CopySelection);
-    let output = frame(&mut app, &ctx, vec![]);
-    assert!(
-        !output
-            .platform_output
-            .commands
-            .iter()
-            .any(|c| matches!(c, egui::OutputCommand::CopyText(_)))
-    );
-    assert_eq!(app.database.status, "Select cells to copy");
-}
-
-#[test]
 fn palette_ends_the_transaction_it_began() {
     use tursobench_core::TransactionState;
     let (_dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
@@ -210,6 +177,17 @@ fn palette_greys_out_commands_that_cannot_run_and_explains_why() {
     )));
     press_key(&mut app, &ctx, egui::Key::Enter, egui::Modifiers::NONE);
     assert!(app.database.ui.palette_open);
+    // Copying an empty selection leaves the clipboard alone.
+    app.execute_command(&ctx, super::super::commands::Command::CopySelection);
+    let output = frame(&mut app, &ctx, vec![]);
+    assert!(
+        !output
+            .platform_output
+            .commands
+            .iter()
+            .any(|c| matches!(c, egui::OutputCommand::CopyText(_)))
+    );
+    assert_eq!(app.database.status, "Select cells to copy");
 }
 
 #[test]
@@ -268,6 +246,21 @@ fn palette_names_match_the_app_old_words_find_them_and_misses_point_to_object_se
         &s.shape,
         egui::Shape::Text(t) if t.galley.job.text.starts_with("No matching commands")
     )));
+    // Enter runs the best match, not the first listed.
+    app.database.ui.palette_open = false;
+    for (query, opened) in [
+        ("set", (|a: &App| a.settings.open) as fn(&App) -> bool),
+        ("help", |a: &App| a.database.tools.help),
+    ] {
+        choose(&mut app, &ctx, query);
+        assert!(opened(&app), "{query}");
+        assert!(
+            !app.database.document.ui.sql_open,
+            "{query} ran the SQL editor"
+        );
+        app.settings.open = false;
+        app.database.tools.help = false;
+    }
 }
 
 #[test]
@@ -308,13 +301,7 @@ fn escape_closes_the_palette_before_a_cell_edit_beneath_it() {
 #[test]
 fn palette_holds_the_database_and_hands_ctrl_p_to_the_sidebar_search() {
     let (dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
-    let second = dir.path().join("second.db");
-    crate::test_support::create(&second, &["CREATE TABLE u(id INTEGER PRIMARY KEY)"]);
-    app.request_database(&ctx, second);
-    inspect_selected(&mut app, &ctx);
-    app.open(&ctx);
-    wait(&mut app, &ctx);
-    let id = app.database.id;
+    let (id, _) = open_second(&mut app, &ctx, second_db(&dir));
     press_key(&mut app, &ctx, egui::Key::K, egui::Modifiers::CTRL);
     for key in [egui::Key::PageDown, egui::Key::PageUp] {
         press_key(&mut app, &ctx, key, egui::Modifiers::CTRL);

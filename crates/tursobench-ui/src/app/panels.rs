@@ -25,9 +25,8 @@ impl App {
         );
         ui.add_space(4.0);
         let query = self.database.tools.bookmark_search.to_lowercase();
-        let mut load = None;
-        let mut remove = None;
-        let mut renamed = false;
+        let mut chosen = None;
+        let mut save = false;
         let mut visible = 0;
         let spacing = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 2.0);
         for (index, bookmark) in self.preferences.saved_queries.iter_mut().enumerate() {
@@ -46,26 +45,22 @@ impl App {
                     saved_query_row(ui, &mut bookmark.name, legacy, &bookmark.sql)
                 })
                 .inner;
-            renamed |= changed;
-            match action {
-                Some(QueryAction::Load) => load = Some(bookmark.sql.clone()),
-                Some(QueryAction::Delete) => remove = Some(index),
-                None => {}
+            save |= changed;
+            if let Some(action) = action {
+                chosen = Some((index, action));
             }
         }
         ui.spacing_mut().item_spacing.y = spacing;
         if visible == 0 {
             ui.weak("No saved queries");
         }
-        if renamed {
+        save |= self.apply_query_action(
+            chosen,
+            |app| &mut app.preferences.saved_queries,
+            |q| q.sql.clone(),
+        );
+        if save {
             self.store.save(&self.preferences);
-        }
-        if let Some(index) = remove {
-            self.preferences.saved_queries.remove(index);
-            self.store.save(&self.preferences);
-        }
-        if let Some(sql) = load {
-            self.load_sql_window(sql);
         }
     }
 
@@ -164,11 +159,10 @@ impl App {
                 "No matching history"
             });
         }
-        let mut load = None;
-        let mut remove = None;
+        let mut chosen = None;
         let spacing = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 2.0);
         for (index, entry) in entries {
-            match ui
+            if let Some(action) = ui
                 .push_id(("history-query", index), |ui| {
                     HistoryRow {
                         sql: &entry.sql,
@@ -181,18 +175,36 @@ impl App {
                 })
                 .inner
             {
-                Some(QueryAction::Load) => load = Some(entry.sql.clone()),
-                Some(QueryAction::Delete) => remove = Some(index),
-                None => {}
+                chosen = Some((index, action));
             }
         }
         ui.spacing_mut().item_spacing.y = spacing;
-        if let Some(index) = remove {
-            self.preferences.query_history.remove(index);
+        if self.apply_query_action(
+            chosen,
+            |app| &mut app.preferences.query_history,
+            |h| h.sql.clone(),
+        ) {
             self.store.save(&self.preferences);
         }
-        if let Some(sql) = load {
-            self.load_sql_window(sql);
+    }
+    /// Load the chosen listed query into an editor, or delete it; true when `list` changed.
+    fn apply_query_action<T>(
+        &mut self,
+        chosen: Option<(usize, QueryAction)>,
+        list: impl Fn(&mut Self) -> &mut Vec<T>,
+        sql: impl Fn(&T) -> String,
+    ) -> bool {
+        match chosen {
+            Some((index, QueryAction::Load)) => {
+                let sql = sql(&list(self)[index]);
+                self.load_sql_window(sql);
+                false
+            }
+            Some((index, QueryAction::Delete)) => {
+                list(self).remove(index);
+                true
+            }
+            None => false,
         }
     }
 
@@ -200,15 +212,12 @@ impl App {
         ui.horizontal(|ui| {
             ui.strong("Checks");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let (rect, response) =
-                    ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
-                icons::paint(
-                    ui.painter(),
-                    rect,
+                icons::hint(
+                    ui,
                     Icon::Lock,
-                    ui.visuals().weak_text_color(),
+                    20.0,
+                    "Storage and validation checks only read the database",
                 );
-                response.on_hover_text("Storage and validation checks only read the database");
             });
         });
         let ready = self.database.ready && !self.database.closing;
@@ -710,6 +719,7 @@ mod tests {
         Saved,
         Diagnostics,
     }
+    use TestPanel::{Diagnostics, History, Saved, Settings};
 
     fn frame(
         app: &mut App,
@@ -719,10 +729,10 @@ mod tests {
         events: Vec<egui::Event>,
     ) -> egui::FullOutput {
         test_ui::render(ctx, egui::vec2(width, 1400.0), events, |ui| match panel {
-            TestPanel::Settings => app.settings_ui(ui),
-            TestPanel::History => app.query_history_ui(ui),
-            TestPanel::Saved => app.saved_queries_ui(ui),
-            TestPanel::Diagnostics => app.diagnostics_ui(ui),
+            Settings => app.settings_ui(ui),
+            History => app.query_history_ui(ui),
+            Saved => app.saved_queries_ui(ui),
+            Diagnostics => app.diagnostics_ui(ui),
         })
     }
 
@@ -753,7 +763,7 @@ mod tests {
     #[test]
     fn appearance_controls_apply_size_without_drift() {
         let (ctx, mut app) = test_ui::app();
-        let output = frame(&mut app, &ctx, TestPanel::Settings, 240.0, vec![]);
+        let output = frame(&mut app, &ctx, Settings, 240.0, vec![]);
         for name in [
             "Decrease font size",
             "Increase font size",
@@ -761,7 +771,7 @@ mod tests {
         ] {
             control(&output, name).center();
         }
-        click(&mut app, &ctx, TestPanel::Settings, "Increase font size");
+        click(&mut app, &ctx, Settings, "Increase font size");
         assert_eq!(app.preferences.font_size, 15);
         assert_eq!(
             ctx.global_style().text_styles[&egui::TextStyle::Body].size,
@@ -776,10 +786,10 @@ mod tests {
             app.apply_theme(&ctx);
             assert_eq!(crate::appearance::monospace(&ctx, 12.0).size, larger);
         }
-        click(&mut app, &ctx, TestPanel::Settings, "Decrease font size");
+        click(&mut app, &ctx, Settings, "Decrease font size");
         assert_eq!(app.preferences.font_size, 14);
-        click(&mut app, &ctx, TestPanel::Settings, "Increase font size");
-        click(&mut app, &ctx, TestPanel::Settings, "Reset font size");
+        click(&mut app, &ctx, Settings, "Increase font size");
+        click(&mut app, &ctx, Settings, "Reset font size");
         assert_eq!(app.preferences.font_size, 14);
         assert_eq!(crate::appearance::monospace(&ctx, 12.0).size, 12.0);
     }
@@ -787,7 +797,7 @@ mod tests {
     #[test]
     fn resource_slider_updates_admission_and_reset_restores_system_choice() {
         let (ctx, mut app) = test_ui::app();
-        let panel = TestPanel::Settings;
+        let panel = Settings;
         app.settings.page = Page::Resources;
         let slider = (panel, "Maximum open databases");
         assert_eq!(app.memory.limits(&app.preferences).database_limit, 8);
@@ -828,11 +838,11 @@ mod tests {
             app.preferences
                 .bookmark("/work/current.db", &"long name ".repeat(6), "SELECT 1");
             for width in [180.0, 240.0, 300.0] {
-                for panel in [TestPanel::History, TestPanel::Saved, TestPanel::Diagnostics] {
+                for panel in [History, Saved, Diagnostics] {
                     frame(&mut app, &ctx, panel, width, vec![]);
                     let output = frame(&mut app, &ctx, panel, width, vec![]);
                     assert_controls_fit(&output, width, &format!("{panel:?}, width {width}"));
-                    if panel == TestPanel::Diagnostics {
+                    if panel == Diagnostics {
                         for diagnostic in Diagnostic::ALL {
                             control(&output, diagnostic.label());
                         }
@@ -858,17 +868,18 @@ mod tests {
         assert_eq!(super::sql_preview(&"x ".repeat(25)), "x ".repeat(23) + "x");
         let (ctx, mut app) = test_ui::app();
         app.database.tools.database_scope = "/work/current.db".into();
-        app.preferences
-            .record_query("/work/other.db", "SELECT 'other'", Some(900), false);
-        app.preferences
-            .record_query("/work/current.db", "SELECT 'fast'", Some(10), false);
-        app.preferences
-            .record_query("/work/current.db", "SELECT 'slow'", Some(900), false);
+        for (db, sql, ms) in [
+            ("/work/other.db", "SELECT 'other'", 900),
+            ("/work/current.db", "SELECT 'fast'", 10),
+            ("/work/current.db", "SELECT 'slow'", 900),
+        ] {
+            app.preferences.record_query(db, sql, Some(ms), false);
+        }
         app.database.document.params = "[42]".into();
         let sequence = app.database.sequence;
-        click(&mut app, &ctx, TestPanel::History, "Slow queries only");
+        click(&mut app, &ctx, History, "Slow queries only");
         assert!(app.database.tools.slow_only);
-        let output = frame(&mut app, &ctx, TestPanel::History, 240.0, vec![]);
+        let output = frame(&mut app, &ctx, History, 240.0, vec![]);
         assert_eq!(
             nodes(&output)
                 .iter()
@@ -876,12 +887,12 @@ mod tests {
                 .count(),
             1
         );
-        click(&mut app, &ctx, TestPanel::History, "Load history query");
+        click(&mut app, &ctx, History, "Load history query");
         assert_eq!(app.database.document.sql, "SELECT 'slow'");
         assert_eq!(app.database.document.params, "[]");
         assert_eq!(app.database.sequence, sequence);
         assert!(app.database.document.active.is_none());
-        click(&mut app, &ctx, TestPanel::History, "Delete history entry");
+        click(&mut app, &ctx, History, "Delete history entry");
         assert_eq!(app.preferences.query_history.len(), 2);
         assert!(
             app.preferences
@@ -899,19 +910,13 @@ mod tests {
         }
         app.preferences
             .record_query("", "SELECT 'λ legacy'", None, true);
-        click(&mut app, &ctx, TestPanel::History, "Slow queries only");
-        click(&mut app, &ctx, TestPanel::History, "Slowest first");
-        let output = frame(&mut app, &ctx, TestPanel::History, 240.0, vec![]);
-        let queries = output
-            .shapes
-            .iter()
-            .filter_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) if text.galley.job.text.starts_with("SELECT") => {
-                    Some(text.galley.job.text.as_str())
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>();
+        click(&mut app, &ctx, History, "Slow queries only");
+        click(&mut app, &ctx, History, "Slowest first");
+        let output = frame(&mut app, &ctx, History, 240.0, vec![]);
+        let queries: Vec<_> = test_ui::texts(&output)
+            .map(|t| t.galley.job.text.as_str())
+            .filter(|text| text.starts_with("SELECT"))
+            .collect();
         assert_eq!(
             queries,
             [
@@ -923,14 +928,15 @@ mod tests {
             ]
         );
         app.database.tools.history_search = "Λ LEGACY".into();
-        let output = frame(&mut app, &ctx, TestPanel::History, 240.0, vec![]);
+        let output = frame(&mut app, &ctx, History, 240.0, vec![]);
         for badge in ["Failed", "Legacy"] {
-            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == badge)));
+            let mut texts = test_ui::texts(&output);
+            assert!(texts.any(|t| t.galley.job.text == badge), "{badge}");
         }
-        click(&mut app, &ctx, TestPanel::History, "Load history query");
+        click(&mut app, &ctx, History, "Load history query");
         assert_eq!(app.database.document.sql, "SELECT 'λ legacy'");
         assert_eq!(app.database.sequence, sequence);
-        click(&mut app, &ctx, TestPanel::History, "Delete history entry");
+        click(&mut app, &ctx, History, "Delete history entry");
         assert!(
             app.preferences
                 .query_history
@@ -941,7 +947,7 @@ mod tests {
         app.database.tools.bookmark_name = "Example".into();
         app.preferences
             .bookmark("/work/other.db", "Other", "SELECT 'other'");
-        click(&mut app, &ctx, TestPanel::Saved, "Save current SQL");
+        click(&mut app, &ctx, Saved, "Save current SQL");
         assert_eq!(
             app.preferences.saved_queries[0].database,
             "/work/current.db"
@@ -949,11 +955,11 @@ mod tests {
         assert_eq!(app.preferences.saved_queries[0].name, "Example");
         app.database.document.sql.clear();
         app.database.document.params = "[42]".into();
-        click(&mut app, &ctx, TestPanel::Saved, "Load saved query");
+        click(&mut app, &ctx, Saved, "Load saved query");
         assert_eq!(app.database.document.sql, "SELECT 'saved'");
         assert_eq!(app.database.document.params, "[]");
         assert!(app.database.document.active.is_none());
-        click(&mut app, &ctx, TestPanel::Saved, "Delete saved query");
+        click(&mut app, &ctx, Saved, "Delete saved query");
         assert_eq!(app.preferences.saved_queries.len(), 1);
         assert_eq!(app.preferences.saved_queries[0].database, "/work/other.db");
         for (name, mode) in [
@@ -961,7 +967,7 @@ mod tests {
             ("Dark theme", Mode::Dark),
             ("Follow system", Mode::System),
         ] {
-            click(&mut app, &ctx, TestPanel::Settings, name);
+            click(&mut app, &ctx, Settings, name);
             assert_eq!(app.preferences.appearance, Some(mode));
         }
     }
@@ -973,73 +979,50 @@ mod tests {
                 .record_query(db, "SELECT 1", Some(10), false);
             app.preferences.bookmark(db, "Example", "SELECT 1");
         }
+        let lengths = |app: &App| {
+            let preferences = &app.preferences;
+            (
+                preferences.query_history.len(),
+                preferences.saved_queries.len(),
+            )
+        };
         app.database.tools.database_scope = "/work/current.db".into();
         // Filters affect the list, but clearing still applies to this entire file.
         app.database.tools.history_search = "no match".into();
         app.database.tools.bookmark_search = "no match".into();
-        click(
-            &mut app,
-            &ctx,
-            TestPanel::History,
-            "Clear history for current.db",
-        );
-        click(
-            &mut app,
-            &ctx,
-            TestPanel::Saved,
-            "Clear saved queries for current.db",
-        );
-        assert_eq!(app.preferences.query_history.len(), 2);
-        assert_eq!(app.preferences.saved_queries.len(), 2);
-        for db in ["/work/other.db", ""] {
-            assert!(
-                app.preferences
-                    .query_history
-                    .iter()
-                    .any(|q| q.database == db)
-            );
-            assert!(
-                app.preferences
-                    .saved_queries
-                    .iter()
-                    .any(|q| q.database == db)
-            );
+        let headings = [
+            (History, "Clear history for current.db"),
+            (Saved, "Clear saved queries for current.db"),
+        ];
+        for (panel, name) in headings {
+            click(&mut app, &ctx, panel, name);
         }
-        for (panel, name) in [
-            (TestPanel::History, "Clear history for current.db"),
-            (TestPanel::Saved, "Clear saved queries for current.db"),
-        ] {
-            let output = frame(&mut app, &ctx, panel, 240.0, vec![]);
-            assert_disabled(&output, name);
+        assert_eq!(lengths(&app), (2, 2));
+        for db in ["/work/other.db", ""] {
+            let preferences = &app.preferences;
+            assert!(preferences.query_history.iter().any(|q| q.database == db));
+            assert!(preferences.saved_queries.iter().any(|q| q.database == db));
+        }
+        for (panel, name) in headings {
+            assert_disabled(&frame(&mut app, &ctx, panel, 240.0, vec![]), name);
         }
         // A missing database scope must never classify legacy entries as local.
         app.database.tools.database_scope.clear();
-        click(&mut app, &ctx, TestPanel::History, "Clear history for ");
-        click(&mut app, &ctx, TestPanel::Saved, "Clear saved queries for ");
-        assert_eq!(app.preferences.query_history.len(), 2);
-        assert_eq!(app.preferences.saved_queries.len(), 2);
+        click(&mut app, &ctx, History, "Clear history for ");
+        click(&mut app, &ctx, Saved, "Clear saved queries for ");
+        assert_eq!(lengths(&app), (2, 2));
         assert!(app.database.session.is_none());
         app.settings.page = Page::Queries;
-        click(
-            &mut app,
-            &ctx,
-            TestPanel::Settings,
-            "Clear history for all databases",
-        );
-        assert!(app.preferences.query_history.is_empty());
-        assert_eq!(app.preferences.saved_queries.len(), 2);
-        click(
-            &mut app,
-            &ctx,
-            TestPanel::Settings,
-            "Clear saved queries for all databases",
-        );
-        assert!(app.preferences.saved_queries.is_empty());
-        let output = frame(&mut app, &ctx, TestPanel::Settings, 240.0, vec![]);
-        for name in [
+        let everywhere = [
             "Clear history for all databases",
             "Clear saved queries for all databases",
-        ] {
+        ];
+        for (name, left) in everywhere.into_iter().zip([(0, 2), (0, 0)]) {
+            click(&mut app, &ctx, Settings, name);
+            assert_eq!(lengths(&app), left, "{name}");
+        }
+        let output = frame(&mut app, &ctx, Settings, 240.0, vec![]);
+        for name in everywhere {
             assert_disabled(&output, name);
         }
     }

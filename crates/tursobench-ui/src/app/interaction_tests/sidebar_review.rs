@@ -4,7 +4,7 @@ use super::{
     wait_until,
 };
 const SIZE: egui::Vec2 = egui::vec2(1280.0, 720.0);
-fn second_db(dir: &tempfile::TempDir) -> std::path::PathBuf {
+pub(super) fn second_db(dir: &tempfile::TempDir) -> std::path::PathBuf {
     let path = dir.path().join("second.db");
     crate::test_support::create(
         &path,
@@ -66,8 +66,11 @@ fn retained_outcomes_are_navigable_and_drafts_keep_their_file_identity() {
     assert!(app.database.uncertain_edit);
 }
 
-fn open_second(app: &mut App, ctx: &egui::Context, dir: &tempfile::TempDir) -> (u64, String) {
-    let path = second_db(dir);
+pub(super) fn open_second(
+    app: &mut App,
+    ctx: &egui::Context,
+    path: std::path::PathBuf,
+) -> (u64, String) {
     app.request_database(ctx, path.clone());
     inspect_selected(app, ctx);
     app.open(ctx);
@@ -75,10 +78,19 @@ fn open_second(app: &mut App, ctx: &egui::Context, dir: &tempfile::TempDir) -> (
     (app.database.id, path.to_string_lossy().into_owned())
 }
 #[test]
-fn review_closing_background_row_keeps_active_database() {
+fn cancelled_review_and_closing_a_background_row_keep_the_active_database() {
     let (d, ctx, mut app) = fixture(&["CREATE TABLE items(id INTEGER PRIMARY KEY)"], false);
     let first = app.database.id;
-    let (_second, path) = open_second(&mut app, &ctx, &d);
+    let second = second_db(&d);
+    app.request_database(&ctx, second.clone());
+    inspect_selected(&mut app, &ctx);
+    click_control(&mut app, &ctx, "Cancel");
+    frame_at(&mut app, &ctx, SIZE, vec![]);
+    assert_eq!(
+        app.database.id, first,
+        "Cancel restores the previous database"
+    );
+    let (_, path) = open_second(&mut app, &ctx, second);
     app.select_workspace(first);
     click_control(&mut app, &ctx, &format!("Close database: {path}"));
     wait_until(&mut app, &ctx, |a| {
@@ -89,27 +101,8 @@ fn review_closing_background_row_keeps_active_database() {
             == 1
     });
     frame_at(&mut app, &ctx, SIZE, vec![]);
-    assert_eq!(
-        app.database.id, first,
-        "active database should stay {first}"
-    );
-    assert!(
-        app.database.session.is_some(),
-        "active workspace should be a live database"
-    );
-}
-#[test]
-fn review_cancel_access_review_returns_to_previous_database() {
-    let (d, ctx, mut app) = fixture(&["CREATE TABLE items(id INTEGER PRIMARY KEY)"], false);
-    let first = app.database.id;
-    app.request_database(&ctx, second_db(&d));
-    inspect_selected(&mut app, &ctx);
-    click_control(&mut app, &ctx, "Cancel");
-    frame_at(&mut app, &ctx, SIZE, vec![]);
-    assert_eq!(
-        app.database.id, first,
-        "Cancel should restore the previous database"
-    );
+    assert_eq!(app.database.id, first, "the active database stays");
+    assert!(app.database.session.is_some(), "and stays live");
 }
 #[test]
 fn cancelling_a_picker_restores_the_database_and_its_drafts() {
@@ -131,7 +124,7 @@ fn cancelling_a_picker_restores_the_database_and_its_drafts() {
 fn active_close_chooses_an_open_database_and_last_close_clears_access() {
     let (dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], true);
     let first = app.database.id;
-    let (second, _) = open_second(&mut app, &ctx, &dir);
+    let (second, _) = open_second(&mut app, &ctx, second_db(&dir));
     app.request_sidebar_close(second);
     assert!(!app.database.confirm_close);
     wait_until(&mut app, &ctx, |a| a.database.id == first);
@@ -144,17 +137,9 @@ fn active_close_chooses_an_open_database_and_last_close_clears_access() {
 }
 #[test]
 fn search_keyboard_pages_and_opens_the_highlighted_result() {
-    let (dir, ctx, mut app) = fixture(
-        &[
-            "CREATE TABLE aa_one(id INTEGER)",
-            "CREATE TABLE aa_two(id INTEGER)",
-            "CREATE TABLE aa_three(id INTEGER)",
-            "CREATE TABLE aa_four(id INTEGER)",
-            "CREATE TABLE aa_five(id INTEGER)",
-            "CREATE TABLE aa_six(id INTEGER)",
-        ],
-        false,
-    );
+    let tables = ["one", "two", "three", "four", "five", "six"]
+        .map(|name| format!("CREATE TABLE aa_{name}(id INTEGER)"));
+    let (dir, ctx, mut app) = fixture(&tables.each_ref().map(String::as_str), false);
     let active = app.database.id;
     app.preferences.discovery.record_open(second_db(&dir), 1);
     app.databases = crate::app::databases::Chooser::new(&app.preferences.discovery);
@@ -205,10 +190,14 @@ fn this_database_filters_the_schema_tree_and_opens_a_matching_column() {
     let (_dir, ctx, mut app) = fixture(
         &[
             "CREATE TABLE messages(id INTEGER PRIMARY KEY, needle TEXT, unrelated TEXT)",
-            "CREATE TABLE other(id INTEGER PRIMARY KEY)",
+            "CREATE TABLE other(id INTEGER PRIMARY KEY, message INTEGER REFERENCES messages(id))",
+            "CREATE INDEX msg_index ON messages(needle)",
         ],
         false,
     );
+    for (table, related) in [("messages", "other"), ("other", "messages")] {
+        assert_eq!(app.related_tables(table), [related.to_owned()].into());
+    }
     app.sidebar_search.scope = super::super::database_navigation::Scope::ThisDatabase;
     app.sidebar_search.query = "needle".into();
     app.sidebar_search.focus = true;
@@ -225,6 +214,15 @@ fn this_database_filters_the_schema_tree_and_opens_a_matching_column() {
         app.database.document.tools.highlight_column,
         Some(("messages".into(), "needle".into()))
     );
+    // The tree's own rows do the same, and an index shows its definition.
+    app.database.document.tools.highlight_column = None;
+    click_control(&mut app, &ctx, "needle");
+    assert!(app.database.document.tools.highlight_column.is_some());
+    app.sidebar_search.query = "msg_index".into();
+    frame_at(&mut app, &ctx, SIZE, vec![]);
+    click_control(&mut app, &ctx, "msg_index");
+    let ddl = app.database.document.tools.ddl.as_ref();
+    assert_eq!(ddl.map(|o| o.name.as_str()), Some("msg_index"));
     close_and_wait(&mut app, &ctx);
 }
 #[test]

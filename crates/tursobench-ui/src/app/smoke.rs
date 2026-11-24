@@ -107,6 +107,40 @@ impl App {
         }
         let stage = smoke.stage;
         match stage {
+            0..=2 | 7 | 9 | 10 => self.smoke_startup(ctx, &mut smoke),
+            3 | 4 | 6 | 8 => self.smoke_queries(&mut smoke),
+            20..=31 => self.smoke_capture_workspace(ctx, &mut smoke),
+            39..=45 if self.smoke_capture_scenes(ctx, &mut smoke) => return,
+            60..=74 => self.smoke_workbench(ctx, &mut smoke),
+            5 if self.database.session.is_none() => {
+                assert!(
+                    self.database.status.contains("cleanup confirmed"),
+                    "{}",
+                    self.database.status
+                );
+                if smoke.capture_dir.is_some() {
+                    // Capture-only pass uses the disposable fixture with real writable
+                    // access. Stage locally to exercise edit surfaces; never commit.
+                    self.database.writable = true;
+                    smoke.stage = 39;
+                } else {
+                    eprintln!(
+                        "DESKTOP SMOKE PASSED: open, schema, page, diagram, typed query, read-only rejection, profile, admin, database cycling, close; elapsed {:?}",
+                        smoke.start.elapsed()
+                    );
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    return;
+                }
+            }
+            _ => {}
+        }
+        self.smoke = Some(smoke);
+        // Automated smoke mode only; normal rendering is event-driven.
+        ctx.request_repaint_after(Duration::from_millis(25));
+    }
+    /// Open the fixture, browse its first page, show Structure and the map.
+    fn smoke_startup(&mut self, ctx: &egui::Context, smoke: &mut Smoke) {
+        match smoke.stage {
             0 => {
                 self.database.writable = false;
                 // The desktop smoke runner intentionally uses a closed SQLite
@@ -115,11 +149,7 @@ impl App {
                     smoke.stage = 1;
                 }
             }
-            1 if self.database.ready
-                && self.database.document.active.is_none()
-                && self.database.catalog_ticket.is_none()
-                && self.database.ui.diagram.ticket.is_none() =>
-            {
+            1 if self.smoke_loaded() && self.database.document.active.is_none() => {
                 assert_eq!(self.database.document.ui.nav, shell::Nav::Overview);
                 assert!(self.database.ui.diagram.data.is_some());
                 self.browse_table(smoke.table.clone());
@@ -144,13 +174,17 @@ impl App {
             7 if self.database.ui.diagram.ticket.is_none() => {
                 self.select_diagram_table(&smoke.table);
                 smoke.stage = if smoke.capture_dir.is_some() {
-                    self.start_captures(ctx, &smoke)
+                    self.start_captures(ctx, smoke)
                 } else {
                     8
                 };
             }
-            20..=31 => self.smoke_capture_workspace(ctx, &mut smoke),
-            39..=45 if self.smoke_capture_scenes(ctx, &mut smoke) => return,
+            _ => {}
+        }
+    }
+    /// A typed parameter, full-text search, a rejected read-only write and a profile.
+    fn smoke_queries(&mut self, smoke: &mut Smoke) {
+        match smoke.stage {
             8 => {
                 self.database
                     .document
@@ -187,19 +221,9 @@ impl App {
                 smoke.stage = 4;
             }
             4 if self.database.document.active.is_none() => {
-                assert_eq!(
-                    self.database
-                        .document
-                        .result
-                        .completion
-                        .as_ref()
-                        .unwrap()
-                        .error
-                        .as_ref()
-                        .unwrap()
-                        .kind,
-                    ErrorKind::ReadOnly
-                );
+                let completion = self.database.document.result.completion.as_ref();
+                let error = completion.and_then(|c| c.error.as_ref());
+                assert_eq!(error.map(|e| &e.kind), Some(&ErrorKind::ReadOnly));
                 let column = self.diagram_columns(&smoke.table)[0].name.clone();
                 self.run_profile(tursobench_db::profile::Request {
                     table: smoke.table.clone(),
@@ -208,33 +232,8 @@ impl App {
                 });
                 smoke.stage = 60;
             }
-            60..=74 => self.smoke_workbench(ctx, &mut smoke),
-            5 if self.database.session.is_none() => {
-                assert!(
-                    self.database.status.contains("cleanup confirmed"),
-                    "{}",
-                    self.database.status
-                );
-                if smoke.capture_dir.is_some() {
-                    // Capture-only pass uses the disposable fixture with real writable
-                    // access. Stage locally to exercise edit surfaces; never commit.
-                    self.database.writable = true;
-
-                    smoke.stage = 39;
-                } else {
-                    eprintln!(
-                        "DESKTOP SMOKE PASSED: open, schema, page, diagram, typed query, read-only rejection, profile, admin, database cycling, close; elapsed {:?}",
-                        smoke.start.elapsed()
-                    );
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    return;
-                }
-            }
             _ => {}
         }
-        self.smoke = Some(smoke);
-        // Automated smoke mode only; normal rendering is event-driven.
-        ctx.request_repaint_after(Duration::from_millis(25));
     }
     fn smoke_workbench(&mut self, ctx: &egui::Context, smoke: &mut Smoke) {
         match smoke.stage {
@@ -274,10 +273,7 @@ impl App {
                 }
             }
             64 if self.smoke_open(ctx) => smoke.stage = 65,
-            65 if self.database.ready
-                && self.database.catalog_ticket.is_none()
-                && self.database.ui.diagram.ticket.is_none() =>
-            {
+            65 if self.smoke_loaded() => {
                 self.run_text("SELECT count(*) FROM items".into(), None);
                 smoke.stage = 66;
             }
@@ -514,10 +510,7 @@ impl App {
         let spreadsheet = std::env::var_os("TURSOBENCH_SPREADSHEET_CAPTURE").is_some();
         match smoke.stage {
             39 if self.smoke_open(ctx) => smoke.stage = 40,
-            40 if self.database.ready
-                && self.database.catalog_ticket.is_none()
-                && self.database.ui.diagram.ticket.is_none() =>
-            {
+            40 if self.smoke_loaded() => {
                 self.browse_table(smoke.table.clone());
                 smoke.stage = 41;
             }
@@ -660,6 +653,11 @@ impl App {
     }
     /// Open the fixture, opting into Turso for a closed SQLite file as the
     /// desktop smoke intends. Returns whether a session started.
+    /// The opened database has its catalog and relationships.
+    fn smoke_loaded(&self) -> bool {
+        let database = &self.database;
+        database.ready && database.catalog_ticket.is_none() && database.ui.diagram.ticket.is_none()
+    }
     fn smoke_open(&mut self, ctx: &egui::Context) -> bool {
         if self.databases.inspection.kind(&self.database.path)
             == crate::discovery::DatabaseKind::LikelySqlite

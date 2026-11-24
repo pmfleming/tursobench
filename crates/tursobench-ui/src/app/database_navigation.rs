@@ -1,6 +1,7 @@
 use super::{
     App,
     icons::{self, Icon},
+    presentation::{self, Intent},
     sessions::DatabaseWorkspace,
 };
 use eframe::egui;
@@ -28,6 +29,12 @@ pub(super) struct Search {
     pub available_highlight: Option<std::path::PathBuf>,
     pub available_collapsed: bool,
     pub tree_highlight: Option<(String, Option<String>)>,
+}
+impl Search {
+    /// Whether a search of this database is filtering the schema tree.
+    pub(super) fn filters_tree(&self) -> bool {
+        self.scope == Scope::ThisDatabase && !self.query.trim().is_empty()
+    }
 }
 
 enum Target {
@@ -64,9 +71,7 @@ impl App {
             // open over a database other than the one it was opened for.
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::P)) {
                 self.database.ui.palette_open = false;
-                self.sidebar_search.focus = true;
-                self.show_sidebar();
-                self.database.ui.sidebar = super::shell::ToolPanel::Schema;
+                self.find_in_sidebar();
             }
             return;
         }
@@ -79,10 +84,14 @@ impl App {
             || !ctx.egui_wants_keyboard_input()
                 && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Slash))
         {
-            self.show_sidebar();
-            self.sidebar_search.focus = true;
-            self.database.ui.sidebar = super::shell::ToolPanel::Schema;
+            self.find_in_sidebar();
         }
+    }
+    /// Focus the sidebar search, revealing a hidden sidebar.
+    pub(super) fn find_in_sidebar(&mut self) {
+        self.show_sidebar();
+        self.sidebar_search.focus = true;
+        self.database.ui.sidebar = super::shell::ToolPanel::Schema;
     }
 
     pub(super) fn sidebar_search_ui(&mut self, ui: &mut egui::Ui) {
@@ -206,6 +215,26 @@ impl App {
         chosen.filter(|&i| i < count)
     }
 
+    pub(super) fn access_dialog(&mut self, ctx: &egui::Context) {
+        if !self.database.ui.access_dialog {
+            return;
+        }
+        let mut open = true;
+        let access = icons::access_mode(ctx, !self.database.writable);
+        presentation::dialog(ctx, format!("Reopen: {}?", access.name), &mut open)
+            .anchor(egui::Align2::LEFT_BOTTOM, [12.0,-48.0]).max_width((ctx.content_rect().width()-40.0).min(520.0)).collapsible(false).show(ctx, |ui| {
+                presentation::notice(ui, access.icon, Intent::Pending,"The current session will close and roll back any open transaction before reopening. Local drafts will be discarded. Committed writes are not undone.");
+                if !self.database.writable { ui.label("Back up the closed database with its WAL state before editing. SQL writes autocommit unless you BEGIN; grid edits are staged for review."); }
+                ui.label("File locks and shared WAL coordination will be checked again when reopening.");
+                if presentation::footer(ui, |ui| ui.add_enabled(self.database.ready && !self.database.closing && self.database.commit_ticket.is_none() && !self.database.uncertain_edit,
+                    presentation::action(ui,"Close cleanly and reopen",Intent::Pending))).inner.clicked() {
+                    self.database.pending_access = Some(!self.database.writable);
+                    self.database.ui.access_dialog = false;
+                    self.close();
+                }
+            });
+        self.database.ui.access_dialog &= open;
+    }
     pub(super) fn begin_database_browse(&mut self, ctx: &egui::Context) {
         if self.new_workspace(ctx) {
             self.sidebar_search.query.clear();
@@ -240,31 +269,7 @@ impl App {
                 });
             }
             if scope != Scope::Databases {
-                let graph = database
-                    .ui
-                    .diagram
-                    .data
-                    .as_ref()
-                    .filter(|_| !database.ui.diagram.stale);
-                let objects: Vec<_> = super::commands::objects(&database.schema, graph)
-                    .filter(|object| {
-                        if scope == Scope::ThisDatabase {
-                            object.matches_name(query)
-                        } else {
-                            super::commands::fuzzy(&object.label(), query)
-                        }
-                    })
-                    .collect();
-                let limit = if scope == Scope::AllOpen { 6 } else { 100 };
-                let extra = objects.len().saturating_sub(limit);
-                for (index, object) in objects.into_iter().take(limit).enumerate() {
-                    results.push(SearchResult {
-                        group: file.clone(),
-                        label: object.label(),
-                        target: Target::Object(database.id, object.command()),
-                        more: if index + 1 == limit { extra } else { 0 },
-                    });
-                }
+                object_matches(database, &file, query, scope, &mut results);
             }
         }
         if scope != Scope::ThisDatabase {
@@ -471,7 +476,7 @@ impl App {
                     if ui.button("Keep open").clicked() {
                         self.cancel_sidebar_close();
                     }
-                    if ui.add(super::presentation::action(ui, "Roll back & close", super::presentation::Intent::Pending)).clicked() {
+                    if ui.add(presentation::action(ui, "Roll back & close", Intent::Pending)).clicked() {
                         self.close();
                     }
                 });
@@ -501,6 +506,21 @@ impl App {
             }
         });
     }
+    /// Under the active database's row: its close decision, or its tools and tree.
+    fn active_database_ui(&mut self, ui: &mut egui::Ui) {
+        if self.database.confirm_close {
+            self.inline_close_confirmation_ui(ui);
+            return;
+        }
+        ui.indent(("active-database", self.database.id), |ui| {
+            if self.database.session.is_none() {
+                self.retained_database_ui(ui);
+            } else {
+                self.database_tools_ui(ui);
+                self.active_database_tree_ui(ui);
+            }
+        });
+    }
     pub(super) fn open_databases_ui(&mut self, ui: &mut egui::Ui) {
         let mut ids: Vec<_> = std::iter::once(&self.database)
             .chain(self.parked.values())
@@ -525,17 +545,8 @@ impl App {
                         &self.parked[&id]
                     };
                     let result = open_database_row(ui, database, active, enabled);
-                    if active && self.database.confirm_close {
-                        self.inline_close_confirmation_ui(ui);
-                    } else if active {
-                        ui.indent(("active-database", id), |ui| {
-                            if self.database.session.is_none() {
-                                self.retained_database_ui(ui);
-                            } else {
-                                self.database_tools_ui(ui);
-                                self.active_database_tree_ui(ui);
-                            }
-                        });
+                    if active {
+                        self.active_database_ui(ui);
                     }
                     result
                 })
@@ -555,6 +566,37 @@ impl App {
         }
     }
 }
+/// The schema objects and columns of `database` that match `query`, the last
+/// one shown counting how many more matched.
+fn object_matches(
+    database: &DatabaseWorkspace,
+    group: &str,
+    query: &str,
+    scope: Scope,
+    results: &mut Vec<SearchResult>,
+) {
+    let diagram = &database.ui.diagram;
+    let graph = diagram.data.as_ref().filter(|_| !diagram.stale);
+    let objects: Vec<_> = super::commands::objects(&database.schema, graph)
+        .filter(|object| {
+            if scope == Scope::ThisDatabase {
+                object.matches_name(query)
+            } else {
+                super::commands::fuzzy(&object.label(), query)
+            }
+        })
+        .collect();
+    let limit = if scope == Scope::AllOpen { 6 } else { 100 };
+    let extra = objects.len().saturating_sub(limit);
+    let shown = objects.into_iter().take(limit).enumerate();
+    results.extend(shown.map(|(index, object)| SearchResult {
+        group: group.to_owned(),
+        label: object.label(),
+        target: Target::Object(database.id, object.command()),
+        more: if index + 1 == limit { extra } else { 0 },
+    }));
+}
+
 fn database_detail(database: &DatabaseWorkspace, drafts: usize) -> String {
     if database.closing {
         return "Closing…".into();

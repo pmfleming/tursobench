@@ -65,10 +65,7 @@ impl App {
                 self.open(ctx);
                 smoke.stage = 54;
             }
-            54 if self.database.ready
-                && self.database.catalog_ticket.is_none()
-                && self.database.ui.diagram.ticket.is_none() =>
-            {
+            54 if self.smoke_loaded() => {
                 self.browse_table(smoke.table.clone());
                 self.load_diagram();
                 smoke.stage = 55;

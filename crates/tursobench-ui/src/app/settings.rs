@@ -244,7 +244,12 @@ impl App {
             .max(1);
             ui.horizontal(|ui| {
                 ui.strong(format!("{count} databases"));
-                reopen_mark(ui, "Changes apply to new opens. Existing work stays open.");
+                icons::hint(
+                    ui,
+                    Icon::Refresh,
+                    13.0,
+                    "Changes apply to new opens. Existing work stays open.",
+                );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
                         .add_enabled_ui(
@@ -524,7 +529,7 @@ fn preference_row(
     ui.horizontal(|ui| {
         let label = ui.label(label).on_hover_text(tooltip);
         if reopen {
-            reopen_mark(ui, tooltip);
+            icons::hint(ui, Icon::Refresh, 13.0, tooltip);
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             control(ui).labelled_by(label.id).on_hover_text(tooltip)
@@ -596,7 +601,7 @@ fn limit_row(
                     ui.set_min_width(columns.label);
                     let label = ui.label(limit.label).on_hover_text(limit.tooltip);
                     if limit.reopen {
-                        reopen_mark(ui, limit.tooltip);
+                        icons::hint(ui, Icon::Refresh, 13.0, limit.tooltip);
                     }
                     label
                 },
@@ -648,17 +653,6 @@ fn format_ms(ms: u64) -> String {
     }
 }
 
-fn reopen_mark(ui: &mut egui::Ui, tooltip: &str) {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(13.0, 13.0), egui::Sense::hover());
-    icons::paint(
-        ui.painter(),
-        rect,
-        Icon::Refresh,
-        ui.visuals().weak_text_color(),
-    );
-    response.on_hover_text(tooltip);
-}
-
 /// Every button, text field, slider and spin button lies inside `width`.
 #[cfg(test)]
 pub(super) fn assert_controls_fit(output: &egui::FullOutput, width: f32, case: &str) {
@@ -685,6 +679,21 @@ mod tests {
     use super::{Mode, Page, assert_controls_fit, egui, format_ms, round_limit};
     use crate::app::test_ui::{self, control, nodes, pointer, render};
 
+    const PAGES: [Page; 4] = [
+        Page::Appearance,
+        Page::Discovery,
+        Page::Resources,
+        Page::Queries,
+    ];
+    fn settings(
+        ctx: &egui::Context,
+        app: &mut crate::app::App,
+        size: egui::Vec2,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        render(ctx, size, events, |ui| app.settings_ui(ui))
+    }
+
     #[test]
     fn settings_pages_fit_narrow_and_wide_windows_with_scaled_text() {
         for dark in [false, true] {
@@ -696,17 +705,10 @@ mod tests {
                 app.preferences.query_timeout_ms = 3_600_000;
                 app.preferences.null_display = "n".repeat(32);
                 for width in [280.0, 440.0, 640.0, 900.0] {
-                    for page in [
-                        Page::Appearance,
-                        Page::Discovery,
-                        Page::Resources,
-                        Page::Queries,
-                    ] {
+                    for page in PAGES {
                         app.settings.page = page;
                         for _ in 0..2 {
-                            let output = render(&ctx, egui::vec2(width, 600.0), vec![], |ui| {
-                                app.settings_ui(ui)
-                            });
+                            let output = settings(&ctx, &mut app, egui::vec2(width, 600.0), vec![]);
                             assert_controls_fit(
                                 &output,
                                 width,
@@ -723,9 +725,7 @@ mod tests {
     fn query_limits_are_sliders_with_readable_values() {
         let (ctx, mut app) = test_ui::app();
         app.settings.page = Page::Queries;
-        let output = render(&ctx, egui::vec2(440.0, 600.0), vec![], |ui| {
-            app.settings_ui(ui)
-        });
+        let output = settings(&ctx, &mut app, egui::vec2(440.0, 600.0), vec![]);
         let sliders = nodes(&output)
             .iter()
             .filter(|(_, node)| node.role() == egui::Role::Slider)
@@ -745,7 +745,7 @@ mod tests {
     fn editing_a_preference_saves_when_switching_pages() {
         let (ctx, mut app) = test_ui::app();
         let size = egui::vec2(640.0, 540.0);
-        let output = render(&ctx, size, vec![], |ui| app.settings_ui(ui));
+        let output = settings(&ctx, &mut app, size, vec![]);
         let bounds = nodes(&output)
             .iter()
             .find_map(|(_, node)| {
@@ -760,16 +760,19 @@ mod tests {
         );
         let click = |app: &mut crate::app::App, pos| {
             for pressed in [true, false] {
-                render(&ctx, size, pointer(pos, pressed), |ui| app.settings_ui(ui));
+                settings(&ctx, app, size, pointer(pos, pressed));
             }
         };
         click(&mut app, pos);
-        render(&ctx, size, vec![egui::Event::Text("marker".into())], |ui| {
-            app.settings_ui(ui)
-        });
+        settings(
+            &ctx,
+            &mut app,
+            size,
+            vec![egui::Event::Text("marker".into())],
+        );
         assert!(app.preferences.null_display.contains("marker"));
         assert!(app.settings.dirty);
-        let output = render(&ctx, size, vec![], |ui| app.settings_ui(ui));
+        let output = settings(&ctx, &mut app, size, vec![]);
         click(
             &mut app,
             control(&output, "Queries and SQL recovery").center(),
@@ -789,14 +792,7 @@ mod tests {
         for _ in 0..3 {
             render(&ctx, size, vec![], |ui| app.render(ui));
         }
-        for page in [
-            Page::Appearance,
-            Page::Discovery,
-            Page::Resources,
-            Page::Queries,
-            Page::Discovery,
-            Page::Queries,
-        ] {
+        for page in PAGES.into_iter().chain([Page::Discovery, Page::Queries]) {
             app.settings.page = page;
             for _ in 0..3 {
                 let output = render(&ctx, size, vec![], |ui| app.render(ui));
