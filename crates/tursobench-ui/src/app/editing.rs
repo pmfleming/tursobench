@@ -580,26 +580,21 @@ impl App {
         ui.label(&self.database.status);
     }
     pub(super) fn staged_edit_dock(&mut self, ui: &mut egui::Ui) {
-        let tokens = crate::appearance::Tokens::of(ui.ctx());
+        let pending = presentation::intent_color(ui, Intent::Pending);
         egui::Frame::new()
-            .fill(tokens.pending.gamma_multiply(0.08))
+            .fill(pending.gamma_multiply(0.08))
             .inner_margin(egui::Margin::symmetric(4, 2))
             .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| self.staged_edit_actions(ui, tokens));
+                ui.horizontal_wrapped(|ui| self.staged_edit_actions(ui, pending));
             });
     }
     /// The staged count, then commit, review and discard, and the commit's state.
-    fn staged_edit_actions(&mut self, ui: &mut egui::Ui, tokens: crate::appearance::Tokens) {
-        let count = self
-            .database
-            .document
-            .drafts
-            .as_ref()
-            .map_or(0, |d| d.edits.len());
-        ui.colored_label(tokens.pending, format!("{count} staged"));
-        let commit = egui::Button::new(egui::RichText::new("Commit").color(tokens.pending))
-            .fill(tokens.pending.gamma_multiply(0.13))
-            .stroke(egui::Stroke::new(1.0, tokens.pending.gamma_multiply(0.48)));
+    fn staged_edit_actions(&mut self, ui: &mut egui::Ui, pending: egui::Color32) {
+        let drafts = self.database.document.drafts.as_ref();
+        let count = drafts.map_or(0, |d| d.edits.len());
+        ui.colored_label(pending, format!("{count} staged"));
+        // The dock's row keeps the buttons at their natural height.
+        let commit = presentation::action(ui, "Commit", Intent::Pending).min_size(egui::Vec2::ZERO);
         if ui
             .add_enabled(self.can_edit() && count > 0, commit)
             .clicked()
@@ -667,7 +662,7 @@ fn edit_diff(ui: &mut egui::Ui, table: &tursobench_core::Table, edit: &Edit) {
             }
             ui.label("->");
             ui.colored_label(
-                crate::appearance::Tokens::of(ui.ctx()).pending,
+                presentation::intent_color(ui, Intent::Pending),
                 after.map_or_else(|| "DEFAULT / removed".into(), Value::preview),
             );
         });

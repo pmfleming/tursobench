@@ -13,11 +13,8 @@ fn select(app: &mut App, a: (usize, usize), b: (usize, usize)) {
     app.select_cell(b.0, b.1, true);
 }
 fn edits(app: &App) -> Vec<tursobench_core::Edit> {
-    app.database
-        .document
-        .drafts
-        .as_ref()
-        .map_or_else(Vec::new, |d| d.edits.clone())
+    let drafts = app.database.document.drafts.as_ref();
+    drafts.map_or_else(Vec::new, |d| d.edits.clone())
 }
 /// A writable fixture browsing table `t`, drawn once.
 fn table(statements: &[&str]) -> (tempfile::TempDir, egui::Context, App) {
@@ -174,21 +171,15 @@ fn spreadsheet_copy_paste_roundtrip_preserves_empty_null_blob_and_literal_marker
     }
     app.database.document.drafts = None;
     // The cell menu stages the same edits and undoes them, then filters by the stored value.
-    menu_entry(
-        &mut app,
-        &ctx,
-        (1, 1),
-        "Set selected cells to NULL Backspace",
-    );
+    let cell = (1, 1);
+    menu_entry(&mut app, &ctx, cell, "Set selected cells to NULL Backspace");
     assert_staged(&app, 1, 1, Value::Null);
-    menu_entry(&mut app, &ctx, (1, 1), "Undo last staged edit Ctrl Z");
+    menu_entry(&mut app, &ctx, cell, "Undo last staged edit Ctrl Z");
     assert!(!app.has_drafts());
-    menu_entry(&mut app, &ctx, (1, 1), "Filter = value Alt click");
+    menu_entry(&mut app, &ctx, cell, "Filter = value Alt click");
     let filter = &app.database.document.browse.as_ref().unwrap().filters[0];
-    assert_eq!(
-        (filter.column, &filter.value),
-        (1, &Value::Text("other".into()))
-    );
+    let other = Value::Text("other".into());
+    assert_eq!((filter.column, &filter.value), (1, &other));
     close_and_wait(&mut app, &ctx);
 }
 
@@ -215,17 +206,8 @@ fn spreadsheet_native_clipboard_fill_and_undo_are_grid_scoped() {
     app.start_inline(0, 1);
     frame(&mut app, &ctx, vec![]);
     frame(&mut app, &ctx, vec![egui::Event::Paste("inline".into())]);
-    assert!(
-        app.database
-            .document
-            .tools
-            .inline
-            .as_ref()
-            .unwrap()
-            .editor
-            .input
-            .contains("inline")
-    );
+    let inline = app.database.document.tools.inline.as_ref().unwrap();
+    assert!(inline.editor.input.contains("inline"));
     assert_staged(&app, 0, 1, Value::Text("native".into()));
     press_key(&mut app, &ctx, egui::Key::Escape, egui::Modifiers::NONE);
     app.database.document.drafts = None;

@@ -459,17 +459,13 @@ mod tests {
         ] {
             let editor = CellEditor::new(&value);
             assert_eq!(editor.parse().unwrap(), value);
-            assert_eq!(
-                CellEditor::inline(&value).is_some(),
-                !matches!(value, Value::Blob(_) | Value::Deferred(_))
-            );
+            let inline = !matches!(value, Value::Blob(_) | Value::Deferred(_));
+            assert_eq!(CellEditor::inline(&value).is_some(), inline);
         }
         let overhead = Value::Text(String::new()).bytes();
         for (len, allowed) in [(4096 - overhead, true), (4097 - overhead, false)] {
-            assert_eq!(
-                CellEditor::inline(&Value::Text("a".repeat(len))).is_some(),
-                allowed
-            );
+            let text = Value::Text("a".repeat(len));
+            assert_eq!(CellEditor::inline(&text).is_some(), allowed);
         }
         for (kind, input, expected) in [
             (CellKind::Text, "001", Value::Text("001".into())),
@@ -505,7 +501,10 @@ mod tests {
             app.copy_row(ui.ctx(), 1);
             app.copy_cell(ui.ctx(), 0, 2);
         });
-        let copied: Vec<_> = (output.platform_output.commands.iter())
+        let copied: Vec<_> = output
+            .platform_output
+            .commands
+            .iter()
             .filter_map(|command| match command {
                 egui::OutputCommand::CopyText(text) => Some(text.as_str()),
                 _ => None,
@@ -539,21 +538,15 @@ mod tests {
         assert!(app.database.document.tools.large.data.is_empty());
         app.value_event(chunk(7));
         let viewer = &app.database.document.tools.large;
-        assert_eq!(
-            (viewer.offset, viewer.data.as_slice()),
-            (16, b"a chunk".as_slice())
-        );
-        assert!(viewer.message.is_empty());
+        let loaded = (viewer.offset, &viewer.data[..], viewer.message.as_str());
+        assert_eq!(loaded, (16, &b"a chunk"[..], ""));
         app.database.document.tools.large.search = "chunk".into();
-        let mut output = None;
-        for _ in 0..2 {
-            let size = egui::vec2(800.0, 600.0);
-            output = Some(test_ui::render(&ctx, size, vec![], |ui| {
-                app.large_value_ui(ui.ctx())
-            }));
-        }
+        let size = egui::vec2(800.0, 600.0);
+        let mut draw = |ui: &mut egui::Ui| app.large_value_ui(ui.ctx());
+        test_ui::render(&ctx, size, vec![], &mut draw);
+        let output = test_ui::render(&ctx, size, vec![], draw);
         let found = "Match at preview position 2";
-        assert!(test_ui::texts(&output.unwrap()).any(|t| t.galley.text() == found));
+        assert!(test_ui::texts(&output).any(|t| t.galley.text() == found));
         app.value_event(EventKind::ValueSaved("/tmp/value".into()));
         assert_eq!(message(&app), "Saved full value to /tmp/value");
         app.value_event(EventKind::Failed(Failure::input("disk full")));

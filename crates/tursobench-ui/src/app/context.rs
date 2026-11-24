@@ -637,11 +637,8 @@ mod tests {
     fn cache_enforces_fifo_count_and_byte_limits_and_accounts_for_retries() {
         let mut reads = ContextReads::default();
         for i in 0..33 {
-            reads.remember(Cached::new(
-                i.to_string(),
-                ResultSet::default(),
-                String::new(),
-            ));
+            let empty = Cached::new(i.to_string(), ResultSet::default(), String::new());
+            reads.remember(empty);
         }
         assert_eq!(reads.cache.len(), 32);
         assert!(reads.cached("0").is_none());
@@ -664,11 +661,8 @@ mod tests {
         assert!(reads.cached("0").is_none());
         assert!(reads.cached("1").is_some());
         assert!(reads.cache_bytes <= 8 * 1024 * 1024);
-        reads.remember(Cached::new(
-            "oversized".into(),
-            ResultSet::default(),
-            "x".repeat(8 * 1024 * 1024 + 1),
-        ));
+        let error = "x".repeat(8 * 1024 * 1024 + 1);
+        reads.remember(Cached::new("oversized".into(), ResultSet::default(), error));
         assert!(reads.cache.is_empty());
         assert_eq!(reads.cache_bytes, 0);
     }

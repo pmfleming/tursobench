@@ -746,18 +746,13 @@ mod tests {
         assert_eq!(sheet.rows[0][0].text, "a\tb");
         assert_eq!(sheet.rows[0][1].text, "line\nλ");
         assert_eq!(sheet.rows[0][2].text, "a\"b");
-        assert_eq!(
-            cell_value(&sheet.rows[0][3], CellKind::Integer).unwrap(),
-            Value::Text(String::new())
-        );
-        assert_eq!(
-            cell_value(&sheet.rows[0][4], CellKind::Text).unwrap(),
-            Value::Null
-        );
-        assert_eq!(
-            cell_value(&sheet.rows[0][5], CellKind::Text).unwrap(),
-            Value::Text("\\N".into())
-        );
+        for (i, kind, expected) in [
+            (3, CellKind::Integer, Value::Text(String::new())),
+            (4, CellKind::Text, Value::Null),
+            (5, CellKind::Text, Value::Text("\\N".into())),
+        ] {
+            assert_eq!(cell_value(&sheet.rows[0][i], kind), Ok(expected));
+        }
         assert_eq!(
             Sheet::parse("a\tb\n\n").unwrap_err(),
             "Clipboard rows must all have the same number of columns"
@@ -781,18 +776,17 @@ mod tests {
             text: text.into(),
             quoted: false,
         };
-        assert_eq!(
-            cell_value(&field("9007199254740993"), CellKind::Integer).unwrap(),
-            Value::Integer(9007199254740993)
-        );
-        assert_eq!(
-            cell_value(&field("00ff"), CellKind::Blob).unwrap(),
-            Value::Blob(vec![0, 255])
-        );
-        assert_eq!(
-            cell_value(&field("001"), CellKind::Text).unwrap(),
-            Value::Text("001".into())
-        );
+        for (text, kind, expected) in [
+            (
+                "9007199254740993",
+                CellKind::Integer,
+                Value::Integer(9007199254740993),
+            ),
+            ("00ff", CellKind::Blob, Value::Blob(vec![0, 255])),
+            ("001", CellKind::Text, Value::Text("001".into())),
+        ] {
+            assert_eq!(cell_value(&field(text), kind), Ok(expected));
+        }
         for (text, kind) in [
             ("9223372036854775808", CellKind::Integer),
             ("1.5", CellKind::Integer),
