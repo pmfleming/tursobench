@@ -137,6 +137,11 @@ fn value_of(output: &egui::FullOutput, name: &str) -> Option<String> {
         .and_then(|(_, node)| node.value().map(str::to_owned))
 }
 
+/// What the header's model picker shows.
+fn picked(output: &egui::FullOutput) -> Option<String> {
+    value_of(output, "Assistant model picker")
+}
+
 /// Settings → Assistant, laid out.
 fn assistant_settings(app: &mut App, ctx: &egui::Context) -> egui::FullOutput {
     app.open_assistant_settings();
@@ -357,11 +362,8 @@ fn privacy_is_chosen_per_provider_and_reaches_the_agent() {
     assert!(labelled(&output, "AGENT SETTINGS") && labelled(&output, "Privacy"));
     // Fixed promises live in the docs, not the settings area.
     assert!(!labelled(&output, "Credentials stay with the CLI"));
-    press(
-        &mut app,
-        &ctx,
-        "Save conversations in Claude Code's history",
-    );
+    let history = "Save conversations in Claude Code's history";
+    press(&mut app, &ctx, history);
     press(&mut app, &ctx, "Tell the agent the database's file name");
     let privacy = &app.preferences.assistant.privacy;
     let claude = privacy.of(Provider::Claude);
@@ -377,19 +379,14 @@ fn privacy_is_chosen_per_provider_and_reaches_the_agent() {
     press(&mut app, &ctx, "Codex");
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
     assert_eq!(app.preferences.assistant.provider, Provider::Codex);
-    assert!(labelled(
-        &output,
-        "Save conversations in Claude Code's history"
-    ));
+    assert!(labelled(&output, history));
     // The "Settings for" choice switches it, and leaves the chat's agent alone.
     app.accounts.configuring = Some(Provider::Copilot);
     frame_at(&mut app, &ctx, SIZE, vec![]);
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
     assert_eq!(app.preferences.assistant.provider, Provider::Codex);
-    assert!(labelled(
-        &output,
-        "Telemetry and history follow Copilot CLI's own settings"
-    ));
+    let note = "Telemetry and history follow Copilot CLI's own settings";
+    assert!(labelled(&output, note));
     assert!(!labelled(&output, "Block analytics and telemetry"));
     press(&mut app, &ctx, "Claude Code");
     app.settings.open = false;
@@ -466,10 +463,7 @@ fn one_picker_changes_agent_model_and_favourites_with_each_agents_sharing() {
     assert_eq!(sharing(&app), Sharing::Schema);
     converse(&mut app, &ctx, "Hello");
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
-    assert_eq!(
-        value_of(&output, "Assistant model picker").as_deref(),
-        Some("Claude Code")
-    );
+    assert_eq!(picked(&output).as_deref(), Some("Claude Code"));
     press(&mut app, &ctx, "Assistant model picker");
     press(&mut app, &ctx, "Sonnet");
     assert_eq!(app.preferences.assistant.selected_model(), "sonnet");
@@ -505,10 +499,7 @@ fn one_picker_changes_agent_model_and_favourites_with_each_agents_sharing() {
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
     assert!(!labelled(&output, "Favourites"));
     assert!(labelled(&output, "Share the schema and query results"));
-    assert_eq!(
-        value_of(&output, "Assistant model picker").as_deref(),
-        Some("Test model")
-    );
+    assert_eq!(picked(&output).as_deref(), Some("Test model"));
     app.select_assistant_provider(Provider::Claude);
     assert_eq!(app.preferences.assistant.selected_model(), "opus");
     assert_eq!(sharing(&app), Sharing::Schema);
@@ -781,10 +772,7 @@ fn the_reasoning_level_changes_mid_conversation_and_follows_each_codex_model() {
     assert_eq!(level(&output).as_deref(), Some("Default"));
     press(&mut app, &ctx, "Reasoning Extra high");
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
-    assert_eq!(
-        value_of(&output, "Assistant model picker").as_deref(),
-        Some("Claude Code · Extra high")
-    );
+    assert_eq!(picked(&output).as_deref(), Some("Claude Code · Extra high"));
     assert_eq!(app.preferences.assistant.selected_effort(), "xhigh");
     // Unlike a model change, the conversation and its agent carry on.
     assert!(app.database.assistant.host().is_some());

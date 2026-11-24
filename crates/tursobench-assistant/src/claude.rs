@@ -234,62 +234,62 @@ fn set_effort(link: &mut Link, changes: &mut u64, level: Option<&str>) {
 mod tests {
     use super::{Path, Spec, Update, json, parse, serve};
     use crate::agent::Privacy;
-    fn parsed(line: &str) -> Vec<Update> {
-        parse(&serde_json::from_str(line).unwrap())
-    }
     #[test]
     fn stream_json_messages_become_updates() {
-        assert_eq!(
-            parsed(r#"{"type":"system","subtype":"init","model":"claude-x","tools":[]}"#),
-            [Update::Ready {
-                model: Some("claude-x".into())
-            }]
-        );
-        assert_eq!(
-            parsed(
-                r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}},"parent_tool_use_id":null}"#
+        let call = Update::ToolCall {
+            id: "t1".into(),
+            name: "run_query".into(),
+            input: json!({"sql": "SELECT 1"}),
+        };
+        let result = Update::ToolResult {
+            id: "t1".into(),
+            ok: false,
+            text: "{}".into(),
+        };
+        let ended = |error: Option<&str>| Update::TurnEnded {
+            error: error.map(str::to_owned),
+        };
+        let ready = Update::Ready {
+            model: Some("claude-x".into()),
+        };
+        let limit = Update::Notice("Your plan's usage limit is allowed warning".into());
+        for (line, expected) in [
+            (
+                r#"{"type":"system","subtype":"init","model":"claude-x","tools":[]}"#,
+                vec![ready],
             ),
-            [Update::Text("Hi".into())]
-        );
-        assert_eq!(
-            parsed(
-                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"x"},{"type":"tool_use","id":"t1","name":"mcp__tursobench__run_query","input":{"sql":"SELECT 1"}}]},"parent_tool_use_id":null}"#
+            (
+                r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}},"parent_tool_use_id":null}"#,
+                vec![Update::Text("Hi".into())],
             ),
-            [Update::ToolCall {
-                id: "t1".into(),
-                name: "run_query".into(),
-                input: json!({"sql": "SELECT 1"})
-            }]
-        );
-        assert_eq!(
-            parsed(
-                r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"{}"}],"is_error":true}]}}"#
+            (
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"x"},{"type":"tool_use","id":"t1","name":"mcp__tursobench__run_query","input":{"sql":"SELECT 1"}}]},"parent_tool_use_id":null}"#,
+                vec![call],
             ),
-            [Update::ToolResult {
-                id: "t1".into(),
-                ok: false,
-                text: "{}".into()
-            }]
-        );
-        assert_eq!(
-            parsed(r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#),
-            [Update::TurnEnded { error: None }]
-        );
-        assert_eq!(
-            parsed(
-                r#"{"type":"result","subtype":"success","is_error":true,"result":"Not logged in · Please run /login"}"#
+            (
+                r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"{}"}],"is_error":true}]}}"#,
+                vec![result],
             ),
-            [Update::TurnEnded {
-                error: Some("Not logged in · Please run /login".into())
-            }]
-        );
-        assert_eq!(
-            parsed(r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning"}}"#),
-            [Update::Notice(
-                "Your plan's usage limit is allowed warning".into()
-            )]
-        );
-        assert!(parsed(r#"{"type":"control_response"}"#).is_empty());
+            (
+                r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#,
+                vec![ended(None)],
+            ),
+            (
+                r#"{"type":"result","subtype":"success","is_error":true,"result":"Not logged in · Please run /login"}"#,
+                vec![ended(Some("Not logged in · Please run /login"))],
+            ),
+            (
+                r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning"}}"#,
+                vec![limit],
+            ),
+            (r#"{"type":"control_response"}"#, vec![]),
+        ] {
+            assert_eq!(
+                parse(&serde_json::from_str(line).unwrap()),
+                expected,
+                "{line}"
+            );
+        }
     }
     #[test]
     fn arguments_remove_built_in_tools_and_allow_only_ours() {
