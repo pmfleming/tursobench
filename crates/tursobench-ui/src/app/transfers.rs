@@ -4,14 +4,14 @@ use tursobench_core::{
     Bindings, Browse, EventKind, ImportFormat, ImportPreview, ImportSpec, InputKind, Table, Ticket,
     TransactionState,
 };
-use tursobench_db::{Operation, Request};
+use tursobench_db::Operation;
 
 pub(super) struct State {
     pub ticket: Option<Ticket>,
     open: bool,
     session: Option<u64>,
     output: String,
-    input: String,
+    pub(super) input: String,
     format: ImportFormat,
     kinds: Vec<InputKind>,
     mapping: Vec<String>,
@@ -50,10 +50,34 @@ impl Default for State {
 fn action(ui: &mut egui::Ui, enabled: bool, label: &str) -> bool {
     ui.add_enabled(enabled, egui::Button::new(label)).clicked()
 }
+/// A combo box of `options` labelled by their names; returns whether it changed.
+fn choice<T: Copy + PartialEq + std::fmt::Debug>(
+    ui: &mut egui::Ui,
+    id: impl egui::AsIdSalt,
+    value: &mut T,
+    options: [T; 4],
+) -> bool {
+    let mut changed = false;
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(format!("{value:?}"))
+        .show_ui(ui, |ui| {
+            for option in options {
+                changed |= ui
+                    .selectable_value(value, option, format!("{option:?}"))
+                    .changed();
+            }
+        });
+    changed
+}
 impl State {
     /// Exports of the source table or statement to a new JSONL file.
-    fn export_ui(&self, ui: &mut egui::Ui, enabled: bool) -> Option<Operation> {
+    fn export_ui(&mut self, ui: &mut egui::Ui, enabled: bool) -> Option<Operation> {
         ui.strong("Complete source export · typed JSONL");
+        ui.horizontal(|ui| {
+            let label = ui.label("New output file");
+            ui.text_edit_singleline(&mut self.output)
+                .labelled_by(label.id);
+        });
         let enabled = enabled && !self.output.is_empty();
         let path = || self.output.clone().into();
         let mut operation = None;
@@ -96,20 +120,17 @@ impl State {
                 }),
         );
         let mut changed = ui.text_edit_singleline(&mut self.input).changed();
-        egui::ComboBox::from_id_salt("import-format")
-            .selected_text(format!("{:?}", self.format))
-            .show_ui(ui, |ui| {
-                for format in [
-                    ImportFormat::JsonLines,
-                    ImportFormat::Json,
-                    ImportFormat::Csv,
-                    ImportFormat::Tsv,
-                ] {
-                    changed |= ui
-                        .selectable_value(&mut self.format, format, format!("{format:?}"))
-                        .changed();
-                }
-            });
+        changed |= choice(
+            ui,
+            "import-format",
+            &mut self.format,
+            [
+                ImportFormat::JsonLines,
+                ImportFormat::Json,
+                ImportFormat::Csv,
+                ImportFormat::Tsv,
+            ],
+        );
         if self.delimited() {
             ui.label("Unquoted NULL marker");
             changed |= ui.text_edit_singleline(&mut self.null_marker).changed();
@@ -147,7 +168,13 @@ impl State {
                 ui.horizontal(|ui| {
                     ui.label(name);
                     mapping_ui(ui, ("import-map", i), table, &mut self.mapping[i]);
-                    if delimited && kind_ui(ui, ("import-kind", i), &mut self.kinds[i]) {
+                    let kinds = [
+                        InputKind::Text,
+                        InputKind::Integer,
+                        InputKind::Real,
+                        InputKind::Blob,
+                    ];
+                    if delimited && choice(ui, ("import-kind", i), &mut self.kinds[i], kinds) {
                         self.preview_current = false;
                     }
                 });
@@ -199,6 +226,31 @@ impl State {
         .then(|| Operation::BackupAndClose(self.output.clone().into()));
         backup.or(checkpoint)
     }
+    /// A preview with new columns maps each onto the visible table column of
+    /// the same name, ignoring case; the mapping is kept for the same columns.
+    fn preview_loaded(&mut self, preview: ImportPreview) {
+        if self
+            .preview
+            .as_ref()
+            .is_none_or(|p| p.columns != preview.columns)
+        {
+            let columns = self.table.as_ref().map_or(&[][..], |t| &t.columns);
+            self.mapping = preview
+                .columns
+                .iter()
+                .map(|name| {
+                    columns
+                        .iter()
+                        .find(|c| c.hidden == 0 && c.name.eq_ignore_ascii_case(name))
+                        .map_or_else(String::new, |c| c.name.clone())
+                })
+                .collect();
+        }
+        self.kinds.resize(preview.columns.len(), InputKind::Text);
+        self.preview = Some(preview);
+        self.preview_current = true;
+        self.message = "Preview loaded. Remaining records are validated during import.".into();
+    }
 
     pub(super) fn disconnected(&mut self) {
         if self.ticket.take().is_some() {
@@ -220,25 +272,6 @@ fn mapping_ui(ui: &mut egui::Ui, id: impl egui::AsIdSalt, table: &Table, mapping
                 ui.selectable_value(mapping, c.name.clone(), &c.name);
             }
         });
-}
-/// A delimited column's input type; returns whether it changed.
-fn kind_ui(ui: &mut egui::Ui, id: impl egui::AsIdSalt, kind: &mut InputKind) -> bool {
-    let mut changed = false;
-    egui::ComboBox::from_id_salt(id)
-        .selected_text(format!("{kind:?}"))
-        .show_ui(ui, |ui| {
-            for option in [
-                InputKind::Text,
-                InputKind::Integer,
-                InputKind::Real,
-                InputKind::Blob,
-            ] {
-                changed |= ui
-                    .selectable_value(kind, option, format!("{option:?}"))
-                    .changed();
-            }
-        });
-    changed
 }
 impl App {
     pub(super) fn open_transfers(&mut self) {
@@ -264,58 +297,32 @@ impl App {
         };
     }
     fn transfer_request(&mut self, operation: Operation) {
-        let Some(session) = &self.database.session else {
+        let Some(session) = self.database.session.as_ref().map(|s| s.id) else {
             return;
         };
-        if self.database.tools.transfers.session != Some(session.id) {
-            self.database.tools.transfers.message =
-                "Reopen the transfer panel for the current database".into();
+        let state = &mut self.database.tools.transfers;
+        if state.session != Some(session) {
+            state.message = "Reopen the transfer panel for the current database".into();
             return;
         }
         if !self.requests_enabled() || self.database.tools.transfers.ticket.is_some() {
             return;
         }
-        self.database.sequence += 1;
-        let ticket = session.ticket(self.database.sequence, self.database.generation);
-        match session.submit(Request { ticket, operation }) {
-            Ok(()) => {
-                self.database.tools.transfers.ticket = Some(ticket);
-                self.database.tools.transfers.message = "Queued…".into();
+        let submitted = self.database.request(operation);
+        let state = &mut self.database.tools.transfers;
+        match submitted {
+            Some(Ok(ticket)) => {
+                state.ticket = Some(ticket);
+                state.message = "Queued…".into();
             }
-            Err(e) => self.database.tools.transfers.message = e.to_string(),
+            Some(Err(e)) => state.message = e.to_string(),
+            None => {}
         }
     }
     pub(super) fn transfer_event(&mut self, kind: EventKind) {
         let state = &mut self.database.tools.transfers;
         match kind {
-            EventKind::ImportPreview(preview) => {
-                if state
-                    .preview
-                    .as_ref()
-                    .is_none_or(|p| p.columns != preview.columns)
-                {
-                    state.mapping = preview
-                        .columns
-                        .iter()
-                        .map(|name| {
-                            state
-                                .table
-                                .as_ref()
-                                .and_then(|t| {
-                                    t.columns.iter().find(|c| {
-                                        c.hidden == 0 && c.name.eq_ignore_ascii_case(name)
-                                    })
-                                })
-                                .map_or_else(String::new, |c| c.name.clone())
-                        })
-                        .collect();
-                }
-                state.kinds.resize(preview.columns.len(), InputKind::Text);
-                state.preview = Some(preview);
-                state.preview_current = true;
-                state.message =
-                    "Preview loaded. Remaining records are validated during import.".into();
-            }
+            EventKind::ImportPreview(preview) => state.preview_loaded(preview),
             EventKind::TransferFinished(outcome) => {
                 self.database.transaction = outcome.transaction;
                 if outcome.transaction == TransactionState::Unknown {

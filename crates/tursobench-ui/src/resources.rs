@@ -132,7 +132,7 @@ mod tests {
     use super::{MIB, MemorySnapshot, Preferences};
 
     #[test]
-    fn available_memory_sets_budget_and_includes_parent_process_limits() {
+    fn memory_and_overrides_set_the_budget_including_parent_process_limits() {
         let mut memory = MemorySnapshot::parse(
             "MemTotal: 33554432 kB\nMemFree: 1048576 kB\nMemAvailable: 16777216 kB\n",
         );
@@ -145,10 +145,9 @@ mod tests {
         assert!(memory.process_limited);
         memory.constrain(1024 * MIB, 2048 * MIB);
         assert_eq!(memory.available_mib, Some(0));
-    }
-
-    #[test]
-    fn overrides_are_limited_by_budget_and_handle_low_or_unknown_memory() {
+        let detected = MemorySnapshot::detect();
+        assert!(detected.total_mib.is_some() && detected.available_mib <= detected.total_mib);
+        // Overrides are limited by the budget; low or unknown memory still admits.
         let mut preferences = Preferences::default();
         let memory = MemorySnapshot {
             available_mib: Some(16 * 1024),

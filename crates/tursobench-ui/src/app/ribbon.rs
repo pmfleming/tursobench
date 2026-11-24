@@ -265,7 +265,7 @@ impl App {
         };
         let response = ui
             .add_enabled_ui(self.action_enabled(action), |ui| match action {
-                Action::RunAll => self.run_all_menu(ui, true),
+                Action::RunAll => self.run_all_menu(ui),
                 Action::Zoom100 => {
                     icons::zoom_button(ui, self.database.ui.diagram.camera.zoom(), label)
                 }

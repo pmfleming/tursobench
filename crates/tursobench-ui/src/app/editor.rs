@@ -67,6 +67,38 @@ fn completions_and_highlighting_preserve_unicode_and_quoted_text() {
         }
     }
 }
+#[cfg(test)]
+#[test]
+fn completion_replaces_the_word_at_the_cursor_with_a_cached_schema_name() {
+    use super::test_ui::{app, control, pointer, render, texts};
+    let (ctx, mut app) = app();
+    let draw = |app: &mut App, events| {
+        render(&ctx, egui::vec2(800.0, 500.0), events, |ui| {
+            app.editor_ui(ui)
+        })
+    };
+    app.database.schema = vec![tursobench_core::SchemaObject {
+        kind: "table".into(),
+        name: "users".into(),
+        table: "users".into(),
+        ddl: None,
+    }];
+    app.database.document.tools.complete = true;
+    app.database.document.sql = "SELECT 'na".into();
+    app.database.document.tools.selection = 10..10;
+    let output = draw(&mut app, vec![]);
+    assert!(texts(&output).any(|t| t.galley.job.text.starts_with("Completion unavailable")));
+    app.database.document.sql = "SELECT * FROM us".into();
+    app.database.document.tools.selection = 16..16;
+    draw(&mut app, vec![]);
+    let pos = control(&draw(&mut app, vec![]), "\"users\"").center();
+    for pressed in [true, false] {
+        draw(&mut app, pointer(pos, pressed));
+    }
+    assert_eq!(app.database.document.sql, "SELECT * FROM \"users\"");
+    assert_eq!(app.database.document.tools.selection, 21..21);
+    assert!(!app.database.document.tools.complete);
+}
 fn completion_span(text: &str, cursor: usize) -> Option<std::ops::Range<usize>> {
     if text.len() > 64 * 1024 || cursor > text.len() || !text.is_char_boundary(cursor) {
         return None;
@@ -190,11 +222,7 @@ impl App {
             return;
         }
         self.database.document.migration = migration.clone();
-        let view = if explain.is_some() {
-            View::Explain
-        } else {
-            View::Query
-        };
+        let view = explain.map_or(View::Query, |_| View::Explain);
         let Some(ticket) = self.submit(operation, view) else {
             return;
         };
@@ -293,15 +321,11 @@ impl App {
             Err(e) => self.database.status = e.to_string(),
         }
     }
-    pub(super) fn run_all_menu(&mut self, ui: &mut egui::Ui, ribbon: bool) -> egui::Response {
+    pub(super) fn run_all_menu(&mut self, ui: &mut egui::Ui) -> egui::Response {
         let enabled = self.action_enabled(super::ribbon::Action::RunAll);
         let response = ui
             .add_enabled_ui(enabled, |ui| {
-                if ribbon {
-                    icons::ribbon_button(ui, Icon::RunAll, "Run all", "", None)
-                } else {
-                    icons::button(ui, Icon::RunAll, "Run all", "")
-                }
+                icons::ribbon_button(ui, Icon::RunAll, "Run all", "", None)
             })
             .inner;
         egui::Popup::menu(&response).show(|ui| {
@@ -317,6 +341,19 @@ impl App {
         });
         response
     }
+    /// The editor's height: its tile less the bindings row in the workspace,
+    /// otherwise a share of the window.
+    fn editor_height(&self, ui: &egui::Ui) -> f32 {
+        if !self.database.workspace.enabled {
+            return (ui.ctx().content_rect().height() * 0.35).clamp(100.0, 400.0);
+        }
+        let bindings = if self.database.document.ui.params_open {
+            120.0
+        } else {
+            8.0
+        };
+        (ui.available_height() - bindings).max(24.0)
+    }
     pub(super) fn editor_ui(&mut self, ui: &mut egui::Ui) {
         if self.database.document.migration.is_some() {
             ui.label("Guarded migration · Run all is atomic · target schema must match the comparison · session-only draft");
@@ -326,17 +363,7 @@ impl App {
         };
         let output = egui::ScrollArea::vertical()
             .id_salt("sql-editor-scroll")
-            .max_height(if self.database.workspace.enabled {
-                (ui.available_height()
-                    - if self.database.document.ui.params_open {
-                        120.0
-                    } else {
-                        8.0
-                    })
-                .max(24.0)
-            } else {
-                (ui.ctx().content_rect().height() * 0.35).clamp(100.0, 400.0)
-            })
+            .max_height(self.editor_height(ui))
             .show(ui, |ui| {
                 let empty_size =
                     if self.database.workspace.enabled && self.database.document.sql.is_empty() {
@@ -364,39 +391,14 @@ impl App {
                 "Write SQL · Ctrl Enter to run",
             );
         }
-        if output.response.has_focus()
-            && let Some(cursor) = output.cursor_range
-        {
-            let caret = output.galley.pos_from_cursor(cursor.primary);
-            let line = egui::Rect::from_min_max(
-                egui::pos2(
-                    output.response.rect.left(),
-                    output.galley_pos.y + caret.top(),
-                ),
-                egui::pos2(
-                    output.response.rect.right(),
-                    output.galley_pos.y + caret.bottom(),
-                ),
-            );
-            ui.painter()
-                .with_clip_rect(output.response.rect.intersect(ui.clip_rect()))
-                .rect_filled(
-                    line,
-                    0.0,
-                    crate::appearance::Tokens::of(ui.ctx())
-                        .primary
-                        .gamma_multiply(0.06),
-                );
-        }
+        highlight_caret_line(ui, &output);
         self.database.document.tools.sql_focus = Some(output.response.id);
         if let Some(range) = self.database.document.restore_cursor.take() {
             let mut state = output.state.clone();
+            let [start, end] = [range.start, range.end].map(egui::text::CCursor::new);
             state
                 .cursor
-                .set_char_range(Some(egui::text::CCursorRange::two(
-                    egui::text::CCursor::new(range.start),
-                    egui::text::CCursor::new(range.end),
-                )));
+                .set_char_range(Some(egui::text::CCursorRange::two(start, end)));
             state.store(ui.ctx(), output.response.id);
         } else if let Some(cursor) = output.cursor_range {
             let range = cursor.as_sorted_char_range();
@@ -420,68 +422,76 @@ impl App {
         });
         ui.small("?1: [{\"type\":\"Integer\",\"value\":42}]    :id: {\":id\":{\"type\":\"Integer\",\"value\":42}}. Values are never interpolated or persisted.");
     }
-    fn completion_ui(&mut self, ui: &mut egui::Ui, editor_id: egui::Id) {
-        let cursor = byte_index(
-            &self.database.document.sql,
-            self.database.document.tools.selection.end,
-        );
-        let Some(span) = completion_span(&self.database.document.sql, cursor) else {
-            ui.small("Completion unavailable here: quoted/comment/parameter text, a lexical error, or a buffer above 64 KiB.");
-            return;
-        };
-        let start = span.start;
+    /// Tables and views of the schema, with the columns of those the map or
+    /// this document has inspected.
+    fn completion_catalog(&self) -> tursobench_db::completion::Catalog {
         let mut catalog = tursobench_db::completion::Catalog::new();
         for object in &self.database.schema {
             if object.kind == "table" || object.kind == "view" {
                 catalog.entry(object.name.clone()).or_default();
             }
         }
-        if let Some(graph) = &self.database.ui.diagram.data {
-            for table in &graph.tables {
-                if let Some(info) = &table.inspection {
-                    catalog.insert(
-                        table.name.clone(),
-                        info.table.columns.iter().map(|c| c.name.clone()).collect(),
-                    );
-                }
-            }
+        let graph = self.database.ui.diagram.data.iter().flat_map(|g| &g.tables);
+        let inspected = graph.filter_map(|t| t.inspection.as_ref());
+        for info in inspected.chain(&self.database.document.tools.inspection) {
+            let columns = info.table.columns.iter().map(|c| c.name.clone());
+            catalog.insert(info.table.name.clone(), columns.collect());
         }
-        if let Some(info) = &self.database.document.tools.inspection {
-            catalog.insert(
-                info.table.name.clone(),
-                info.table.columns.iter().map(|c| c.name.clone()).collect(),
-            );
-        }
-        let candidates = tursobench_db::completion::candidates(
-            &self.database.document.sql,
-            cursor,
-            start,
-            &catalog,
-        );
+        catalog
+    }
+    fn completion_ui(&mut self, ui: &mut egui::Ui, editor_id: egui::Id) {
+        let sql = &self.database.document.sql;
+        let cursor = byte_index(sql, self.database.document.tools.selection.end);
+        let Some(span) = completion_span(sql, cursor) else {
+            ui.small("Completion unavailable here: quoted/comment/parameter text, a lexical error, or a buffer above 64 KiB.");
+            return;
+        };
+        let catalog = self.completion_catalog();
+        let candidates = tursobench_db::completion::candidates(sql, cursor, span.start, &catalog);
         ui.small("Context completions from cached schema: aliases, qualified columns and CTEs. Unknown expressions remain unresolved.");
         ui.horizontal_wrapped(|ui| {
             for candidate in candidates.into_iter().take(30) {
                 if ui.button(candidate.as_str()).clicked() {
-                    self.database
-                        .document
-                        .sql
-                        .replace_range(span.clone(), &candidate);
-                    self.database.document.sql_changed();
-                    let position = self.database.document.sql[..start].chars().count()
-                        + candidate.chars().count();
-                    self.database.document.tools.selection = position..position;
-                    if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), editor_id) {
-                        state
-                            .cursor
-                            .set_char_range(Some(egui::text::CCursorRange::one(
-                                egui::text::CCursor::new(position),
-                            )));
-                        state.store(ui.ctx(), editor_id);
-                        ui.memory_mut(|m| m.request_focus(editor_id));
-                    }
-                    self.database.document.tools.complete = false;
+                    self.complete(ui, editor_id, span.clone(), &candidate);
                 }
             }
         });
     }
+    /// Replace `span` with `candidate` and put the editor's cursor after it.
+    fn complete(
+        &mut self,
+        ui: &egui::Ui,
+        editor_id: egui::Id,
+        span: std::ops::Range<usize>,
+        candidate: &str,
+    ) {
+        let document = &mut self.database.document;
+        let position = document.sql[..span.start].chars().count() + candidate.chars().count();
+        document.sql.replace_range(span, candidate);
+        document.sql_changed();
+        document.tools.selection = position..position;
+        document.tools.complete = false;
+        if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), editor_id) {
+            let cursor = egui::text::CCursor::new(position);
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::one(cursor)));
+            state.store(ui.ctx(), editor_id);
+            ui.memory_mut(|m| m.request_focus(editor_id));
+        }
+    }
+}
+/// Tint the line that holds the caret of the focused editor.
+fn highlight_caret_line(ui: &egui::Ui, output: &egui::text_edit::TextEditOutput) {
+    let Some(cursor) = output.cursor_range.filter(|_| output.response.has_focus()) else {
+        return;
+    };
+    let caret = output.galley.pos_from_cursor(cursor.primary);
+    let rect = output.response.rect;
+    let top = output.galley_pos.y + caret.top();
+    let line = egui::Rect::from_x_y_ranges(rect.x_range(), top..=top + caret.height());
+    let color = crate::appearance::Tokens::of(ui.ctx()).primary;
+    ui.painter()
+        .with_clip_rect(rect.intersect(ui.clip_rect()))
+        .rect_filled(line, 0.0, color.gamma_multiply(0.06));
 }

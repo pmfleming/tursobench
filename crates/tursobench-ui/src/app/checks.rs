@@ -19,9 +19,6 @@ impl Default for Admin {
 impl App {
     pub(super) fn admin_ui(&mut self, ctx: &egui::Context) {
         let mut open = self.database.tools.admin.open;
-        if !open {
-            return;
-        }
         let mut request = None;
         egui::Window::new("Database administration").open(&mut open).show(ctx,|ui| {
             ui.label("Read effective PRAGMAs and file sizes; unsupported values are reported individually.");
@@ -69,9 +66,6 @@ impl Default for Profile {
 impl App {
     pub(super) fn profile_ui(&mut self, ctx: &egui::Context) {
         let mut open = self.database.tools.profile.open;
-        if !open {
-            return;
-        }
         let mut run = None;
         egui::Window::new("Data profiling").open(&mut open).resizable(true).show(ctx, |ui| {
             let old = self.database.tools.profile.table.clone();

@@ -42,21 +42,20 @@ impl App {
             return;
         }
         self.databases.picking_folder = None;
-        match start_picker(ctx.clone(), || {
+        let started = start_picker(ctx.clone(), || {
             rfd::FileDialog::new()
                 .set_title("Open existing Turso database")
                 .pick_file()
-        }) {
+        });
+        self.database.status = match started {
             Ok(rx) => {
                 self.picker = Some(rx);
-                self.database.status = "Waiting for file selection…".into();
+                "Waiting for file selection…".into()
             }
-            Err(error) => {
-                self.database.status = format!(
-                    "Could not start the file chooser: {error}. Enter the database path manually."
-                );
-            }
-        }
+            Err(error) => format!(
+                "Could not start the file chooser: {error}. Enter the database path manually."
+            ),
+        };
     }
 
     pub(super) fn browse_search_folder(&mut self, ctx: &egui::Context) {
@@ -64,26 +63,24 @@ impl App {
             return;
         }
         let list = self.databases.folder_list;
-        match start_picker(ctx.clone(), move || {
-            rfd::FileDialog::new()
-                .set_title(if list == FolderList::Excluded {
-                    "Choose a folder to exclude"
-                } else {
-                    "Choose a database search folder"
-                })
-                .pick_folder()
-        }) {
+        let title = if list == FolderList::Excluded {
+            "Choose a folder to exclude"
+        } else {
+            "Choose a database search folder"
+        };
+        let started = start_picker(ctx.clone(), move || {
+            rfd::FileDialog::new().set_title(title).pick_folder()
+        });
+        self.databases.message = Some(match started {
             Ok(rx) => {
                 self.databases.picking_folder = Some(list);
                 self.picker = Some(rx);
-                self.databases.message = Some("Waiting for folder selection…".into());
+                "Waiting for folder selection…".into()
             }
             Err(error) => {
-                self.databases.message = Some(format!(
-                    "Could not start the folder chooser: {error}. Enter a folder path below."
-                ))
+                format!("Could not start the folder chooser: {error}. Enter a folder path below.")
             }
-        }
+        });
     }
 
     pub(super) fn poll_picker(&mut self) {

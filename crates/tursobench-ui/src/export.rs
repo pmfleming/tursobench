@@ -1,5 +1,6 @@
 use serde_json::{Value as Json, json};
 use std::{
+    borrow::Cow,
     io::{BufWriter, Write},
     path::Path,
 };
@@ -69,13 +70,13 @@ pub fn write_result_as(
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(io)?;
     {
         let mut writer = BufWriter::new(&mut temp);
         render(&mut writer, format, scope, columns, rows, table)?;
-        writer.flush().map_err(|e| e.to_string())?;
+        writer.flush().map_err(io)?;
     }
-    temp.as_file().sync_all().map_err(|e| e.to_string())?;
+    temp.as_file().sync_all().map_err(io)?;
     temp.persist_noclobber(path).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -129,7 +130,6 @@ fn render(
     if rows.iter().any(|r| r.len() != columns.len()) {
         return Err("Result column/row widths do not match".into());
     }
-    let error = |e: std::io::Error| e.to_string();
     match format {
         Format::JsonLines => {
             line(w, &header(scope, columns, rows.len()))?;
@@ -142,19 +142,19 @@ fn render(
             line(w, &json!({"record":"end", "rows":rows.len()}))?;
         }
         Format::Json => {
-            w.write_all(b"{\"header\":").map_err(error)?;
+            w.write_all(b"{\"header\":").map_err(io)?;
             let mut h = header(scope, columns, rows.len());
             h["format"] = json!("tursobench-typed-json");
             serde_json::to_writer(&mut *w, &h).map_err(|e| e.to_string())?;
-            w.write_all(b",\"rows\":[").map_err(error)?;
+            w.write_all(b",\"rows\":[").map_err(io)?;
             for (i, row) in rows.iter().enumerate() {
                 if i > 0 {
-                    w.write_all(b",").map_err(error)?;
+                    w.write_all(b",").map_err(io)?;
                 }
                 serde_json::to_writer(&mut *w, &row.iter().map(encode).collect::<Vec<_>>())
                     .map_err(|e| e.to_string())?;
             }
-            writeln!(w, "],\"end\":{{\"rows\":{}}}}}", rows.len()).map_err(error)?;
+            writeln!(w, "],\"end\":{{\"rows\":{}}}}}", rows.len()).map_err(io)?;
         }
         Format::Csv
         | Format::Tsv
@@ -173,49 +173,31 @@ fn render_delimited(
     columns: &[Column],
     rows: &[Vec<Value>],
 ) -> Result<(), String> {
-    let error = |e: std::io::Error| e.to_string();
-    let delimiter = if matches!(format, Format::Csv | Format::CsvSafe | Format::CsvAnnotated) {
-        ","
-    } else {
-        "\t"
-    };
-    let protect = matches!(
-        format,
-        Format::CsvSafe | Format::TsvSafe | Format::CsvAnnotated | Format::TsvAnnotated
-    );
+    let csv = matches!(format, Format::Csv | Format::CsvSafe | Format::CsvAnnotated);
+    let delimiter = if csv { "," } else { "\t" };
     let annotated = matches!(format, Format::CsvAnnotated | Format::TsvAnnotated);
+    let protect = annotated || matches!(format, Format::CsvSafe | Format::TsvSafe);
+    let text = |text: &str| {
+        let text = if protect {
+            spreadsheet_text(text)
+        } else {
+            text.into()
+        };
+        Ok(csv_field(&text))
+    };
     if annotated {
-        writeln!(w, "# TursoBench scope={} rows={}; NULL=\\N, blobs=X'hex', text formula-safe; skip this metadata line", scope.replace(['\r','\n'], " "), rows.len()).map_err(error)?;
+        writeln!(w, "# TursoBench scope={} rows={}; NULL=\\N, blobs=X'hex', text formula-safe; skip this metadata line", scope.replace(['\r','\n'], " "), rows.len()).map_err(io)?;
     }
-    separated(
-        w,
-        columns.iter().map(|c| {
-            Ok(csv_field(&if protect {
-                spreadsheet_text(&c.name)
-            } else {
-                c.name.clone()
-            }))
-        }),
-        delimiter,
-    )?;
-    w.write_all(b"\r\n").map_err(error)?;
+    separated(w, columns.iter().map(|c| text(&c.name)), delimiter)?;
+    w.write_all(b"\r\n").map_err(io)?;
     for row in rows {
-        separated(
-            w,
-            row.iter().map(|value| {
-                Ok(match value {
-                    Value::Null => "\\N".into(),
-                    Value::Text(text) => csv_field(&if protect {
-                        spreadsheet_text(text)
-                    } else {
-                        text.clone()
-                    }),
-                    _ => csv_field(&cell_text(value)),
-                })
-            }),
-            delimiter,
-        )?;
-        w.write_all(b"\r\n").map_err(error)?;
+        let fields = row.iter().map(|value| match value {
+            Value::Null => Ok("\\N".into()),
+            Value::Text(t) => text(t),
+            _ => Ok(csv_field(&cell_text(value))),
+        });
+        separated(w, fields, delimiter)?;
+        w.write_all(b"\r\n").map_err(io)?;
     }
     Ok(())
 }
@@ -226,7 +208,6 @@ fn render_sql(
     rows: &[Vec<Value>],
     table: &str,
 ) -> Result<(), String> {
-    let error = |e: std::io::Error| e.to_string();
     if table.is_empty() || table.len() > 1024 || columns.is_empty() {
         return Err("SQL export requires a target table and named columns".into());
     }
@@ -241,7 +222,7 @@ fn render_sql(
         scope.replace(['\r', '\n'], " "),
         rows.len()
     )
-    .map_err(error)?;
+    .map_err(io)?;
     let prefix = format!(
         "INSERT INTO {} ({}) VALUES (",
         quote_identifier(table),
@@ -252,9 +233,9 @@ fn render_sql(
             .join(", ")
     );
     for row in rows {
-        w.write_all(prefix.as_bytes()).map_err(error)?;
+        w.write_all(prefix.as_bytes()).map_err(io)?;
         separated(w, row.iter().map(sql_literal), ", ")?;
-        w.write_all(b");\n").map_err(error)?;
+        w.write_all(b");\n").map_err(io)?;
     }
     Ok(())
 }
@@ -265,22 +246,25 @@ fn separated(
 ) -> Result<(), String> {
     for (i, value) in values.into_iter().enumerate() {
         if i > 0 {
-            w.write_all(separator.as_bytes())
-                .map_err(|e| e.to_string())?;
+            w.write_all(separator.as_bytes()).map_err(io)?;
         }
-        w.write_all(value?.as_bytes()).map_err(|e| e.to_string())?;
+        w.write_all(value?.as_bytes()).map_err(io)?;
     }
     Ok(())
 }
 fn csv_field(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\"\""))
 }
-fn spreadsheet_text(value: &str) -> String {
+fn spreadsheet_text(value: &str) -> Cow<'_, str> {
     if value.trim_start().starts_with(['=', '+', '-', '@']) {
-        format!("'{value}")
+        format!("'{value}").into()
     } else {
         value.into()
     }
+}
+/// An I/O error as an export message.
+fn io(e: std::io::Error) -> String {
+    e.to_string()
 }
 pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -313,7 +297,7 @@ fn sql_literal(value: &Value) -> Result<String, String> {
 }
 fn line(writer: &mut impl Write, value: &Json) -> Result<(), String> {
     serde_json::to_writer(&mut *writer, value).map_err(|e| e.to_string())?;
-    writer.write_all(b"\n").map_err(|e| e.to_string())
+    writer.write_all(b"\n").map_err(io)
 }
 pub fn bindings_text(values: &[Value]) -> String {
     serde_json::to_string(&values.iter().map(encode).collect::<Vec<_>>()).unwrap_or_default()

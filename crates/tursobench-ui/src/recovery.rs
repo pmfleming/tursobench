@@ -293,7 +293,7 @@ mod tests {
         assert!(Arc::ptr_eq(&saved, &store.snapshot));
     }
     #[test]
-    fn restart_deletion_and_invalid_save_preserve_acknowledged_data() {
+    fn restart_deletion_corruption_and_locks_preserve_acknowledged_data() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("recovery.json");
         let docs = vec![Document {
@@ -317,11 +317,7 @@ mod tests {
         store.clear();
         drop(store);
         assert!(read(&path).unwrap().databases.is_empty());
-    }
-    #[test]
-    fn corrupt_or_locked_store_is_not_overwritten() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("recovery.json");
+        // A corrupt or locked store is not overwritten.
         std::fs::write(&path, b"corrupt").unwrap();
         let mut store = Store::start_path(Some(path.clone()), || {});
         assert!(store.error.is_some());
