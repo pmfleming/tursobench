@@ -1,9 +1,14 @@
+use crate::assistant_tools::Sharing;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, BTreeSet, HashSet},
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, SyncSender, TrySendError},
 };
+
+/// The longest path or database key preferences keep.
+const PATH_BYTES: usize = 4096;
+const SQL_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CachedDatabase {
@@ -54,28 +59,34 @@ impl DiscoveryPreferences {
         self.cached.insert(0, entry);
         self.normalize();
     }
+    /// Whether `path` is inside a folder the user excluded.
+    pub fn excludes(&self, path: &Path) -> bool {
+        self.excluded.iter().any(|p| path.starts_with(p))
+    }
     pub fn normalize(&mut self) {
-        normalize_paths(&mut self.roots, 32, 32 * 1024, false);
-        normalize_paths(&mut self.removed_roots, 128, 512 * 1024, false);
-        normalize_paths(&mut self.excluded, 64, 32 * 1024, true);
-        normalize_entries(&mut self.recent, |e| &mut e.path, 50, 64 * 1024);
-        normalize_entries(&mut self.cached, |e| &mut e.path, 200, 256 * 1024);
+        normalize_paths(&mut self.roots, |p| p, 32, 32 * 1024, false);
+        normalize_paths(&mut self.removed_roots, |p| p, 128, 512 * 1024, false);
+        normalize_paths(&mut self.excluded, |p| p, 64, 32 * 1024, true);
+        normalize_paths(&mut self.recent, |e| &mut e.path, 50, 64 * 1024, true);
+        normalize_paths(&mut self.cached, |e| &mut e.path, 200, 256 * 1024, true);
     }
 }
 
 /// Keep the first `count` entries with distinct persistable paths, within
-/// `bytes` of path text.
-fn normalize_entries<T>(
+/// `bytes` of path text; the filesystem root itself only if `allow_root`.
+fn normalize_paths<T>(
     entries: &mut Vec<T>,
     path: fn(&mut T) -> &mut PathBuf,
     count: usize,
     bytes: usize,
+    allow_root: bool,
 ) {
     let mut seen = HashSet::new();
     let mut total = 0;
     entries.retain_mut(|entry| {
         let path = path(entry);
-        let Some(persisted) = persistable_path(path) else {
+        let Some(persisted) = persistable_path(path).filter(|p| allow_root || p.parent().is_some())
+        else {
             return false;
         };
         total += persisted.as_os_str().len();
@@ -108,24 +119,18 @@ pub fn normalized_absolute(path: &Path) -> Option<PathBuf> {
 }
 fn persistable_path(path: &Path) -> Option<PathBuf> {
     let normalized = normalized_absolute(path)?;
-    normalized.to_str().filter(|s| s.len() <= 4096)?;
+    normalized.to_str().filter(|s| s.len() <= PATH_BYTES)?;
     Some(normalized)
 }
-fn normalize_paths(paths: &mut Vec<PathBuf>, count: usize, byte_limit: usize, allow_root: bool) {
-    let mut seen = HashSet::new();
-    let mut bytes = 0;
-    paths.retain_mut(|path| {
-        let Some(normalized) = persistable_path(path) else {
-            return false;
-        };
-        if !allow_root && normalized.parent().is_none() {
-            return false;
-        }
-        bytes += normalized.as_os_str().len();
-        *path = normalized;
-        bytes <= byte_limit && seen.insert(path.clone())
-    });
-    paths.truncate(count);
+/// A database a preference is keyed by: an absolute path of bounded length.
+fn database_key(path: &str) -> bool {
+    path.len() <= PATH_BYTES && Path::new(path).is_absolute()
+}
+/// Keep at most `count` entries, dropping the lowest keys.
+fn truncate_map<K: Ord, V>(map: &mut BTreeMap<K, V>, count: usize) {
+    while map.len() > count {
+        map.pop_first();
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -160,7 +165,7 @@ pub struct Preferences {
     pub discovery: DiscoveryPreferences,
     pub map_layouts: Vec<MapLayout>,
     pub(crate) workspace_layouts: Vec<crate::app::workspace::Snapshot>,
-    pub inspector_visibility: std::collections::BTreeMap<String, bool>,
+    pub inspector_visibility: BTreeMap<String, bool>,
     pub panels: Panels,
     pub assistant: AssistantPreferences,
 }
@@ -174,27 +179,24 @@ pub struct AssistantPreferences {
     /// Passed to the agent as its model; empty keeps the agent's own default.
     #[serde(skip_serializing)]
     pub model: String,
-    pub models: std::collections::BTreeMap<Provider, String>,
+    pub models: BTreeMap<Provider, String>,
     /// Reasoning level per provider; a missing one keeps the agent's own.
-    pub efforts: std::collections::BTreeMap<Provider, String>,
+    pub efforts: BTreeMap<Provider, String>,
     /// Models starred in the chat's model picker, across agents, in the order starred.
     pub favourite_models: Vec<FavouriteModel>,
-    pub executables: std::collections::BTreeMap<Provider, PathBuf>,
+    pub executables: BTreeMap<Provider, PathBuf>,
     /// Legacy per-database choices, migrated into `grants`.
     #[serde(skip_serializing)]
-    pub sharing: std::collections::BTreeMap<String, crate::assistant_tools::Sharing>,
+    pub sharing: BTreeMap<String, Sharing>,
     /// What a database shares with an agent until it is changed for that database.
-    pub default_sharing: crate::assistant_tools::Sharing,
+    pub default_sharing: Sharing,
     /// Choices made for one database and provider; they override the default.
-    pub grants: std::collections::BTreeMap<
-        String,
-        std::collections::BTreeMap<Provider, crate::assistant_tools::Sharing>,
-    >,
+    pub grants: BTreeMap<String, BTreeMap<Provider, Sharing>>,
     /// What each agent CLI may keep or report, chosen separately per provider.
     pub privacy: Privacy,
     /// Sessions left before each agent's notice of who receives the data shows
     /// again; a missing provider has never seen it.
-    pub intro_skips: std::collections::BTreeMap<Provider, u8>,
+    pub intro_skips: BTreeMap<Provider, u8>,
     /// How the chat's copy buttons format a reply or the conversation.
     pub copy_format: CopyFormat,
 }
@@ -228,10 +230,10 @@ impl AssistantPreferences {
         self.efforts.get(&self.provider).map_or("", String::as_str)
     }
     /// This database's own choice for the selected provider, if it has one.
-    pub fn grant_for(&self, database: &str) -> Option<crate::assistant_tools::Sharing> {
+    pub fn grant_for(&self, database: &str) -> Option<Sharing> {
         self.grants.get(database)?.get(&self.provider).copied()
     }
-    pub fn sharing_for(&self, database: &str) -> crate::assistant_tools::Sharing {
+    pub fn sharing_for(&self, database: &str) -> Sharing {
         self.grant_for(database).unwrap_or(self.default_sharing)
     }
     pub fn clear_custom_grants(&mut self) {
@@ -241,11 +243,39 @@ impl AssistantPreferences {
         }
         self.grants.retain(|_, grants| !grants.is_empty());
     }
+    fn normalize(&mut self) {
+        // Legacy sharing and model apply only to the previously selected vendor.
+        for (path, sharing) in std::mem::take(&mut self.sharing) {
+            let grants = self.grants.entry(path).or_default();
+            grants.entry(self.provider).or_insert(sharing);
+        }
+        if !self.model.is_empty() {
+            let model = std::mem::take(&mut self.model);
+            self.models.entry(self.provider).or_insert(model);
+        }
+        self.grants
+            .retain(|path, grants| !grants.is_empty() && database_key(path));
+        truncate_map(&mut self.grants, 50);
+        self.models.retain(|_, model| model.len() <= 200);
+        let mut seen = BTreeSet::new();
+        self.favourite_models
+            .retain(|f| f.model.len() <= 200 && seen.insert((f.provider, f.model.clone())));
+        self.favourite_models.truncate(24);
+        self.efforts
+            .retain(|_, effort| !effort.is_empty() && effort.len() <= 40);
+        self.executables
+            .retain(|_, path| path.is_absolute() && path.as_os_str().len() <= PATH_BYTES);
+        self.intro_skips
+            .retain(|_, skips| *skips <= Self::INTRO_SKIPS);
+        if self.custom_command.len() > PATH_BYTES {
+            self.custom_command.clear();
+        }
+    }
 }
 /// Per-provider privacy; aliases on Provider preserve existing preference keys.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(transparent)]
-pub struct Privacy(std::collections::BTreeMap<Provider, ProviderPrivacy>);
+pub struct Privacy(BTreeMap<Provider, ProviderPrivacy>);
 impl Privacy {
     pub fn of(&self, provider: Provider) -> ProviderPrivacy {
         self.0.get(&provider).copied().unwrap_or_default()
@@ -300,13 +330,40 @@ impl Default for Panels {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MapLayout {
     pub database: String,
-    pub positions: std::collections::BTreeMap<String, [f32; 2]>,
+    pub positions: BTreeMap<String, [f32; 2]>,
     pub pan: [f32; 2],
     pub zoom: f32,
     #[serde(default)]
     pub pack_width: f32,
     pub all_columns: bool,
     pub selected: Option<String>,
+}
+impl MapLayout {
+    /// Drop out-of-bounds positions and selection; whether the layout itself
+    /// is valid and still fits the `bytes` shared by all layouts.
+    fn retain_bounded(&mut self, bytes: &mut usize) -> bool {
+        // Ranges reject NaN and infinities too.
+        let coordinate = |n: &f32| (-10_000_000.0..=10_000_000.0).contains(n);
+        if !database_key(&self.database)
+            || !(0.0..=3600.0).contains(&self.pack_width)
+            || !(0.0001..=2.5).contains(&self.zoom)
+            || !self.pan.iter().all(coordinate)
+        {
+            return false;
+        }
+        let mut count = 0;
+        self.positions.retain(|name, pos| {
+            count += 1;
+            *bytes += name.len() + 16;
+            count <= 512
+                && name.len() <= PATH_BYTES
+                && *bytes <= 256 * 1024
+                && pos.iter().all(coordinate)
+        });
+        self.selected = self.selected.take().filter(|s| s.len() <= PATH_BYTES);
+        *bytes += self.database.len() + self.selected.as_ref().map_or(0, String::len);
+        *bytes <= 256 * 1024
+    }
 }
 impl Default for Preferences {
     fn default() -> Self {
@@ -340,7 +397,7 @@ impl Preferences {
         elapsed_ms: Option<u64>,
         failed: bool,
     ) {
-        if sql.len() > 64 * 1024 || database.len() > 4096 {
+        if sql.len() > SQL_BYTES || database.len() > PATH_BYTES {
             return;
         }
         self.query_history
@@ -369,50 +426,10 @@ impl Preferences {
     }
     pub fn normalize(&mut self) {
         self.discovery.normalize();
+        self.assistant.normalize();
         self.inspector_visibility
-            .retain(|path, _| path.len() <= 4096 && Path::new(path).is_absolute());
-        while self.inspector_visibility.len() > 20 {
-            self.inspector_visibility.pop_first();
-        }
-        // Legacy sharing and model apply only to the previously selected vendor.
-        for (path, sharing) in std::mem::take(&mut self.assistant.sharing) {
-            self.assistant
-                .grants
-                .entry(path)
-                .or_default()
-                .entry(self.assistant.provider)
-                .or_insert(sharing);
-        }
-        if !self.assistant.model.is_empty() {
-            self.assistant
-                .models
-                .entry(self.assistant.provider)
-                .or_insert(std::mem::take(&mut self.assistant.model));
-        }
-        self.assistant.grants.retain(|path, grants| {
-            !grants.is_empty() && path.len() <= 4096 && Path::new(path).is_absolute()
-        });
-        while self.assistant.grants.len() > 50 {
-            self.assistant.grants.pop_first();
-        }
-        self.assistant.models.retain(|_, model| model.len() <= 200);
-        let mut seen = std::collections::BTreeSet::new();
-        self.assistant
-            .favourite_models
-            .retain(|f| f.model.len() <= 200 && seen.insert((f.provider, f.model.clone())));
-        self.assistant.favourite_models.truncate(24);
-        self.assistant
-            .efforts
-            .retain(|_, effort| !effort.is_empty() && effort.len() <= 40);
-        self.assistant
-            .executables
-            .retain(|_, path| path.is_absolute() && path.as_os_str().len() <= 4096);
-        self.assistant
-            .intro_skips
-            .retain(|_, skips| *skips <= AssistantPreferences::INTRO_SKIPS);
-        if self.assistant.custom_command.len() > 4096 {
-            self.assistant.custom_command.clear();
-        }
+            .retain(|path, _| database_key(path));
+        truncate_map(&mut self.inspector_visibility, 20);
         self.workspace_layouts.truncate(20);
         let mut workspace_names = HashSet::new();
         let mut workspace_bytes = 0;
@@ -429,35 +446,8 @@ impl Preferences {
         });
         self.map_layouts.truncate(20);
         let mut layout_bytes = 0;
-        self.map_layouts.retain_mut(|layout| {
-            if layout.database.len() > 4096
-                || !Path::new(&layout.database).is_absolute()
-                || !layout.pack_width.is_finite()
-                || !(0.0..=3600.0).contains(&layout.pack_width)
-                || !layout.zoom.is_finite()
-                || !(0.0001..=2.5).contains(&layout.zoom)
-                || layout
-                    .pan
-                    .iter()
-                    .any(|n| !n.is_finite() || n.abs() > 10_000_000.0)
-            {
-                return false;
-            }
-            let mut count = 0;
-            layout.positions.retain(|name, pos| {
-                count += 1;
-                layout_bytes += name.len() + 16;
-                count <= 512
-                    && name.len() <= 4096
-                    && layout_bytes <= 256 * 1024
-                    && pos.iter().all(|n| n.is_finite() && n.abs() <= 10_000_000.0)
-            });
-            if layout.selected.as_ref().is_some_and(|s| s.len() > 4096) {
-                layout.selected = None;
-            }
-            layout_bytes += layout.database.len() + layout.selected.as_ref().map_or(0, String::len);
-            layout_bytes <= 256 * 1024
-        });
+        self.map_layouts
+            .retain_mut(|layout| layout.retain_bounded(&mut layout_bytes));
         self.database_limit = self.database_limit.map(|limit| limit.max(1));
         self.memory_budget_mib = self
             .memory_budget_mib
@@ -469,10 +459,10 @@ impl Preferences {
         self.slow_query_ms = self.slow_query_ms.clamp(1, 60_000);
         self.null_display = self.null_display.chars().take(32).collect();
         self.query_history
-            .retain(|h| h.sql.len() <= 64 * 1024 && h.database.len() <= 4096);
+            .retain(|h| h.sql.len() <= SQL_BYTES && h.database.len() <= PATH_BYTES);
         retain_prefix(&mut self.query_history, |h| h.sql.len() + h.database.len());
         self.saved_queries.retain(|b| {
-            b.sql.len() <= 64 * 1024 && b.database.len() <= 4096 && b.name.len() <= 256
+            b.sql.len() <= SQL_BYTES && b.database.len() <= PATH_BYTES && b.name.len() <= 256
         });
         retain_prefix(&mut self.saved_queries, |b| {
             b.sql.len() + b.database.len() + b.name.len()
@@ -597,12 +587,15 @@ impl Drop for Store {
         }
     }
 }
-pub(crate) fn config_path() -> Result<PathBuf, String> {
-    let root = std::env::var_os("XDG_CONFIG_HOME")
+/// `$XDG_CONFIG_HOME` when it is absolute, otherwise `~/.config`.
+pub(crate) fn config_home() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".config")))
-        .ok_or("No application configuration directory available")?;
+}
+pub(crate) fn config_path() -> Result<PathBuf, String> {
+    let root = config_home().ok_or("No application configuration directory available")?;
     Ok(root.join("tursobench/preferences.db"))
 }
 fn decode(payload: &str) -> Result<Preferences, String> {
@@ -613,10 +606,19 @@ fn decode(payload: &str) -> Result<Preferences, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CachedDatabase, MapLayout, Path, PathBuf, Preferences, Store, decode};
+    use super::{
+        CachedDatabase, MapLayout, Path, PathBuf, Preferences, Provider, SQL_BYTES, Sharing, Store,
+        decode, normalized_absolute,
+    };
+    use crate::appearance::Mode;
+    fn open(path: &Path) -> tursobench_db::preferences::Store {
+        tursobench_db::preferences::Store::open(path).unwrap()
+    }
     fn read(path: &Path) -> Preferences {
-        let db = tursobench_db::preferences::Store::open(path).unwrap();
-        decode(db.payload().unwrap_or("{}")).unwrap()
+        decode(open(path).payload().unwrap_or("{}")).unwrap()
+    }
+    fn write(path: &Path, payload: &str) {
+        open(path).save(payload).unwrap();
     }
     fn save_and_wait(store: &mut Store, prefs: &Preferences) -> Result<(), String> {
         store.save(prefs);
@@ -627,57 +629,34 @@ mod tests {
     }
     #[test]
     fn assistant_migration_scopes_legacy_consent_and_models_to_the_selected_vendor() {
-        use super::Provider;
         let mut prefs = decode(r#"{"assistant":{"provider":"Codex","model":"my-model","sharing":{"/tmp/a.db":"Rows"},"privacy":{"claude":{"keep_history":true}}}}"#).unwrap();
-        assert_eq!(prefs.assistant.selected_model(), "my-model");
-        assert_eq!(
-            prefs.assistant.grant_for("/tmp/a.db"),
-            Some(crate::assistant_tools::Sharing::Rows)
-        );
-        assert!(prefs.assistant.privacy.of(Provider::Claude).keep_history);
-        prefs.assistant.provider = Provider::Claude;
-        assert_eq!(prefs.assistant.grant_for("/tmp/a.db"), None);
-        assert_eq!(
-            prefs.assistant.sharing_for("/tmp/a.db"),
-            crate::assistant_tools::Sharing::Rows
-        );
-        prefs.assistant.default_sharing = crate::assistant_tools::Sharing::Schema;
-        assert_eq!(
-            prefs.assistant.sharing_for("/tmp/a.db"),
-            crate::assistant_tools::Sharing::Schema
-        );
-        assert_eq!(prefs.assistant.selected_model(), "");
+        let assistant = &mut prefs.assistant;
+        assert_eq!(assistant.selected_model(), "my-model");
+        assert_eq!(assistant.grant_for("/tmp/a.db"), Some(Sharing::Rows));
+        assert!(assistant.privacy.of(Provider::Claude).keep_history);
+        assistant.provider = Provider::Claude;
+        assert_eq!(assistant.grant_for("/tmp/a.db"), None);
+        assert_eq!(assistant.sharing_for("/tmp/a.db"), Sharing::Rows);
+        assistant.default_sharing = Sharing::Schema;
+        assert_eq!(assistant.sharing_for("/tmp/a.db"), Sharing::Schema);
+        assert_eq!(assistant.selected_model(), "");
         let encoded = serde_json::to_string(&prefs).unwrap();
         let restored = decode(&encoded).unwrap();
         assert_eq!(restored.assistant, prefs.assistant);
         assert!(!encoded.contains("\"sharing\":"));
+        // Forgetting a custom agent keeps every other provider's choices.
+        let assistant = &mut prefs.assistant;
+        for database in ["/tmp/a.db", "/tmp/b.db"] {
+            let grants = assistant.grants.entry(database.into()).or_default();
+            grants.insert(Provider::Custom, Sharing::Schema);
+        }
+        assistant.intro_skips.insert(Provider::Custom, 2);
+        assistant.clear_custom_grants();
+        assert_eq!(assistant.grants.keys().collect::<Vec<_>>(), ["/tmp/a.db"]);
+        assert_eq!(assistant.grants["/tmp/a.db"].len(), 1);
+        assert!(assistant.intro_skips.is_empty());
     }
 
-    #[test]
-    fn shutdown_drains_the_latest_coalesced_snapshot() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("preferences.db");
-        let (mut store, mut prefs, warning) = Store::start_path(Ok(path.clone()), || {});
-        assert!(warning.is_none());
-        for i in 1..=50 {
-            prefs.row_limit = i;
-            store.save(&prefs);
-        }
-        drop(store);
-        assert_eq!(read(&path).row_limit, 50);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
-                0o700
-            );
-            assert_eq!(
-                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-                0o600
-            );
-        }
-    }
     #[test]
     fn turso_storage_roundtrips_settings_history_and_layouts_without_json_import() {
         let dir = tempfile::tempdir().unwrap();
@@ -692,7 +671,7 @@ mod tests {
         prefs.font_size = 18;
         prefs.memory_budget_mib = Some(12 * 1024);
         prefs.database_limit = Some(17);
-        prefs.appearance = Some(crate::appearance::Mode::Light);
+        prefs.appearance = Some(Mode::Light);
         for i in 0..150 {
             prefs.record_query("db-a", &format!("SELECT {i}"), Some(i), false);
         }
@@ -710,12 +689,25 @@ mod tests {
             selected: Some("t".into()),
         });
         save_and_wait(&mut store, &prefs).unwrap();
+        for i in 1..=50 {
+            prefs.row_limit = i;
+            store.save(&prefs);
+        }
+        // Drop drains the latest coalesced snapshot and releases the
+        // writer's database handles before reopen.
         drop(store);
-        // Drop drains the writer and releases its database handles before reopen.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(dir.path()), 0o700);
+            assert_eq!(mode(&path), 0o600);
+        }
         let (reader, loaded, error) = Store::start_path(Ok(path.clone()), || {});
         assert!(error.is_none(), "{error:?}");
+        assert_eq!(loaded.row_limit, 50);
         assert_eq!(loaded.font_size, 18);
-        assert_eq!(loaded.appearance, Some(crate::appearance::Mode::Light));
+        assert_eq!(loaded.appearance, Some(Mode::Light));
         assert_eq!(loaded.query_history.len(), 100);
         assert_eq!(loaded.saved_queries[0].sql, "SELECT ';'");
         assert_eq!(loaded.map_layouts, prefs.map_layouts);
@@ -729,54 +721,74 @@ mod tests {
     fn unsupported_payload_disables_saves_without_losing_stored_queries() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("preferences.db");
-        {
-            let mut db = tursobench_db::preferences::Store::open(&path).unwrap();
-            db.save(r#"{"font_size":"invalid","saved_queries":[{"database":"db","name":"q","sql":"SELECT 1"}]}"#).unwrap();
-        }
+        write(
+            &path,
+            r#"{"font_size":"invalid","saved_queries":[{"database":"db","name":"q","sql":"SELECT 1"}]}"#,
+        );
         let (mut store, prefs, warning) = Store::start_path(Ok(path.clone()), || {});
         assert!(warning.is_some());
         assert_eq!(prefs.font_size, 14);
         assert!(save_and_wait(&mut store, &prefs).is_err());
-        let db = tursobench_db::preferences::Store::open(&path).unwrap();
-        assert!(db.payload().unwrap().contains("SELECT 1"));
-    }
-    #[test]
-    fn resource_preferences_default_to_auto_and_normalize_without_overflow() {
-        let old = decode("{}").unwrap();
-        assert_eq!(old.database_limit, None);
-        assert_eq!(old.memory_budget_mib, None);
-        let prefs =
-            decode(r#"{"database_limit":0,"memory_budget_mib":18446744073709551615}"#).unwrap();
-        assert_eq!(prefs.database_limit, Some(1));
-        assert_eq!(
-            prefs.memory_budget_mib,
-            Some(u64::MAX / crate::resources::MIB)
-        );
+        assert!(open(&path).payload().unwrap().contains("SELECT 1"));
     }
 
     #[test]
-    fn font_and_discovery_preferences_normalize_without_legacy_migration() {
-        let mut prefs = decode(r#"{"font_size":100,"discovery":{"enabled":false}}"#).unwrap();
+    fn decoded_preferences_keep_defaults_and_stay_within_bounds() {
+        let old = decode("{}").unwrap();
+        assert_eq!((old.database_limit, old.memory_budget_mib), (None, None));
+        let mut prefs = decode(
+            r#"{"font_size":100,"database_limit":0,"memory_budget_mib":18446744073709551615,"discovery":{"enabled":false}}"#,
+        )
+        .unwrap();
         assert_eq!(prefs.font_size, 20);
+        assert_eq!(prefs.database_limit, Some(1));
+        let mib = crate::resources::MIB;
+        assert_eq!(prefs.memory_budget_mib, Some(u64::MAX / mib));
         assert!(!prefs.discovery.enabled);
-        assert_eq!(prefs.appearance, Some(crate::appearance::Mode::System));
+        assert_eq!(prefs.appearance, Some(Mode::System));
         prefs.discovery.roots = vec![
             "/".into(),
             "relative".into(),
             "/home/test/Projects/../Code".into(),
             "/home/test/Code".into(),
         ];
+        prefs.discovery.record_open("relative.db".into(), 1);
         for i in 0..250 {
-            prefs
-                .discovery
-                .record_open(format!("/home/test/{i}.db").into(), i);
+            let path = PathBuf::from(format!("/home/test/{i}.db"));
+            prefs.discovery.record_open(path.clone(), i);
+            let (size, modified) = (100, Some(i));
             prefs.discovery.remember(CachedDatabase {
-                path: format!("/home/test/{i}.db").into(),
-                size: 100,
-                modified: Some(i),
+                path,
+                size,
+                modified,
             });
         }
+        assert_eq!(
+            normalized_absolute(Path::new("/a/./b/../c")),
+            Some("/a/c".into())
+        );
+        assert_eq!(normalized_absolute(Path::new("/a/../..")), None);
+        // Invalid layouts go; a valid one loses only its out-of-range parts.
+        let layout = |database: &str, zoom| MapLayout {
+            database: database.into(),
+            positions: [("t".into(), [1.0, 2.0]), ("far".into(), [f32::NAN, 0.0])].into(),
+            pan: [0.0; 2],
+            zoom,
+            pack_width: 0.0,
+            all_columns: false,
+            selected: Some("x".repeat(5000)),
+        };
+        prefs.map_layouts = vec![
+            layout("/a.db", 1.0),
+            layout("a.db", 1.0),
+            layout("/b.db", 9.0),
+        ];
+        prefs.record_query("/a.db", &"x".repeat(SQL_BYTES + 1), None, false);
         prefs.normalize();
+        assert!(prefs.query_history.is_empty());
+        assert_eq!(prefs.map_layouts.len(), 1);
+        assert_eq!(prefs.map_layouts[0].positions.len(), 1);
+        assert_eq!(prefs.map_layouts[0].selected, None);
         assert_eq!(
             prefs.discovery.roots,
             vec![PathBuf::from("/home/test/Code")]
@@ -785,10 +797,7 @@ mod tests {
         assert_eq!(prefs.discovery.cached.len(), 200);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("preferences.db");
-        {
-            let mut db = tursobench_db::preferences::Store::open(&path).unwrap();
-            db.save(&serde_json::to_string(&prefs).unwrap()).unwrap();
-        }
+        write(&path, &serde_json::to_string(&prefs).unwrap());
         assert_eq!(read(&path).discovery.cached, prefs.discovery.cached);
     }
     #[cfg(unix)]

@@ -3,6 +3,8 @@ use crate::app::icons::{self, Icon};
 use eframe::egui;
 use std::path::Path;
 
+pub(super) const ROW_HEIGHT: f32 = 34.0;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum EngineMark {
     OpenedTurso,
@@ -30,6 +32,100 @@ impl Entry {
             EngineMark::LikelyTurso => "Likely Turso",
             EngineMark::Other => self.kind.label(),
         }
+    }
+
+    /// One list row: icon, file name, folder and badge; returns the row's
+    /// response and whether its menu asked to forget the database.
+    pub(super) fn row_ui(
+        &self,
+        ui: &mut egui::Ui,
+        selected: bool,
+        highlighted: bool,
+        available: bool,
+    ) -> (egui::Response, bool) {
+        let (rect, response) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), ROW_HEIGHT),
+            egui::Sense::click(),
+        );
+        if !ui.is_rect_visible(rect) {
+            return (response, false);
+        }
+        let badge = self.badge();
+        response.widget_info(|| {
+            let badge = badge.map(|b| format!(" · {b}")).unwrap_or_default();
+            let name = format!("{} · {}{badge}", self.path.display(), self.engine_label());
+            egui::WidgetInfo::selected(egui::Role::ListBoxOption, available, selected, name)
+        });
+        let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+        let visuals = ui.visuals();
+        if selected || highlighted || response.hovered() || response.has_focus() {
+            let fill = if selected || highlighted {
+                visuals.selection.bg_fill
+            } else {
+                visuals.faint_bg_color
+            };
+            painter.rect_filled(rect, 6.0, fill);
+        }
+        let icon = egui::Rect::from_center_size(
+            rect.left_center() + egui::vec2(14.0, 0.0),
+            egui::vec2(22.0, 22.0),
+        );
+        database_icon(ui, icon, self, available);
+        let badge = badge.or((self.kind == DatabaseKind::LikelySqlite).then_some("SQLite"));
+        let badge_width = badge.map_or(0.0, |badge| {
+            let font = crate::appearance::proportional(ui.ctx(), 9.0);
+            let galley = painter.layout_no_wrap(badge.into(), font, visuals.warn_fg_color);
+            let width = galley.size().x + 8.0;
+            let pos = rect.right_center() - egui::vec2(width, galley.size().y / 2.0);
+            painter.galley(pos, galley, visuals.warn_fg_color);
+            width
+        });
+        let name = self.path.file_name().unwrap_or(self.path.as_os_str());
+        let color = if available {
+            visuals.text_color()
+        } else {
+            visuals.weak_text_color()
+        };
+        let text_width = (rect.width() - 34.0).max(1.0);
+        for (text, y, size, color, width) in [
+            (
+                name.to_string_lossy().into_owned(),
+                1.0,
+                12.0,
+                color,
+                (text_width - badge_width).max(1.0),
+            ),
+            (
+                folder_label(&self.path),
+                18.0,
+                10.0,
+                visuals.weak_text_color(),
+                text_width,
+            ),
+        ] {
+            let text = egui::RichText::new(text).size(crate::appearance::text_size(ui.ctx(), size));
+            let galley = egui::WidgetText::from(text).into_galley(
+                ui,
+                Some(egui::TextWrapMode::Truncate),
+                width,
+                egui::TextStyle::Body,
+            );
+            painter.galley(rect.min + egui::vec2(30.0, y), galley, color);
+        }
+        let mut forget = false;
+        response.context_menu(|ui| {
+            ui.label(self.label());
+            ui.label(self.engine_label());
+            ui.small(self.kind.explanation());
+            if let Some(bytes) = self.size {
+                ui.small(format!("{} KiB", bytes.div_ceil(1024)));
+            }
+            if ui.button("Forget database").clicked() {
+                forget = true;
+                ui.close();
+            }
+        });
+        (response.on_hover_text(self.path.to_string_lossy()), forget)
     }
 }
 
@@ -131,11 +227,10 @@ fn turso_texture(ctx: &egui::Context, dark: bool) -> egui::TextureHandle {
 
 #[cfg(test)]
 mod tests {
-    use super::{DatabaseKind, EngineMark, Entry, Path, folder_label};
-    use crate::{
-        app::databases::{Chooser, State},
-        discovery::Availability,
-        storage::DiscoveryPreferences,
+    use super::{DatabaseKind, Entry, Path, egui, folder_label};
+    use crate::app::{
+        databases::State,
+        test_ui::{control, nodes, texts},
     };
 
     #[test]
@@ -157,27 +252,67 @@ mod tests {
     }
 
     #[test]
-    fn only_successful_open_history_gets_the_checked_turso_mark() {
-        let mut entry = Entry {
-            path: "/work/example.db".into(),
+    fn row_tooltip_is_the_full_path_and_its_menu_describes_and_forgets_the_file() {
+        let path = "/home/demo/.local/share/clip-daemon/history/history.db";
+        let entry = Entry {
             state: State::Found,
-            size: None,
-            last_opened: None,
-            kind: DatabaseKind::Unknown,
+            size: Some(4096),
+            kind: DatabaseKind::LikelyTurso,
+            ..Entry::remembered(path.into(), Some(1))
         };
-        assert_eq!(entry.engine_mark(), EngineMark::Other);
-        entry.kind = DatabaseKind::LikelyTurso;
-        assert_eq!(entry.engine_mark(), EngineMark::LikelyTurso);
-        entry.kind = DatabaseKind::LikelySqlite;
-        assert_eq!(entry.engine_mark(), EngineMark::Other);
-
-        let mut prefs = DiscoveryPreferences::default();
-        prefs.record_open(entry.path.clone(), 1);
-        let restored = Chooser::new(&prefs);
-        assert_eq!(restored.entries[0].engine_mark(), EngineMark::OpenedTurso);
-        entry.last_opened = Some(1);
-        assert_eq!(entry.engine_mark(), EngineMark::OpenedTurso);
-        entry.state = State::Checked(Availability::NotDatabase);
-        assert_eq!(entry.engine_mark(), EngineMark::Other);
+        let screen_rect = Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(600.0, 400.0),
+        ));
+        for dark in [false, true] {
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            crate::appearance::theme(&ctx, dark);
+            let mut time = 0.0;
+            let mut frame = |events| {
+                let mut forget = false;
+                // Long enough to show the tooltip, short enough for a click.
+                time += 0.4;
+                let input = egui::RawInput {
+                    time: Some(time),
+                    screen_rect,
+                    events,
+                    ..Default::default()
+                };
+                let mut output =
+                    ctx.run_ui(input, |ui| forget = entry.row_ui(ui, false, false, true).1);
+                output.textures_delta.clear();
+                (output, forget)
+            };
+            let row = egui::pos2(100.0, 30.0);
+            frame(vec![egui::Event::PointerMoved(row)]);
+            let output = (0..3).map(|_| frame(vec![]).0).last().unwrap();
+            let painted: Vec<_> = texts(&output).map(|t| t.galley.job.text.as_str()).collect();
+            assert_eq!(painted, ["history.db", "clip-daemon/history", path]);
+            assert!(nodes(&output).iter().any(|(_, node)| {
+                node.label() == Some(&format!("{path} · Opened with Turso"))
+            }));
+            for pressed in [true, false] {
+                frame(vec![egui::Event::PointerButton {
+                    pos: row,
+                    button: egui::PointerButton::Secondary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }]);
+            }
+            let (menu, _) = frame(vec![]);
+            let painted: Vec<_> = texts(&menu).map(|t| t.galley.job.text.as_str()).collect();
+            for line in [
+                "Opened before · header checked",
+                "Opened with Turso",
+                "4 KiB",
+            ] {
+                assert!(painted.contains(&line), "{line}: {painted:?}");
+            }
+            let forget = control(&menu, "Forget database").center();
+            let clicks =
+                [true, false].map(|pressed| frame(crate::app::test_ui::pointer(forget, pressed)).1);
+            assert!(clicks.contains(&true));
+        }
     }
 }

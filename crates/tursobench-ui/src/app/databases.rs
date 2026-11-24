@@ -8,7 +8,7 @@ mod presentation;
 pub(super) use presentation::{folder_label, opened_database_icon};
 mod settings;
 use crate::{
-    discovery::{self, Availability, DatabaseKind, Event, Job, Request, Root, Summary},
+    discovery::{self, Availability, Candidate, DatabaseKind, Event, Job, Request, Root, Summary},
     storage::{CachedDatabase, DiscoveryPreferences, normalized_absolute},
 };
 pub(super) use settings::FolderList;
@@ -26,6 +26,23 @@ enum State {
     Checked(Availability),
 }
 
+/// The row badge and the full description of a path the search checked.
+fn checked_status(availability: Availability) -> (&'static str, &'static str) {
+    match availability {
+        Availability::Missing => ("Missing", "File no longer found"),
+        Availability::Unavailable => ("Unreadable", "Could not read file"),
+        Availability::NotDatabase => ("Not a database", "No recognized database header"),
+        Availability::Skipped => (
+            "Outside search scope",
+            "Not searched · outside automatic search policy",
+        ),
+        Availability::ExcludedApplication => (
+            "Use Browse",
+            "Excluded application data · use Browse to select explicitly",
+        ),
+    }
+}
+
 #[derive(Clone)]
 struct Entry {
     path: PathBuf,
@@ -35,13 +52,20 @@ struct Entry {
     kind: DatabaseKind,
 }
 impl Entry {
+    /// A path known from history or the search cache, not yet checked.
+    fn remembered(path: PathBuf, last_opened: Option<u64>) -> Self {
+        Self {
+            path,
+            state: State::Remembered,
+            size: None,
+            last_opened,
+            kind: DatabaseKind::Unknown,
+        }
+    }
+
     fn badge(&self) -> Option<&'static str> {
         match self.state {
-            State::Checked(Availability::Missing) => Some("Missing"),
-            State::Checked(Availability::Unavailable) => Some("Unreadable"),
-            State::Checked(Availability::NotDatabase) => Some("Not a database"),
-            State::Checked(Availability::Skipped) => Some("Outside search scope"),
-            State::Checked(Availability::ExcludedApplication) => Some("Use Browse"),
+            State::Checked(availability) => Some(checked_status(availability).0),
             _ if self.path.to_str().is_none() => Some("Unsupported path"),
             _ => None,
         }
@@ -49,19 +73,11 @@ impl Entry {
 
     fn label(&self) -> &'static str {
         match (self.state, self.last_opened.is_some()) {
+            (State::Checked(availability), _) => checked_status(availability).1,
             (State::Remembered, true) => "Opened before · awaiting header check",
             (State::Remembered, false) => "Remembered candidate · awaiting header check",
             (State::Found, true) => "Opened before · header checked",
             (State::Found, false) => "Database candidate · header checked",
-            (State::Checked(Availability::Missing), _) => "File no longer found",
-            (State::Checked(Availability::Unavailable), _) => "Could not read file",
-            (State::Checked(Availability::NotDatabase), _) => "No recognized database header",
-            (State::Checked(Availability::Skipped), _) => {
-                "Not searched · outside automatic search policy"
-            }
-            (State::Checked(Availability::ExcludedApplication), _) => {
-                "Excluded application data · use Browse to select explicitly"
-            }
         }
     }
     fn selectable(&self) -> bool {
@@ -117,30 +133,20 @@ impl Chooser {
     pub(super) fn new(prefs: &DiscoveryPreferences) -> Self {
         let mut chooser = Self::default();
         for recent in &prefs.recent {
-            chooser.entries.push(Entry {
-                path: recent.path.clone(),
-                state: State::Remembered,
-                size: None,
-                last_opened: Some(recent.last_opened),
-                kind: DatabaseKind::Unknown,
-            });
+            let entry = Entry::remembered(recent.path.clone(), Some(recent.last_opened));
+            chooser.entries.push(entry);
         }
         for cached in &prefs.cached {
-            if let Some(entry) = chooser.entries.iter_mut().find(|e| e.path == cached.path) {
-                entry.size = Some(cached.size);
-            } else {
-                chooser.entries.push(Entry {
-                    path: cached.path.clone(),
-                    state: State::Remembered,
-                    size: Some(cached.size),
-                    last_opened: None,
-                    kind: DatabaseKind::Unknown,
-                });
+            let size = Some(cached.size);
+            match chooser.entry_mut(&cached.path) {
+                Some(entry) => entry.size = size,
+                None => chooser.entries.push(Entry {
+                    size,
+                    ..Entry::remembered(cached.path.clone(), None)
+                }),
             }
         }
-        chooser
-            .entries
-            .retain(|e| !prefs.excluded.iter().any(|p| e.path.starts_with(p)));
+        chooser.entries.retain(|e| !prefs.excludes(&e.path));
         chooser.entries.sort_by(|a, b| {
             b.last_opened
                 .cmp(&a.last_opened)
@@ -149,31 +155,89 @@ impl Chooser {
         });
         chooser
     }
+    fn entry_mut(&mut self, path: &Path) -> Option<&mut Entry> {
+        self.entries.iter_mut().find(|e| e.path == path)
+    }
     fn cancel(&mut self) {
         if let Some(job) = &self.job {
             job.cancel();
             self.cancelling = true;
         }
     }
+
+    /// List and remember a found candidate unless it was forgotten or excluded.
+    fn found(&mut self, prefs: &mut DiscoveryPreferences, candidate: Candidate) {
+        let path = candidate.path;
+        if self.forgotten.contains(&path) || prefs.excludes(&path) {
+            return;
+        }
+        if let Some(identity) = candidate.identity {
+            self.identities.insert(path.clone(), identity);
+        }
+        let size = candidate.size;
+        prefs.remember(CachedDatabase {
+            path: path.clone(),
+            size,
+            modified: candidate.modified,
+        });
+        let (state, kind, size) = (State::Found, candidate.kind, Some(size));
+        if let Some(entry) = self.entry_mut(&path) {
+            (entry.state, entry.kind, entry.size) = (state, kind, size);
+        } else {
+            // Append during a scan: preserve keyboard focus and scroll.
+            self.entries.push(Entry {
+                path,
+                state,
+                size,
+                last_opened: None,
+                kind,
+            });
+        }
+    }
+
+    /// A remembered path that is no longer a usable candidate.
+    fn checked(&mut self, prefs: &mut DiscoveryPreferences, path: PathBuf, state: Availability) {
+        self.identities.remove(&path);
+        if let Some(entry) = self.entry_mut(&path) {
+            entry.state = State::Checked(state);
+            entry.kind = DatabaseKind::Unknown;
+        }
+        use Availability::{ExcludedApplication, Missing, NotDatabase};
+        if matches!(state, Missing | NotDatabase | ExcludedApplication) {
+            prefs.cached.retain(|c| c.path != path);
+        }
+        if state == ExcludedApplication {
+            self.entries
+                .retain(|e| e.path != path || e.last_opened.is_some());
+        }
+    }
+
+    /// `path` is another name for `original`: keep one row, with the later open.
+    fn alias(&mut self, prefs: &mut DiscoveryPreferences, path: PathBuf, original: PathBuf) {
+        if let Some(identity) = self.identities.get(&original).cloned() {
+            self.identities.insert(path.clone(), identity);
+        }
+        let recent = self.entry_mut(&path).and_then(|e| e.last_opened);
+        self.entries.retain(|e| e.path != path);
+        prefs.cached.retain(|e| e.path != path);
+        if let Some(time) = recent
+            && let Some(entry) = self.entry_mut(&original)
+        {
+            entry.last_opened = Some(entry.last_opened.unwrap_or(0).max(time));
+        }
+    }
 }
 
 fn request(prefs: &DiscoveryPreferences, folder: Option<PathBuf>) -> Request {
-    let known: Vec<_> = prefs
-        .recent
-        .iter()
-        .map(|e| e.path.clone())
-        .chain(prefs.cached.iter().map(|e| e.path.clone()))
+    let known = prefs.recent.iter().map(|e| &e.path);
+    let known = known
+        .chain(prefs.cached.iter().map(|e| &e.path))
         .filter(|p| folder.as_ref().is_none_or(|root| p.starts_with(root)))
+        .cloned()
         .collect();
-    let roots = if let Some(path) = folder {
-        vec![Root {
-            path,
-            depth: 5,
-            extensionless: true,
-            explicit: true,
-        }]
-    } else {
-        search_roots(prefs)
+    let roots = match folder {
+        Some(path) => vec![Root::explicit(path)],
+        None => search_roots(prefs),
     };
     Request {
         roots,
@@ -184,59 +248,38 @@ fn request(prefs: &DiscoveryPreferences, folder: Option<PathBuf>) -> Request {
 }
 
 fn search_roots(prefs: &DiscoveryPreferences) -> Vec<Root> {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let var = |name| std::env::var_os(name).map(PathBuf::from);
+    let (home, data, state) = (var("HOME"), var("XDG_DATA_HOME"), var("XDG_STATE_HOME"));
     let cwd = std::env::current_dir().ok();
-    let data = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from);
-    let state = std::env::var_os("XDG_STATE_HOME").map(PathBuf::from);
-    configured_roots(
-        prefs,
-        discovery::default_roots(
-            home.as_deref(),
-            cwd.as_deref(),
-            data.as_deref(),
-            state.as_deref(),
-        ),
-    )
+    let (home, cwd, data, state) = (
+        home.as_deref(),
+        cwd.as_deref(),
+        data.as_deref(),
+        state.as_deref(),
+    );
+    configured_roots(prefs, discovery::default_roots(home, cwd, data, state))
 }
 
 /// The settings list and the worker use exactly the same roots and policies.
 fn configured_roots(prefs: &DiscoveryPreferences, defaults: Vec<Root>) -> Vec<Root> {
-    let added = prefs.roots.iter().map(|path| Root {
-        path: path.clone(),
-        depth: 5,
-        extensionless: true,
-        explicit: true,
-    });
+    let added = prefs.roots.iter().cloned().map(Root::explicit);
     let recent = prefs.recent.iter().filter_map(|entry| {
-        entry
-            .path
-            .parent()
-            .filter(|p| p.parent().is_some())
-            .map(|path| Root {
-                path: path.into(),
-                depth: 1,
-                extensionless: true,
-                explicit: false,
-            })
+        let folder = entry.path.parent().filter(|p| p.parent().is_some())?;
+        Some(Root::automatic(folder.into(), 1, true))
     });
     let mut roots = Vec::<Root>::new();
-    let mut positions = std::collections::BTreeMap::<PathBuf, usize>::new();
     for mut root in added.chain(recent).chain(defaults) {
-        let Some(path) = normalized_absolute(&root.path) else {
+        let Some(path) = normalized_absolute(&root.path)
+            .filter(|p| !prefs.removed_roots.contains(p) && !prefs.excludes(p))
+        else {
             continue;
         };
-        if prefs.removed_roots.contains(&path) || prefs.excluded.iter().any(|p| path.starts_with(p))
-        {
-            continue;
-        }
-        root.path = path;
-        if let Some(&index) = positions.get(&root.path) {
-            let previous = &mut roots[index];
+        if let Some(previous) = roots.iter_mut().find(|r| r.path == path) {
             previous.depth = previous.depth.max(root.depth);
             previous.extensionless |= root.extensionless;
             previous.explicit |= root.explicit;
         } else {
-            positions.insert(root.path.clone(), roots.len());
+            root.path = path;
             roots.push(root);
         }
     }
@@ -304,95 +347,16 @@ impl App {
     }
 
     fn discovery_event(&mut self, event: Event) {
+        let prefs = &mut self.preferences.discovery;
         match event {
-            Event::Found(candidate) => {
-                if self.databases.forgotten.contains(&candidate.path)
-                    || self
-                        .preferences
-                        .discovery
-                        .excluded
-                        .iter()
-                        .any(|p| candidate.path.starts_with(p))
-                {
-                    return;
-                }
-                if let Some(identity) = candidate.identity {
-                    self.databases
-                        .identities
-                        .insert(candidate.path.clone(), identity);
-                }
-                self.preferences.discovery.remember(CachedDatabase {
-                    path: candidate.path.clone(),
-                    size: candidate.size,
-                    modified: candidate.modified,
-                });
-                if let Some(entry) = self
-                    .databases
-                    .entries
-                    .iter_mut()
-                    .find(|e| e.path == candidate.path)
-                {
-                    entry.state = State::Found;
-                    entry.kind = candidate.kind;
-                    entry.size = Some(candidate.size);
-                } else {
-                    // Append during a scan: preserve keyboard focus and scroll.
-                    self.databases.entries.push(Entry {
-                        path: candidate.path,
-                        state: State::Found,
-                        size: Some(candidate.size),
-                        last_opened: None,
-                        kind: candidate.kind,
-                    });
-                }
-            }
-            Event::Checked(path, state) => {
-                self.databases.identities.remove(&path);
-                if let Some(entry) = self.databases.entries.iter_mut().find(|e| e.path == path) {
-                    entry.state = State::Checked(state);
-                    entry.kind = DatabaseKind::Unknown;
-                }
-                if matches!(
-                    state,
-                    Availability::Missing
-                        | Availability::NotDatabase
-                        | Availability::ExcludedApplication
-                ) {
-                    self.preferences.discovery.cached.retain(|c| c.path != path);
-                }
-                if state == Availability::ExcludedApplication {
-                    self.databases
-                        .entries
-                        .retain(|e| e.path != path || e.last_opened.is_some());
-                }
-            }
-            Event::Alias { path, original } => {
-                if let Some(identity) = self.databases.identities.get(&original).cloned() {
-                    self.databases.identities.insert(path.clone(), identity);
-                }
-                let recent = self
-                    .databases
-                    .entries
-                    .iter()
-                    .find(|e| e.path == path)
-                    .and_then(|e| e.last_opened);
-                self.databases.entries.retain(|e| e.path != path);
-                self.preferences.discovery.cached.retain(|e| e.path != path);
-                if let Some(time) = recent
-                    && let Some(entry) = self
-                        .databases
-                        .entries
-                        .iter_mut()
-                        .find(|e| e.path == original)
-                {
-                    entry.last_opened = Some(entry.last_opened.unwrap_or(0).max(time));
-                }
-            }
+            Event::Found(candidate) => self.databases.found(prefs, candidate),
+            Event::Checked(path, state) => self.databases.checked(prefs, path, state),
+            Event::Alias { path, original } => self.databases.alias(prefs, path, original),
             Event::Finished(summary) => {
                 self.databases.job = None;
                 self.databases.cancelling = false;
                 self.databases.summary = Some(summary);
-                self.preferences.discovery.normalize();
+                prefs.normalize();
                 self.store.save(&self.preferences);
             }
         }
@@ -416,19 +380,12 @@ impl App {
             .unwrap_or_default()
             .as_secs();
         self.preferences.discovery.record_open(path.clone(), time);
-        if let Some(entry) = self.databases.entries.iter_mut().find(|e| e.path == path) {
-            entry.last_opened = Some(time);
-        } else {
-            self.databases.entries.insert(
-                0,
-                Entry {
-                    path,
-                    state: State::Remembered,
-                    size: None,
-                    last_opened: Some(time),
-                    kind: DatabaseKind::Unknown,
-                },
-            );
+        match self.databases.entry_mut(&path) {
+            Some(entry) => entry.last_opened = Some(time),
+            None => self
+                .databases
+                .entries
+                .insert(0, Entry::remembered(path, Some(time))),
         }
         self.store.save(&self.preferences);
     }
@@ -440,13 +397,7 @@ impl App {
             self.databases.message = Some("Enter an absolute folder path narrower than the filesystem root. Only UTF-8 paths can be saved.".into());
             return;
         };
-        if self
-            .preferences
-            .discovery
-            .excluded
-            .iter()
-            .any(|p| path.starts_with(p))
-        {
+        if self.preferences.discovery.excludes(&path) {
             self.databases.message =
                 Some("That folder is excluded. Remove its exclusion before searching it.".into());
             return;
@@ -566,14 +517,14 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::{
-        Availability, CachedDatabase, Chooser, DatabaseKind, DiscoveryPreferences, Event, Path,
-        State, request,
+        Availability, CachedDatabase, Candidate, Chooser, DatabaseKind, DiscoveryPreferences,
+        Event, Path, PathBuf, Root, State, presentation::EngineMark, request,
     };
     use crate::app::{
         App,
         test_ui::{self, key_event, pointer, render},
     };
-    use crate::{discovery::Candidate, storage::RecentDatabase};
+    use crate::storage::RecentDatabase;
     use eframe::egui;
     use std::{
         sync::mpsc,
@@ -592,6 +543,21 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(2));
         }
+    }
+
+    /// A real Turso database with one `example` table, in its own folder.
+    pub(super) fn turso_file(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(name);
+        crate::test_support::create(&path, &["CREATE TABLE example(id INTEGER PRIMARY KEY)"]);
+        (dir, path)
+    }
+    fn finish_search(app: &mut App, ctx: &egui::Context) {
+        wait(
+            app,
+            |app| app.poll_discovery(ctx),
+            |app| app.databases.job.is_none(),
+        );
     }
 
     /// The navigation sidebar at `width` by `height`.
@@ -640,12 +606,7 @@ mod tests {
             "/work/private/nested",
         ]
         .into_iter()
-        .map(|path| super::Root {
-            path: path.into(),
-            depth: 3,
-            extensionless: false,
-            explicit: false,
-        })
+        .map(|path| Root::automatic(path.into(), 3, false))
         .collect();
         let roots = super::configured_roots(&prefs, defaults);
         assert_eq!(roots.len(), 2);
@@ -727,11 +688,8 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn cached_identity_and_virtual_rows_bound_database_list_repaints() {
-        let dir = tempfile::tempdir().unwrap();
-        let source = dir.path().join("source.db");
+        let (dir, source) = turso_file("source.db");
         let alias = dir.path().join("alias.db");
-        crate::test_support::create(&source, &["CREATE TABLE example(id INTEGER PRIMARY KEY)"]);
-
         let (ctx, mut app) = test_ui::app();
         app.set_database_path(source.to_str().unwrap().into());
         test_ui::inspect_selected(&mut app, &ctx);
@@ -902,6 +860,21 @@ mod tests {
         assert_eq!(chooser.entries.len(), 2);
         assert_eq!(chooser.entries[0].path, Path::new("/work/recent.db"));
         assert!(chooser.entries.iter().all(|e| e.state == State::Remembered));
+        // Only a successful open, never a header guess, earns the checked mark.
+        assert_eq!(chooser.entries[0].engine_mark(), EngineMark::OpenedTurso);
+        let mut entry = chooser.entries[1].clone();
+        for (kind, mark) in [
+            (DatabaseKind::Unknown, EngineMark::Other),
+            (DatabaseKind::LikelyTurso, EngineMark::LikelyTurso),
+            (DatabaseKind::LikelySqlite, EngineMark::Other),
+        ] {
+            entry.kind = kind;
+            assert_eq!(entry.engine_mark(), mark);
+        }
+        entry.last_opened = Some(1);
+        assert_eq!(entry.engine_mark(), EngineMark::OpenedTurso);
+        entry.state = State::Checked(Availability::NotDatabase);
+        assert_eq!(entry.engine_mark(), EngineMark::Other);
     }
 
     #[test]
@@ -1014,11 +987,7 @@ mod tests {
         );
         app.poll_discovery(&ctx);
         assert!(app.databases.job.is_some());
-        wait(
-            &mut app,
-            |app| app.poll_discovery(&ctx),
-            |app| app.databases.job.is_none(),
-        );
+        finish_search(&mut app, &ctx);
         assert!(
             app.databases
                 .entries
@@ -1068,11 +1037,7 @@ mod tests {
         app.start_discovery(&ctx, Some(temp.path().join("replacement")));
         assert!(app.databases.cancelling);
         assert!(app.databases.job.is_some());
-        wait(
-            &mut app,
-            |app| app.poll_discovery(&ctx),
-            |app| app.databases.job.is_none(),
-        );
+        finish_search(&mut app, &ctx);
         assert!(app.databases.summary.is_some());
         assert!(!app.databases.cancelling);
     }
