@@ -145,9 +145,7 @@ impl App {
         {
             self.databases.override_rect = None;
         }
-        if !inspection.ready(&self.database.path)
-            || inspection.kind(&self.database.path) != crate::discovery::DatabaseKind::LikelySqlite
-        {
+        if !inspection.likely_sqlite(&self.database.path) {
             return;
         }
         ui.horizontal_wrapped(|ui| {
@@ -203,47 +201,6 @@ impl App {
         }
     }
 
-    /// Why the file cannot open, or a spinner while it is checked; returns
-    /// whether the user asked to check a blocked file again.
-    fn open_issue_ui(&self, ui: &mut egui::Ui) -> bool {
-        let path = &self.database.path;
-        let blocked = self.databases.inspection.blocked(path);
-        let Some(error) = self.databases.open_failure.as_ref().or(blocked) else {
-            if !self.databases.inspection.ready(path) {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.weak("Checking file…");
-                });
-            }
-            return false;
-        };
-        let title = if self.databases.open_failure.is_some() {
-            "Couldn’t open database"
-        } else if error.kind == tursobench_core::ErrorKind::Busy {
-            "Database in use"
-        } else {
-            "Cannot open database"
-        };
-        let color = ui.visuals().error_fg_color;
-        let mut recheck = false;
-        egui::Frame::new()
-            .fill(color.gamma_multiply(0.09))
-            .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.4)))
-            .corner_radius(6)
-            .inner_margin(10.0)
-            .show(ui, |ui| {
-                ui.colored_label(color, egui::RichText::new(title).strong());
-                ui.add(egui::Label::new(&error.message).wrap());
-                if blocked.is_some() {
-                    recheck = ui
-                        .button("Check again")
-                        .on_hover_text("Recheck this file’s availability and locks")
-                        .clicked();
-                }
-            });
-        recheck
-    }
-
     fn database_path_ui(&mut self, ui: &mut egui::Ui, focus: bool) {
         let mut path = self.database.path.clone();
         let response = ui.add(
@@ -265,8 +222,8 @@ impl App {
 mod tests {
     use super::{App, egui};
     use crate::app::databases::{
-        Chooser, Entry, State,
-        tests::{scroll_down_at, wait},
+        Entry, State,
+        tests::{scroll_down_at, turso_file, wait},
     };
     use crate::app::test_ui::{self, control, inspect_selected as inspect, nodes, pointer, render};
     use crate::discovery::Availability;
@@ -280,13 +237,8 @@ mod tests {
         size: egui::Vec2,
     ) -> Vec<String> {
         let output = render(ctx, size, events, |ui| app.render(ui));
-        output
-            .shapes
-            .iter()
-            .filter_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) => Some(text.galley.job.text.clone()),
-                _ => None,
-            })
+        test_ui::texts(&output)
+            .map(|text| text.galley.job.text.clone())
             .collect()
     }
 
@@ -296,13 +248,17 @@ mod tests {
         }
     }
 
+    /// A fresh app drawn in the light or dark theme.
+    fn themed(dark: bool) -> (egui::Context, App) {
+        let (ctx, mut app) = test_ui::app();
+        app.set_dark(&ctx, dark);
+        (ctx, app)
+    }
+
     #[test]
     fn sqlite_guess_can_be_overridden_and_opens_with_turso() {
-        use crate::discovery::DatabaseKind;
         use std::io::{Seek, SeekFrom, Write};
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("shared-format.db");
-        crate::test_support::create(&path, &["CREATE TABLE example(id INTEGER PRIMARY KEY)"]);
+        let (dir, path) = turso_file("shared-format.db");
         // A valid shared-format file whose writer metadata resembles SQLite.
         // This exercises the user correcting a false negative for Turso.
         let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
@@ -315,10 +271,7 @@ mod tests {
         app.set_database_path(path.to_str().unwrap().into());
 
         inspect(&mut app, &ctx);
-        assert_eq!(
-            app.databases.inspection.kind(&app.database.path),
-            DatabaseKind::LikelySqlite
-        );
+        assert!(app.databases.inspection.likely_sqlite(&app.database.path));
         let texts = frame(&mut app, &ctx, vec![], SIZE);
         assert!(texts.iter().any(|t| t.contains("Likely SQLite")));
         assert!(!app.databases.open_enabled);
@@ -361,12 +314,16 @@ mod tests {
     }
 
     #[test]
-    fn access_panel_uses_automatic_checks_and_picker_selection_resets_write_access() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("example.db");
-        crate::test_support::create(&path, &["CREATE TABLE example(id INTEGER)"]);
+    fn typed_path_gets_automatic_checks_and_picker_selection_resets_write_access() {
+        let (dir, path) = turso_file("example.db");
         let (ctx, mut app) = test_ui::app();
-        app.set_database_path(path.to_string_lossy().into_owned());
+        frame(&mut app, &ctx, vec![], SIZE);
+        frame(&mut app, &ctx, vec![], SIZE);
+        let edit = app.databases.edit_path_rect.unwrap().center();
+        click(&mut app, &ctx, edit);
+        let typed = egui::Event::Text(path.to_string_lossy().into_owned());
+        frame(&mut app, &ctx, vec![typed], SIZE);
+        assert_eq!(app.database.path, path.to_str().unwrap());
         frame(&mut app, &ctx, vec![], SIZE);
         assert!(!app.databases.open_enabled);
         let open = app.databases.open_rect.unwrap().center();
@@ -444,7 +401,7 @@ mod tests {
         }
         assert!(app.databases.refresh_rect.unwrap().width() <= 30.0);
         assert!(!app.settings.open);
-        app.execute_command(&ctx, crate::app::commands::Command::Settings);
+        app.settings.open = true;
         app.settings.page = crate::app::settings::Page::Discovery;
         frame(&mut app, &ctx, vec![], SIZE);
         let texts = frame(&mut app, &ctx, vec![], SIZE);
@@ -491,15 +448,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("missing.db");
         for dark in [false, true] {
-            let ctx = egui::Context::default();
-            crate::appearance::theme(&ctx, dark);
-            let mut app = App::new(&ctx);
+            let (ctx, mut app) = themed(dark);
             app.set_database_path(path.to_string_lossy().into_owned());
             inspect(&mut app, &ctx);
             let texts = frame(&mut app, &ctx, vec![], egui::vec2(960.0, 640.0));
-            assert!(texts.iter().any(|t| t == "Cannot open database"));
-            assert!(texts.iter().any(|t| t == "File not found."));
-            assert!(texts.iter().any(|t| t == "Check again"));
+            for text in ["Cannot open database", "File not found.", "Check again"] {
+                assert!(texts.iter().any(|t| t == text), "{text}");
+            }
             assert!(!app.databases.open_enabled);
             assert!(app.databases.open_rect.unwrap().bottom() < 640.0);
             assert!(
@@ -516,8 +471,11 @@ mod tests {
             );
             let texts = frame(&mut app, &ctx, vec![], egui::vec2(960.0, 640.0));
             assert!(app.databases.open_enabled);
-            assert!(!texts.iter().any(|t| t == "Cannot open database"));
-            assert!(!texts.iter().any(|t| t == "Check again"));
+            assert!(
+                !texts
+                    .iter()
+                    .any(|t| t == "Cannot open database" || t == "Check again")
+            );
             std::fs::remove_file(&path).unwrap();
             let _ = std::fs::remove_file(path.with_extension("db-wal"));
         }
@@ -525,9 +483,7 @@ mod tests {
 
     #[test]
     fn engine_open_failure_stays_visible_until_retry_or_path_change() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("damaged.db");
-        crate::test_support::create(&path, &["CREATE TABLE damaged(id INTEGER)"]);
+        let (dir, path) = turso_file("damaged.db");
         // Valid recognizable header, missing pages: preflight succeeds, engine fails.
         let mut bytes = std::fs::read(&path).unwrap();
         bytes.truncate(100);
@@ -546,16 +502,12 @@ mod tests {
         let reason = app.databases.open_failure.as_ref().unwrap().message.clone();
         app.database.status = "Unrelated status change".into();
         let texts = frame(&mut app, &ctx, vec![], egui::vec2(960.0, 640.0));
-        assert!(texts.iter().any(|t| t == "Couldn’t open database"));
-        assert!(texts.iter().any(|t| t == &reason));
-        assert!(texts.iter().any(|t| t == "Retry"));
+        for text in ["Couldn’t open database", &reason, "Retry"] {
+            assert!(texts.iter().any(|t| t == text), "{text}");
+        }
         assert!(app.databases.open_enabled);
-        app.set_database_path(
-            dir.path()
-                .join("different.db")
-                .to_string_lossy()
-                .into_owned(),
-        );
+        let different = dir.path().join("different.db");
+        app.set_database_path(different.to_string_lossy().into_owned());
         assert!(app.databases.open_failure.is_none());
     }
 
@@ -568,30 +520,18 @@ mod tests {
                 (1280.0, 720.0),
                 (1920.0, 1080.0),
             ] {
-                let ctx = egui::Context::default();
-                crate::appearance::theme(&ctx, dark);
-                let mut app = App::new(&ctx);
-                app.databases = Chooser::default();
+                let (ctx, mut app) = themed(dark);
                 app.set_database_path("/work/recent.db".into());
-                app.databases.entries.push(Entry {
-                    path: app.database.path.clone().into(),
-                    state: State::Remembered,
-                    size: None,
-                    last_opened: Some(1),
-                    kind: crate::discovery::DatabaseKind::Unknown,
-                });
+                let recent = Entry::remembered(app.database.path.clone().into(), Some(1));
+                app.databases.entries.push(recent);
                 for i in 0..80 {
-                    app.databases.entries.push(Entry {
-                        path: format!("/work/{i}.db").into(),
-                        state: if i == 0 {
-                            State::Checked(Availability::Missing)
-                        } else {
-                            State::Found
-                        },
-                        size: None,
-                        last_opened: None,
-                        kind: crate::discovery::DatabaseKind::Unknown,
-                    });
+                    let state = if i == 0 {
+                        State::Checked(Availability::Missing)
+                    } else {
+                        State::Found
+                    };
+                    let entry = Entry::remembered(format!("/work/{i}.db").into(), None);
+                    app.databases.entries.push(Entry { state, ..entry });
                 }
                 let size = egui::vec2(width, height);
                 frame(&mut app, &ctx, vec![], size);

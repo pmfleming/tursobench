@@ -24,6 +24,25 @@ pub struct Root {
     /// Only user-added roots may opt into otherwise excluded locations.
     pub explicit: bool,
 }
+impl Root {
+    /// A folder the user chose: five levels deep, with extensionless files.
+    pub fn explicit(path: PathBuf) -> Self {
+        Self {
+            path,
+            depth: 5,
+            extensionless: true,
+            explicit: true,
+        }
+    }
+    pub fn automatic(path: PathBuf, depth: usize, extensionless: bool) -> Self {
+        Self {
+            path,
+            depth,
+            extensionless,
+            explicit: false,
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Budget {
@@ -149,45 +168,31 @@ pub fn default_roots(
     data: Option<&Path>,
     state: Option<&Path>,
 ) -> Vec<Root> {
+    // Neither a relative path nor the filesystem root becomes a root.
+    let usable = |p: &&Path| p.is_absolute() && p.parent().is_some();
+    let home = home.filter(usable);
     let mut roots = Vec::new();
     // Visit application storage before broad development trees consume the budget.
     for (configured, fallback) in [(data, ".local/share"), (state, ".local/state")] {
         if let Some(path) = configured
-            .filter(|p| p.is_absolute() && p.parent().is_some())
+            .filter(usable)
             .map(Path::to_path_buf)
-            .or_else(|| {
-                home.filter(|p| p.is_absolute() && p.parent().is_some())
-                    .map(|p| p.join(fallback))
-            })
+            .or_else(|| home.map(|p| p.join(fallback)))
         {
-            roots.push(Root {
-                path,
-                depth: 3,
-                extensionless: true,
-                explicit: false,
-            });
+            roots.push(Root::automatic(path, 3, true));
         }
     }
-    if let Some(cwd) = cwd.filter(|p| p.is_absolute() && p.parent().is_some()) {
-        roots.push(Root {
-            path: cwd.into(),
-            depth: if Some(cwd) == home || system_path(cwd) {
-                0
-            } else {
-                5
-            },
-            extensionless: false,
-            explicit: false,
-        });
+    if let Some(cwd) = cwd.filter(usable) {
+        let broad = Some(cwd) == home || system_path(cwd);
+        roots.push(Root::automatic(
+            cwd.into(),
+            if broad { 0 } else { 5 },
+            false,
+        ));
     }
-    if let Some(home) = home.filter(|p| p.is_absolute() && p.parent().is_some()) {
-        roots.push(Root {
-            path: home.into(),
-            depth: 0,
-            extensionless: false,
-            explicit: false,
-        });
-        for name in [
+    if let Some(home) = home {
+        roots.push(Root::automatic(home.into(), 0, false));
+        let projects = [
             "Projects",
             "projects",
             "Code",
@@ -195,14 +200,8 @@ pub fn default_roots(
             "Developer",
             "Development",
             "src",
-        ] {
-            roots.push(Root {
-                path: home.join(name),
-                depth: 5,
-                extensionless: false,
-                explicit: false,
-            });
-        }
+        ];
+        roots.extend(projects.map(|name| Root::automatic(home.join(name), 5, false)));
     }
     roots
 }
@@ -279,46 +278,35 @@ fn skip_directory(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
         return true;
     };
-    if name.starts_with('.') && !matches!(name, ".data" | ".turso" | ".libsql" | ".local") {
-        return true;
-    }
-    if application_directory_name(name) {
-        return true;
-    }
-    matches!(
-        name.to_ascii_lowercase().as_str(),
-        "node_modules"
-            | "target"
-            | "vendor"
-            | "build"
-            | "dist"
-            | "result"
-            | "__pycache__"
-            | "venv"
-            | "env"
-            | "site-packages"
-            | "cache"
-            | "caches"
-            | "trash"
-            | "trash-1000"
-            | "mozilla"
-            | "firefox"
-            | "chromium"
-            | "google-chrome"
-            | "brave"
-            | "bravesoftware"
-            | "vivaldi"
-            | "microsoft-edge"
-            | "webkitgtk"
-            | "webkit"
-            | "electron"
-            | "steam"
-            | "flatpak"
-            | "containers"
-            | "docker"
-            | "nix"
-            | "lost+found"
-    )
+    let hidden =
+        name.starts_with('.') && !matches!(name, ".data" | ".turso" | ".libsql" | ".local");
+    hidden
+        || application_directory_name(name)
+        || matches!(
+            name.to_ascii_lowercase().as_str(),
+            "node_modules"
+                | "target"
+                | "vendor"
+                | "build"
+                | "dist"
+                | "result"
+                | "__pycache__"
+                | "venv"
+                | "env"
+                | "site-packages"
+                | "cache"
+                | "caches"
+                | "trash"
+                | "trash-1000"
+                | "microsoft-edge"
+                | "electron"
+                | "steam"
+                | "flatpak"
+                | "containers"
+                | "docker"
+                | "nix"
+                | "lost+found"
+        )
 }
 
 fn application_directory_name(name: &str) -> bool {
@@ -384,26 +372,11 @@ impl Mounts {
             let mut devices = HashMap::new();
             for line in text.lines() {
                 let fields: Vec<_> = line.split_whitespace().collect();
-                if fields.len() < 6 {
-                    continue;
-                }
-                let device = fields[2];
-                let removable = *devices.entry(device).or_insert_with(|| {
-                    let mut path = fs::canonicalize(format!("/sys/dev/block/{device}")).ok();
-                    while let Some(current) = path {
-                        if fs::read_to_string(current.join("removable"))
-                            .is_ok_and(|s| s.trim() == "1")
-                        {
-                            return true;
-                        }
-                        if current == Path::new("/sys/devices") {
-                            break;
-                        }
-                        path = current.parent().map(Path::to_path_buf);
-                    }
-                    false
-                });
-                if removable {
+                if fields.len() >= 6
+                    && *devices
+                        .entry(fields[2])
+                        .or_insert_with(|| removable_device(fields[2]))
+                {
                     mounts.blocked.push(unescape_mount(fields[4]));
                 }
             }
@@ -417,13 +390,12 @@ impl Mounts {
     fn parse(text: &str) -> Self {
         let mut result = Self::default();
         for line in text.lines() {
-            let Some((left, right)) = line.split_once(" - ") else {
-                continue;
-            };
-            let Some(point) = left.split_whitespace().nth(4) else {
-                continue;
-            };
-            let Some(kind) = right.split_whitespace().next() else {
+            let Some((point, kind)) = line.split_once(" - ").and_then(|(left, right)| {
+                Some((
+                    left.split_whitespace().nth(4)?,
+                    right.split_whitespace().next()?,
+                ))
+            }) else {
                 continue;
             };
             let path = unescape_mount(point);
@@ -463,6 +435,19 @@ impl Mounts {
                 .iter()
                 .any(|p| p != root && p.starts_with(root) && path.starts_with(p))
     }
+}
+
+/// Whether a block device, or a device above it in sysfs, is removable.
+#[cfg(target_os = "linux")]
+fn removable_device(device: &str) -> bool {
+    let Ok(path) = fs::canonicalize(format!("/sys/dev/block/{device}")) else {
+        return false;
+    };
+    let devices = Path::new("/sys/devices");
+    let within = path.starts_with(devices);
+    path.ancestors()
+        .take_while(|a| !within || a.starts_with(devices))
+        .any(|a| fs::read_to_string(a.join("removable")).is_ok_and(|s| s.trim() == "1"))
 }
 
 fn unescape_mount(value: &str) -> PathBuf {
@@ -604,10 +589,7 @@ impl<F: FnMut(Event) -> bool> Scanner<'_, F> {
         }
     }
     fn probe(&mut self, path: &Path, known: bool) {
-        if self.stopped() {
-            return;
-        }
-        if !self.probed_paths.insert(path.into()) {
+        if self.stopped() || !self.probed_paths.insert(path.into()) {
             return;
         }
         if self.summary.probes >= self.request.budget.probes {
@@ -617,8 +599,7 @@ impl<F: FnMut(Event) -> bool> Scanner<'_, F> {
         self.summary.probes += 1;
         // O_NONBLOCK and O_NOFOLLOW keep replaced FIFOs and symlinks from
         // blocking the worker or redirecting its header reads.
-        let result = read_candidate(path);
-        match result {
+        match read_candidate(path) {
             Ok(Some((metadata, candidate))) => {
                 let id = identity(&metadata, path);
                 if let Some(original) = self.files.get(&id) {
@@ -639,73 +620,58 @@ impl<F: FnMut(Event) -> bool> Scanner<'_, F> {
         }
     }
     fn check_known(&mut self, path: &Path) {
-        let explicit = self
-            .request
-            .roots
-            .iter()
-            .any(|r| r.explicit && self.mounts.explicit_allowed(&r.path, path));
-        let beneath_explicit = self
-            .request
-            .roots
-            .iter()
-            .any(|r| r.explicit && path.starts_with(&r.path));
-        if self.excluded(path)
-            || (beneath_explicit && !explicit)
-            || (!explicit && !self.mounts.automatic_allowed(path))
+        let explicit_roots = || self.request.roots.iter().filter(|r| r.explicit);
+        let explicit = explicit_roots().any(|r| self.mounts.explicit_allowed(&r.path, path));
+        let beneath_explicit = explicit_roots().any(|r| path.starts_with(&r.path));
+        let availability = if self.excluded(path)
+            || (!explicit && (beneath_explicit || !self.mounts.automatic_allowed(path)))
         {
-            self.checked(path, Availability::Skipped, true);
+            Availability::Skipped
         } else {
             match no_symlink_components(path) {
-                Ok(true) => {
-                    if !explicit && path.parent().is_some_and(|p| self.application_path(p)) {
-                        self.checked(path, Availability::ExcludedApplication, true);
-                    } else {
-                        self.probe(path, true);
-                    }
+                Ok(true)
+                    if explicit || !path.parent().is_some_and(|p| self.application_path(p)) =>
+                {
+                    return self.probe(path, true);
                 }
-                Ok(false) => self.checked(path, Availability::Skipped, true),
-                Err(e) => self.checked(path, Availability::of(&e), true),
+                Ok(true) => Availability::ExcludedApplication,
+                Ok(false) => Availability::Skipped,
+                Err(e) => Availability::of(&e),
             }
-        }
+        };
+        self.checked(path, availability, true);
+    }
+    /// Count a directory left out of the search.
+    fn skip<T>(&mut self) -> Option<T> {
+        self.summary.skipped += 1;
+        None
+    }
+    fn unavailable<T>(&mut self, counted: bool) -> Option<T> {
+        self.summary.unavailable += usize::from(counted);
+        None
     }
     fn directory(&mut self, root: &Root, device: Option<u64>) -> Option<(Metadata, u64)> {
         if self.excluded(&root.path)
             || (!root.explicit && !self.mounts.automatic_allowed(&root.path))
         {
-            self.summary.skipped += 1;
-            return None;
+            return self.skip();
         }
         // Check ancestry before opening a directory, including a parent
         // replaced with a symlink since it was queued.
         match no_symlink_components(&root.path) {
             Ok(true) => {}
-            Ok(false) => {
-                self.summary.skipped += 1;
-                return None;
-            }
+            Ok(false) => return self.skip(),
             Err(e) => {
-                if root.explicit || e.kind() != io::ErrorKind::NotFound {
-                    self.summary.unavailable += 1;
-                }
-                return None;
+                return self.unavailable(root.explicit || e.kind() != io::ErrorKind::NotFound);
             }
         }
         if !root.explicit && self.application_path(&root.path) {
-            self.summary.skipped += 1;
-            return None;
+            return self.skip();
         }
         let metadata = match fs::symlink_metadata(&root.path) {
             Ok(m) if m.is_dir() && !m.file_type().is_symlink() => m,
-            Err(e) if e.kind() != io::ErrorKind::NotFound => {
-                self.summary.unavailable += 1;
-                return None;
-            }
-            _ => {
-                if root.explicit {
-                    self.summary.unavailable += 1;
-                }
-                return None;
-            }
+            Err(e) if e.kind() != io::ErrorKind::NotFound => return self.unavailable(true),
+            _ => return self.unavailable(root.explicit),
         };
         #[cfg(unix)]
         let current_device = {
@@ -715,8 +681,7 @@ impl<F: FnMut(Event) -> bool> Scanner<'_, F> {
         #[cfg(not(unix))]
         let current_device = 0u64;
         if device.is_some_and(|d| d != current_device) {
-            self.summary.skipped += 1;
-            return None;
+            return self.skip();
         }
         Some((metadata, current_device))
     }
@@ -727,12 +692,9 @@ impl<F: FnMut(Event) -> bool> Scanner<'_, F> {
         current_device: u64,
         queue: &mut VecDeque<(Root, Option<u64>)>,
     ) {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => {
-                self.summary.unavailable += 1;
-                return;
-            }
+        let Ok(entry) = entry else {
+            self.summary.unavailable += 1;
+            return;
         };
         let path = entry.path();
         if self.excluded(&path) {
@@ -743,23 +705,18 @@ impl<F: FnMut(Event) -> bool> Scanner<'_, F> {
             self.summary.skipped += 1;
             return;
         }
-        let kind = match entry.file_type() {
-            Ok(t) => t,
-            Err(_) => {
-                self.summary.unavailable += 1;
-                return;
-            }
+        let Ok(kind) = entry.file_type() else {
+            self.summary.unavailable += 1;
+            return;
         };
         if kind.is_dir() && root.depth > 0 && !skip_directory(&path) {
-            queue.push_back((
-                Root {
-                    path,
-                    depth: root.depth - 1,
-                    extensionless: root.extensionless,
-                    explicit: root.explicit,
-                },
-                Some(current_device),
-            ));
+            let depth = root.depth - 1;
+            let child = Root {
+                path,
+                depth,
+                ..*root
+            };
+            queue.push_back((child, Some(current_device)));
         } else if kind.is_file() && candidate_name(&path, root.extensionless) {
             self.probe(&path, false);
         }
@@ -769,6 +726,25 @@ impl<F: FnMut(Event) -> bool> Scanner<'_, F> {
             || self.summary.probes >= self.request.budget.probes;
         self.summary.limited |= limited;
         limited
+    }
+    /// Visit one directory's entries, queueing its subdirectories.
+    fn read_directory(
+        &mut self,
+        root: &Root,
+        device: u64,
+        queue: &mut VecDeque<(Root, Option<u64>)>,
+    ) {
+        let Ok(entries) = fs::read_dir(&root.path) else {
+            self.summary.unavailable += 1;
+            return;
+        };
+        for entry in entries {
+            if self.stopped() || self.entry_limit() {
+                break;
+            }
+            self.summary.entries += 1;
+            self.entry(entry, root, device, queue);
+        }
     }
     fn run(mut self) -> Summary {
         // Revalidate remembered files before traversing directories. Explicit
@@ -801,20 +777,7 @@ impl<F: FnMut(Event) -> bool> Scanner<'_, F> {
             }
             visited.insert(key, root.depth);
             self.summary.directories += 1;
-            let entries = match fs::read_dir(&root.path) {
-                Ok(entries) => entries,
-                Err(_) => {
-                    self.summary.unavailable += 1;
-                    continue;
-                }
-            };
-            for entry in entries {
-                if self.stopped() || self.entry_limit() {
-                    break;
-                }
-                self.summary.entries += 1;
-                self.entry(entry, &root, current_device, &mut queue);
-            }
+            self.read_directory(&root, current_device, &mut queue);
         }
         self.summary.cancelled |= self.cancel.load(Ordering::Relaxed);
         self.summary
@@ -855,12 +818,7 @@ mod tests {
     }
     fn request(path: &Path) -> Request {
         Request {
-            roots: vec![Root {
-                path: path.into(),
-                depth: 5,
-                extensionless: true,
-                explicit: true,
-            }],
+            roots: vec![Root::explicit(path.into())],
             ..Default::default()
         }
     }
@@ -878,14 +836,18 @@ mod tests {
     fn paths(events: &[Event]) -> Vec<PathBuf> {
         events
             .iter()
-            .filter_map(|e| {
-                if let Event::Found(c) = e {
-                    Some(c.path.clone())
-                } else {
-                    None
-                }
+            .filter_map(|e| match e {
+                Event::Found(c) => Some(c.path.clone()),
+                _ => None,
             })
             .collect()
+    }
+    fn checks(events: &[Event]) -> Vec<(&Path, Availability)> {
+        let checked = events.iter().filter_map(|e| match e {
+            Event::Checked(path, availability) => Some((path.as_path(), *availability)),
+            _ => None,
+        });
+        checked.collect()
     }
     #[test]
     fn finds_headers_in_likely_files_without_following_gitignore() {
@@ -947,16 +909,11 @@ mod tests {
             paths(&events),
             vec![temp.path().join("clip-daemon/history/history.db")]
         );
-        assert_eq!(
-            events
-                .iter()
-                .filter(|event| matches!(
-                    event,
-                    Event::Checked(_, Availability::ExcludedApplication)
-                ))
-                .count(),
-            2
-        );
+        let checks = checks(&events);
+        let excluded = checks
+            .iter()
+            .filter(|(_, a)| *a == Availability::ExcludedApplication);
+        assert_eq!(excluded.count(), 2);
         // A deliberate search of the profile itself still allows an override.
         let mut req = request(&browser);
         req.known.push(history.clone());
@@ -986,6 +943,11 @@ mod tests {
         let mut req = request(temp.path());
         req.excluded.push(temp.path().join("nested"));
         assert_eq!(run(req).1.found, 10);
+        // A shallow visit of the same folder does not hide deeper results.
+        let mut req = request(temp.path());
+        req.roots
+            .insert(0, Root::automatic(temp.path().into(), 0, true));
+        assert_eq!(run(req).1.found, 11);
         let summary = scan(
             request(temp.path()),
             &Mounts::default(),
@@ -1009,16 +971,9 @@ mod tests {
         req.known = vec![good.clone(), bad.clone(), missing.clone()];
         let (events, summary) = run(req);
         assert_eq!(paths(&events), vec![good]);
-        assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, Event::Checked(p, Availability::Missing) if p == &missing))
-        );
-        assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, Event::Checked(p, Availability::NotDatabase) if p == &bad))
-        );
+        let checks = checks(&events);
+        assert!(checks.contains(&(missing.as_path(), Availability::Missing)));
+        assert!(checks.contains(&(bad.as_path(), Availability::NotDatabase)));
         assert_eq!(summary.found, 1);
     }
     #[cfg(unix)]
@@ -1039,9 +994,14 @@ mod tests {
                 .unwrap();
         // SAFETY: fifo is a live, NUL-terminated path; mkfifo retains no pointer.
         assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
-        let (events, summary) = run(request(temp.path()));
+        let mut req = request(temp.path());
+        req.known = vec![temp.path().join("original.db"), temp.path().join("hard.db")];
+        let (events, summary) = run(req);
         assert_eq!(summary.found, 2);
         assert!(paths(&events).contains(&odd));
+        assert!(events.iter().any(
+            |e| matches!(e, Event::Alias { path, original: o } if path.ends_with("hard.db") && o.ends_with("original.db"))
+        ));
         let mut req = request(&temp.path().join("loop"));
         req.known.push(temp.path().join("pipe.db"));
         assert_eq!(run(req).1.found, 0);
@@ -1051,9 +1011,10 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         database(&temp.path().join("app.db"));
         let mounts = Mounts::parse(&format!(
-            "1 0 8:1 / / rw - ext4 /dev/a rw\n2 1 0:1 / {} rw - autofs none rw\n",
+            "1 0 8:1 / / rw - ext4 /dev/a rw\n2 1 0:1 / {} rw - autofs none rw\nbad\n3 2 - ext4\n4 1 0:2 / /x rw - \n",
             temp.path().display()
         ));
+        assert_eq!(mounts.points.len(), 2, "malformed lines are ignored");
         assert!(!mounts.automatic_allowed(&temp.path().join("sub")));
         let mut req = request(temp.path());
         req.roots[0].explicit = false;
@@ -1061,16 +1022,6 @@ mod tests {
         assert_eq!(run_in(request(temp.path()), &mounts).1.found, 1);
         assert_eq!(unescape_mount("/home/a\\040b"), Path::new("/home/a b"));
         assert!(!Mounts::default().automatic_allowed(temp.path()));
-    }
-    #[test]
-    fn overlapping_roots_do_not_hide_deeper_results() {
-        let temp = tempfile::tempdir().unwrap();
-        database(&temp.path().join("nested/deep/app.db"));
-        let mut req = request(temp.path());
-        let mut shallow = req.roots[0].clone();
-        shallow.depth = 0;
-        req.roots.insert(0, shallow);
-        assert_eq!(run(req).1.found, 1);
     }
     #[test]
     fn explicit_folders_do_not_authorize_nested_mounts_or_cached_files_inside_them() {
@@ -1088,9 +1039,9 @@ mod tests {
             let (events, summary) = run_in(req, &mounts);
             assert_eq!(summary.found, 1, "{kind}");
             assert!(
-                events
+                checks(&events)
                     .iter()
-                    .any(|e| matches!(e, Event::Checked(_, Availability::Skipped)))
+                    .any(|(_, a)| *a == Availability::Skipped)
             );
         }
     }
@@ -1106,6 +1057,14 @@ mod tests {
         {
             std::os::unix::fs::symlink(temp.path(), temp.path().join("alias")).unwrap();
             assert_eq!(run(request(&temp.path().join("alias/nested"))).1.skipped, 1);
+            // A remembered file behind the link is skipped, never read.
+            let mounts = Mounts::parse("1 0 8:1 / / rw - ext4 /dev/a rw\n");
+            let mut req = Request::default();
+            req.known.push(temp.path().join("alias/file.db"));
+            let (events, summary) = run_in(req, &mounts);
+            let link = temp.path().join("alias/file.db");
+            assert_eq!(checks(&events), [(link.as_path(), Availability::Skipped)]);
+            assert_eq!(summary.probes, 0);
         }
     }
     #[cfg(unix)]
@@ -1128,47 +1087,24 @@ mod tests {
         }
     }
     #[test]
-    fn root_defaults_are_shallow_for_home_and_never_scan_the_filesystem_root() {
+    fn default_roots_put_application_data_first_and_keep_broad_folders_shallow() {
         let home = Path::new("/home/test");
         let roots = default_roots(Some(home), Some(home), None, None);
-        assert!(
-            roots
-                .iter()
-                .filter(|r| r.path == home)
-                .all(|r| r.depth == 0)
-        );
-        assert!(
-            roots
-                .iter()
-                .any(|r| r.path == home.join(".local/share") && r.extensionless)
-        );
-        assert!(
-            roots
-                .iter()
-                .any(|r| r.path == home.join(".local/state") && r.extensionless)
-        );
-        assert_eq!(roots[0].path, home.join(".local/share"));
-        assert_eq!(roots[1].path, home.join(".local/state"));
+        let home_roots = roots.iter().filter(|r| r.path == home);
+        assert!(home_roots.into_iter().all(|r| r.depth == 0));
+        for (root, path) in roots.iter().zip([".local/share", ".local/state"]) {
+            assert!(root.path == home.join(path) && root.extensionless);
+        }
         assert!(default_roots(None, Some(Path::new("/")), None, None).is_empty());
-    }
-    #[test]
-    fn application_roots_respect_xdg_overrides_without_home() {
-        let roots = default_roots(
-            None,
-            None,
-            Some(Path::new("/data")),
-            Some(Path::new("/state")),
-        );
-        assert_eq!(
-            roots.iter().map(|r| r.path.as_path()).collect::<Vec<_>>(),
-            vec![Path::new("/data"), Path::new("/state")]
-        );
+        let (data, state) = (Path::new("/data"), Path::new("/state"));
+        let roots = default_roots(None, None, Some(data), Some(state));
+        let paths: Vec<_> = roots.iter().map(|r| r.path.as_path()).collect();
+        assert_eq!(paths, [data, state]);
         assert!(
             roots
                 .iter()
                 .all(|r| r.extensionless && r.depth == 3 && !r.explicit)
         );
-        let home = Path::new("/home/test");
         let fallback = default_roots(
             Some(home),
             None,

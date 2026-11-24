@@ -49,22 +49,17 @@ impl Appearance {
             Mode::Dark => true,
             Mode::Light => false,
         };
-        let next = (mode, dark, self.palette.clone(), font_size);
-        if self.applied.as_ref() != Some(&next) {
+        let current = self.applied.as_ref().is_some_and(|(m, d, palette, f)| {
+            (*m, *d, *f) == (mode, dark, font_size) && *palette == self.palette
+        });
+        if !current {
             apply(ctx, dark, &self.palette);
-            ctx.style_mut_of(
-                if dark {
-                    egui::Theme::Dark
-                } else {
-                    egui::Theme::Light
-                },
-                |style| {
-                    for font in style.text_styles.values_mut() {
-                        font.size *= f32::from(font_size.clamp(10, 20)) / 14.0;
-                    }
-                },
-            );
-            self.applied = Some(next);
+            ctx.style_mut_of(egui::Theme::from_dark_mode(dark), |style| {
+                for font in style.text_styles.values_mut() {
+                    font.size *= f32::from(font_size.clamp(10, 20)) / 14.0;
+                }
+            });
+            self.applied = Some((mode, dark, self.palette.clone(), font_size));
         }
     }
 }
@@ -190,52 +185,33 @@ impl Roles<'_> {
 
 fn apply(ctx: &egui::Context, dark: bool, palette: &Palette) {
     let roles = Roles { palette, dark };
-    let mut visuals = if dark {
-        egui::Visuals::dark()
-    } else {
-        egui::Visuals::light()
+    let theme = egui::Theme::from_dark_mode(dark);
+    let mut visuals = theme.default_visuals();
+    // The built-in colour for this scheme, as dark and light RGB.
+    let builtin = |dark_rgb: [u8; 3], light_rgb: [u8; 3]| {
+        let [r, g, b] = if dark { dark_rgb } else { light_rgb };
+        egui::Color32::from_rgb(r, g, b)
     };
     visuals.panel_fill = roles.neutral(
         &["window_bg_color", "theme_bg_color"],
-        if dark {
-            egui::Color32::from_rgb(20, 27, 24)
-        } else {
-            egui::Color32::from_rgb(246, 248, 246)
-        },
+        builtin([20, 27, 24], [246, 248, 246]),
     );
     visuals.window_fill = visuals.panel_fill;
     visuals.extreme_bg_color = roles.neutral(
         &["view_bg_color", "theme_base_color"],
-        if dark {
-            egui::Color32::from_rgb(12, 18, 16)
-        } else {
-            egui::Color32::WHITE
-        },
+        builtin([12, 18, 16], [255, 255, 255]),
     );
     let text = roles.neutral(
         &["window_fg_color", "theme_fg_color"],
-        if dark {
-            egui::Color32::from_rgb(226, 236, 230)
-        } else {
-            egui::Color32::from_rgb(37, 54, 45)
-        },
+        builtin([226, 236, 230], [37, 54, 45]),
     );
     visuals.override_text_color = Some(text);
     visuals.hyperlink_color = roles.semantic(
         &["accent_color", "theme_selected_bg_color"],
-        if dark {
-            egui::Color32::from_rgb(135, 211, 173)
-        } else {
-            egui::Color32::from_rgb(28, 121, 82)
-        },
+        builtin([135, 211, 173], [28, 121, 82]),
     );
     let tokens = resolve_tokens(&roles, &mut visuals, text);
     widget_visuals(&mut visuals, &tokens, text);
-    let theme = if dark {
-        egui::Theme::Dark
-    } else {
-        egui::Theme::Light
-    };
     ctx.set_theme(theme);
     ctx.set_visuals(visuals);
     ctx.data_mut(|data| data.insert_temp(egui::Id::unique("interface-tokens"), tokens));

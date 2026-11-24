@@ -46,32 +46,27 @@ impl FolderList {
 impl App {
     /// Shared by Available and Settings; neither action changes search policy.
     pub(in crate::app) fn discovery_actions(&mut self, ui: &mut egui::Ui) -> egui::Response {
-        if self.databases.job.is_some() {
-            ui.spinner().on_hover_text(if self.databases.cancelling {
+        let searching = self.databases.job.is_some();
+        let (enabled, icon, name) = if searching {
+            let status = if self.databases.cancelling {
                 "Stopping…"
             } else {
                 "Searching…"
-            });
-            let response = ui
-                .add_enabled_ui(!self.databases.cancelling, |ui| {
-                    icons::button(ui, Icon::Close, "Stop search", "")
-                })
-                .inner;
-            if response.clicked() {
-                self.databases.cancel();
-            }
-            response
+            };
+            ui.spinner().on_hover_text(status);
+            (!self.databases.cancelling, Icon::Close, "Stop search")
         } else {
-            let response = ui
-                .add_enabled_ui(self.picker.is_none(), |ui| {
-                    icons::button(ui, Icon::Refresh, "Refresh databases", "")
-                })
-                .inner;
-            if response.clicked() {
-                self.start_discovery(ui.ctx(), None);
-            }
-            response
+            (self.picker.is_none(), Icon::Refresh, "Refresh databases")
+        };
+        let response = ui
+            .add_enabled_ui(enabled, |ui| icons::button(ui, icon, name, ""))
+            .inner;
+        match (response.clicked(), searching) {
+            (true, true) => self.databases.cancel(),
+            (true, false) => self.start_discovery(ui.ctx(), None),
+            (false, _) => {}
         }
+        response
     }
 
     pub(in crate::app) fn discovery_settings_ui(&mut self, ui: &mut egui::Ui) {
@@ -314,8 +309,12 @@ fn metric(ui: &mut egui::Ui, icon: Icon, count: usize, name: &str) {
 mod tests {
     use super::super::{request, search_roots, tests::scroll_down_at};
     use super::{App, FolderList, PathBuf, egui};
-    use crate::app::test_ui::{self, control, key_event, nodes, pointer, render};
+    use crate::app::test_ui::{self, control, key_event, nodes, pointer, render, texts};
     use crate::discovery::Summary;
+
+    fn painted(output: &egui::FullOutput, text: &str) -> bool {
+        texts(output).any(|t| t.galley.job.text == text)
+    }
 
     fn frame(
         app: &mut App,
@@ -344,7 +343,7 @@ mod tests {
         let output = render(&ctx, egui::vec2(420.0, 600.0), vec![], |ui| {
             app.discovery_settings_ui(ui)
         });
-        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == roots[0].path.to_string_lossy())));
+        assert!(painted(&output, &roots[0].path.to_string_lossy()));
         // Isolate a default root so its removal control is unambiguous.
         app.preferences.discovery.removed_roots =
             roots.iter().skip(1).map(|r| r.path.clone()).collect();
@@ -373,15 +372,15 @@ mod tests {
 
         app.database.writable = true;
 
-        for (input, path) in [
-            ("Search folder path", "/work/projects"),
-            ("Excluded folder path", "/work/projects/private"),
+        for (list, input, path) in [
+            (FolderList::Search, "Search folder path", "/work/projects"),
+            (
+                FolderList::Excluded,
+                "Excluded folder path",
+                "/work/projects/private",
+            ),
         ] {
-            app.databases.folder_list = if input == "Excluded folder path" {
-                FolderList::Excluded
-            } else {
-                FolderList::Search
-            };
+            app.databases.folder_list = list;
             let nodes = frame(&mut app, &ctx, vec![], 420.0);
             click(&mut app, &ctx, control(&nodes, input));
             frame(
@@ -404,12 +403,11 @@ mod tests {
             vec![PathBuf::from("/work/projects/private")]
         );
         assert!(app.databases.folder_input.is_empty());
-        for action in ["Remove search folder", "Remove exclusion"] {
-            app.databases.folder_list = if action == "Remove exclusion" {
-                FolderList::Excluded
-            } else {
-                FolderList::Search
-            };
+        for (list, action) in [
+            (FolderList::Search, "Remove search folder"),
+            (FolderList::Excluded, "Remove exclusion"),
+        ] {
+            app.databases.folder_list = list;
             let nodes = frame(&mut app, &ctx, vec![], 420.0);
             click(&mut app, &ctx, control(&nodes, action));
         }
@@ -423,10 +421,8 @@ mod tests {
     #[test]
     fn named_controls_fit_narrow_settings_in_both_themes() {
         for dark in [false, true] {
-            let ctx = egui::Context::default();
-            ctx.enable_accesskit();
-            crate::appearance::theme(&ctx, dark);
-            let mut app = App::new(&ctx);
+            let (ctx, mut app) = test_ui::app();
+            app.set_dark(&ctx, dark);
             app.preferences.discovery.roots = vec![PathBuf::from(format!(
                 "/work/{}",
                 "long-folder/".repeat(30)
@@ -467,32 +463,6 @@ mod tests {
                             "{name}: {rect:?} at {width}"
                         );
                     }
-                }
-            }
-            for (limited, cancelled, status) in
-                [(false, true, "Stopped"), (true, true, "Limit reached")]
-            {
-                app.databases.summary = Some(Summary {
-                    probes: 7,
-                    directories: 3,
-                    unavailable: 2,
-                    skipped: 1,
-                    limited,
-                    cancelled,
-                    error: Some("Unreadable search root".into()),
-                    ..Default::default()
-                });
-                let output = frame(&mut app, &ctx, vec![], 420.0);
-                for name in [
-                    "Headers checked: 7",
-                    "Folders searched: 3",
-                    "Unavailable locations: 2",
-                    "Skipped locations: 1",
-                ] {
-                    assert!(nodes(&output).iter().any(|(_, n)| n.label() == Some(name)));
-                }
-                for expected in [status, "Unreadable search root"] {
-                    assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == expected)), "missing {expected}");
                 }
             }
         }
@@ -542,14 +512,11 @@ mod tests {
         let size = egui::vec2(420.0, 400.0);
         let mut draw = |events| render(&ctx, size, events, |ui| app.discovery_settings_ui(ui));
         let metric = |output: &egui::FullOutput| {
-            output
-                .shapes
-                .iter()
-                .find_map(|s| match &s.shape {
-                    egui::Shape::Text(t) if t.galley.job.text == "300" => Some(t.pos),
-                    _ => None,
-                })
+            let mut texts = texts(output);
+            texts
+                .find(|t| t.galley.job.text == "300")
                 .expect("metric is painted")
+                .pos
         };
         draw(vec![]);
         let before = draw(vec![]);
@@ -563,12 +530,36 @@ mod tests {
         assert_eq!(metric(&after), footer, "metric stays painted in place");
         assert_eq!(control(&after, "Search folder path"), input);
         assert!(footer.y <= size.y);
-        assert!(after.shapes.iter().any(
-            |s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.job.text == "Limit reached")
-        ));
-        assert!(!after.shapes.iter().any(
-            |s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.job.text == "/work/folder-0")
-        ));
+        assert!(painted(&after, "Limit reached"));
+        assert!(!painted(&after, "/work/folder-0"));
+        // The summary names each count and says why the search stopped.
+        for (limited, status) in [(false, "Stopped"), (true, "Limit reached")] {
+            app.databases.summary = Some(Summary {
+                probes: 7,
+                directories: 3,
+                unavailable: 2,
+                skipped: 1,
+                limited,
+                cancelled: true,
+                error: Some("Unreadable search root".into()),
+                ..Default::default()
+            });
+            let output = render(&ctx, size, vec![], |ui| app.discovery_settings_ui(ui));
+            for name in [
+                "Headers checked: 7",
+                "Folders searched: 3",
+                "Unavailable locations: 2",
+                "Skipped locations: 1",
+            ] {
+                assert!(
+                    nodes(&output).iter().any(|(_, n)| n.label() == Some(name)),
+                    "{name}"
+                );
+            }
+            for expected in [status, "Unreadable search root"] {
+                assert!(painted(&output, expected), "missing {expected}");
+            }
+        }
     }
 
     #[test]
