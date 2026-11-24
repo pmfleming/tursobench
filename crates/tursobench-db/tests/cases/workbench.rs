@@ -290,9 +290,17 @@ fn native_metadata_related_lookup_and_diagnostics_preserve_readonly_bytes() {
     assert!(files.unchanged());
 }
 #[test]
-fn diagram_includes_isolated_quoted_cyclic_and_composite_tables_without_writes() {
+fn diagram_reads_committed_isolated_quoted_cyclic_and_composite_tables_within_budget() {
     let (dir, path) = fixture("diagram.db");
     let mut client = Client::open(&path, Access::ReadWrite);
+    client.sql("BEGIN");
+    client.sql("CREATE TABLE pending_schema(id INTEGER PRIMARY KEY)");
+    client.sql("ALTER TABLE child ADD COLUMN pending_column TEXT");
+    let graph = client.diagram();
+    assert!(!graph.tables.iter().any(|t| t.name == "pending_schema"));
+    let child = graph.tables.iter().find(|t| t.name == "child").unwrap();
+    assert_eq!(child.inspection.as_ref().unwrap().table.columns.len(), 4);
+    client.sql("ROLLBACK");
     for sql in [
         "CREATE TABLE isolated(value TEXT)",
         "CREATE TABLE sqlitex_visible(id INTEGER PRIMARY KEY)",
@@ -366,31 +374,7 @@ fn diagram_includes_isolated_quoted_cyclic_and_composite_tables_without_writes()
     );
     client.close();
     assert!(files.unchanged());
-}
-#[test]
-fn diagram_reads_committed_schema_within_its_discovery_budget() {
-    let (_dir, path) = fixture("snapshot.db");
     let mut client = Client::open(&path, Access::ReadWrite);
-    client.sql("BEGIN");
-    client.sql("CREATE TABLE pending_schema(id INTEGER PRIMARY KEY)");
-    client.sql("ALTER TABLE child ADD COLUMN pending_column TEXT");
-    let graph = client.diagram();
-    assert!(!graph.tables.iter().any(|t| t.name == "pending_schema"));
-    assert_eq!(
-        graph
-            .tables
-            .iter()
-            .find(|t| t.name == "child")
-            .unwrap()
-            .inspection
-            .as_ref()
-            .unwrap()
-            .table
-            .columns
-            .len(),
-        4
-    );
-    client.sql("ROLLBACK");
     client.sql("BEGIN");
     for i in 0..511 {
         client.sql(&format!("CREATE TABLE t{i:04}(id INTEGER PRIMARY KEY)"));
