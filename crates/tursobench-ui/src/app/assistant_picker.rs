@@ -7,7 +7,7 @@ use super::{
     presentation::{self, Intent},
 };
 use crate::storage::{FavouriteModel, Provider};
-use eframe::egui;
+use eframe::egui::{self, Align2};
 use tursobench_assistant::{
     account::{self, Effort, Model},
     vendor::VENDORS,
@@ -48,6 +48,14 @@ pub(super) struct Menu {
     focus: bool,
 }
 
+impl Menu {
+    /// List `shelf` from its start.
+    fn show(&mut self, shelf: Shelf) {
+        self.shelf = Some(shelf);
+        self.more = false;
+    }
+}
+
 /// One row of the model list.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Choice {
@@ -70,6 +78,16 @@ pub(super) fn status_dot(ui: &mut egui::Ui, intent: Intent, state: &str) {
     ui.painter().circle_filled(rect.center(), 3.0, color);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, state));
     response.on_hover_text(state);
+}
+
+/// A badge's status in its corner, unless there is nothing to say.
+fn paint_corner_dot(ui: &egui::Ui, badge: egui::Rect, intent: Intent) {
+    if intent != Intent::Neutral {
+        let dot = badge.right_bottom() - egui::vec2(1.0, 1.0);
+        let painter = ui.painter();
+        painter.circle_filled(dot, 4.0, ui.visuals().window_fill);
+        painter.circle_filled(dot, 2.6, presentation::intent_color(ui, intent));
+    }
 }
 
 /// A small square standing for an agent: its initials on its own colour.
@@ -122,6 +140,19 @@ fn truncated(
     );
     job.wrap = egui::text::TextWrapping::truncate_at_width(width.max(1.0));
     ui.painter().layout_job(job)
+}
+
+/// `text` on one line, cut to `width`, placed by `align` at `pos`; returns its rect.
+fn paint_text(
+    ui: &egui::Ui,
+    (text, size, color): (&str, f32, egui::Color32),
+    width: f32,
+    (align, pos): (Align2, egui::Pos2),
+) -> egui::Rect {
+    let galley = truncated(ui, text, size, color, width);
+    let rect = align.anchor_size(pos, galley.size());
+    ui.painter().galley(rect.min, galley, color);
+    rect
 }
 
 /// Remember `value` for an agent; empty forgets it, so the agent's own applies.
@@ -493,12 +524,12 @@ impl App {
         );
         let badge = badge_at(rect.left(), rect.center().y);
         paint_badge(ui, badge, provider, false);
-        let galley = truncated(ui, &text, size, visuals.text_color(), width - chrome);
-        ui.painter().galley(
-            egui::pos2(badge.right() + 7.0, rect.center().y - galley.size().y / 2.0),
-            galley,
-            visuals.text_color(),
+        let label = (text.as_str(), size, visuals.text_color());
+        let at = (
+            Align2::LEFT_CENTER,
+            egui::pos2(badge.right() + 7.0, rect.center().y),
         );
+        paint_text(ui, label, width - chrome, at);
         icons::paint(
             ui.painter(),
             egui::Rect::from_center_size(
@@ -567,8 +598,7 @@ impl App {
             );
         });
         if favourites.on_hover_text("Favourite models").clicked() {
-            self.accounts.menu.shelf = Some(Shelf::Favourites);
-            self.accounts.menu.more = false;
+            self.accounts.menu.show(Shelf::Favourites);
         }
         let tokens = crate::appearance::Tokens::of(ui.ctx());
         let (line, _) = ui.allocate_exact_size(egui::vec2(RAIL, 9.0), egui::Sense::hover());
@@ -582,17 +612,10 @@ impl App {
             let name = format!("{} · {state}", vendor.name);
             let item = rail_item(ui, shelf == Shelf::Agent(vendor.id), &name, |ui, rect| {
                 paint_badge(ui, rect, vendor.id, !installed);
-                if intent != Intent::Neutral {
-                    let dot = rect.right_bottom() - egui::vec2(1.0, 1.0);
-                    ui.painter()
-                        .circle_filled(dot, 4.0, ui.visuals().window_fill);
-                    ui.painter()
-                        .circle_filled(dot, 2.6, presentation::intent_color(ui, intent));
-                }
+                paint_corner_dot(ui, rect, intent);
             });
             if item.on_hover_text(&name).clicked() {
-                self.accounts.menu.shelf = Some(Shelf::Agent(vendor.id));
-                self.accounts.menu.more = false;
+                self.accounts.menu.show(Shelf::Agent(vendor.id));
             }
         }
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
@@ -767,22 +790,11 @@ fn paint_bar_line(ui: &egui::Ui, bar: egui::Rect) {
 fn reasoning_heading(ui: &mut egui::Ui, model: &str, current: &str) {
     let muted = crate::appearance::Tokens::of(ui.ctx()).muted;
     let (bar, heading) = ui.allocate_exact_size(egui::vec2(REASONING, 38.0), egui::Sense::hover());
-    ui.painter().text(
-        egui::pos2(bar.left() + 12.0, bar.center().y),
-        egui::Align2::LEFT_CENTER,
-        "Reasoning",
-        egui::FontId::proportional(13.0),
-        muted,
-    );
-    let label = truncated(ui, model, 12.0, muted, REASONING - 96.0);
-    ui.painter().galley(
-        egui::pos2(
-            bar.right() - 12.0 - label.size().x,
-            bar.center().y - label.size().y / 2.0,
-        ),
-        label,
-        muted,
-    );
+    let inset = egui::vec2(12.0, 0.0);
+    let left = (Align2::LEFT_CENTER, bar.left_center() + inset);
+    paint_text(ui, ("Reasoning", 13.0, muted), f32::INFINITY, left);
+    let right = (Align2::RIGHT_CENTER, bar.right_center() - inset);
+    paint_text(ui, (model, 12.0, muted), REASONING - 96.0, right);
     heading.widget_info(|| {
         let mut info =
             egui::WidgetInfo::labeled(egui::Role::RadioGroup, true, "Assistant reasoning level");
@@ -950,36 +962,38 @@ fn model_row(
     if index < NUMBER_KEYS.len() {
         paint_shortcut(ui, index, inner.right() - 6.0, rect.center().y);
     }
+    let over_star = hovered.then(|| star.hovered());
+    paint_star(ui, star_rect.shrink(4.0), favourite, over_star);
+    let y = rect.center().y;
     let mut right = star_rect.left();
-    let glyph = star_rect.shrink(4.0);
-    if favourite {
-        icons::paint_filled_star(ui.painter(), glyph, tokens.pending);
-    } else if hovered {
-        let color = if star.hovered() { text } else { tokens.muted };
-        icons::paint(ui.painter(), glyph, Icon::Star, color);
-    }
     if row.default && !row.model.is_empty() {
-        let tag = truncated(ui, "Default", 11.0, tokens.muted, 60.0);
-        right -= tag.size().x + 4.0;
-        ui.painter().galley(
-            egui::pos2(right, rect.center().y - tag.size().y / 2.0),
-            tag,
-            tokens.muted,
-        );
+        let at = (Align2::RIGHT_CENTER, egui::pos2(right - 4.0, y));
+        right = paint_text(ui, ("Default", 11.0, tokens.muted), 60.0, at).left();
     }
     let left = badge.right() + 8.0;
     let check = if checked { 20.0 } else { 0.0 };
-    let name = truncated(ui, &row.name, 13.0, text, right - left - check - 6.0);
-    let name_width = name.size().x;
-    ui.painter().galley(
-        egui::pos2(left, rect.center().y - name.size().y / 2.0),
-        name,
-        text,
-    );
+    let at = (Align2::LEFT_CENTER, egui::pos2(left, y));
+    let name = paint_text(ui, (&row.name, 13.0, text), right - left - check - 6.0, at);
     if checked {
-        paint_check(ui, egui::pos2(left + name_width + 12.0, rect.center().y));
+        paint_check(ui, egui::pos2(name.right() + 12.0, y));
     }
     model_row_click(row, response, star, checked, favourite)
+}
+
+/// A favourite's filled star, or an outline while its row is `hovered`,
+/// stronger over the star itself.
+fn paint_star(ui: &egui::Ui, glyph: egui::Rect, favourite: bool, hovered: Option<bool>) {
+    let tokens = crate::appearance::Tokens::of(ui.ctx());
+    if favourite {
+        icons::paint_filled_star(ui.painter(), glyph, tokens.pending);
+    } else if let Some(over_star) = hovered {
+        let color = if over_star {
+            ui.visuals().text_color()
+        } else {
+            tokens.muted
+        };
+        icons::paint(ui.painter(), glyph, Icon::Star, color);
+    }
 }
 
 /// The Ctrl and number that choose a row, in a chip ending at `right`.
@@ -1042,25 +1056,17 @@ fn level_row(ui: &mut egui::Ui, name: &str, id: &str, default: bool, checked: bo
     if response.hovered() {
         paint_hover(ui, inner);
     }
-    ui.painter().text(
-        egui::pos2(inner.left() + 8.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        name,
-        egui::FontId::proportional(13.0),
-        ui.visuals().text_color(),
-    );
-    let right = inner.right() - 8.0;
+    let (y, right) = (rect.center().y, inner.right() - 8.0);
+    let label = (name, 13.0, ui.visuals().text_color());
+    let at = (Align2::LEFT_CENTER, egui::pos2(inner.left() + 8.0, y));
+    paint_text(ui, label, f32::INFINITY, at);
     if checked {
-        paint_check(ui, egui::pos2(right - 7.0, rect.center().y));
+        paint_check(ui, egui::pos2(right - 7.0, y));
     }
     if default {
-        ui.painter().text(
-            egui::pos2(right - 20.0, rect.center().y),
-            egui::Align2::RIGHT_CENTER,
-            "Default",
-            egui::FontId::proportional(11.0),
-            crate::appearance::Tokens::of(ui.ctx()).muted,
-        );
+        let muted = crate::appearance::Tokens::of(ui.ctx()).muted;
+        let at = (Align2::RIGHT_CENTER, egui::pos2(right - 20.0, y));
+        paint_text(ui, ("Default", 11.0, muted), f32::INFINITY, at);
     }
     let label = format!("Reasoning {name}");
     response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, checked, &label));

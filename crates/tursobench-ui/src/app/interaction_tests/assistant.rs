@@ -178,18 +178,12 @@ fn a_conversation_shares_results_by_default_streams_tools_and_proposes_sql_witho
         Sharing::Rows
     );
 
-    app.database.assistant.draft = "What is in t?".into();
-    app.database.assistant.program = Some(dir.path().join("no-such-claude"));
-    app.send_assistant(&ctx);
-    let missing = last_notice(&app.database.assistant);
-    assert!(missing.is_some_and(|text| text.contains("was not found")));
-    assert!(!app.database.assistant.busy);
-    // The draft waits to be sent again.
     scripted(&mut app, &dir);
+    app.database.assistant.draft = "What is in t?".into();
     app.send_assistant(&ctx);
     assert!(app.database.assistant.busy);
     wait_until(&mut app, &ctx, |a| !a.database.assistant.busy);
-    let entries = &app.database.assistant.entries[1..];
+    let entries = &app.database.assistant.entries;
     assert!(matches!(&entries[0], Entry::User(text) if text == "What is in t?"));
     assert!(
         matches!(&entries[1], Entry::Tool { name, result: Some((true, _)), .. } if name == RUN_QUERY)
@@ -231,9 +225,22 @@ fn a_conversation_shares_results_by_default_streams_tools_and_proposes_sql_witho
     );
     assert!(query("SELECT 1").is_error);
     assert!(last_notice(&app.database.assistant).is_some());
+    app.close();
+}
 
-    // Stop ends a running turn; stopping is the user's choice, not a failure.
+#[test]
+fn a_missing_agent_is_explained_and_stop_ends_a_running_turn() {
+    let (dir, ctx, mut app) = fixture(TABLE, false);
+    runtime_dir();
+    app.set_assistant_shown(true);
     app.database.assistant.draft = "Wait".into();
+    app.database.assistant.program = Some(dir.path().join("no-such-claude"));
+    app.send_assistant(&ctx);
+    let missing = last_notice(&app.database.assistant);
+    assert!(missing.is_some_and(|text| text.contains("was not found")));
+    assert!(!app.database.assistant.busy);
+    // The draft waits to be sent again; stopping is not a failure to report.
+    scripted(&mut app, &dir);
     app.send_assistant(&ctx);
     assert!(app.database.assistant.busy);
     press(&mut app, &ctx, "Stop");
@@ -508,53 +515,40 @@ fn one_picker_changes_agent_model_and_favourites_with_each_agents_sharing() {
     app.close();
 }
 
+/// Start signing in to `provider` with `program` in place of its CLI.
+fn sign_in(app: &mut App, ctx: &egui::Context, provider: Provider, program: PathBuf) {
+    app.preferences
+        .assistant
+        .executables
+        .insert(provider, program);
+    app.agent_account_job(ctx, provider, Operation::Login { method: None });
+}
+
+fn cancel(app: &App, provider: Provider) {
+    app.accounts.rows[&provider].job.as_ref().unwrap().cancel();
+}
+
 #[test]
 fn only_the_selected_vendors_account_change_stops_chat_and_blocks_new_turns() {
-    use crate::app::presentation::Intent;
     let (dir, ctx, mut app) = fixture(TABLE, false);
     runtime_dir();
     scripted_turn(&mut app, &ctx, &dir);
     let helper = install(&dir, "waiting-helper", WAITING);
-    let executables = &mut app.preferences.assistant.executables;
-    for provider in [Provider::Codex, Provider::Claude] {
-        executables.insert(provider, helper.clone());
-    }
-    let cancel = |app: &mut App, provider| {
-        app.accounts.rows[&provider].job.as_ref().unwrap().cancel();
-    };
-    app.accounts.rows.entry(Provider::Codex).or_default().status = Some(Status {
-        state: SignIn::SignedOut,
-        models: vec![model("gpt-test", "Test model")],
-        ..Default::default()
-    });
-    // Cancelling or failing a sign-in keeps the last status and models.
-    let still_known = |app: &App, described| {
-        let status = status(app, Provider::Codex);
-        assert_eq!(status.state, SignIn::SignedOut);
-        assert_eq!(status.models[0].id, "gpt-test");
-        let row = &app.accounts.rows[&Provider::Codex];
-        assert_eq!(row.describe(), Some(described));
-    };
 
     // Signing in to another vendor leaves the Claude Code chat running.
-    app.agent_account_job(&ctx, Provider::Codex, Operation::Login { method: None });
+    sign_in(&mut app, &ctx, Provider::Codex, helper.clone());
     assert!(!app.assistant_account_pending());
     assert!(app.database.assistant.host().is_some());
     let entries = app.database.assistant.entries.len();
     converse(&mut app, &ctx, "Still here");
     assert!(app.database.assistant.entries.len() > entries);
-    cancel(&mut app, Provider::Codex);
+    cancel(&app, Provider::Codex);
     wait_for_account(&mut app, &ctx, Provider::Codex);
     assert!(app.database.assistant.host().is_some());
-    still_known(&app, ("Signed out", Intent::Pending));
-    let failing = install(&dir, "failing-codex", "#!/bin/sh\nexit 3\n");
-    let executables = &mut app.preferences.assistant.executables;
-    executables.insert(Provider::Codex, failing);
-    app.agent_account_job(&ctx, Provider::Codex, Operation::Login { method: None });
-    wait_for_account(&mut app, &ctx, Provider::Codex);
-    still_known(&app, ("Sign-in failed", Intent::Danger));
 
     // Signing out of the selected vendor ends its chat and holds new turns.
+    let executables = &mut app.preferences.assistant.executables;
+    executables.insert(Provider::Claude, helper);
     app.agent_account_job(&ctx, Provider::Claude, Operation::Logout);
     assert!(app.assistant_account_pending());
     assert!(app.database.assistant.host().is_none());
@@ -562,15 +556,47 @@ fn only_the_selected_vendors_account_change_stops_chat_and_blocks_new_turns() {
     app.send_assistant(&ctx);
     assert!(app.database.assistant.host().is_none());
     assert!(app.database.assistant.entries.is_empty());
-    cancel(&mut app, Provider::Claude);
+    cancel(&app, Provider::Claude);
     wait_until(&mut app, &ctx, |a| !a.assistant_account_pending());
     assert_eq!(app.database.assistant.draft, "Wait for account change");
     app.close();
 }
 
 #[test]
-fn the_panel_checks_the_selected_vendor_once_and_a_scan_checks_every_vendor() {
-    use tursobench_assistant::vendor::VENDORS;
+fn cancelling_or_failing_a_sign_in_keeps_the_last_status_and_models() {
+    use crate::app::presentation::Intent;
+    let (dir, ctx, mut app) = fixture(TABLE, false);
+    runtime_dir();
+    app.accounts.rows.entry(Provider::Codex).or_default().status = Some(Status {
+        state: SignIn::SignedOut,
+        models: vec![model("gpt-test", "Test model")],
+        ..Default::default()
+    });
+    let still_known = |app: &App, described| {
+        let status = status(app, Provider::Codex);
+        assert_eq!(status.state, SignIn::SignedOut);
+        assert_eq!(status.models[0].id, "gpt-test");
+        let row = &app.accounts.rows[&Provider::Codex];
+        assert_eq!(row.describe(), Some(described));
+    };
+    sign_in(
+        &mut app,
+        &ctx,
+        Provider::Codex,
+        install(&dir, "waiting", WAITING),
+    );
+    cancel(&app, Provider::Codex);
+    wait_for_account(&mut app, &ctx, Provider::Codex);
+    still_known(&app, ("Signed out", Intent::Pending));
+    let failing = install(&dir, "failing", "#!/bin/sh\nexit 3\n");
+    sign_in(&mut app, &ctx, Provider::Codex, failing);
+    wait_for_account(&mut app, &ctx, Provider::Codex);
+    still_known(&app, ("Sign-in failed", Intent::Danger));
+    app.close();
+}
+
+#[test]
+fn the_panel_checks_the_selected_vendor_once_without_opening_settings() {
     let (dir, ctx, mut app) = fixture(TABLE, false);
     runtime_dir();
     // A stand-in for `codex app-server` that answers only status calls.
@@ -590,9 +616,6 @@ done
     );
     let broken = install(&dir, "broken-claude", "#!/bin/sh\nexit 0\n");
     let executables = &mut app.preferences.assistant.executables;
-    for vendor in VENDORS {
-        executables.insert(vendor.id, dir.path().join("not-installed"));
-    }
     executables.insert(Provider::Codex, codex);
     executables.insert(Provider::Claude, broken);
     app.preferences.assistant.provider = Provider::Codex;
@@ -619,17 +642,24 @@ done
         frame_at(&mut app, &ctx, SIZE, vec![]);
     }
     assert!(app.accounts.rows[&Provider::Claude].job.is_none());
+    app.close();
+}
 
-    // A scan asks every vendor, keeps only status and starts no conversation.
+#[test]
+fn agent_scan_reports_status_and_missing_executables_without_starting_a_conversation() {
+    use tursobench_assistant::vendor::VENDORS;
+    let (dir, ctx, mut app) = fixture(TABLE, false);
+    runtime_dir();
     let script = install(
         &dir,
         "my claude",
         "#!/usr/bin/env bash\nif [[ $1 == --version ]]; then echo 'Claude test'; else echo '{\"loggedIn\":true,\"authMethod\":\"claude.ai\",\"email\":\"private@example.com\"}'; fi\n",
     );
-    app.preferences
-        .assistant
-        .executables
-        .insert(Provider::Claude, script);
+    let executables = &mut app.preferences.assistant.executables;
+    for vendor in VENDORS {
+        executables.insert(vendor.id, dir.path().join("not-installed"));
+    }
+    executables.insert(Provider::Claude, script);
     app.scan_assistant(&ctx);
     wait_until(&mut app, &ctx, |a| {
         a.accounts.rows.values().all(|row| row.job.is_none())
@@ -637,7 +667,7 @@ done
     let claude = status(&app, Provider::Claude);
     assert_eq!(claude.state, SignIn::SignedIn);
     assert_eq!(claude.version.as_deref(), Some("Claude test"));
-    assert_eq!(status(&app, Provider::Antigravity).state, SignIn::Missing);
+    assert_eq!(status(&app, Provider::Codex).state, SignIn::Missing);
     assert!(app.database.assistant.host().is_none());
     assert!(app.preferences.assistant.grants.is_empty());
     let saved = serde_json::to_string(&app.preferences).unwrap();

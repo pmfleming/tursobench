@@ -147,34 +147,12 @@ fn control_response(link: &mut Link, response: &Json, original: &mut Option<Stri
 
 /// Updates carried by one stream-json message.
 pub(crate) fn parse(message: &Json) -> Vec<Update> {
-    let kind = message.get("type").and_then(Json::as_str).unwrap_or("");
-    let text = |v: &Json, key: &str| v.get(key).and_then(Json::as_str).map(str::to_owned);
-    match kind {
-        "system" if text(message, "subtype").as_deref() == Some("init") => vec![Update::Ready {
+    let text = |v: &Json, key: &str| v[key].as_str().map(str::to_owned);
+    match message["type"].as_str().unwrap_or("") {
+        "system" if message["subtype"] == "init" => vec![Update::Ready {
             model: text(message, "model"),
         }],
-        "stream_event" => {
-            // Subagent output has a parent; only the main conversation is shown.
-            if message
-                .get("parent_tool_use_id")
-                .is_some_and(|p| !p.is_null())
-            {
-                return vec![];
-            }
-            let event = &message["event"];
-            if event["type"] != "content_block_delta" {
-                return vec![];
-            }
-            let delta = &event["delta"];
-            match delta["type"].as_str() {
-                Some("text_delta") => text(delta, "text").map(Update::Text).into_iter().collect(),
-                Some("thinking_delta") => text(delta, "thinking")
-                    .map(Update::Thought)
-                    .into_iter()
-                    .collect(),
-                _ => vec![],
-            }
-        }
+        "stream_event" => delta(message).into_iter().collect(),
         "assistant" => blocks(message)
             .filter(|b| b["type"] == "tool_use")
             .map(|b| Update::ToolCall {
@@ -191,39 +169,47 @@ pub(crate) fn parse(message: &Json) -> Vec<Update> {
                 text: content_text(&b["content"]),
             })
             .collect(),
-        "result" => {
-            let failed = message["is_error"].as_bool().unwrap_or(false)
-                || text(message, "subtype").is_some_and(|s| s != "success");
-            let error = failed.then(|| {
-                text(message, "result")
-                    .filter(|r| !r.trim().is_empty())
-                    .or_else(|| {
-                        message["errors"]
-                            .as_array()
-                            .and_then(|e| e.first())
-                            .and_then(Json::as_str)
-                            .map(str::to_owned)
-                    })
-                    .or_else(|| text(message, "subtype"))
-                    .unwrap_or_else(|| "The turn failed".into())
-            });
-            // An interrupted turn is the user's choice, not a failure to report.
-            let error = error
-                .filter(|_| text(message, "terminal_reason").as_deref() != Some("interrupted"));
-            vec![Update::TurnEnded { error }]
-        }
-        "rate_limit_event" => {
-            let info = &message["rate_limit_info"];
-            match info["status"].as_str() {
-                Some("allowed") | None => vec![],
-                Some(status) => vec![Update::Notice(format!(
-                    "Your plan's usage limit is {}",
-                    status.replace('_', " ")
-                ))],
-            }
-        }
+        "result" => vec![Update::TurnEnded {
+            error: turn_error(message),
+        }],
+        "rate_limit_event" => match message["rate_limit_info"]["status"].as_str() {
+            Some("allowed") | None => vec![],
+            Some(status) => vec![Update::Notice(format!(
+                "Your plan's usage limit is {}",
+                status.replace('_', " ")
+            ))],
+        },
         _ => vec![],
     }
+}
+
+/// A fragment of the main conversation's reply or visible thinking.
+fn delta(message: &Json) -> Option<Update> {
+    // Subagent output has a parent; only the main conversation is shown.
+    let event = &message["event"];
+    if !message["parent_tool_use_id"].is_null() || event["type"] != "content_block_delta" {
+        return None;
+    }
+    let delta = &event["delta"];
+    let text = |key: &str| delta[key].as_str().map(str::to_owned);
+    match delta["type"].as_str() {
+        Some("text_delta") => text("text").map(Update::Text),
+        Some("thinking_delta") => text("thinking").map(Update::Thought),
+        _ => None,
+    }
+}
+
+/// Why a finished turn failed: its result, first error or subtype. An
+/// interrupted turn is the user's choice, not a failure to report.
+fn turn_error(message: &Json) -> Option<String> {
+    let subtype = message["subtype"].as_str();
+    let failed = message["is_error"] == true || subtype.is_some_and(|s| s != "success");
+    if !failed || message["terminal_reason"] == "interrupted" {
+        return None;
+    }
+    let result = message["result"].as_str().filter(|r| !r.trim().is_empty());
+    let error = result.or_else(|| message["errors"][0].as_str()).or(subtype);
+    Some(error.unwrap_or("The turn failed").to_owned())
 }
 
 fn blocks(message: &Json) -> impl Iterator<Item = &Json> {

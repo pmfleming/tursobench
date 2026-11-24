@@ -496,120 +496,103 @@ fn request(link: &mut Link, method: &str, id: &Json, params: &Json) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Json, Spec, State, Update, json, notification, serve, thread_params};
+    use super::{Spec, State, Update, json, notification, serve, thread_params};
 
     #[test]
     fn deltas_tools_and_turns_become_updates() {
         let mut state = State::default();
-        let n =
-            |state: &mut State, method: &str, params: Json| notification(state, method, &params);
-        assert!(n(&mut state, "turn/started", json!({"turn": {"id": "t1"}})).is_empty());
+        let started = json!({"turn": {"id": "t1"}});
+        assert!(notification(&mut state, "turn/started", &started).is_empty());
         assert_eq!(state.turn.as_deref(), Some("t1"));
-        assert_eq!(
-            n(
-                &mut state,
-                "item/agentMessage/delta",
-                json!({"itemId": "m1", "delta": "Hi"})
-            ),
-            [Update::Text("Hi".into())]
-        );
-        // A second message in the same turn starts a new paragraph.
-        assert_eq!(
-            n(
-                &mut state,
-                "item/agentMessage/delta",
-                json!({"itemId": "m2", "delta": "Then"})
-            ),
-            [Update::Text("\n\n".into()), Update::Text("Then".into())]
-        );
-        assert!(
-            n(
-                &mut state,
-                "item/completed",
-                json!({"item": {"type": "agentMessage", "id": "m2", "text": "Then"}})
-            )
-            .is_empty()
-        );
-        assert_eq!(
-            n(
-                &mut state,
-                "item/started",
-                json!({"item": {"type": "mcpToolCall", "id": "c1", "server": "tursobench", "tool": "run_query", "arguments": {"sql": "SELECT 1"}}})
-            ),
-            [Update::ToolCall {
-                id: "c1".into(),
-                name: "run_query".into(),
-                input: json!({"sql": "SELECT 1"})
-            }]
-        );
-        assert_eq!(
-            n(
-                &mut state,
-                "item/completed",
-                json!({"item": {"type": "mcpToolCall", "id": "c1", "server": "tursobench", "tool": "run_query", "status": "completed", "result": {"content": [{"type": "text", "text": "[]"}], "isError": false}, "error": null}})
-            ),
-            [Update::ToolResult {
-                id: "c1".into(),
-                ok: true,
-                text: "[]".into()
-            }]
-        );
-        assert_eq!(
-            n(
-                &mut state,
-                "item/completed",
-                json!({"item": {"type": "agentMessage", "id": "m3", "text": "Done"}})
-            ),
-            [Update::Text("Done".into())]
-        );
-        assert!(matches!(
-            &n(&mut state, "item/started", json!({"item": {"type": "commandExecution", "id": "x"}}))[..],
-            [Update::Notice(t)] if t.contains("command")
-        ));
-        assert!(
-            n(
-                &mut state,
-                "error",
-                json!({"error": {"message": "unauthorized"}, "willRetry": false})
-            )
-            .is_empty()
-        );
-        assert_eq!(
-            n(
-                &mut state,
-                "turn/completed",
-                json!({"turn": {"id": "t1", "status": "failed", "error": null}})
-            ),
-            [Update::TurnEnded {
-                error: Some("unauthorized".into())
-            }]
-        );
-        assert_eq!(state.turn, None);
-        assert_eq!(
-            n(
-                &mut state,
-                "turn/completed",
-                json!({"turn": {"id": "t2", "status": "interrupted", "error": null}})
-            ),
-            [Update::TurnEnded { error: None }]
-        );
-        // Only TursoBench's own relay failing to start is worth a notice.
-        let startup = |name: &str, status: &str| {
-            let params = json!({"name": name, "status": status, "error": "spawn failed"});
-            notification(
-                &mut State::default(),
-                "mcpServer/startupStatus/updated",
-                &params,
-            )
+        let text = |text: &str| Update::Text(text.into());
+        let ended = |error: Option<&str>| Update::TurnEnded {
+            error: error.map(str::to_owned),
         };
-        assert!(startup("tursobench", "ready").is_empty());
-        assert!(startup("other", "failed").is_empty());
-        assert_eq!(
-            startup("tursobench", "failed"),
-            [Update::Notice(
-                "TursoBench's tools did not start in Codex (failed): spawn failed".into()
-            )]
-        );
+        let call = Update::ToolCall {
+            id: "c1".into(),
+            name: "run_query".into(),
+            input: json!({"sql": "SELECT 1"}),
+        };
+        let result = Update::ToolResult {
+            id: "c1".into(),
+            ok: true,
+            text: "[]".into(),
+        };
+        let relay_failed = "TursoBench's tools did not start in Codex (failed): spawn failed";
+        let steps = [
+            (
+                "item/agentMessage/delta",
+                json!({"itemId": "m1", "delta": "Hi"}),
+                vec![text("Hi")],
+            ),
+            // A second message in the same turn starts a new paragraph.
+            (
+                "item/agentMessage/delta",
+                json!({"itemId": "m2", "delta": "Then"}),
+                vec![text("\n\n"), text("Then")],
+            ),
+            (
+                "item/completed",
+                json!({"item": {"type": "agentMessage", "id": "m2", "text": "Then"}}),
+                vec![],
+            ),
+            (
+                "item/started",
+                json!({"item": {"type": "mcpToolCall", "id": "c1", "server": "tursobench", "tool": "run_query", "arguments": {"sql": "SELECT 1"}}}),
+                vec![call],
+            ),
+            (
+                "item/completed",
+                json!({"item": {"type": "mcpToolCall", "id": "c1", "server": "tursobench", "tool": "run_query", "status": "completed", "result": {"content": [{"type": "text", "text": "[]"}], "isError": false}, "error": null}}),
+                vec![result],
+            ),
+            (
+                "item/completed",
+                json!({"item": {"type": "agentMessage", "id": "m3", "text": "Done"}}),
+                vec![text("Done")],
+            ),
+            (
+                "item/started",
+                json!({"item": {"type": "commandExecution", "id": "x"}}),
+                vec![Update::Notice("Codex started its own command".into())],
+            ),
+            (
+                "error",
+                json!({"error": {"message": "unauthorized"}, "willRetry": false}),
+                vec![],
+            ),
+            (
+                "turn/completed",
+                json!({"turn": {"id": "t1", "status": "failed", "error": null}}),
+                vec![ended(Some("unauthorized"))],
+            ),
+            (
+                "turn/completed",
+                json!({"turn": {"id": "t2", "status": "interrupted", "error": null}}),
+                vec![ended(None)],
+            ),
+            // Only TursoBench's own relay failing to start is worth a notice.
+            (
+                "mcpServer/startupStatus/updated",
+                json!({"name": "tursobench", "status": "ready"}),
+                vec![],
+            ),
+            (
+                "mcpServer/startupStatus/updated",
+                json!({"name": "other", "status": "failed"}),
+                vec![],
+            ),
+            (
+                "mcpServer/startupStatus/updated",
+                json!({"name": "tursobench", "status": "failed", "error": "spawn failed"}),
+                vec![Update::Notice(relay_failed.into())],
+            ),
+        ];
+        for (method, params, expected) in steps {
+            let updates = notification(&mut state, method, &params);
+            assert_eq!(updates, expected, "{method} {params}");
+        }
+        assert_eq!(state.turn, None);
     }
 
     #[test]

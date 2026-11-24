@@ -676,37 +676,28 @@ mod tests {
             ),
             [Update::Text("Hi".into())]
         );
-        assert!(is_ours(
-            &json!({"title": "Tool: tursobench.describe_table"})
-        ));
-        assert!(!is_ours(&json!({"title": "Run shell command: rm -rf ~"})));
-        for title in [
-            "Run shell: touch /tmp/tursobench-probe",
-            "Edit file /tmp/tursobench/config",
-            "tursobench/run_query; rm -rf ~",
-            "other_tursobench/run_query",
-            "tursobench/unknown",
+        // Only a complete qualified name of one of TursoBench's tools is ours.
+        for call in [
+            json!({"title": "Tool: tursobench.describe_table"}),
+            json!({"toolName": "run_query", "rawInput": {"server": "tursobench"}}),
+            json!({"name": "mcp_tursobench_list_tables", "title": "Run mcp_tursobench_list_tables"}),
         ] {
-            assert!(!is_ours(&json!({"title": title})), "{title}");
+            assert!(is_ours(&call), "{call}");
         }
-        assert!(!is_ours(
-            &json!({"title": "tursobench/run_query", "toolName": "shell"})
-        ));
-        assert!(!is_ours(
-            &json!({"title": "shell", "rawInput": {"server": "tursobench"}})
-        ));
-        assert!(is_ours(
-            &json!({"toolName": "run_query", "rawInput": {"server": "tursobench"}})
-        ));
-        assert!(is_ours(
-            &json!({"name":"mcp_tursobench_list_tables","title":"Run mcp_tursobench_list_tables"})
-        ));
-        assert!(!is_ours(
-            &json!({"name":"mcp_tursobench_list_tables; touch /tmp/probe"})
-        ));
-        assert!(!is_ours(
-            &json!({"name":"shell","title":"Run mcp_tursobench_list_tables"})
-        ));
+        for call in [
+            json!({"title": "Run shell command: rm -rf ~"}),
+            json!({"title": "Run shell: touch /tmp/tursobench-probe"}),
+            json!({"title": "Edit file /tmp/tursobench/config"}),
+            json!({"title": "tursobench/run_query; rm -rf ~"}),
+            json!({"title": "other_tursobench/run_query"}),
+            json!({"title": "tursobench/unknown"}),
+            json!({"title": "tursobench/run_query", "toolName": "shell"}),
+            json!({"title": "shell", "rawInput": {"server": "tursobench"}}),
+            json!({"name": "mcp_tursobench_list_tables; touch /tmp/probe"}),
+            json!({"name": "shell", "title": "Run mcp_tursobench_list_tables"}),
+        ] {
+            assert!(!is_ours(&call), "{call}");
+        }
         assert_eq!(
             tool_name(&short_title("Run mcp_tursobench_list_tables")),
             "list_tables"
