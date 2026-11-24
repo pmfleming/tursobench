@@ -151,33 +151,13 @@ async fn stream(
     )?;
     let stoppable = sql::stoppable_read(text);
     let mut rows = stmt.query(params).await.map_err(failure)?;
-    loop {
-        let row = match rows.next().await {
-            Ok(Some(row)) => row,
-            Ok(None) => {
-                outcome.executed = true;
-                outcome.changed = stmt.n_change();
-                break;
-            }
-            Err(e) => {
-                outcome.error = Some(failure(e));
-                break;
-            }
-        };
-        outcome.rows += 1;
-        let cancelled = cancel();
-        if outcome.error.is_none() {
-            outcome.error = if cancelled {
-                Some(Failure::input(
-                    "Export cancelled; preceding committed SQL is not undone",
-                ))
-            } else {
-                write_row(&mut writer, &row, rows.column_count()).err()
-            };
+    match drain(&mut rows, &mut writer, &mut outcome, stoppable, cancel).await {
+        Ok(true) => {
+            outcome.executed = true;
+            outcome.changed = stmt.n_change();
         }
-        if outcome.error.is_some() && stoppable {
-            break;
-        }
+        Ok(false) => {}
+        Err(e) => outcome.error = Some(failure(e)),
     }
     drop(rows);
     outcome.transaction = state(c);
@@ -187,6 +167,33 @@ async fn stream(
             .err();
     }
     Ok(outcome)
+}
+
+/// Counts every row and writes each until the first failure, where stoppable
+/// reads end early; true once the statement has run to completion.
+async fn drain(
+    rows: &mut turso::Rows,
+    writer: &mut impl Write,
+    outcome: &mut TransferOutcome,
+    stoppable: bool,
+    cancel: impl Fn() -> bool,
+) -> Result<bool, turso::Error> {
+    while let Some(row) = rows.next().await? {
+        outcome.rows += 1;
+        if outcome.error.is_none() {
+            outcome.error = if cancel() {
+                Some(Failure::input(
+                    "Export cancelled; preceding committed SQL is not undone",
+                ))
+            } else {
+                write_row(writer, &row, rows.column_count()).err()
+            };
+        }
+        if outcome.error.is_some() && stoppable {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 pub(crate) async fn checkpoint(c: &Connection) -> Result<(), Failure> {
@@ -355,7 +362,9 @@ pub(crate) fn decode(value: &Json) -> Result<Value, Failure> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::stream;
+    use std::io::Write;
+    use tursobench_core::TransactionState;
     struct FullDisk(usize);
     impl Write for FullDisk {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {

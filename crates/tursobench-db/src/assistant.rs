@@ -4,7 +4,7 @@
 //! Replies travel over a per-call channel, not the UI event stream.
 use crate::{
     Operation, Request,
-    connection::{failure, from_engine},
+    connection::{failure, from_engine, text_column},
     sql,
 };
 use serde_json::{Value as Json, json};
@@ -106,10 +106,7 @@ pub(crate) fn validate(text: &str) -> Result<(), Failure> {
     {
         return Err(location_error());
     }
-    let command = turso_parser::parser::Parser::new(text.as_bytes())
-        .next_cmd()
-        .map_err(|e| Failure::input(e.to_string()))?;
-    match command {
+    match sql::parse_first(text)? {
         Some(Cmd::Stmt(Stmt::Select(_)))
         | Some(Cmd::Explain(Stmt::Select(_)))
         | Some(Cmd::ExplainQueryPlan {
@@ -178,12 +175,10 @@ async fn validate_views(c: &Connection, text: &str) -> Result<(), Failure> {
     let mut views = std::collections::HashMap::new();
     let mut bytes = 0usize;
     while let Some(row) = rows.next().await.map_err(failure)? {
-        let turso::Value::Text(name) = row.get_value(0).map_err(failure)? else {
-            return Err(Failure::input("Unexpected view name"));
-        };
-        let turso::Value::Text(ddl) = row.get_value(1).map_err(failure)? else {
-            return Err(Failure::input("Unexpected view definition"));
-        };
+        let (name, ddl) = (
+            text_column(&row, 0, "view name")?,
+            text_column(&row, 1, "view definition")?,
+        );
         bytes = bytes.saturating_add(name.len()).saturating_add(ddl.len());
         if bytes > crate::COMMAND_BYTES {
             return Err(Failure::input(
@@ -207,7 +202,7 @@ async fn validate_views(c: &Connection, text: &str) -> Result<(), Failure> {
     Ok(())
 }
 
-pub(crate) async fn connect(
+async fn connect(
     db: &turso::Database,
     settings: tursobench_core::ConnectionSettings,
 ) -> Result<Connection, Failure> {
@@ -225,19 +220,28 @@ pub(crate) async fn connect(
     Ok(c)
 }
 
-pub(crate) async fn run(
-    c: &Connection,
-    tool: Tool,
-    request: u64,
-    discard: &crate::DeliveryControl,
-) -> Reply {
-    match tool {
-        Tool::ListTables => list(c).await,
-        Tool::Describe(name) => describe(c, &name).await,
-        Tool::Query(text) => {
-            validate(&text)?;
-            let _read = discard.interruptible(request, c);
-            query(c, &text, request, discard).await
+impl Tool {
+    /// Runs on the session's `assistant` connection, opening it on first use.
+    pub(crate) async fn run(
+        self,
+        assistant: &mut Option<Connection>,
+        db: &turso::Database,
+        settings: tursobench_core::ConnectionSettings,
+        request: u64,
+        discard: &crate::DeliveryControl,
+    ) -> Reply {
+        let c = match assistant {
+            Some(c) => c,
+            None => assistant.insert(connect(db, settings).await?),
+        };
+        match self {
+            Tool::ListTables => list(c).await,
+            Tool::Describe(name) => describe(c, &name).await,
+            Tool::Query(text) => {
+                validate(&text)?;
+                let _read = discard.interruptible(request, c);
+                query(c, &text, request, discard).await
+            }
         }
     }
 }

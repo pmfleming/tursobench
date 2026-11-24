@@ -98,9 +98,7 @@ fn comparison_captures_readonly_schema_and_classifies_manual_changes() {
             .clone()
             .unwrap();
         let expected = capture(&mut writable);
-        let applied = migrate(&mut writable, &sql, &expected);
-        assert!(applied.failure.is_none(), "{name}: {:?}", applied.failure);
-        assert!(applied.result.completion.unwrap().error.is_none(), "{name}");
+        migrate(&mut writable, &sql, &expected).assert_succeeded();
     }
     writable.sql("INSERT INTO t(id) VALUES(1)");
     assert_eq!(

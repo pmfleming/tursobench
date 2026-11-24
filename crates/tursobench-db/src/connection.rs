@@ -32,6 +32,13 @@ pub(crate) fn failure(e: turso::Error) -> Failure {
         },
     }
 }
+/// Column `i` of `row` as text; any other value is an unexpected `what`.
+pub(crate) fn text_column(row: &turso::Row, i: usize, what: &str) -> Result<String, Failure> {
+    match row.get_value(i).map_err(failure)? {
+        turso::Value::Text(v) => Ok(v),
+        _ => Err(Failure::input(format!("Unexpected {what}"))),
+    }
+}
 pub(crate) fn state(c: &Connection) -> TransactionState {
     match c.is_autocommit() {
         Ok(true) => TransactionState::Autocommit,

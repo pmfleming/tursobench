@@ -107,12 +107,70 @@ mod tests {
     use std::cell::Cell;
     use tursobench_core::{CommitOutcome, ErrorKind, Failure};
 
-    #[tokio::test]
-    async fn boundary_failures_preserve_uncertainty_and_block_retries() {
-        let io = || Failure {
+    /// A database whose only connection holds one uncommitted insert.
+    async fn pending_insert(path: &std::path::Path) -> (turso::Database, turso::Connection) {
+        let db = turso::Builder::new_local(path.to_str().unwrap())
+            .build()
+            .await
+            .unwrap();
+        let c = db.connect().unwrap();
+        for sql in [
+            "CREATE TABLE items(id INTEGER PRIMARY KEY)",
+            "BEGIN IMMEDIATE",
+            "INSERT INTO items VALUES(1)",
+        ] {
+            c.execute(sql, ()).await.unwrap();
+        }
+        (db, c)
+    }
+    fn io() -> Failure {
+        Failure {
             kind: ErrorKind::Io,
             message: "injected I/O failure".into(),
+        }
+    }
+    /// COMMIT and ROLLBACK on `c` that record their calls in `called` and fail
+    /// before COMMIT (point 1), after a durable COMMIT (point 2) or on rollback.
+    fn boundary<'a>(
+        c: &'a turso::Connection,
+        commit_point: u8,
+        rollback_failed: bool,
+        called: &'a (Cell<bool>, Cell<bool>),
+    ) -> (
+        impl Future<Output = Result<(), Failure>> + 'a,
+        impl Future<Output = Result<(), Failure>> + 'a,
+    ) {
+        let commit = async move {
+            called.0.set(true);
+            if commit_point == 1 {
+                return Err(io());
+            }
+            c.execute("COMMIT", ()).await.map_err(failure)?;
+            if commit_point == 2 { Err(io()) } else { Ok(()) }
         };
+        let cleanup = async move {
+            called.1.set(true);
+            if rollback_failed {
+                Err(io())
+            } else {
+                rollback(c).await
+            }
+        };
+        (commit, cleanup)
+    }
+    /// The durable row count, read through a second connection.
+    async fn durable_rows(db: &turso::Database) -> turso::Value {
+        let mut rows = db
+            .connect()
+            .unwrap()
+            .query("SELECT count(*) FROM items", ())
+            .await
+            .unwrap();
+        rows.next().await.unwrap().unwrap().get_value(0).unwrap()
+    }
+
+    #[tokio::test]
+    async fn boundary_failures_preserve_uncertainty_and_block_retries() {
         // commit point: 0 = success, 1 = before commit, 2 = after durable commit.
         for (statement_failed, commit_point, rollback_failed) in [
             (false, 0, false),
@@ -124,55 +182,22 @@ mod tests {
             (false, 2, true),
         ] {
             let dir = tempfile::tempdir().unwrap();
-            let db = turso::Builder::new_local(dir.path().join("boundary.db").to_str().unwrap())
-                .build()
-                .await
-                .unwrap();
-            let c = db.connect().unwrap();
-            c.execute("CREATE TABLE items(id INTEGER PRIMARY KEY)", ())
-                .await
-                .unwrap();
-            c.execute("BEGIN IMMEDIATE", ()).await.unwrap();
-            c.execute("INSERT INTO items VALUES(1)", ()).await.unwrap();
-            let commit_called = Cell::new(false);
-            let rollback_called = Cell::new(false);
+            let (db, c) = pending_insert(&dir.path().join("boundary.db")).await;
+            let called = (Cell::new(false), Cell::new(false));
+            let (commit, cleanup) = boundary(&c, commit_point, rollback_failed, &called);
+            let statement = match statement_failed {
+                true => Err(Failure::input("statement failed")),
+                false => Ok(()),
+            };
             let mut unconfirmed = false;
-            let outcome = guarded(
-                &mut unconfirmed,
-                finish(
-                    if statement_failed {
-                        Err(Failure::input("statement failed"))
-                    } else {
-                        Ok(())
-                    },
-                    1,
-                    async {
-                        commit_called.set(true);
-                        if commit_point == 1 {
-                            return Err(io());
-                        }
-                        c.execute("COMMIT", ()).await.map_err(failure)?;
-                        if commit_point == 2 { Err(io()) } else { Ok(()) }
-                    },
-                    async {
-                        rollback_called.set(true);
-                        if rollback_failed {
-                            Err(io())
-                        } else {
-                            rollback(&c).await
-                        }
-                    },
-                ),
-            )
-            .await;
+            let outcome = guarded(&mut unconfirmed, finish(statement, 1, commit, cleanup)).await;
             let uncertain = rollback_failed || commit_point != 0;
             assert_eq!(unconfirmed, uncertain);
-            assert_eq!(commit_called.get(), !statement_failed);
-            assert_eq!(rollback_called.get(), statement_failed || commit_point != 0);
+            assert_eq!(called.0.get(), !statement_failed);
+            assert_eq!(called.1.get(), statement_failed || commit_point != 0);
             match outcome {
-                CommitOutcome::Committed { operations } => {
-                    assert_eq!(operations, 1);
-                    assert!(!statement_failed && !uncertain);
+                CommitOutcome::Committed { operations: 1 } => {
+                    assert!(!statement_failed && !uncertain)
                 }
                 CommitOutcome::Rejected(e) => {
                     assert_eq!(e.message, "statement failed");
@@ -183,6 +208,7 @@ mod tests {
                     assert!(uncertain);
                     assert!(e.message.contains("injected I/O failure"));
                 }
+                other => panic!("{other:?}"),
             }
             let retry_called = Cell::new(false);
             let retry = guarded(&mut unconfirmed, async {
@@ -193,19 +219,12 @@ mod tests {
             assert_eq!(retry_called.get(), !uncertain);
             assert_eq!(matches!(retry, CommitOutcome::Unknown(_)), uncertain);
             rollback(&c).await.unwrap();
-            // Read through a second connection to check durable state, including
-            // the ambiguous successful COMMIT with a failed acknowledgement.
-            let reader = db.connect().unwrap();
-            let mut rows = reader
-                .query("SELECT count(*) FROM items", ())
-                .await
-                .unwrap();
-            let count = rows.next().await.unwrap().unwrap().get_value(0).unwrap();
+            // Durable state includes an ambiguous COMMIT whose acknowledgement failed.
+            let committed = !statement_failed && commit_point != 1;
             assert_eq!(
-                count,
-                turso::Value::Integer(i64::from(!statement_failed && commit_point != 1))
+                durable_rows(&db).await,
+                turso::Value::Integer(committed.into())
             );
-            assert!(rows.next().await.unwrap().is_none());
         }
     }
 }

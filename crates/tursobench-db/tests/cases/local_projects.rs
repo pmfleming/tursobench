@@ -1,20 +1,14 @@
 use crate::common::{self, Client, local_fixtures as fixtures};
 
 use tursobench_core::{
-    Access, Browse, CommitOutcome, Delivery, Edit, ErrorKind, Failure, TransactionState, Value,
-    quote_identifier,
+    Access, Browse, Delivery, Edit, ErrorKind, TransactionState, Value, quote_identifier,
 };
 use tursobench_db::Operation;
 
 fn fixture(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(format!("{name}.db"));
-    tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap()
-        .block_on(fixtures::create(&path, name))
-        .unwrap();
+    common::block_on(fixtures::create(&path, name)).unwrap();
     (dir, path)
 }
 fn text(s: &str) -> Value {
@@ -37,16 +31,14 @@ fn exact_project_schemas_open_browse_filter_page_and_preserve_readonly_files() {
         let mut c = Client::open(&path, Access::ReadOnly);
         let schema = c.run(Operation::Schema).result;
         assert!(schema.completion.unwrap().error.is_none());
-        for row in schema.rows {
-            if row[0] == text("table") {
-                let Value::Text(table) = &row[1] else {
-                    panic!()
-                };
-                let (description, page) = c.browse(table, 0);
-                assert!(description.is_table);
-                assert_eq!(page.columns.len(), description.columns.len());
-                assert!(page.rows.len() <= 100);
-            }
+        for row in schema.rows.iter().filter(|row| row[0] == text("table")) {
+            let Value::Text(table) = &row[1] else {
+                panic!("{row:?}")
+            };
+            let (description, page) = c.browse(table, 0);
+            assert!(description.is_table);
+            assert_eq!(page.columns.len(), description.columns.len());
+            assert!(page.rows.len() <= 100);
         }
         let paged = match name {
             "scratchpad" => "buffer_ids",
@@ -75,38 +67,26 @@ fn exact_project_schemas_open_browse_filter_page_and_preserve_readonly_files() {
             ..common::browse(paged)
         }));
         assert_eq!(filtered.result.rows, vec![first.rows[0].clone()]);
-        assert_eq!(
-            c.query(&format!("DELETE FROM {}", quote_identifier(paged)), vec![])
-                .completion
-                .unwrap()
-                .error
-                .unwrap()
-                .kind,
-            ErrorKind::ReadOnly
-        );
-        if name == "clipboard" {
-            assert_eq!(matches(&mut c, "needle"), vec![vec![text("entry-0000")]]);
-            let large = c.sql("SELECT bytes FROM payloads WHERE entry_id='entry-0204'");
-            assert!(matches!(&large.rows[0][0],Value::Deferred(cell) if cell.handle.is_some()));
-            assert_eq!(large.completion.unwrap().delivery, Delivery::Complete);
-        }
-        if name == "scratchpad" {
-            assert_eq!(
-                c.sql("SELECT length(body) FROM blobs ORDER BY bytes DESC LIMIT 1")
-                    .rows,
-                vec![vec![Value::Integer(1024 * 1024)]]
-            );
-        }
-        if name == "notifications" {
-            assert_eq!(first.rows[0][8], Value::Null);
+        let delete = format!("DELETE FROM {}", quote_identifier(paged));
+        assert_eq!(c.failure(&delete).unwrap().kind, ErrorKind::ReadOnly);
+        match name {
+            "clipboard" => {
+                assert_eq!(matches(&mut c, "needle"), vec![vec![text("entry-0000")]]);
+                let large = c.sql("SELECT bytes FROM payloads WHERE entry_id='entry-0204'");
+                assert!(matches!(&large.rows[0][0],Value::Deferred(cell) if cell.handle.is_some()));
+                assert_eq!(large.completion.unwrap().delivery, Delivery::Complete);
+            }
+            "scratchpad" => {
+                let largest = "SELECT length(body) FROM blobs ORDER BY bytes DESC LIMIT 1";
+                assert_eq!(c.sql(largest).rows, vec![vec![Value::Integer(1024 * 1024)]]);
+            }
+            "notifications" => assert_eq!(first.rows[0][8], Value::Null),
+            _ => {}
         }
         c.close();
         assert!(
             files.unchanged(),
             "read-only access changed {name} fixture files"
-        );
-        eprintln!(
-            "PASS {name}: schema/all-table browse, typed page/filter, read-only rejection, byte preservation"
         );
     }
 }
@@ -143,27 +123,12 @@ fn native_fts_creation_queries_returning_and_engine_readonly_enforcement() {
             .len(),
         1
     );
-    assert_eq!(
-        c.query(
-            "CREATE INDEX denied_fts ON documents USING fts(body)",
-            vec![]
-        )
-        .completion
-        .unwrap()
-        .error
-        .unwrap()
-        .kind,
-        ErrorKind::ReadOnly
-    );
-    assert_eq!(
-        c.query("UPDATE documents SET body='changed' WHERE id=1", vec![])
-            .completion
-            .unwrap()
-            .error
-            .unwrap()
-            .kind,
-        ErrorKind::ReadOnly
-    );
+    for denied in [
+        "CREATE INDEX denied_fts ON documents USING fts(body)",
+        "UPDATE documents SET body='changed' WHERE id=1",
+    ] {
+        assert_eq!(c.failure(denied).unwrap().kind, ErrorKind::ReadOnly);
+    }
     c.close();
 }
 
@@ -181,19 +146,11 @@ fn clipboard_fts_staged_edits_conflicts_constraints_and_transaction_rollback() {
             changes: vec![(1, text("changed marker")), (2, text("changed marker"))],
         }],
     );
-    assert!(
-        matches!(outcome, CommitOutcome::Committed { operations: 1 }),
-        "{outcome:?}"
-    );
+    common::committed(&outcome, Some(1));
     assert!(matches(&mut c, "needle").is_empty());
     assert_eq!(matches(&mut c, "marker"), vec![vec![text("entry-0000")]]);
-    assert!(matches!(
-        c.commit(table.clone(), vec![Edit::Delete { original: row }]),
-        CommitOutcome::Rejected(Failure {
-            kind: ErrorKind::Conflict,
-            ..
-        })
-    ));
+    let stale = c.commit(table.clone(), vec![Edit::Delete { original: row }]);
+    common::rejected(&stale, ErrorKind::Conflict);
     let (_, current) = c.browse("search_content", 0);
     let outcome = c.commit(
         table.clone(),
@@ -212,16 +169,7 @@ fn clipboard_fts_staged_edits_conflicts_constraints_and_transaction_rollback() {
             },
         ],
     );
-    assert!(
-        matches!(
-            outcome,
-            CommitOutcome::Rejected(Failure {
-                kind: ErrorKind::Constraint,
-                ..
-            })
-        ),
-        "{outcome:?}"
-    );
+    common::rejected(&outcome, ErrorKind::Constraint);
     assert!(matches(&mut c, "rollback").is_empty());
     assert_eq!(matches(&mut c, "marker").len(), 1);
     c.sql("BEGIN IMMEDIATE");
@@ -244,10 +192,7 @@ fn clipboard_fts_staged_edits_conflicts_constraints_and_transaction_rollback() {
             original: current.rows[0].clone(),
         }],
     );
-    assert!(
-        matches!(outcome, CommitOutcome::Committed { .. }),
-        "{outcome:?}"
-    );
+    common::committed(&outcome, None);
     assert!(matches(&mut c, "marker").is_empty());
     let outcome = c.commit(
         table,
@@ -260,10 +205,7 @@ fn clipboard_fts_staged_edits_conflicts_constraints_and_transaction_rollback() {
             ],
         }],
     );
-    assert!(
-        matches!(outcome, CommitOutcome::Committed { operations: 1 }),
-        "{outcome:?}"
-    );
+    common::committed(&outcome, Some(1));
     assert_eq!(
         matches(&mut c, "searchable"),
         vec![vec![text("entry-0000")]]
@@ -298,7 +240,7 @@ fn project_typed_edits_and_close_rollback() {
         let (_dir, path) = fixture(name);
         let mut c = Client::open(&path, Access::ReadWrite);
         let committed = c.update_first(table_name, vec![(column, value.clone())]);
-        assert!(matches!(committed, CommitOutcome::Committed { .. }));
+        common::committed(&committed, None);
         let (_, after) = c.browse(table_name, 0);
         assert_eq!(after.rows[0][column], value);
         c.sql("BEGIN");

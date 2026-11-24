@@ -28,7 +28,8 @@ impl Drop for HeldLock {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
-    use super::*;
+    use super::{Admission, check_access, lock, reserve};
+    use tursobench_core::ErrorKind;
 
     #[test]
     fn admission_releases_locks_even_with_inherited_descriptors() {
@@ -61,6 +62,18 @@ mod tests {
             "reservation survived close"
         );
         drop((inherited_main, inherited_reservation));
+    }
+    #[test]
+    fn unreadable_files_are_reported_as_io_failures() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("unreadable.db");
+        std::fs::write(&path, b"fixture").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // A privileged user can still open it; there is nothing to report then.
+        if std::fs::File::open(&path).is_err() {
+            assert_eq!(check_access(&path).unwrap_err().kind, ErrorKind::Io);
+        }
     }
 }
 
@@ -324,6 +337,27 @@ impl Admission {
     }
 }
 
+/// Whether `process` holds a `targets` file open; `None` when its descriptors
+/// cannot all be read before `deadline`.
+#[cfg(target_os = "linux")]
+fn holds(
+    process: &Path,
+    targets: &std::collections::HashSet<(u64, u64)>,
+    deadline: std::time::Instant,
+) -> Option<bool> {
+    use std::os::unix::fs::MetadataExt;
+    let fds = std::fs::read_dir(process.join("fd")).ok()?;
+    for (i, fd) in fds.flatten().enumerate() {
+        if i >= 4096 || std::time::Instant::now() > deadline {
+            return None;
+        }
+        if std::fs::metadata(fd.path()).is_ok_and(|m| targets.contains(&(m.dev(), m.ino()))) {
+            return Some(true);
+        }
+    }
+    Some(false)
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ProcessUsage {
     pub applications: Vec<String>,
@@ -350,46 +384,25 @@ pub fn processes_using(path: &Path) -> ProcessUsage {
                     .map(|m| (m.dev(), m.ino()))
             })
             .collect();
-        if targets.is_empty() {
-            report.incomplete = true;
-            return report;
-        }
-        let Ok(processes) = std::fs::read_dir("/proc") else {
+        let processes = std::fs::read_dir("/proc");
+        let (false, Ok(processes)) = (targets.is_empty(), processes) else {
             report.incomplete = true;
             return report;
         };
-        let started = Instant::now();
+        let deadline = Instant::now() + Duration::from_millis(200);
         for process in processes.take(8192).flatten() {
-            if started.elapsed() > Duration::from_millis(200) || report.applications.len() >= 16 {
+            if Instant::now() > deadline || report.applications.len() >= 16 {
                 report.incomplete = true;
                 break;
             }
-            let Some(pid) = process
-                .file_name()
-                .to_str()
-                .and_then(|s| s.parse::<u32>().ok())
-            else {
+            let pid = process.file_name().to_str().and_then(|s| s.parse().ok());
+            let Some(pid) = pid.filter(|pid| *pid != std::process::id()) else {
                 continue;
             };
-            if pid == std::process::id() {
-                continue;
-            }
-            let Ok(fds) = std::fs::read_dir(process.path().join("fd")) else {
-                report.incomplete = true;
-                continue;
-            };
-            for (i, fd) in fds.flatten().enumerate() {
-                if i >= 4096 || started.elapsed() > Duration::from_millis(200) {
-                    report.incomplete = true;
-                    break;
-                }
-                if std::fs::metadata(fd.path())
-                    .ok()
-                    .is_some_and(|m| targets.contains(&(m.dev(), m.ino())))
-                {
-                    report.applications.push(process_name(pid));
-                    break;
-                }
+            match holds(&process.path(), &targets, deadline) {
+                Some(true) => report.applications.push(process_name(pid)),
+                Some(false) => {}
+                None => report.incomplete = true,
             }
         }
         report.applications.sort();

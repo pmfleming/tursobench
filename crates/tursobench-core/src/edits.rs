@@ -161,14 +161,14 @@ struct Binder {
     params: Vec<Value>,
 }
 impl Binder {
-    fn bind(&mut self, value: Value) -> Result<String, Failure> {
+    fn bind(&mut self, value: &Value) -> Result<String, Failure> {
         if matches!(value, Value::Deferred(_))
             || value.bytes() > 64 * 1024
-            || matches!(&value, Value::Real(n) if n.is_nan())
+            || matches!(value, Value::Real(n) if n.is_nan())
         {
             return Err(Failure::input("Edit value is oversized or non-finite"));
         }
-        self.params.push(value);
+        self.params.push(value.clone());
         Ok(format!("?{}", self.params.len()))
     }
     /// Matches exactly the original row: per column, the same storage class
@@ -187,8 +187,8 @@ impl Binder {
         let mut predicates = Vec::new();
         for (i, v) in original.iter().enumerate() {
             let name = column(table, i)?;
-            let kind = self.bind(Value::Text(storage_class(v)?.into()))?;
-            let value = self.bind(v.clone())?;
+            let kind = self.bind(&Value::Text(storage_class(v)?.into()))?;
+            let value = self.bind(v)?;
             predicates.push(format!(
                 "(typeof({name}) = {kind} AND {name} COLLATE BINARY IS {value})"
             ));
@@ -207,7 +207,7 @@ impl Binder {
         for (i, v) in values.iter().enumerate() {
             if let Some(v) = v {
                 columns.push(column(table, i)?);
-                slots.push(self.bind(v.clone())?);
+                slots.push(self.bind(v)?);
             }
         }
         Ok(if columns.is_empty() {
@@ -235,11 +235,7 @@ impl Binder {
             if !seen.insert(i) {
                 return Err(Failure::input("Duplicate update column"));
             }
-            assignments.push(format!(
-                "{} = {}",
-                column(table, *i)?,
-                self.bind(v.clone())?
-            ));
+            assignments.push(format!("{} = {}", column(table, *i)?, self.bind(v)?));
         }
         Ok(format!(
             "UPDATE {} SET {} WHERE {}",
@@ -276,8 +272,9 @@ fn generate(table: &Table, edit: &Edit) -> Result<BoundEdit, Failure> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{DraftBatch, Edit};
     use crate::TableColumn;
+    use crate::{Table, Value};
     fn table() -> Table {
         Table {
             name: "a\"b".into(),

@@ -57,21 +57,8 @@ impl Csv {
             }
             if record.inside {
                 self.quoted(&mut record, b);
-            } else if b == self.delimiter {
-                record.end_field()?;
-            } else if b == b'\n' || b == b'\r' {
-                record.end_field()?;
-                if b == b'\r' {
-                    self.skip(b'\n');
-                }
+            } else if self.unquoted(&mut record, b)? {
                 return Ok(Some(record.fields));
-            } else if b == b'"' && record.field.is_empty() && !record.closed {
-                record.quoted = true;
-                record.inside = true;
-            } else if record.closed || b == b'"' {
-                return Err(error("Unexpected text after CSV closing quote"));
-            } else {
-                record.field.push(b);
             }
         }
         if record.inside {
@@ -93,6 +80,26 @@ impl Csv {
             self.bytes.next();
         }
         found
+    }
+    /// Outside quotes; true when `b` ends the record.
+    fn unquoted(&mut self, record: &mut Record, b: u8) -> Result<bool, Failure> {
+        let ends_record = b == b'\n' || b == b'\r';
+        if ends_record || b == self.delimiter {
+            record.end_field()?;
+            if b == b'\r' {
+                self.skip(b'\n');
+            }
+            return Ok(ends_record);
+        }
+        if b == b'"' && record.field.is_empty() && !record.closed {
+            record.quoted = true;
+            record.inside = true;
+        } else if record.closed || b == b'"' {
+            return Err(error("Unexpected text after CSV closing quote"));
+        } else {
+            record.field.push(b);
+        }
+        Ok(false)
     }
     /// Inside quotes, `""` is a literal quote and a lone `"` closes the field.
     fn quoted(&mut self, record: &mut Record, b: u8) {
@@ -192,11 +199,9 @@ impl Source {
         if header["format"] != "tursobench-typed-json" || header["version"] != 1 {
             return Err(error("Unsupported typed JSON format/version"));
         }
-        let rows = data["rows"]
-            .take()
-            .as_array()
-            .cloned()
-            .ok_or_else(|| error("Missing typed JSON rows"))?;
+        let Json::Array(rows) = data["rows"].take() else {
+            return Err(error("Missing typed JSON rows"));
+        };
         if data["end"]["rows"].as_u64() != Some(rows.len() as u64) {
             return Err(error("Typed JSON end count mismatch"));
         }

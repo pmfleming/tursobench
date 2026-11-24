@@ -27,16 +27,14 @@ fn validate(payload: &str) -> Result<(), String> {
     }
     Ok(())
 }
-async fn scalar(c: &Connection, sql: &str) -> Result<i64, String> {
+/// The first column of `sql`'s first row; `missing` when there is none.
+async fn first_value(c: &Connection, sql: &str, missing: &str) -> Result<Value, String> {
     let mut rows = c.query(sql, ()).await.map_err(error)?;
-    match rows
-        .next()
-        .await
-        .map_err(error)?
-        .ok_or("Missing preferences metadata")?
-        .get_value(0)
-        .map_err(error)?
-    {
+    let row = rows.next().await.map_err(error)?.ok_or(missing)?;
+    row.get_value(0).map_err(error)
+}
+async fn scalar(c: &Connection, sql: &str) -> Result<i64, String> {
+    match first_value(c, sql, "Missing preferences metadata").await? {
         Value::Integer(n) => Ok(n),
         _ => Err("Invalid preferences metadata".into()),
     }
@@ -65,18 +63,8 @@ async fn read(c: &Connection) -> Result<Option<String>, String> {
         _ => return Err("Preferences exceed 2 MiB".into()),
     }
     drop(rows);
-    let mut rows = c
-        .query("SELECT payload FROM app_preferences WHERE id=1", ())
-        .await
-        .map_err(error)?;
-    match rows
-        .next()
-        .await
-        .map_err(error)?
-        .ok_or("Preferences changed during read")?
-        .get_value(0)
-        .map_err(error)?
-    {
+    let payload = "SELECT payload FROM app_preferences WHERE id=1";
+    match first_value(c, payload, "Preferences changed during read").await? {
         Value::Text(payload) => {
             validate(&payload)?;
             Ok(Some(payload))
@@ -217,7 +205,8 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{MAX_BYTES, Store};
+    use turso::Value;
     #[test]
     fn commits_reopen_and_preserve_previous_snapshot() {
         let dir = tempfile::tempdir().unwrap();
@@ -240,10 +229,9 @@ mod tests {
                 .is_err()
         );
         drop(s);
-        assert_eq!(
-            Store::open(&path).unwrap().payload(),
-            Some(r#"{"font_size":18}"#)
-        );
+        let saved = Some(r#"{"font_size":18}"#);
+        assert_eq!(Store::read_file(&path).unwrap().as_deref(), saved);
+        assert_eq!(Store::open(&path).unwrap().payload(), saved);
     }
     #[test]
     fn runtime_corruption_and_external_changes_cannot_be_overwritten() {

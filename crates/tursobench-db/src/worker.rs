@@ -11,7 +11,7 @@ mod transfer;
 use crate::{
     Operation, Request,
     connection::{self, Engine, rollback, state},
-    edits, inspection,
+    edits,
     observe::Watch,
     sql,
 };
@@ -152,10 +152,8 @@ pub(super) async fn worker(
     drop(browse);
     drop(editor);
     drop(db);
-    if let Some((request, destination)) = backup {
-        let outcome =
-            crate::transfers::publish_backup(&source_path, &destination, settings, &cleanup).await;
-        output.finish(request, EventKind::TransferFinished(outcome));
+    if let Some(backup) = backup {
+        transfer::publish_backup(&output, backup, &source_path, settings, &cleanup).await;
     }
     // Closed acknowledges that both native and admission locks are released;
     // a user may immediately reopen in another access mode after this event.
@@ -182,27 +180,11 @@ impl<'a> Worker<'a> {
     /// once the engine has closed.
     async fn serve(
         &mut self,
-        ticket: Ticket,
+        session: Ticket,
         rx: &Receiver<Request>,
         watch: &mut Watch,
     ) -> Option<(Ticket, PathBuf)> {
-        while !self.output.closing() {
-            match watch.poll(self.browse).await {
-                Ok(Some(schema)) => self.output.invalidated(ticket, schema),
-                Ok(None) => {}
-                Err(e) => {
-                    self.output.send(ticket, EventKind::Failed(e));
-                    break;
-                }
-            }
-            let Request { ticket, operation } = match watch.receive(rx) {
-                Ok(request) => request,
-                Err(RecvTimeoutError::Timeout) => continue,
-                Err(RecvTimeoutError::Disconnected) => break,
-            };
-            if self.output.closing() {
-                break;
-            }
+        while let Some(Request { ticket, operation }) = self.next(session, rx, watch).await {
             let event = match operation {
                 Operation::BackupAndClose(destination) => {
                     match self.prepare_backup(&destination).await {
@@ -214,7 +196,15 @@ impl<'a> Worker<'a> {
                     }
                 }
                 Operation::Assistant { tool, reply } => {
-                    let answer = self.assistant(ticket, tool).await;
+                    let answer = tool
+                        .run(
+                            &mut self.assistant,
+                            self.db,
+                            self.settings,
+                            ticket.request,
+                            &self.output.discard,
+                        )
+                        .await;
                     self.output.discard.finished(ticket.request);
                     // The caller may have timed out and gone; that is not an error here.
                     let _ = reply.try_send(answer);
@@ -230,16 +220,30 @@ impl<'a> Worker<'a> {
         }
         None
     }
-    async fn assistant(
-        &mut self,
-        ticket: Ticket,
-        tool: crate::assistant::Tool,
-    ) -> crate::assistant::Reply {
-        if self.assistant.is_none() {
-            self.assistant = Some(crate::assistant::connect(self.db, self.settings).await?);
+    /// The next request, reporting external changes while waiting; `None`
+    /// once the session closes or can no longer watch for changes.
+    async fn next(
+        &self,
+        session: Ticket,
+        rx: &Receiver<Request>,
+        watch: &mut Watch,
+    ) -> Option<Request> {
+        while !self.output.closing() {
+            match watch.poll(self.browse).await {
+                Ok(Some(schema)) => self.output.invalidated(session, schema),
+                Ok(None) => {}
+                Err(e) => {
+                    self.output.send(session, EventKind::Failed(e));
+                    return None;
+                }
+            }
+            match watch.receive(rx) {
+                Ok(request) => return (!self.output.closing()).then_some(request),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return None,
+            }
         }
-        let connection = self.assistant.as_ref().expect("connected above");
-        crate::assistant::run(connection, tool, ticket.request, &self.output.discard).await
+        None
     }
     /// The persistent editor's state, which every result reports, browse reads included.
     fn transaction(&self) -> TransactionState {
@@ -314,8 +318,7 @@ impl<'a> Worker<'a> {
             }
             Operation::Profile(request) => self.profile(&request).await?,
             Operation::Diagnostic(kind) => {
-                let sql = inspection::diagnostic(self.browse, kind).await?;
-                Query::read(self.browse, sql, vec![].into())
+                Query::read(self.browse, kind.query(self.browse).await?, vec![].into())
             }
             Operation::Count(name) => {
                 let sql = format!(
@@ -380,12 +383,8 @@ impl<'a> Worker<'a> {
                     .await
             }
             Operation::Admin(change) => self.admin(ticket, change).await,
-            Operation::Diagram => inspection::diagram(self.browse)
-                .await
-                .map(EventKind::Diagram),
-            Operation::Inspect(name) => inspection::inspect(self.browse, &name)
-                .await
-                .map(EventKind::Inspection),
+            Operation::Diagram => self.diagram().await,
+            Operation::Inspect(name) => self.inspect(&name).await,
             Operation::CommitEdits(batch) => {
                 let commit = edits::commit(self.db, self.access, self.settings, batch);
                 let outcome = edits::guarded(&mut self.uncertain, commit).await;
@@ -405,8 +404,7 @@ impl<'a> Worker<'a> {
                 format,
                 kinds,
                 null_marker,
-            } => crate::imports::preview(&path, format, kinds, null_marker)
-                .map(EventKind::ImportPreview),
+            } => transfer::preview_import(&path, format, kinds, null_marker),
             Operation::Import(spec) => self.import(ticket, spec).await,
             Operation::ExportTable { path, spec } => self.export_table(ticket, path, spec).await,
             Operation::ExportQuery {

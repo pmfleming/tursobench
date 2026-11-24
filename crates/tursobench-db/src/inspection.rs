@@ -3,7 +3,7 @@
 use crate::{
     Diagnostic,
     browse::describe,
-    connection::{failure, from_engine},
+    connection::{failure, from_engine, text_column},
 };
 use turso::Connection;
 use tursobench_core::{
@@ -279,9 +279,7 @@ async fn table_names(
     let mut rows = c.query(sql, ()).await.map_err(failure)?;
     let (mut names, mut bytes) = (Vec::new(), 0);
     while let Some(row) = rows.next().await.map_err(failure)? {
-        let turso::Value::Text(name) = row.get_value(0).map_err(failure)? else {
-            return Err(Failure::input("Unexpected schema name"));
-        };
+        let name = text_column(&row, 0, "schema name")?;
         bytes += name.len();
         if names.len() == max || bytes > max_bytes {
             return Ok((names, true));
@@ -372,13 +370,57 @@ pub(crate) async fn diagram(c: &Connection) -> Result<SchemaDiagram, Failure> {
     Ok(graph)
 }
 
-/// The SQL for `kind`; foreign keys are checked by a query built from supported
-/// native metadata rather than `PRAGMA foreign_key_check`.
-pub(crate) async fn diagnostic(c: &Connection, kind: Diagnostic) -> Result<String, Failure> {
-    match kind {
-        Diagnostic::ForeignKeys => foreign_key_check(c).await,
-        kind => Ok(kind.sql().into()),
+impl Diagnostic {
+    /// This check's SQL; foreign keys are checked by a query built from supported
+    /// native metadata rather than `PRAGMA foreign_key_check`.
+    pub(crate) async fn query(self, c: &Connection) -> Result<String, Failure> {
+        match self {
+            Self::ForeignKeys => foreign_key_check(c).await,
+            kind => Ok(kind.sql().into()),
+        }
     }
+}
+/// Counts `child` rows whose non-NULL `key` has no `parent` row.
+fn key_check(
+    child: &str,
+    key: &ForeignKey,
+    parent: &Table,
+    checked_tables: usize,
+) -> Result<String, Failure> {
+    let mut present = Vec::new();
+    let mut matches = Vec::new();
+    for (source, target) in &key.columns {
+        let target = target
+            .as_ref()
+            .filter(|target| {
+                parent
+                    .columns
+                    .iter()
+                    .any(|c| c.name.eq_ignore_ascii_case(target))
+            })
+            .ok_or_else(|| Failure::input("Unresolved parent key; validation incomplete"))?;
+        present.push(format!("c.{} IS NOT NULL", quote_identifier(source)));
+        // Parent affinity and collation govern FK comparisons.
+        matches.push(format!(
+            "p.{} = c.{}",
+            quote_identifier(target),
+            quote_identifier(source)
+        ));
+    }
+    if present.is_empty() {
+        return Err(Failure::input("Empty foreign key; validation incomplete"));
+    }
+    let literal = |s: &str| format!("'{}'", s.replace('\'', "''"));
+    Ok(format!(
+        "SELECT {} AS child_table, {} AS parent_table, {} AS foreign_key_id, count(*) AS violations, {checked_tables} AS checked_tables FROM {} AS c WHERE {} AND NOT EXISTS (SELECT 1 FROM {} AS p WHERE {})",
+        literal(child),
+        literal(&key.target),
+        key.id,
+        quote_identifier(child),
+        present.join(" AND "),
+        quote_identifier(&key.target),
+        matches.join(" AND ")
+    ))
 }
 async fn foreign_key_check(c: &Connection) -> Result<String, Failure> {
     let (names, truncated) = table_names(c, 1000, 1024 * 1024).await?;
@@ -392,34 +434,7 @@ async fn foreign_key_check(c: &Connection) -> Result<String, Failure> {
         let info = inspect(c, name).await?;
         for key in &info.foreign_keys {
             let parent = describe(c, &key.target).await?;
-            let mut present = Vec::new();
-            let mut matches = Vec::new();
-            for (source, target) in &key.columns {
-                let target = target
-                    .as_ref()
-                    .filter(|target| {
-                        parent
-                            .columns
-                            .iter()
-                            .any(|c| c.name.eq_ignore_ascii_case(target))
-                    })
-                    .ok_or_else(|| {
-                        Failure::input("Unresolved parent key; validation incomplete")
-                    })?;
-                present.push(format!("c.{} IS NOT NULL", quote_identifier(source)));
-                // Parent affinity and collation govern FK comparisons.
-                matches.push(format!(
-                    "p.{} = c.{}",
-                    quote_identifier(target),
-                    quote_identifier(source)
-                ));
-            }
-            if present.is_empty() {
-                return Err(Failure::input("Empty foreign key; validation incomplete"));
-            }
-            let literal = |s: &str| format!("'{}'", s.replace('\'', "''"));
-            checks.push(format!("SELECT {} AS child_table, {} AS parent_table, {} AS foreign_key_id, count(*) AS violations, {} AS checked_tables FROM {} AS c WHERE {} AND NOT EXISTS (SELECT 1 FROM {} AS p WHERE {})",
-                literal(name), literal(&key.target), key.id, names.len(), quote_identifier(name), present.join(" AND "), quote_identifier(&key.target), matches.join(" AND ")));
+            checks.push(key_check(name, key, &parent, names.len())?);
             if checks.len() > 256 || checks.iter().map(String::len).sum::<usize>() > 1024 * 1024 {
                 return Err(Failure::input(
                     "Foreign keys exceed validation budget; validation incomplete",

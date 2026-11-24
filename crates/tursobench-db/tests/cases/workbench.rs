@@ -57,28 +57,6 @@ fn catalog_preserves_large_definitions_and_more_than_one_thousand_indexes() {
 }
 
 #[test]
-fn readonly_vacuum_into_and_attach_do_not_create_files() {
-    let (dir, path) = common::database("source.db", &["CREATE TABLE t(id INTEGER PRIMARY KEY)"]);
-    let files = common::Files::record(dir.path());
-    let mut client = Client::open(&path, Access::ReadOnly);
-    for sql in [
-        format!("VACUUM INTO '{}'", dir.path().join("copy.db").display()),
-        format!(
-            "ATTACH '{}' AS other",
-            dir.path().join("attached.db").display()
-        ),
-    ] {
-        let result = client.query(&sql, vec![]);
-        assert_eq!(
-            result.completion.unwrap().error.unwrap().kind,
-            ErrorKind::ReadOnly
-        );
-    }
-    client.close();
-    assert!(files.unchanged());
-}
-
-#[test]
 fn seek_paging_grouped_filters_counts_and_reference_pages_are_complete() {
     let (_dir, path) = common::database(
         "paging.db",
@@ -91,12 +69,7 @@ fn seek_paging_grouped_filters_counts_and_reference_pages_are_complete() {
         ],
     );
     let mut client = Client::open(&path, Access::ReadOnly);
-    let key = client
-        .run(Operation::Inspect("c".into()))
-        .info
-        .unwrap()
-        .foreign_keys
-        .remove(0);
+    let key = client.inspect("c").foreign_keys.remove(0);
     let legacy = client
         .run(Operation::References {
             table: "c".into(),
@@ -195,14 +168,8 @@ fn large_values_keep_rows_and_save_exact_original_bytes() {
         .is_some()
     );
     assert_eq!(std::fs::read(&destination).unwrap(), vec![b'0'; 100000]);
-    assert!(
-        c.run(Operation::SaveValue {
-            handle,
-            path: destination
-        })
-        .failure
-        .is_some()
-    );
+    let path = destination;
+    assert!(c.refuses(Operation::SaveValue { handle, path }));
     let second = c.browse("t", 100).1;
     assert_eq!(second.rows.len(), 51);
     assert_eq!(second.rows[0][0], Value::Integer(101));
@@ -252,8 +219,7 @@ fn scripts_report_partial_success_and_atomic_rollback() {
     ));
     assert!(reply.result.completion.unwrap().error.is_none());
     assert_eq!(reply.script[1].rows, vec![vec![Value::Integer(7)]]);
-    let rejected = c.run(common::script("BEGIN; INSERT INTO t VALUES(8)", true));
-    assert!(rejected.failure.is_some());
+    assert!(c.refuses(common::script("BEGIN; INSERT INTO t VALUES(8)", true)));
     c.close();
 }
 
@@ -262,9 +228,15 @@ fn native_metadata_related_lookup_and_diagnostics_preserve_readonly_bytes() {
     let (dir, path) = fixture("workbench.db");
     let files = common::Files::record(dir.path());
     let mut client = Client::open(&path, Access::ReadOnly);
-    let reply = client.run(Operation::Inspect("child".into()));
-    assert!(reply.failure.is_none(), "{:?}", reply.failure);
-    let info = reply.info.unwrap();
+    // Neither may create a file beside a read-only database.
+    let beside = |file: &str| dir.path().join(file).display().to_string();
+    for sql in [
+        format!("VACUUM INTO '{}'", beside("copy.db")),
+        format!("ATTACH '{}' AS other", beside("attached.db")),
+    ] {
+        assert_eq!(client.failure(&sql).unwrap().kind, ErrorKind::ReadOnly);
+    }
+    let info = client.inspect("child");
     assert_eq!(info.table.columns.len(), 4);
     assert!(info.indexes.iter().any(|i| i.name == "child_note_idx"
         && i.partial
@@ -272,12 +244,7 @@ fn native_metadata_related_lookup_and_diagnostics_preserve_readonly_bytes() {
     assert!(info.indexes.iter().any(|i| i.name == "child_fts"));
     assert_eq!(info.foreign_keys.len(), 1);
     assert_eq!(info.foreign_keys[0].on_delete, "CASCADE");
-    assert!(
-        client
-            .run(Operation::Inspect("x".repeat(64 * 1024 + 1)))
-            .failure
-            .is_some()
-    );
+    assert!(client.refuses(Operation::Inspect("x".repeat(64 * 1024 + 1))));
     assert_eq!(
         info.foreign_keys[0].columns,
         vec![
@@ -300,26 +267,18 @@ fn native_metadata_related_lookup_and_diagnostics_preserve_readonly_bytes() {
             Value::Text("original".into())
         ]]
     );
-    assert!(
-        client
-            .run(Operation::Lookup {
-                table: "parent".into(),
-                keys: vec![("a\" OR 1=1 --".into(), Value::Integer(7))]
-            })
-            .failure
-            .is_some()
-    );
+    assert!(client.refuses(Operation::Lookup {
+        table: "parent".into(),
+        keys: vec![("a\" OR 1=1 --".into(), Value::Integer(7))]
+    }));
     assert_eq!(
         client.run(Operation::Count("child".into())).result.rows,
         vec![vec![Value::Integer(2)]]
     );
     for diagnostic in Diagnostic::ALL {
-        let result = client.run(Operation::Diagnostic(diagnostic)).result;
-        assert!(
-            result.completion.as_ref().unwrap().error.is_none(),
-            "{diagnostic:?}: {:?}",
-            result.completion
-        );
+        let reply = client.run(Operation::Diagnostic(diagnostic));
+        reply.assert_succeeded();
+        let result = reply.result;
         if diagnostic == Diagnostic::Integrity {
             assert_eq!(result.rows, vec![vec![Value::Text("ok".into())]]);
         }
@@ -331,9 +290,17 @@ fn native_metadata_related_lookup_and_diagnostics_preserve_readonly_bytes() {
     assert!(files.unchanged());
 }
 #[test]
-fn diagram_includes_isolated_quoted_cyclic_and_composite_tables_without_writes() {
+fn diagram_reads_committed_isolated_quoted_cyclic_and_composite_tables_within_budget() {
     let (dir, path) = fixture("diagram.db");
     let mut client = Client::open(&path, Access::ReadWrite);
+    client.sql("BEGIN");
+    client.sql("CREATE TABLE pending_schema(id INTEGER PRIMARY KEY)");
+    client.sql("ALTER TABLE child ADD COLUMN pending_column TEXT");
+    let graph = client.diagram();
+    assert!(!graph.tables.iter().any(|t| t.name == "pending_schema"));
+    let child = graph.tables.iter().find(|t| t.name == "child").unwrap();
+    assert_eq!(child.inspection.as_ref().unwrap().table.columns.len(), 4);
+    client.sql("ROLLBACK");
     for sql in [
         "CREATE TABLE isolated(value TEXT)",
         "CREATE TABLE sqlitex_visible(id INTEGER PRIMARY KEY)",
@@ -407,31 +374,7 @@ fn diagram_includes_isolated_quoted_cyclic_and_composite_tables_without_writes()
     );
     client.close();
     assert!(files.unchanged());
-}
-#[test]
-fn diagram_reads_committed_schema_within_its_discovery_budget() {
-    let (_dir, path) = fixture("snapshot.db");
     let mut client = Client::open(&path, Access::ReadWrite);
-    client.sql("BEGIN");
-    client.sql("CREATE TABLE pending_schema(id INTEGER PRIMARY KEY)");
-    client.sql("ALTER TABLE child ADD COLUMN pending_column TEXT");
-    let graph = client.diagram();
-    assert!(!graph.tables.iter().any(|t| t.name == "pending_schema"));
-    assert_eq!(
-        graph
-            .tables
-            .iter()
-            .find(|t| t.name == "child")
-            .unwrap()
-            .inspection
-            .as_ref()
-            .unwrap()
-            .table
-            .columns
-            .len(),
-        4
-    );
-    client.sql("ROLLBACK");
     client.sql("BEGIN");
     for i in 0..511 {
         client.sql(&format!("CREATE TABLE t{i:04}(id INTEGER PRIMARY KEY)"));
@@ -455,20 +398,14 @@ fn named_parameters_and_explain_are_bound_and_non_mutating() {
         ),
         ("$id".into(), Value::Integer(7)),
     ]));
-    let result = client
-        .run(Operation::ExecuteBound {
-            sql: "SELECT :payload,:payload,$id".into(),
-            parameters,
-            budget: Budget::default(),
-        })
-        .result;
-    assert!(
-        result.completion.as_ref().unwrap().error.is_none(),
-        "{:?}",
-        result.completion
-    );
+    let reply = client.run(Operation::ExecuteBound {
+        sql: "SELECT :payload,:payload,$id".into(),
+        parameters,
+        budget: Budget::default(),
+    });
+    reply.assert_succeeded();
     assert_eq!(
-        result.rows[0],
+        reply.result.rows[0],
         vec![
             Value::Text("'; DELETE FROM parent; --".into()),
             Value::Text("'; DELETE FROM parent; --".into()),
@@ -498,12 +435,7 @@ fn named_parameters_and_explain_are_bound_and_non_mutating() {
             parameters: Bindings::Named(BTreeMap::from([(":id".into(), Value::Integer(1))])),
             bytecode,
         });
-        assert!(reply.failure.is_none());
-        assert!(
-            reply.result.completion.as_ref().unwrap().error.is_none(),
-            "{:?}",
-            reply.result.completion
-        );
+        reply.assert_succeeded();
         assert!(!reply.result.rows.is_empty());
         assert_eq!(reply.result.completion.unwrap().changed, 0);
     }
@@ -514,16 +446,11 @@ fn named_parameters_and_explain_are_bound_and_non_mutating() {
         "CREATE TABLE unwanted(x)",
         "DELETE FROM child; DELETE FROM parent",
     ] {
-        assert!(
-            client
-                .run(Operation::Explain {
-                    sql: sql.into(),
-                    parameters: vec![].into(),
-                    bytecode: true
-                })
-                .failure
-                .is_some()
-        );
+        assert!(client.refuses(Operation::Explain {
+            sql: sql.into(),
+            parameters: vec![].into(),
+            bytecode: true
+        }));
     }
     let missing = client.run(Operation::ExecuteBound {
         sql: "DELETE FROM child WHERE id=:id".into(),
@@ -647,7 +574,7 @@ fn foreign_keys_use_parent_affinity_and_collation_in_checks_and_references() {
     let checked_tables = Value::Integer(2);
     assert_eq!(check.result.rows.len(), 1);
     assert_eq!(check.result.rows[0][3..5], [violations, checked_tables]);
-    let info = c.run(Operation::Inspect("child".into())).info.unwrap();
+    let info = c.inspect("child");
     let key = info.foreign_keys[0].clone();
     let values = vec![Value::Integer(7), Value::Text("Alpha".into())];
     let reply = c.run(Operation::References {
@@ -698,11 +625,11 @@ fn suggested_index_executes_and_is_not_suggested_twice() {
         ],
     );
     let mut client = Client::open(&path, Access::ReadWrite);
-    let info = client.run(Operation::Inspect("items".into())).info.unwrap();
+    let info = client.inspect("items");
     let sql = "SELECT * FROM items WHERE label = ?1";
     let draft = tursobench_db::advice::index_draft(sql, &info).unwrap();
     client.sql(&draft);
-    let info = client.run(Operation::Inspect("items".into())).info.unwrap();
+    let info = client.inspect("items");
     assert!(tursobench_db::advice::index_draft(sql, &info).is_none());
     let plan = client.run(Operation::Explain {
         sql: sql.into(),
@@ -754,14 +681,11 @@ fn profiles_exact_sampled_and_keyless_values_without_writing() {
         }
     }
     assert!(
-        client
-            .run(Operation::Profile(tursobench_db::profile::Request {
-                table: "items".into(),
-                column: Some("missing".into()),
-                sample_rows: None
-            }))
-            .failure
-            .is_some()
+        client.refuses(Operation::Profile(tursobench_db::profile::Request {
+            table: "items".into(),
+            column: Some("missing".into()),
+            sample_rows: None
+        }))
     );
     client.close();
     assert!(files.unchanged());
@@ -782,12 +706,7 @@ fn admin_settings_readback_is_scoped_and_readonly_changes_are_rejected() {
             .iter()
             .any(|r| r[0] == Value::Text("Main file bytes".into()))
     );
-    assert!(
-        client
-            .run(Operation::Admin(Some(Change::EditorBusyTimeout(123))))
-            .failure
-            .is_some()
-    );
+    assert!(client.refuses(Operation::Admin(Some(Change::EditorBusyTimeout(123)))));
     client.close();
     assert!(files.unchanged());
     let mut client = Client::open(&path, Access::ReadWrite);
@@ -801,25 +720,10 @@ fn admin_settings_readback_is_scoped_and_readonly_changes_are_rejected() {
         .collect();
     assert_eq!(timeouts[0][2], Value::Integer(123));
     assert_ne!(timeouts[1][2], Value::Integer(123));
-    assert!(
-        client
-            .run(Operation::Admin(Some(Change::EditorCacheKiB(1024))))
-            .failure
-            .is_none()
-    );
-    assert!(
-        client
-            .run(Operation::Admin(Some(Change::EditorCacheKiB(0))))
-            .failure
-            .is_some()
-    );
+    assert!(!client.refuses(Operation::Admin(Some(Change::EditorCacheKiB(1024)))));
+    assert!(client.refuses(Operation::Admin(Some(Change::EditorCacheKiB(0)))));
     client.sql("BEGIN");
-    assert!(
-        client
-            .run(Operation::Admin(Some(Change::EditorBusyTimeout(99))))
-            .failure
-            .is_some()
-    );
+    assert!(client.refuses(Operation::Admin(Some(Change::EditorBusyTimeout(99)))));
     client.sql("ROLLBACK");
     client.close();
 }

@@ -3,18 +3,17 @@ use tursobench_core::{
     Access, Bindings, Browse, Budget, ConnectionSettings, DraftBatch, ErrorKind, Event, Failure,
     Ticket, Value,
 };
-mod access;
-mod browse;
-mod observe;
-pub use access::{ProcessUsage, check_access, processes_using};
+pub mod access;
 pub mod admin;
 pub mod advice;
 pub mod assistant;
+mod browse;
 pub mod completion;
 mod connection;
 mod edits;
 mod imports;
 mod inspection;
+mod observe;
 pub mod preferences;
 pub mod profile;
 pub mod schema_compare;
@@ -22,7 +21,6 @@ pub mod sql;
 mod transfers;
 mod values;
 mod worker;
-pub use sql::validate_single;
 use std::{
     path::PathBuf,
     sync::{
@@ -445,7 +443,12 @@ impl Drop for Session {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Operation, Request, Session};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
 
     #[test]
     fn close_wakes_an_idle_receiver_once_and_never_blocks_on_a_full_queue() {

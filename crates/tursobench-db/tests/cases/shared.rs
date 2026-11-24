@@ -150,13 +150,19 @@ fn fixture() -> (tempfile::TempDir, std::path::PathBuf) {
 }
 
 #[test]
-fn coordinated_reader_tracks_commits_checkpoints_restart_and_preserves_source_bytes() {
+fn coordinated_reader_tracks_commits_checkpoints_fts_restart_and_preserves_source_bytes() {
     let (_dir, path) = fixture();
     let (mut writer, ready) = Peer::start(&path, "writer");
     assert_eq!(ready, "READY|true");
+    writer.ok("CREATE INDEX search ON items USING fts(value)");
     let (mut reader, ready) = Peer::start(&path, "reader");
     assert_eq!(ready, "READY|true");
     assert!(reader.ok("SELECT value FROM items").contains("initial"));
+    let found = |reader: &mut Peer, term: &str| {
+        let sql = format!("SELECT id FROM items WHERE fts_match(value,'{term}')");
+        reader.ok(&sql).contains("Integer(1)")
+    };
+    assert!(found(&mut reader, "initial"));
     for i in 0..12 {
         writer.ok(&format!("UPDATE items SET value='commit{i}'"));
         assert!(
@@ -164,6 +170,8 @@ fn coordinated_reader_tracks_commits_checkpoints_restart_and_preserves_source_by
                 .ok("SELECT value FROM items")
                 .contains(&format!("commit{i}"))
         );
+        assert!(found(&mut reader, &format!("commit{i}")));
+        assert!(!found(&mut reader, "initial"));
         writer.ok("PRAGMA wal_checkpoint(TRUNCATE)");
         assert!(
             reader
@@ -194,43 +202,36 @@ fn coordinated_reader_tracks_commits_checkpoints_restart_and_preserves_source_by
 }
 
 #[test]
-fn readonly_flag_is_not_proof_of_coordination() {
-    let (_dir, path) = fixture();
-    let (_reader, ready) = Peer::start(&path, "reader");
-    assert_eq!(ready, "READY|false");
-}
-
-#[test]
 fn access_preflight_reports_locks_without_writing_or_interfering_with_shared_writers() {
     use tursobench_core::{Access, ErrorKind};
     let (dir, path) = fixture();
     let files = common::Files::record(dir.path());
-    assert!(tursobench_db::check_access(&path).is_ok());
+    assert!(tursobench_db::access::check_access(&path).is_ok());
     assert!(!dir.path().join("shared.db-tshm").exists());
     assert!(files.unchanged());
     {
         let (legacy, _) = Peer::start(&path, "legacy");
-        let error = tursobench_db::check_access(&path).unwrap_err();
+        let error = tursobench_db::access::check_access(&path).unwrap_err();
         assert_eq!(error.kind, ErrorKind::Busy);
         assert!(error.message.contains(&legacy.child.id().to_string()));
     }
-    assert!(tursobench_db::check_access(&path).is_ok());
+    assert!(tursobench_db::access::check_access(&path).is_ok());
     {
         let (mut writer, _) = Peer::start(&path, "writer");
         writer.ok("BEGIN IMMEDIATE");
         writer.ok("UPDATE items SET value='pending'");
         for _ in 0..8 {
-            assert!(tursobench_db::check_access(&path).is_ok());
+            assert!(tursobench_db::access::check_access(&path).is_ok());
         }
         writer.ok("ROLLBACK");
     }
     let app = common::Client::open(&path, Access::ReadOnly);
     assert_eq!(
-        tursobench_db::check_access(&path).unwrap_err().kind,
+        tursobench_db::access::check_access(&path).unwrap_err().kind,
         ErrorKind::Busy
     );
     app.close();
-    assert!(tursobench_db::check_access(&path).is_ok());
+    assert!(tursobench_db::access::check_access(&path).is_ok());
 }
 
 #[test]
@@ -238,7 +239,7 @@ fn preflight_preserves_existing_process_owned_posix_locks() {
     let (_dir, path) = fixture();
     let db = common::block_on(turso::Builder::new_local(path.to_str().unwrap()).build()).unwrap();
     assert_eq!(
-        tursobench_db::check_access(&path).unwrap_err().kind,
+        tursobench_db::access::check_access(&path).unwrap_err().kind,
         tursobench_core::ErrorKind::Busy
     );
     let (_legacy, reply) = Peer::start(&path, "legacy");
@@ -247,7 +248,7 @@ fn preflight_preserves_existing_process_owned_posix_locks() {
         "preflight released the existing POSIX lock: {reply}"
     );
     drop(db);
-    assert!(tursobench_db::check_access(&path).is_ok());
+    assert!(tursobench_db::access::check_access(&path).is_ok());
 }
 
 #[test]
@@ -292,7 +293,7 @@ fn application_admission_blocks_legacy_writers_and_reserves_readonly_fallback() 
     let (_dir, path) = fixture();
     {
         let (_legacy, _) = Peer::start(&path, "legacy");
-        let usage = tursobench_db::processes_using(&path);
+        let usage = tursobench_db::access::processes_using(&path);
         assert!(!usage.applications.is_empty() || usage.incomplete);
         for access in [Access::ReadOnly, Access::ReadWrite] {
             let (_session, opened) = common::start(&path, access);
@@ -338,6 +339,10 @@ fn application_admission_blocks_legacy_writers_and_reserves_readonly_fallback() 
 #[test]
 fn engine_mixed_mode_open_probe() {
     let (_dir, path) = fixture();
+    // A read-only open alone is not proof of coordination.
+    let (reader, ready) = Peer::start(&path, "reader");
+    assert_eq!(ready, "READY|false");
+    drop(reader);
     let (_legacy, ready) = Peer::start(&path, "legacy");
     assert_eq!(ready, "READY|false");
     let (_shared, reply) = Peer::start(&path, "writer");
@@ -369,34 +374,8 @@ fn external_commits_notify_data_and_schema_without_changing_manual_snapshots() {
 }
 
 #[test]
-fn coordinated_native_fts_reads_follow_external_commits() {
-    let (_dir, path) = fixture();
-    let (mut writer, ready) = Peer::start(&path, "writer");
-    assert_eq!(ready, "READY|true");
-    writer.ok("CREATE INDEX search ON items USING fts(value)");
-    let (mut reader, ready) = Peer::start(&path, "reader");
-    assert_eq!(ready, "READY|true");
-    assert!(
-        reader
-            .ok("SELECT id FROM items WHERE fts_match(value,'initial')")
-            .contains("Integer(1)")
-    );
-    writer.ok("UPDATE items SET value='replacement'");
-    assert!(
-        reader
-            .ok("SELECT id FROM items WHERE fts_match(value,'replacement')")
-            .contains("Integer(1)")
-    );
-    assert!(
-        !reader
-            .ok("SELECT id FROM items WHERE fts_match(value,'initial')")
-            .contains("Integer(1)")
-    );
-}
-
-#[test]
 fn shared_edits_report_busy_conflicts_and_refuse_live_peer_backup() {
-    use tursobench_core::{Access, CommitOutcome, Edit, ErrorKind, EventKind, Value};
+    use tursobench_core::{Access, Edit, ErrorKind, EventKind, Value};
     use tursobench_db::Operation;
     let (dir, path) = fixture();
     let (mut writer, _) = Peer::start(&path, "writer");
@@ -411,8 +390,9 @@ fn shared_edits_report_busy_conflicts_and_refuse_live_peer_backup() {
         original: original.clone(),
         changes: vec![(1, Value::Text("draft".into()))],
     };
-    assert!(
-        matches!(app.commit(table.clone(), vec![edit.clone()]), CommitOutcome::Rejected(e) if e.kind == ErrorKind::Busy)
+    common::rejected(
+        &app.commit(table.clone(), vec![edit.clone()]),
+        ErrorKind::Busy,
     );
     let reply = app.run(common::script("UPDATE items SET value='atomic'", true));
     assert_eq!(reply.failure.unwrap().kind, ErrorKind::Busy);
@@ -435,11 +415,9 @@ fn shared_edits_report_busy_conflicts_and_refuse_live_peer_backup() {
     writer.ok("ROLLBACK");
     assert_eq!(item(&mut app), "initial");
     writer.ok("UPDATE items SET value='external'");
-    assert!(
-        matches!(app.commit(table, vec![edit]), CommitOutcome::Rejected(e) if e.kind == ErrorKind::Conflict)
-    );
+    common::rejected(&app.commit(table, vec![edit]), ErrorKind::Conflict);
     let committed = app.update_first("items", vec![(1, Value::Text("committed".into()))]);
-    assert!(matches!(committed, CommitOutcome::Committed { .. }));
+    common::committed(&committed, None);
     assert!(writer.ok("SELECT value FROM items").contains("committed"));
     writer.ok("BEGIN");
     writer.ok("SELECT * FROM items");

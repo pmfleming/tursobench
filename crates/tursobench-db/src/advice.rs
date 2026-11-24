@@ -110,7 +110,8 @@ pub fn index_draft(sql: &str, info: &Inspection) -> Option<String> {
 }
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::index_draft;
+    use tursobench_core::Inspection;
     #[test]
     fn drafts_are_quoted_and_existing_or_ambiguous_indexes_are_not_suggested() {
         let mut info = Inspection {
