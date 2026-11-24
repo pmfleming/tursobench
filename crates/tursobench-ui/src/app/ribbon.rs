@@ -269,7 +269,7 @@ impl App {
         };
         let response = ui
             .add_enabled_ui(self.action_enabled(action), |ui| match action {
-                Action::RunAll => self.run_all_menu(ui, true),
+                Action::RunAll => self.run_all_menu(ui),
                 Action::Zoom100 => zoom_button(ui, self.database.ui.diagram.camera.zoom(), label),
                 Action::Run => icons::ribbon_button(ui, icon, label, action.shortcut(), selected)
                     .on_hover_text("Selection or current statement · Ctrl Shift Enter"),

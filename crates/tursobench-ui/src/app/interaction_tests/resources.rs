@@ -9,20 +9,24 @@ fn open_sessions(app: &App) -> usize {
         .filter(|d| d.session.is_some())
         .count()
 }
+const TABLE: &str = "CREATE TABLE t(id INTEGER PRIMARY KEY)";
+/// Create a database at `path` and open it in a workspace of its own.
+fn open_new(app: &mut App, ctx: &egui::Context, path: std::path::PathBuf) {
+    crate::test_support::create(&path, &[TABLE]);
+    app.request_database(ctx, path);
+    inspect_selected(app, ctx);
+    app.open(ctx);
+    wait(app, ctx);
+}
 
 #[test]
 fn count_and_memory_limits_admit_more_than_four_and_preserve_existing_work() {
-    let (dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
+    let (dir, ctx, mut app) = fixture(&[TABLE], false);
     let first = app.database.id;
     app.preferences.database_limit = Some(7);
     app.preferences.memory_budget_mib = Some(7 * crate::resources::DATABASE_RESERVATION_MIB);
     for index in 1..6 {
-        let path = dir.path().join(format!("db{index}.db"));
-        crate::test_support::create(&path, &["CREATE TABLE t(id INTEGER PRIMARY KEY)"]);
-        app.request_database(&ctx, path);
-        inspect_selected(&mut app, &ctx);
-        app.open(&ctx);
-        wait(&mut app, &ctx);
+        open_new(&mut app, &ctx, dir.path().join(format!("db{index}.db")));
     }
     assert_eq!(open_sessions(&app), 6);
     let recent = app.database.id;
@@ -48,17 +52,15 @@ fn count_and_memory_limits_admit_more_than_four_and_preserve_existing_work() {
     assert_eq!(app.database.id, first);
     app.quit = true;
     app.continue_quit(&ctx);
-    wait_until(&mut app, &ctx, |a| {
-        a.database.session.is_none() && a.parked.values().all(|d| d.session.is_none())
-    });
+    wait_until(&mut app, &ctx, |a| open_sessions(a) == 0);
 }
 
 #[test]
 fn a_pending_or_cli_open_cannot_bypass_a_reduced_budget() {
-    let (dir, ctx, mut app) = fixture(&["CREATE TABLE t(id INTEGER PRIMARY KEY)"], false);
+    let (dir, ctx, mut app) = fixture(&[TABLE], false);
     let first = app.database.id;
     let path = dir.path().join("pending.db");
-    crate::test_support::create(&path, &["CREATE TABLE t(id INTEGER PRIMARY KEY)"]);
+    crate::test_support::create(&path, &[TABLE]);
     app.preferences.memory_budget_mib = Some(1024);
     app.request_database(&ctx, path.clone());
     inspect_selected(&mut app, &ctx);

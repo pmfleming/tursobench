@@ -113,34 +113,35 @@ pub(super) fn parse_filter(input: &str, table: &Table) -> Result<Filter, String>
     }
     Ok(Filter { column, op, value })
 }
+/// The index after the quote opened at `start`. A doubled quote is part of
+/// the text, and inside brackets a backslash escapes a JSON string's quote.
+fn quoted_end(bytes: &[u8], start: usize, json: bool) -> usize {
+    let quote = bytes[start];
+    let mut i = start + 1;
+    while i < bytes.len() {
+        if json && quote == b'"' && bytes[i] == b'\\' || bytes[i..].starts_with(&[quote; 2]) {
+            i += 2;
+        } else if bytes[i] == quote {
+            return i + 1;
+        } else {
+            i += 1;
+        }
+    }
+    i
+}
+/// The ranges of `operator` as a whole word outside quotes, brackets and parentheses.
 fn boolean_boundaries(input: &str, operator: &str) -> Vec<std::ops::Range<usize>> {
     let bytes = input.as_bytes();
-    let mut result = Vec::new();
-    let mut i = 0;
-    let mut quote = None;
-    let mut brackets = 0i32;
-    let mut parens = 0i32;
+    let boundary = |i: usize| {
+        bytes
+            .get(i)
+            .is_none_or(|b| !b.is_ascii_alphanumeric() && *b != b'_')
+    };
+    let (mut result, mut i, mut brackets, mut parens) = (Vec::new(), 0, 0i32, 0i32);
     while i < bytes.len() {
-        let b = bytes[i];
-        if let Some(q) = quote {
-            if q == b'"' && brackets > 0 && b == b'\\' {
-                i += 2;
-                continue;
-            }
-            if b == q {
-                if bytes.get(i + 1) == Some(&q) {
-                    i += 2;
-                    continue;
-                }
-                quote = None;
-            }
-            i += 1;
-            continue;
-        }
-        match b {
+        match bytes[i] {
             b'\'' | b'"' => {
-                quote = Some(b);
-                i += 1;
+                i = quoted_end(bytes, i, brackets > 0);
                 continue;
             }
             b'[' => brackets += 1,
@@ -149,16 +150,17 @@ fn boolean_boundaries(input: &str, operator: &str) -> Vec<std::ops::Range<usize>
             b')' if brackets == 0 => parens -= 1,
             _ => {}
         }
-        let word = bytes.get(i..i + operator.len());
-        let boundary = |b: u8| !b.is_ascii_alphanumeric() && b != b'_';
+        let end = i + operator.len();
         if brackets == 0
             && parens == 0
-            && word.is_some_and(|w| w.eq_ignore_ascii_case(operator.as_bytes()))
-            && (i == 0 || boundary(bytes[i - 1]))
-            && bytes.get(i + operator.len()).is_none_or(|b| boundary(*b))
+            && bytes
+                .get(i..end)
+                .is_some_and(|w| w.eq_ignore_ascii_case(operator.as_bytes()))
+            && (i == 0 || boundary(i - 1))
+            && boundary(end)
         {
-            result.push(i..i + operator.len());
-            i += operator.len();
+            result.push(i..end);
+            i = end;
         } else {
             i += 1;
         }
@@ -170,51 +172,47 @@ fn parse_expression(input: &str, table: &Table, depth: usize) -> Result<FilterEx
         return Err("Expression exceeds nesting/size budget".into());
     }
     let input = input.trim();
-    let tokens = tursobench_db::sql::tokens(input);
     for operator in ["OR", "AND"] {
         let boundaries = boolean_boundaries(input, operator);
-        if !boundaries.is_empty() {
-            let mut parts = Vec::new();
-            let mut start = 0;
-            for end in boundaries {
-                parts.push(parse_expression(
-                    &input[start..end.start],
-                    table,
-                    depth + 1,
-                )?);
-                start = end.end;
-            }
-            parts.push(parse_expression(&input[start..], table, depth + 1)?);
-            return Ok(if operator == "OR" {
-                FilterExpr::Any(parts)
-            } else {
-                FilterExpr::All(parts)
-            });
+        if boundaries.is_empty() {
+            continue;
         }
+        let starts = std::iter::once(0).chain(boundaries.iter().map(|b| b.end));
+        let ends = boundaries.iter().map(|b| b.start).chain([input.len()]);
+        let parts = starts
+            .zip(ends)
+            .map(|(start, end)| parse_expression(&input[start..end], table, depth + 1))
+            .collect::<Result<_, _>>()?;
+        return Ok(if operator == "OR" {
+            FilterExpr::Any(parts)
+        } else {
+            FilterExpr::All(parts)
+        });
     }
     if input.starts_with('(') && input.ends_with(')') {
         return parse_expression(&input[1..input.len() - 1], table, depth + 1);
     }
-    if let Some(token) = tokens.iter().find(|t| {
-        t.style == tursobench_db::sql::TokenStyle::Keyword
-            && input[t.range.clone()].trim().eq_ignore_ascii_case("IN")
-    }) {
-        let field = parse_filter(&format!("{} IS NULL", &input[..token.range.start]), table)?;
-        let list: Vec<serde_json::Value> =
-            serde_json::from_str(input[token.range.end..].trim()).map_err(|e| e.to_string())?;
-        if list.is_empty() || list.len() > 1000 {
-            return Err("IN requires 1–1000 values".into());
-        }
-        return Ok(FilterExpr::In {
-            column: field.column,
-            values: list
-                .into_iter()
-                .map(Value::from_input)
-                .collect::<Result<_, _>>()
-                .map_err(|e| e.to_string())?,
-        });
+    match boolean_boundaries(input, "IN").first() {
+        Some(at) => parse_in(&input[..at.start], &input[at.end..], table),
+        None => parse_filter(input, table).map(FilterExpr::Compare),
     }
-    parse_filter(input, table).map(FilterExpr::Compare)
+}
+/// `column IN [json values]`.
+fn parse_in(column: &str, list: &str, table: &Table) -> Result<FilterExpr, String> {
+    let field = parse_filter(&format!("{column} IS NULL"), table)?;
+    let list: Vec<serde_json::Value> =
+        serde_json::from_str(list.trim()).map_err(|e| e.to_string())?;
+    if list.is_empty() || list.len() > 1000 {
+        return Err("IN requires 1–1000 values".into());
+    }
+    Ok(FilterExpr::In {
+        column: field.column,
+        values: list
+            .into_iter()
+            .map(Value::from_input)
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?,
+    })
 }
 pub(super) struct FilterEditor {
     index: usize,
@@ -240,7 +238,7 @@ impl FilterEditor {
             },
         })
     }
-    fn ui(&mut self, ui: &mut egui::Ui, column: usize) -> Option<Result<FilterChange, String>> {
+    fn ui(&mut self, ui: &mut egui::Ui, column: usize) -> Action {
         egui::ComboBox::from_id_salt(("chip-op", self.index))
             .selected_text(self.op.label())
             .show_ui(ui, |ui| {
@@ -260,7 +258,9 @@ enum FilterChange {
     Add(Filter),
     Replace(usize, Filter),
     Remove(usize),
+    Predicate(Option<FilterExpr>),
 }
+type Action = Option<Result<FilterChange, String>>;
 impl FilterChange {
     fn apply(self, browse: &Browse) -> Result<Browse, String> {
         let mut next = browse.clone();
@@ -275,6 +275,7 @@ impl FilterChange {
                 }
                 next.filters.remove(i);
             }
+            Self::Predicate(predicate) => next.options.predicate = predicate.map(Box::new),
         }
         if next.filters.len() > 32
             || next.filters.iter().map(|f| f.value.bytes()).sum::<usize>() > 1024 * 1024
@@ -287,53 +288,53 @@ impl FilterChange {
         Ok(next)
     }
 }
+/// A filter's chip, its editor popup and its remove button.
+fn filter_chip(
+    ui: &mut egui::Ui,
+    (i, f): (usize, &Filter),
+    name: &str,
+    editor: &mut Option<FilterEditor>,
+) -> Action {
+    let value = if f.op.unary() {
+        String::new()
+    } else {
+        f.value.preview()
+    };
+    let color = crate::appearance::Tokens::of(ui.ctx()).primary;
+    let chip = super::presentation::chip(ui, &format!("{name} {} {value}", f.op.label()), color);
+    if chip.clicked() {
+        *editor = Some(FilterEditor::new(i, f));
+    }
+    let edited = egui::Popup::menu(&chip).show(|ui| {
+        let editor = editor.as_mut().filter(|e| e.index == i)?;
+        ui.label(format!("{name} · stored comparison type"));
+        editor.ui(ui, f.column)
+    });
+    let removed = ui.small_button("×").on_hover_text("Remove filter");
+    if removed.clicked() {
+        return Some(Ok(FilterChange::Remove(i)));
+    }
+    edited.and_then(|popup| popup.inner)
+}
 fn filter_chips(
     ui: &mut egui::Ui,
     table: &Table,
     filters: &[Filter],
     editor: &mut Option<FilterEditor>,
-) -> Option<Result<FilterChange, String>> {
-    let mut action = None;
+) -> Action {
     egui::ScrollArea::horizontal()
         .id_salt("filter-tokens")
         .max_width((ui.available_width() - 100.0).max(0.0))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                for (i, f) in filters.iter().enumerate() {
-                    let name = table.columns.get(f.column).map_or("?", |c| c.name.as_str());
-                    let label = format!(
-                        "{name} {} {}",
-                        f.op.label(),
-                        if f.op.unary() {
-                            String::new()
-                        } else {
-                            f.value.preview()
-                        }
-                    );
-                    let color = crate::appearance::Tokens::of(ui.ctx()).primary;
-                    let chip = super::presentation::chip(ui, &label, color);
-                    if chip.clicked() {
-                        *editor = Some(FilterEditor::new(i, f));
-                    }
-                    egui::Popup::menu(&chip).show(|ui| {
-                        if let Some(editor) = editor.as_mut().filter(|e| e.index == i) {
-                            ui.label(format!("{name} · stored comparison type"));
-                            if let Some(change) = editor.ui(ui, f.column) {
-                                action = Some(change);
-                            }
-                        }
-                    });
-                    if ui
-                        .small_button("×")
-                        .on_hover_text("Remove filter")
-                        .clicked()
-                    {
-                        action = Some(Ok(FilterChange::Remove(i)));
-                    }
-                }
-            });
-        });
-    action
+                filters.iter().enumerate().fold(None, |action, chip| {
+                    let name = table.columns.get(chip.1.column).map_or("?", |c| &c.name);
+                    filter_chip(ui, chip, name, editor).or(action)
+                })
+            })
+            .inner
+        })
+        .inner
 }
 /// Enter adds the typed filter; Backspace in an empty input removes the last
 /// one and keeps the input focused.
@@ -343,7 +344,7 @@ fn filter_input_keys(
     table: &Table,
     filters: usize,
     refocus: &mut bool,
-) -> Option<Result<FilterChange, String>> {
+) -> Action {
     let key = |key| ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key));
     let mut action = None;
     if key(egui::Key::Enter) {
@@ -354,6 +355,19 @@ fn filter_input_keys(
         *refocus = true;
     }
     action
+}
+/// The seven most frequent `values`, most frequent first.
+fn top_values<'a>(values: impl Iterator<Item = &'a Value>) -> Vec<(Value, usize)> {
+    let mut counts = std::collections::BTreeMap::<String, (Value, usize)>::new();
+    for value in values {
+        if let Ok(key) = serde_json::to_string(value) {
+            counts.entry(key).or_insert((value.clone(), 0)).1 += 1;
+        }
+    }
+    let mut counts: Vec<_> = counts.into_values().collect();
+    counts.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+    counts.truncate(7);
+    counts
 }
 impl App {
     fn change_filters(&mut self, change: FilterChange) -> bool {
@@ -383,62 +397,60 @@ impl App {
         self.change_filters(FilterChange::Add(filter))
     }
     pub(super) fn filter_controls(&mut self, ui: &mut egui::Ui) {
-        self.expression_controls(ui);
-        let (Some(table), Some(browse)) = (
-            &self.database.document.table,
-            &self.database.document.browse,
-        ) else {
-            return;
-        };
-        let enabled = self.requests_enabled();
-        let action = ui
-            .add_enabled_ui(enabled, |ui| {
-                ui.horizontal(|ui| {
-                    let mut action = filter_chips(
-                        ui,
-                        table,
-                        &browse.filters,
-                        &mut self.database.document.tools.filter_editor,
-                    );
-                    let response = ui.add(
-                        egui::TextEdit::singleline(&mut self.database.document.filter)
-                            .id_salt("token-input")
-                            .hint_text("column = value")
-                            .desired_width(ui.available_width().max(90.0))
-                            .char_limit(65536),
-                    );
-                    if std::mem::take(&mut self.database.document.tools.filter_focus) {
-                        response.request_focus();
-                        self.database.document.ui.filter_open = self.database.workspace.enabled;
-                    }
-                    if (response.has_focus() || response.lost_focus())
-                        && let Some(change) = filter_input_keys(
-                            ui,
-                            &self.database.document.filter,
-                            table,
-                            browse.filters.len(),
-                            &mut self.database.document.tools.filter_focus,
-                        )
-                    {
-                        action = Some(change);
-                    }
-                    if !self.database.document.tools.filter_error.is_empty() {
-                        ui.colored_label(ui.visuals().error_fg_color, "!")
-                            .on_hover_text(&self.database.document.tools.filter_error);
-                    }
-                    action
-                })
-                .inner
-            })
-            .inner;
-        match action {
+        let expression = self.expression_controls(ui);
+        match self.filter_bar(ui).or(expression) {
             Some(Ok(change)) => self.finish_filter_change(ui, change),
             Some(Err(error)) => self.database.document.tools.filter_error = error,
             None => {}
         }
     }
-    /// Apply a chip or input change; an added filter clears and refocuses
-    /// the input, and a replaced one closes its editor.
+    /// The filter chips and the input that adds one.
+    fn filter_bar(&mut self, ui: &mut egui::Ui) -> Action {
+        let (Some(table), Some(browse)) = (
+            &self.database.document.table,
+            &self.database.document.browse,
+        ) else {
+            return None;
+        };
+        let enabled = self.requests_enabled();
+        let tools = &mut self.database.document.tools;
+        ui.add_enabled_ui(enabled, |ui| {
+            ui.horizontal(|ui| {
+                let chips = filter_chips(ui, table, &browse.filters, &mut tools.filter_editor);
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut self.database.document.filter)
+                        .id_salt("token-input")
+                        .hint_text("column = value")
+                        .desired_width(ui.available_width().max(90.0))
+                        .char_limit(65536),
+                );
+                if std::mem::take(&mut tools.filter_focus) {
+                    response.request_focus();
+                    self.database.document.ui.filter_open = self.database.workspace.enabled;
+                }
+                let typed = (response.has_focus() || response.lost_focus())
+                    .then(|| {
+                        filter_input_keys(
+                            ui,
+                            &self.database.document.filter,
+                            table,
+                            browse.filters.len(),
+                            &mut tools.filter_focus,
+                        )
+                    })
+                    .flatten();
+                if !tools.filter_error.is_empty() {
+                    ui.colored_label(ui.visuals().error_fg_color, "!")
+                        .on_hover_text(&tools.filter_error);
+                }
+                typed.or(chips)
+            })
+            .inner
+        })
+        .inner
+    }
+    /// Apply a chip, input or expression change; an added filter clears and
+    /// refocuses the input, and a replaced one closes its editor.
     fn finish_filter_change(&mut self, ui: &egui::Ui, change: FilterChange) {
         let add = matches!(change, FilterChange::Add(_));
         let replace = matches!(change, FilterChange::Replace(..));
@@ -453,7 +465,7 @@ impl App {
             egui::Popup::close_all(ui.ctx());
         }
     }
-    fn expression_controls(&mut self, ui: &mut egui::Ui) {
+    fn expression_controls(&mut self, ui: &mut egui::Ui) -> Action {
         let mut change = None;
         ui.menu_button("AND / OR / IN…", |ui| {
             ui.label("Group comparisons with parentheses, AND and OR. IN accepts a JSON list.");
@@ -462,61 +474,27 @@ impl App {
             if ui.button("Apply expression").clicked()
                 && let Some(table) = &self.database.document.table
             {
+                let expression = &self.database.document.tools.advanced_filter;
                 change = Some(
-                    parse_expression(&self.database.document.tools.advanced_filter, table, 0)
-                        .map(Some),
+                    parse_expression(expression, table, 0)
+                        .map(|e| FilterChange::Predicate(Some(e))),
                 );
             }
             if ui.button("Clear expression").clicked() {
-                change = Some(Ok(None));
+                change = Some(Ok(FilterChange::Predicate(None)));
             }
         });
-        if let Some(change) = change {
-            match change {
-                Ok(predicate) => {
-                    if let Some(mut next) = self.database.document.browse.clone() {
-                        next.options.predicate = predicate.map(Box::new);
-                        next.options.cursor = None;
-                        next.options.reverse = false;
-                        next.offset = 0;
-                        if self
-                            .submit(Operation::Browse(next.clone()), View::Browse)
-                            .is_some()
-                        {
-                            self.database.document.browse = Some(next);
-                            self.database.tools.counts.clear();
-                        }
-                    }
-                }
-                Err(e) => self.database.document.tools.filter_error = e,
-            }
-        }
+        change
     }
     pub(super) fn column_facets(&mut self, ui: &mut egui::Ui, column: usize) {
         if self.database.document.view != View::Browse || self.database.document.browse.is_none() {
             ui.label("Facets require a table browse");
             return;
         }
-        let sample = self.database.document.result.rows.len().min(1000);
+        let rows = &self.database.document.result.rows;
+        let sample = rows.len().min(1000);
         ui.label(format!("Top values · {sample} retained rows"));
-        let mut counts = std::collections::BTreeMap::<String, (Value, usize)>::new();
-        for value in self
-            .database
-            .document
-            .result
-            .rows
-            .iter()
-            .take(sample)
-            .filter_map(|r| r.get(column))
-        {
-            if let Ok(key) = serde_json::to_string(value) {
-                let entry = counts.entry(key).or_insert((value.clone(), 0));
-                entry.1 += 1;
-            }
-        }
-        let mut counts: Vec<_> = counts.into_values().collect();
-        counts.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
-        for (value, n) in counts.into_iter().take(7) {
+        for (value, n) in top_values(rows.iter().take(sample).filter_map(|r| r.get(column))) {
             if ui.button(format!("{}  · {n}", value.preview())).clicked() {
                 self.add_filter(Filter {
                     column,
@@ -546,8 +524,8 @@ mod tests {
     use super::{FilterChange, FilterEditor, parse_filter};
     use tursobench_core::{Browse, FilterOp, Table, Value};
     #[test]
-    fn expressions_group_or_and_in_without_splitting_quoted_text() {
-        let table = table();
+    fn grammar_groups_expressions_and_preserves_identifiers_types_and_boundaries() {
+        let table = sample();
         assert!(super::parse_expression("(n = 5 OR n IN [7,8]) AND r > 1.0", &table, 0).is_ok());
         assert!(
             super::parse_expression(
@@ -568,29 +546,7 @@ mod tests {
             parse_filter("n = '5'", &table).unwrap().value,
             Value::Text("5".into())
         );
-    }
-    fn table() -> Table {
-        Table {
-            name: "t".into(),
-            is_table: true,
-            has_rowid: true,
-            binary_collations: true,
-            columns: [("odd \" name", "TEXT"), ("n", "INTEGER"), ("r", "REAL")]
-                .into_iter()
-                .map(|(name, ty)| tursobench_core::TableColumn {
-                    name: name.into(),
-                    declared_type: ty.into(),
-                    not_null: false,
-                    default_sql: None,
-                    primary_key: 0,
-                    hidden: 0,
-                })
-                .collect(),
-        }
-    }
-    #[test]
-    fn tokens_preserve_identifiers_storage_types_and_operator_boundaries() {
-        let t = table();
+        let t = sample();
         for (input, column, op, value) in [
             (
                 "\"odd \"\" name\" = 'it''s ✓'",
@@ -650,7 +606,7 @@ mod tests {
     }
     #[test]
     fn filter_changes_are_bounded_and_leave_the_source_untouched() {
-        let filter = parse_filter("n=1", &table()).unwrap();
+        let filter = parse_filter("n=1", &sample()).unwrap();
         let original = Browse {
             options: Default::default(),
             table: "t".into(),
@@ -659,7 +615,7 @@ mod tests {
             descending: true,
             filters: vec![filter.clone()],
         };
-        let replacement = parse_filter("n=2", &table()).unwrap();
+        let replacement = parse_filter("n=2", &sample()).unwrap();
         for (change, values) in [
             (
                 FilterChange::Add(replacement.clone()),
@@ -703,5 +659,24 @@ mod tests {
         assert!(FilterChange::Add(large).apply(&original).is_err());
         assert_eq!(original.offset, 100);
         assert_eq!(original.filters[0].value, Value::Integer(1));
+    }
+    fn sample() -> Table {
+        Table {
+            name: "t".into(),
+            is_table: true,
+            has_rowid: true,
+            binary_collations: true,
+            columns: [("odd \" name", "TEXT"), ("n", "INTEGER"), ("r", "REAL")]
+                .into_iter()
+                .map(|(name, ty)| tursobench_core::TableColumn {
+                    name: name.into(),
+                    declared_type: ty.into(),
+                    not_null: false,
+                    default_sql: None,
+                    primary_key: 0,
+                    hidden: 0,
+                })
+                .collect(),
+        }
     }
 }

@@ -116,6 +116,13 @@ fn facets_and_chips_add_replace_and_remove_filters_of_the_browsed_rows() {
     click_panel(&ctx, "×", |ui| app.filter_controls(ui));
     wait(&mut app, &ctx);
     assert_eq!(rows(&app), 3);
+    app.database.document.tools.advanced_filter = "name = 'b' OR id IN [3]".into();
+    for (label, expected) in [("Apply expression", 2), ("Clear expression", 3)] {
+        click_panel(&ctx, "AND / OR / IN…", |ui| app.filter_controls(ui));
+        click_panel(&ctx, label, |ui| app.filter_controls(ui));
+        wait(&mut app, &ctx);
+        assert_eq!(rows(&app), expected, "{label}");
+    }
     click_panel(&ctx, "Custom filter…", |ui| app.column_facets(ui, 1));
     assert_eq!(app.database.document.filter, "\"name\" = ");
     assert!(app.database.document.tools.filter_focus);

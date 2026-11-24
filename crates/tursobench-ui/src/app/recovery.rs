@@ -4,21 +4,12 @@ use eframe::egui;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
+#[derive(Default)]
 pub(super) struct State {
     observed: Vec<Document>,
     revisions: Vec<(u64, u64)>,
     changed: Option<Instant>,
     cleared: bool,
-}
-impl State {
-    pub fn new(_ctx: &egui::Context) -> Self {
-        Self {
-            observed: vec![],
-            revisions: vec![],
-            changed: None,
-            cleared: false,
-        }
-    }
 }
 /// A workspace's SQL editors, the focused one among them, in recovery order.
 fn editors<'a>(documents: &'a BTreeMap<u64, Editor>, focused: &'a Editor) -> Vec<&'a Editor> {
@@ -176,14 +167,33 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{Duration, Instant, Kind};
-    #[test]
-    fn idle_cursor_and_focus_changes_do_not_schedule_sql_snapshots() {
+    use super::{App, Duration, Instant, Kind, egui};
+    /// An app with a ready SQL editor whose recovery is saved under `scope`.
+    fn editing(scope: &str) -> (egui::Context, App) {
         let (ctx, mut app) = crate::app::test_ui::app();
-        app.database.tools.database_scope = "/tmp/recovery-revisions.db".into();
+        app.database.tools.database_scope = scope.into();
         app.initialize_workspace();
         app.database.ready = true;
         app.open_sql_window(false);
+        (ctx, app)
+    }
+    /// Wait for the worker to acknowledge `count` saved editors.
+    fn wait_saved(app: &mut App, count: usize) {
+        let until = Instant::now() + Duration::from_secs(5);
+        while app
+            .recovery_store
+            .documents(&app.database.tools.database_scope)
+            .len()
+            < count
+        {
+            assert!(Instant::now() < until);
+            app.recovery_store.poll();
+            std::thread::yield_now();
+        }
+    }
+    #[test]
+    fn idle_cursor_and_focus_changes_do_not_schedule_sql_snapshots() {
+        let (ctx, mut app) = editing("/tmp/recovery-revisions.db");
         let editor = app.database.document.id;
         app.database.document.set_sql("SELECT 'λ'".into());
         app.save_recovery();
@@ -227,28 +237,14 @@ mod tests {
     }
     #[test]
     fn restoring_multiple_editors_preserves_order_when_the_last_editor_is_focused() {
-        let (ctx, mut app) = crate::app::test_ui::app();
-        app.database.tools.database_scope = "/tmp/recovery-order.db".into();
-        app.initialize_workspace();
-        app.database.ready = true;
-        app.open_sql_window(false);
+        let (ctx, mut app) = editing("/tmp/recovery-order.db");
         let first = app.database.document.id;
         app.database.document.set_sql("SELECT 'first'".into());
         app.open_sql_window(true);
         let second = app.database.document.id;
         app.database.document.set_sql("SELECT 'second'".into());
         app.save_recovery();
-        let until = Instant::now() + Duration::from_secs(5);
-        while app
-            .recovery_store
-            .documents(&app.database.tools.database_scope)
-            .len()
-            < 2
-        {
-            assert!(Instant::now() < until);
-            app.recovery_store.poll();
-            std::thread::yield_now();
-        }
+        wait_saved(&mut app, 2);
         app.database.document.set_sql(String::new());
         app.database
             .documents
@@ -263,11 +259,7 @@ mod tests {
     }
     #[test]
     fn recovery_restores_only_sql_and_cursor_without_execution() {
-        let (ctx, mut app) = crate::app::test_ui::app();
-        app.database.tools.database_scope = "/tmp/recovery-test.db".into();
-        app.initialize_workspace();
-        app.database.ready = true;
-        app.open_sql_window(false);
+        let (ctx, mut app) = editing("/tmp/recovery-test.db");
         app.database.document.sql = "SELECT :secret, 'λ'".into();
         app.database.document.params = "{\":secret\":123}".into();
         app.database.document.tools.selection = 2..5;
@@ -283,17 +275,7 @@ mod tests {
         );
         app.database.document.migration = None;
         app.save_recovery();
-        // Wait for the worker acknowledgement, not a fixed scheduling delay.
-        let until = Instant::now() + Duration::from_secs(5);
-        while app
-            .recovery_store
-            .documents(&app.database.tools.database_scope)
-            .is_empty()
-        {
-            assert!(Instant::now() < until);
-            app.recovery_store.poll();
-            std::thread::yield_now();
-        }
+        wait_saved(&mut app, 1);
         app.database.documents.clear();
         app.database.document = Default::default();
         app.database.workspace = Default::default();

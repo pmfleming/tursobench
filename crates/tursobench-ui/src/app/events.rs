@@ -4,7 +4,6 @@ use eframe::egui;
 use tursobench_core::{
     CommitOutcome, Completion, Event, EventKind, Failure, Ticket, TransactionState,
 };
-use tursobench_db::{Operation, Request};
 
 enum Target {
     Snapshot,
@@ -446,32 +445,4 @@ fn completion_summary(c: &Completion) -> String {
         "{:?}: {} rows seen, {} changes; transaction {:?}{error}",
         c.delivery, c.rows_seen, c.changed, c.transaction
     )
-}
-
-impl super::sessions::DatabaseWorkspace {
-    /// Submit `operation` under the next ticket of the current generation;
-    /// `None` when no session is open.
-    pub(super) fn request(&mut self, operation: Operation) -> Option<Result<Ticket, Failure>> {
-        let session = self.session.as_ref()?;
-        self.sequence += 1;
-        let ticket = session.ticket(self.sequence, self.generation);
-        Some(
-            session
-                .submit(Request { ticket, operation })
-                .map(|()| ticket),
-        )
-    }
-    pub(super) fn request_diagram(&mut self) {
-        if !self.ready || self.closing || self.ui.diagram.ticket.is_some() {
-            return;
-        }
-        match self.request(Operation::Diagram) {
-            Some(Ok(ticket)) => {
-                self.ui.diagram.ticket = Some(ticket);
-                self.ui.diagram.error.clear();
-            }
-            Some(Err(e)) => self.ui.diagram.error = e.to_string(),
-            None => {}
-        }
-    }
 }

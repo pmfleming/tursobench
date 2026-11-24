@@ -2,8 +2,8 @@
 use super::{App, document, recovery, shell, tools, workspace};
 use eframe::egui;
 use std::path::{Path, PathBuf};
-use tursobench_core::{ResultSet, SchemaObject, Ticket, TransactionState};
-use tursobench_db::Session;
+use tursobench_core::{Failure, ResultSet, SchemaObject, Ticket, TransactionState};
+use tursobench_db::{Operation, Request, Session};
 pub(super) struct DatabaseWorkspace {
     pub(super) id: u64,
     pub(super) recovery: recovery::State,
@@ -96,7 +96,7 @@ impl DatabaseWorkspace {
     pub(super) fn new(ctx: &egui::Context, id: u64) -> Self {
         Self {
             id,
-            recovery: recovery::State::new(ctx),
+            recovery: Default::default(),
             pending_database: Default::default(),
             path: Default::default(),
             identity: None,
@@ -130,6 +130,31 @@ impl DatabaseWorkspace {
             commit_ticket: Default::default(),
             uncertain_edit: Default::default(),
             assistant: Default::default(),
+        }
+    }
+    /// Submit `operation` under the next ticket of the current generation;
+    /// `None` when no session is open.
+    pub(super) fn request(&mut self, operation: Operation) -> Option<Result<Ticket, Failure>> {
+        let session = self.session.as_ref()?;
+        self.sequence += 1;
+        let ticket = session.ticket(self.sequence, self.generation);
+        Some(
+            session
+                .submit(Request { ticket, operation })
+                .map(|()| ticket),
+        )
+    }
+    pub(super) fn request_diagram(&mut self) {
+        if !self.ready || self.closing || self.ui.diagram.ticket.is_some() {
+            return;
+        }
+        match self.request(Operation::Diagram) {
+            Some(Ok(ticket)) => {
+                self.ui.diagram.ticket = Some(ticket);
+                self.ui.diagram.error.clear();
+            }
+            Some(Err(e)) => self.ui.diagram.error = e.to_string(),
+            None => {}
         }
     }
 }
@@ -239,17 +264,17 @@ impl App {
             }
             return;
         }
-        if path.to_str().is_none() {
+        let Some(utf8) = path.to_str() else {
             self.database.status =
                 "Only UTF-8 database paths are supported by the Turso engine".into();
             return;
-        }
+        };
         if self.new_workspace(ctx) {
             self.databases.editing_path = false;
             self.sidebar_search.query.clear();
             self.sidebar_search.navigating = false;
             self.sidebar_search.available_highlight = None;
-            self.set_database_path(path.to_str().unwrap().into());
+            self.set_database_path(utf8.into());
         }
     }
     pub(super) fn poll(&mut self, ctx: &egui::Context) {
@@ -323,15 +348,13 @@ impl App {
         }
         let mut completed = Vec::new();
         for database in std::iter::once(&mut self.database).chain(self.parked.values_mut()) {
-            if database.close_origin.is_some()
-                && database.session.is_none()
+            if database.session.is_none()
                 && !database.closing
                 && !database.confirm_close
+                && let Some(origin) = database.close_origin.take()
+                && !database.retained()
             {
-                let origin = database.close_origin.take().unwrap();
-                if !database.retained() {
-                    completed.push((database.id, origin));
-                }
+                completed.push((database.id, origin));
             }
         }
         for (id, origin) in completed {
@@ -340,22 +363,22 @@ impl App {
             }
             self.set_database_path(String::new());
             self.database.writable = false;
-            let next = self
-                .parked
-                .get(&origin)
-                .filter(|d| d.retained())
-                .map(|d| d.id)
-                .or_else(|| {
-                    self.parked
-                        .values()
-                        .find(|d| d.session.is_some())
-                        .map(|d| d.id)
-                })
-                .or_else(|| self.parked.values().find(|d| d.retained()).map(|d| d.id));
-            if let Some(next) = next {
+            if let Some(next) = self.after_close(origin) {
                 self.select_workspace(next);
             }
         }
+    }
+
+    /// The workspace to show after a sidebar close: its origin while retained,
+    /// else one with a session, else any retained one.
+    fn after_close(&self, origin: u64) -> Option<u64> {
+        let parked = || self.parked.values();
+        self.parked
+            .get(&origin)
+            .filter(|d| d.retained())
+            .or_else(|| parked().find(|d| d.session.is_some()))
+            .or_else(|| parked().find(|d| d.retained()))
+            .map(|d| d.id)
     }
 
     pub(super) fn continue_quit(&mut self, ctx: &egui::Context) {

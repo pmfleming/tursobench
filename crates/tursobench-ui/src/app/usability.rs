@@ -1,6 +1,8 @@
 use super::presentation::{self, Intent};
 use super::{App, View, shell};
+use crate::export::Format;
 use eframe::egui;
+use std::sync::mpsc::TryRecvError;
 use tursobench_core::Delivery;
 
 impl App {
@@ -11,25 +13,20 @@ impl App {
                 self.database.status = format!("Could not save application preferences: {e}");
             }
         }
-        if let Some(rx) = &self.database.export_job {
-            let result = match rx.try_recv() {
-                Ok(r) => Some(r),
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    Some(Err("Export worker stopped unexpectedly".into()))
-                }
-                Err(_) => None,
-            };
-            if let Some(result) = result {
-                self.database.export_job = None;
-                self.database.status = result.unwrap_or_else(|e| format!("Export failed: {e}"));
-                if self.quit {
-                    if self.database.session.is_some() {
-                        self.request_close();
-                    } else {
-                        self.continue_quit(ctx);
-                    }
-                }
-            }
+        let Some(rx) = &self.database.export_job else {
+            return;
+        };
+        let result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Disconnected) => Err("Export worker stopped unexpectedly".into()),
+            Err(TryRecvError::Empty) => return,
+        };
+        self.database.export_job = None;
+        self.database.status = result.unwrap_or_else(|e| format!("Export failed: {e}"));
+        if self.quit && self.database.session.is_some() {
+            self.request_close();
+        } else if self.quit {
+            self.continue_quit(ctx);
         }
     }
     pub(super) fn history_controls(&mut self, ui: &mut egui::Ui) {
@@ -87,7 +84,7 @@ impl App {
             egui::ComboBox::from_id_salt("export-format")
                 .selected_text(self.database.document.tools.format.label())
                 .show_ui(ui, |ui| {
-                    for format in crate::export::Format::ALL {
+                    for format in Format::ALL {
                         ui.selectable_value(
                             &mut self.database.document.tools.format,
                             format,
@@ -95,7 +92,7 @@ impl App {
                         );
                     }
                 });
-            if self.database.document.tools.format == crate::export::Format::Sql {
+            if self.database.document.tools.format == Format::Sql {
                 ui.label("Target table:");
                 ui.text_edit_singleline(&mut self.database.document.tools.export_table);
             }
@@ -116,48 +113,47 @@ impl App {
                 )
                 .clicked()
             {
-                let columns = self.database.document.result.columns.clone();
-                let rows = self.database.document.result.rows.clone();
-                let format = self.database.document.tools.format;
-                let table = self.database.document.tools.export_table.clone();
-                let wake = ui.ctx().clone();
-                let (tx, rx) = std::sync::mpsc::sync_channel(1);
-                self.database.export_job = Some(rx);
-                std::thread::spawn(move || {
-                    let result = if let Some(path) = rfd::FileDialog::new()
-                        .set_title("Export to a NEW file — never overwrite")
-                        .set_file_name(format!("tursobench-{scope}.{}", format.extension()))
-                        .save_file()
-                    {
-                        let written = crate::export::write_result_as(
-                            &path, format, scope, &columns, &rows, &table,
-                        );
-                        written.map(|_| {
+                self.start_export(ui.ctx(), scope);
+            }
+            for (label, format) in [
+                ("Copy retained TSV", Format::Tsv),
+                ("Copy typed JSON", Format::Json),
+            ] {
+                if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
+                    self.copy_results(ui.ctx(), format);
+                }
+            }
+        });
+    }
+    /// Choose a new file on a worker thread and write the retained result to it.
+    fn start_export(&mut self, ctx: &egui::Context, scope: &'static str) {
+        let result = &self.database.document.result;
+        let (columns, rows) = (result.columns.clone(), result.rows.clone());
+        let format = self.database.document.tools.format;
+        let table = self.database.document.tools.export_table.clone();
+        let wake = ctx.clone();
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        self.database.export_job = Some(rx);
+        std::thread::spawn(move || {
+            let path = rfd::FileDialog::new()
+                .set_title("Export to a NEW file — never overwrite")
+                .set_file_name(format!("tursobench-{scope}.{}", format.extension()))
+                .save_file();
+            let result = match path {
+                Some(path) => {
+                    crate::export::write_result_as(&path, format, scope, &columns, &rows, &table)
+                        .map(|()| {
                             format!(
                                 "Exported {} rows ({scope}) to {}",
                                 rows.len(),
                                 path.display()
                             )
                         })
-                    } else {
-                        Ok("Export cancelled; no file written".into())
-                    };
-                    let _ = tx.send(result);
-                    wake.request_repaint();
-                });
-            }
-            if ui
-                .add_enabled(enabled, egui::Button::new("Copy retained TSV"))
-                .clicked()
-            {
-                self.copy_results(ui.ctx(), crate::export::Format::Tsv);
-            }
-            if ui
-                .add_enabled(enabled, egui::Button::new("Copy typed JSON"))
-                .clicked()
-            {
-                self.copy_results(ui.ctx(), crate::export::Format::Json);
-            }
+                }
+                None => Ok("Export cancelled; no file written".into()),
+            };
+            let _ = tx.send(result);
+            wake.request_repaint();
         });
     }
 }

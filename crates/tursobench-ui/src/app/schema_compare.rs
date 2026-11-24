@@ -4,7 +4,7 @@ use eframe::egui;
 use std::sync::{Arc, mpsc};
 use tursobench_core::{EventKind, SchemaSnapshot, Ticket};
 use tursobench_db::{
-    Operation, Request,
+    Operation,
     schema_compare::{Difference, Status, compare},
 };
 
@@ -53,24 +53,17 @@ impl App {
         } else {
             self.parked.get_mut(&id)
         };
-        let Some(w) =
-            workspace.filter(|w| w.ready && !w.closing && w.tools.snapshot.ticket.is_none())
-        else {
+        let Some(w) = workspace.filter(|w| {
+            w.ready && !w.closing && w.session.is_some() && w.tools.snapshot.ticket.is_none()
+        }) else {
             return;
         };
-        let Some(session) = &w.session else {
-            return;
-        };
-        w.sequence += 1;
-        let ticket = session.ticket(w.sequence, w.generation);
         w.tools.snapshot.snapshot = None;
         w.tools.snapshot.error.clear();
-        match session.submit(Request {
-            ticket,
-            operation: Operation::CaptureSchema,
-        }) {
-            Ok(()) => w.tools.snapshot.ticket = Some(ticket),
-            Err(e) => w.tools.snapshot.error = e.to_string(),
+        match w.request(Operation::CaptureSchema) {
+            Some(Ok(ticket)) => w.tools.snapshot.ticket = Some(ticket),
+            Some(Err(e)) => w.tools.snapshot.error = e.to_string(),
+            None => {}
         }
     }
     pub(super) fn snapshot_event(&mut self, event: EventKind) {
