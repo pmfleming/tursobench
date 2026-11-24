@@ -1,5 +1,8 @@
 //! Read-only schema capture and additive migration drafts for reviewed execution.
-use crate::{connection::failure, sql};
+use crate::{
+    connection::{failure, text_column},
+    sql,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use turso::Connection;
 use turso_parser::ast::{
@@ -30,10 +33,7 @@ pub(crate) async fn capture(c: &Connection) -> Result<SchemaSnapshot, Failure> {
     let mut objects = vec![];
     let mut bytes = 0;
     while let Some(row) = rows.next().await.map_err(failure)? {
-        let text = |i| match row.get_value(i).map_err(failure)? {
-            turso::Value::Text(v) => Ok(v),
-            _ => Err(Failure::input("Unexpected schema metadata")),
-        };
+        let text = |i| text_column(&row, i, "schema metadata");
         let ddl = match row.get_value(3).map_err(failure)? {
             turso::Value::Text(v) => Some(v),
             turso::Value::Null

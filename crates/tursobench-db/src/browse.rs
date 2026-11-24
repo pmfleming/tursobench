@@ -130,12 +130,12 @@ impl Predicates<'_> {
             .map(|c| quote_identifier(&c.name))
             .ok_or_else(|| Failure::input("Invalid column index"))
     }
-    fn bind(&mut self, value: Value) -> Result<String, Failure> {
+    fn bind(&mut self, value: &Value) -> Result<String, Failure> {
         self.bytes += value.bytes();
         if self.bytes > 1024 * 1024 || self.params.len() >= 1000 {
             return Err(Failure::input("Filter bindings exceed 1 MiB / 1000 values"));
         }
-        self.params.push(value);
+        self.params.push(value.clone());
         Ok(format!("?{}", self.params.len()))
     }
     fn expression(&mut self, expr: &FilterExpr, depth: usize) -> Result<String, Failure> {
@@ -169,7 +169,7 @@ impl Predicates<'_> {
                 }
                 let params = values
                     .iter()
-                    .map(|v| self.bind(v.clone()))
+                    .map(|v| self.bind(v))
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(format!("{col} IN ({})", params.join(",")))
             }
@@ -193,7 +193,7 @@ impl Predicates<'_> {
             return Ok(format!("{col} {operator}"));
         }
         if *op != FilterOp::Contains {
-            let p = self.bind(value.clone())?;
+            let p = self.bind(value)?;
             return Ok(format!("{col} {operator} {p}"));
         }
         let Value::Text(text) = value else {
@@ -203,7 +203,7 @@ impl Predicates<'_> {
             .replace('\\', "\\\\")
             .replace('%', "\\%")
             .replace('_', "\\_");
-        let p = self.bind(Value::Text(format!("%{pattern}%")))?;
+        let p = self.bind(&Value::Text(format!("%{pattern}%")))?;
         Ok(format!("{col} LIKE {p} ESCAPE '\\'"))
     }
 }
@@ -244,27 +244,24 @@ fn filtered<'a>(
     spec: &Browse,
     relation: Option<(String, Vec<Value>)>,
 ) -> Result<(Predicates<'a>, Vec<String>), Failure> {
-    let mut builder = Predicates {
-        table,
-        params: Vec::new(),
-        leaves: 0,
-        bytes: 0,
-    };
     if spec.filters.len() > 32 {
         return Err(Failure::input("Filters exceed 32 predicates"));
     }
-    if let Some((_, params)) = &relation {
-        builder.params = params.clone();
-        builder.bytes = params.iter().map(Value::bytes).sum();
-    }
+    let (condition, params) = relation.unzip();
+    let params = params.unwrap_or_default();
+    let mut builder = Predicates {
+        table,
+        bytes: params.iter().map(Value::bytes).sum(),
+        params,
+        // Each chip is one leaf of the node budget.
+        leaves: spec.filters.len(),
+    };
     let mut parts = spec
         .filters
         .iter()
-        .map(|f| builder.expression(&FilterExpr::Compare(f.clone()), 0))
+        .map(|f| builder.compare(f))
         .collect::<Result<Vec<_>, _>>()?;
-    if let Some((condition, _)) = relation {
-        parts.push(condition);
-    }
+    parts.extend(condition);
     if let Some(expr) = &spec.options.predicate {
         parts.push(builder.expression(expr, 0)?);
     }
@@ -324,7 +321,7 @@ impl Predicates<'_> {
         let mut prefix = Vec::new();
         for &(i, desc) in order {
             let col = self.column(i)?;
-            let param = self.bind(cursor[i].clone())?;
+            let param = self.bind(&cursor[i])?;
             let less = desc != reverse;
             let cmp = match (&cursor[i], less, self.table.columns[i].not_null) {
                 (Value::Null, true, _) => "0".into(),

@@ -1,9 +1,12 @@
 use crate::common::{self, Client};
 use std::time::Duration;
 use tursobench_core::{Access, ErrorKind};
-use tursobench_db::assistant::{MAX_ROWS, Tool};
+use tursobench_db::assistant::{Handle, MAX_BYTES, MAX_ROWS, Reply, Tool};
 
 const WAIT: Duration = Duration::from_secs(30);
+fn query(tools: &Handle, sql: &str) -> Reply {
+    tools.call(Tool::Query(sql.into()), WAIT)
+}
 
 fn fixture() -> (tempfile::TempDir, std::path::PathBuf) {
     common::database(
@@ -46,12 +49,7 @@ fn tools_describe_and_read_committed_state_without_joining_the_editor_transactio
             .starts_with("CREATE TABLE pets")
     );
 
-    let rows = tools
-        .call(
-            Tool::Query("SELECT name, photo FROM pets ORDER BY id".into()),
-            WAIT,
-        )
-        .unwrap();
+    let rows = query(&tools, "SELECT name, photo FROM pets ORDER BY id").unwrap();
     assert_eq!(rows["columns"], serde_json::json!(["name", "photo"]));
     assert_eq!(rows["rows"][0][0], "Rex");
     assert_eq!(rows["rows"][0][1]["blob_bytes"], 2);
@@ -60,9 +58,7 @@ fn tools_describe_and_read_committed_state_without_joining_the_editor_transactio
     // The editor's uncommitted work stays invisible and its transaction stays open.
     client.sql("BEGIN");
     client.sql("INSERT INTO owners VALUES (2, 'Grace')");
-    let count = tools
-        .call(Tool::Query("SELECT count(*) FROM owners".into()), WAIT)
-        .unwrap();
+    let count = query(&tools, "SELECT count(*) FROM owners").unwrap();
     assert_eq!(count["rows"][0][0], 1);
     let state = client.sql("SELECT count(*) FROM owners");
     assert_eq!(
@@ -84,38 +80,13 @@ fn writes_are_refused_by_the_gate_and_by_the_engine() {
         "PRAGMA query_only = 0",
         "SELECT 1; DELETE FROM pets",
     ] {
-        let error = tools.call(Tool::Query(sql.into()), WAIT).unwrap_err();
+        let error = query(&tools, sql).unwrap_err();
         assert!(
             matches!(error.kind, ErrorKind::ReadOnly | ErrorKind::Input),
             "{sql}: {error:?}"
         );
     }
     assert_eq!(client.count("pets"), 2);
-    client.close();
-}
-
-#[test]
-fn the_database_location_is_not_readable() {
-    let (_dir, path) = fixture();
-    let client = Client::open(&path, Access::ReadOnly);
-    let tools = client.session.assistant();
-    for sql in [
-        "SELECT * FROM pragma_database_list",
-        "SELECT file FROM \"PRAGMA_DATABASE_LIST\"()",
-        "SELECT file FROM [pragma_database_list]",
-        "EXPLAIN SELECT * FROM pragma_database_list",
-    ] {
-        let error = tools.call(Tool::Query(sql.into()), WAIT).unwrap_err();
-        assert!(error.message.contains("location"), "{sql}: {error:?}");
-    }
-    // Other table-valued pragmas stay available.
-    let info = tools
-        .call(
-            Tool::Query("SELECT name FROM pragma_table_info('pets')".into()),
-            WAIT,
-        )
-        .unwrap();
-    assert_eq!(info["row_count"], 4);
     client.close();
 }
 
@@ -139,30 +110,7 @@ fn turso_query_only_rejects_writes_on_its_connection() {
 }
 
 #[test]
-fn results_are_bounded_and_calls_fail_cleanly_after_close() {
-    let (_dir, path) = fixture();
-    let client = Client::open(&path, Access::ReadOnly);
-    let tools = client.session.assistant();
-    let many = tools
-        .call(
-            Tool::Query(
-                "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<5000) \
-                 SELECT x, printf('%.3000c', 'a') FROM n"
-                    .into(),
-            ),
-            WAIT,
-        )
-        .unwrap();
-    assert!(many["limited"].as_bool().unwrap());
-    assert!(many["rows"].as_array().unwrap().len() <= MAX_ROWS);
-    assert!(many["truncated_cells"].as_u64().unwrap() > 0);
-    assert!(tools.call(Tool::Describe("missing".into()), WAIT).is_err());
-    client.close();
-    assert!(tools.call(Tool::ListTables, WAIT).is_err());
-}
-
-#[test]
-fn location_queries_hidden_in_views_are_refused() {
+fn location_queries_direct_or_hidden_in_views_are_refused() {
     let (_dir, path) = fixture();
     let mut client = Client::open(&path, Access::ReadWrite);
     client.sql("CREATE VIEW diagnostic AS SELECT file FROM pragma_database_list AS p");
@@ -171,6 +119,10 @@ fn location_queries_hidden_in_views_are_refused() {
     client.sql("CREATE VIEW [diagnostic view] AS SELECT * FROM nested");
     let tools = client.session.assistant();
     for sql in [
+        "SELECT * FROM pragma_database_list",
+        "SELECT file FROM \"PRAGMA_DATABASE_LIST\"()",
+        "SELECT file FROM [pragma_database_list]",
+        "EXPLAIN SELECT * FROM pragma_database_list",
         r#"SELECT * FROM "escaped""name""#,
         "SELECT * FROM [diagnostic view]",
         "SELECT * FROM diagnostic",
@@ -180,31 +132,35 @@ fn location_queries_hidden_in_views_are_refused() {
         "EXPLAIN QUERY PLAN SELECT * FROM nested",
         "WITH x AS (SELECT * FROM nested) SELECT * FROM x",
     ] {
-        let error = tools.call(Tool::Query(sql.into()), WAIT).unwrap_err();
+        let error = query(&tools, sql).unwrap_err();
         assert!(error.message.contains("location"), "{sql}: {error:?}");
     }
-    // Unrelated views still work, and failed checks release their snapshot.
-    assert!(
-        tools
-            .call(Tool::Query("SELECT * FROM named".into()), WAIT)
-            .is_ok()
-    );
+    // Other table-valued pragmas and unrelated views stay available, and
+    // failed checks release their snapshot.
+    let info = query(&tools, "SELECT name FROM pragma_table_info('pets')").unwrap();
+    assert_eq!(info["row_count"], 4);
+    assert!(query(&tools, "SELECT * FROM named").is_ok());
     client.sql("DROP VIEW nested");
     client.sql("CREATE VIEW nested AS SELECT name FROM pets");
-    assert!(
-        tools
-            .call(Tool::Query("SELECT * FROM nested".into()), WAIT)
-            .is_ok()
-    );
+    assert!(query(&tools, "SELECT * FROM nested").is_ok());
     client.close();
 }
 
 #[test]
-fn serialized_results_fit_the_byte_budget_even_for_wide_and_escaped_rows() {
-    use tursobench_db::assistant::MAX_BYTES;
+fn results_fit_row_and_byte_budgets_and_calls_fail_cleanly_after_close() {
     let (_dir, path) = fixture();
     let client = Client::open(&path, Access::ReadOnly);
     let tools = client.session.assistant();
+    let many = query(
+        &tools,
+        "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<5000) \
+         SELECT x, printf('%.3000c', 'a') FROM n",
+    )
+    .unwrap();
+    assert!(many["limited"].as_bool().unwrap());
+    assert!(many["rows"].as_array().unwrap().len() <= MAX_ROWS);
+    assert!(many["truncated_cells"].as_u64().unwrap() > 0);
+    // Serialized results fit the byte budget even for wide and escaped rows.
     for (count, value, expect_empty) in [
         (200, "printf('%2000s', 'x')", true),
         (50, "replace(printf('%2000s', 'x'), ' ', char(1))", true),
@@ -214,9 +170,9 @@ fn serialized_results_fit_the_byte_budget_even_for_wide_and_escaped_rows() {
             .map(|i| format!("{value} AS c{i}"))
             .collect::<Vec<_>>()
             .join(",");
-        let result = tools.call(Tool::Query(format!(
+        let result = query(&tools, &format!(
             "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<10) SELECT {columns} FROM n"
-        )), WAIT).unwrap();
+        )).unwrap();
         assert!(result.to_string().len() <= MAX_BYTES);
         assert_eq!(result["limited"], true);
         assert_eq!(result["rows"].as_array().unwrap().is_empty(), expect_empty);
@@ -227,13 +183,8 @@ fn serialized_results_fit_the_byte_budget_even_for_wide_and_escaped_rows() {
     }
     // Column metadata alone also counts, including for an empty result.
     let long_name = "x".repeat(MAX_BYTES);
-    assert!(
-        tools
-            .call(
-                Tool::Query(format!("SELECT 1 AS \"{long_name}\" WHERE 0")),
-                WAIT
-            )
-            .is_err()
-    );
+    assert!(query(&tools, &format!("SELECT 1 AS \"{long_name}\" WHERE 0")).is_err());
+    assert!(tools.call(Tool::Describe("missing".into()), WAIT).is_err());
     client.close();
+    assert!(tools.call(Tool::ListTables, WAIT).is_err());
 }

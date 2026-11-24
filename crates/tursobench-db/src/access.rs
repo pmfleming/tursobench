@@ -28,7 +28,8 @@ impl Drop for HeldLock {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
-    use super::{Admission, lock, reserve};
+    use super::{Admission, check_access, lock, reserve};
+    use tursobench_core::ErrorKind;
 
     #[test]
     fn admission_releases_locks_even_with_inherited_descriptors() {
@@ -61,6 +62,18 @@ mod tests {
             "reservation survived close"
         );
         drop((inherited_main, inherited_reservation));
+    }
+    #[test]
+    fn unreadable_files_are_reported_as_io_failures() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("unreadable.db");
+        std::fs::write(&path, b"fixture").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // A privileged user can still open it; there is nothing to report then.
+        if std::fs::File::open(&path).is_err() {
+            assert_eq!(check_access(&path).unwrap_err().kind, ErrorKind::Io);
+        }
     }
 }
 

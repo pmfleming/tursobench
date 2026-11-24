@@ -1,7 +1,7 @@
 use std::{path::Path, time::Duration};
 use tursobench_core::{
-    Access, Browse, Budget, CommitOutcome, DraftBatch, Edit, Event, EventKind, Failure, Inspection,
-    ResultSet, SchemaDiagram, Table,
+    Access, Browse, Budget, CommitOutcome, DraftBatch, Edit, ErrorKind, Event, EventKind, Failure,
+    Inspection, ResultSet, SchemaDiagram, Table,
 };
 use tursobench_db::{Operation, Request, Session};
 
@@ -89,6 +89,15 @@ pub fn run(session: &Session, sequence: u64, operation: Operation) -> Reply {
             continue;
         }
         assert_eq!(event.ticket, ticket);
+        // Script results, table metadata and streamed rows precede the answer.
+        let terminal = !matches!(
+            event.kind,
+            EventKind::ScriptResult(_)
+                | EventKind::ScriptOutcome { .. }
+                | EventKind::Table(_)
+                | EventKind::Columns(_)
+                | EventKind::Rows(_)
+        );
         match event.kind {
             EventKind::SchemaSnapshot(snapshot) => reply.snapshot = Some(snapshot),
             EventKind::ImportPreview(preview) => reply.preview = Some(preview),
@@ -97,32 +106,23 @@ pub fn run(session: &Session, sequence: u64, operation: Operation) -> Reply {
                 reply.result.columns = result.columns.clone();
                 reply.result.rows = result.rows.clone();
                 reply.script.push(result);
-                continue;
             }
-            EventKind::ScriptOutcome { rolled_back, .. } => {
-                reply.rolled_back = rolled_back;
-                continue;
-            }
+            EventKind::ScriptOutcome { rolled_back, .. } => reply.rolled_back = rolled_back,
             EventKind::ValueChunk { offset, bytes, .. } => reply.chunk = Some((offset, bytes)),
             EventKind::ValueSaved(path) => reply.saved = Some(path),
-            EventKind::Table(table) => {
-                reply.table = Some(table);
-                continue;
-            }
+            EventKind::Table(table) => reply.table = Some(table),
             EventKind::Inspection(info) => reply.info = Some(info),
             EventKind::Diagram(graph) => reply.graph = Some(graph),
             EventKind::EditsCommitted(outcome) => reply.outcome = Some(outcome),
             EventKind::Failed(error) => reply.failure = Some(error),
-            EventKind::Finished(_) => {
+            EventKind::Finished(_) | EventKind::Columns(_) | EventKind::Rows(_) => {
                 reply.result.apply(event);
-            }
-            EventKind::Columns(_) | EventKind::Rows(_) => {
-                reply.result.apply(event);
-                continue;
             }
             other => panic!("Unexpected response: {other:?}"),
         }
-        return reply;
+        if terminal {
+            return reply;
+        }
     }
 }
 pub struct Client {
@@ -200,12 +200,36 @@ impl Client {
         let original = page.rows[0].clone();
         self.commit(table, vec![Edit::Update { original, changes }])
     }
+    pub fn inspect(&mut self, table: &str) -> Inspection {
+        let reply = self.run(Operation::Inspect(table.into()));
+        reply
+            .info
+            .unwrap_or_else(|| panic!("{table}: {:?}", reply.failure))
+    }
+    /// Whether the worker refuses `operation` outright.
+    pub fn refuses(&mut self, operation: Operation) -> bool {
+        self.run(operation).failure.is_some()
+    }
     pub fn diagram(&mut self) -> SchemaDiagram {
         self.run(Operation::Diagram).graph.unwrap()
     }
     pub fn close(self) {
         close(&self.session);
     }
+}
+/// Panics unless `outcome` committed, and exactly `operations` when given.
+pub fn committed(outcome: &CommitOutcome, operations: Option<usize>) {
+    assert!(
+        matches!(outcome, CommitOutcome::Committed { operations: n } if operations.is_none_or(|o| o == *n)),
+        "{outcome:?}"
+    );
+}
+/// Panics unless `outcome` was rejected with `kind`.
+pub fn rejected(outcome: &CommitOutcome, kind: ErrorKind) {
+    assert!(
+        matches!(outcome, CommitOutcome::Rejected(e) if e.kind == kind),
+        "{outcome:?}"
+    );
 }
 /// Closes `session` and waits for its clean rollback acknowledgement.
 pub fn close(session: &Session) {

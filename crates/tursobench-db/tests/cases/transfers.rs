@@ -1,26 +1,43 @@
 use crate::common::{self, Client};
-use tursobench_core::{Access, ImportFormat, ImportSpec, InputKind, TransferOutcome, Value};
+use std::path::Path;
+use tursobench_core::{
+    Access, ImportFormat, ImportPreview, ImportSpec, InputKind, TransferOutcome, Value,
+};
 use tursobench_db::Operation;
 
-/// Imports typed JSONL into `table`, mapping every source column by name.
+/// Previews `path`, then imports it into `table`, mapping its source columns
+/// to `mapping` in order, or by name when `mapping` is empty.
 fn import(
     c: &mut Client,
-    path: &std::path::Path,
-    table: &str,
-    columns: &[String],
+    path: &Path,
+    format: ImportFormat,
+    kinds: &[InputKind],
+    (table, mapping): (&str, &[&str]),
     atomic: bool,
-) -> TransferOutcome {
+) -> (ImportPreview, TransferOutcome) {
+    let preview = c.run(Operation::PreviewImport {
+        path: path.into(),
+        format,
+        kinds: kinds.to_vec(),
+        null_marker: "\\N".into(),
+    });
+    let preview = preview.preview.expect("import preview");
+    let source_columns = preview.columns.clone();
+    let mapping = match mapping {
+        [] => source_columns.clone(),
+        names => names.iter().map(|&name| name.into()).collect(),
+    };
     let spec = ImportSpec {
         path: path.into(),
         table: table.into(),
-        format: ImportFormat::JsonLines,
-        source_columns: columns.to_vec(),
-        mapping: columns.to_vec(),
-        kinds: vec![],
+        format,
+        source_columns,
+        mapping,
+        kinds: kinds.to_vec(),
         null_marker: "\\N".into(),
         atomic,
     };
-    c.run(Operation::Import(spec)).transfer.unwrap()
+    (preview, c.run(Operation::Import(spec)).transfer.unwrap())
 }
 
 #[test]
@@ -46,16 +63,10 @@ fn complete_export_import_and_corrupt_input_transactions_are_truthful() {
         .unwrap();
     assert!(export.error.is_none(), "{}", export.message);
     assert_eq!(export.rows, 1205);
-    let preview = c
-        .run(Operation::PreviewImport {
-            path: output.clone(),
-            format: ImportFormat::JsonLines,
-            kinds: vec![],
-            null_marker: "\\N".into(),
-        })
-        .preview
-        .unwrap();
-    let imported = import(&mut c, &output, "target", &preview.columns, true);
+    let jsonl = |c: &mut Client, path: &Path, table: &str, atomic: bool| {
+        import(c, path, ImportFormat::JsonLines, &[], (table, &[]), atomic).1
+    };
+    let imported = jsonl(&mut c, &output, "target", true);
     assert!(imported.error.is_none(), "{}", imported.message);
     assert_eq!(imported.rows, 1205);
     assert_eq!(
@@ -69,11 +80,11 @@ fn complete_export_import_and_corrupt_input_transactions_are_truthful() {
         data.lines().take(1206).collect::<Vec<_>>().join("\n"),
     )
     .unwrap();
-    let atomic = import(&mut c, &corrupt, "invalid", &preview.columns, true);
+    let atomic = jsonl(&mut c, &corrupt, "invalid", true);
     assert!(atomic.error.is_some());
     assert_eq!(atomic.rows, 0);
     assert_eq!(c.count("invalid"), 0);
-    let partial = import(&mut c, &corrupt, "partial", &preview.columns, false);
+    let partial = jsonl(&mut c, &corrupt, "partial", false);
     assert!(partial.error.is_some());
     assert_eq!(partial.rows, 1000);
     assert_eq!(c.count("partial"), 1000);
@@ -81,7 +92,7 @@ fn complete_export_import_and_corrupt_input_transactions_are_truthful() {
 }
 
 #[test]
-fn csv_mapping_preserves_quoted_multiline_text_null_and_blobs() {
+fn csv_and_typed_json_imports_preserve_quoted_multiline_text_null_and_blobs() {
     let (dir, path) = common::database(
         "csv.db",
         &["CREATE TABLE target(id INTEGER PRIMARY KEY,value TEXT,note TEXT,data BLOB)"],
@@ -93,35 +104,15 @@ fn csv_mapping_preserves_quoted_multiline_text_null_and_blobs() {
     )
     .unwrap();
     let mut c = Client::open(&path, Access::ReadWrite);
-    let kinds = vec![
+    let kinds = [
         InputKind::Integer,
         InputKind::Text,
         InputKind::Text,
         InputKind::Blob,
     ];
-    let preview = c
-        .run(Operation::PreviewImport {
-            path: input.clone(),
-            format: ImportFormat::Csv,
-            kinds: kinds.clone(),
-            null_marker: "\\N".into(),
-        })
-        .preview
-        .unwrap();
+    let target = ("target", &["id", "value", "note", "data"][..]);
+    let (preview, imported) = import(&mut c, &input, ImportFormat::Csv, &kinds, target, true);
     assert_eq!(preview.rows.len(), 2);
-    let imported = c
-        .run(Operation::Import(ImportSpec {
-            path: input,
-            table: "target".into(),
-            format: ImportFormat::Csv,
-            source_columns: preview.columns,
-            mapping: vec!["id".into(), "value".into(), "note".into(), "data".into()],
-            kinds,
-            null_marker: "\\N".into(),
-            atomic: true,
-        }))
-        .transfer
-        .unwrap();
     assert!(imported.error.is_none(), "{}", imported.message);
     assert_eq!(
         c.sql("SELECT * FROM target ORDER BY id").rows,
@@ -139,6 +130,41 @@ fn csv_mapping_preserves_quoted_multiline_text_null_and_blobs() {
                 Value::Blob(vec![])
             ]
         ]
+    );
+    let json = dir.path().join("input.json");
+    let typed = |end: usize| {
+        let row = r#"[{"type":"integer","value":"3"},{"type":"text","value":"json"},{"type":"null"},{"type":"blob","hex":"01"}]"#;
+        let columns = r#"[{"name":"id"},{"name":"value"},{"name":"note"},{"name":"data"}]"#;
+        format!(
+            r#"{{"header":{{"format":"tursobench-typed-json","version":1,"columns":{columns}}},"rows":[{row}],"end":{{"rows":{end}}}}}"#
+        )
+    };
+    std::fs::write(&json, typed(2)).unwrap();
+    assert!(c.refuses(Operation::PreviewImport {
+        path: json.clone(),
+        format: ImportFormat::Json,
+        kinds: vec![],
+        null_marker: String::new(),
+    }));
+    std::fs::write(&json, typed(1)).unwrap();
+    let (preview, imported) = import(
+        &mut c,
+        &json,
+        ImportFormat::Json,
+        &[],
+        ("target", &[]),
+        true,
+    );
+    assert_eq!(preview.rows.len(), 1);
+    assert!(imported.error.is_none(), "{}", imported.message);
+    assert_eq!(
+        c.sql("SELECT * FROM target WHERE id=3").rows,
+        vec![vec![
+            Value::Integer(3),
+            Value::Text("json".into()),
+            Value::Null,
+            Value::Blob(vec![1])
+        ]]
     );
     c.close();
 }
@@ -186,7 +212,7 @@ fn sql_real_literals_are_checked_against_actual_engine_roundtrips() {
         &["CREATE TABLE t(id INTEGER PRIMARY KEY,value DECIMAL(10,2))"],
     );
     let mut c = Client::open(&path, Access::ReadOnly);
-    let table = c.run(Operation::Inspect("t".into())).info.unwrap().table;
+    let table = c.inspect("t").table;
     assert!(table.columns[1].declared_type.contains("10"));
     assert!(table.columns[1].declared_type.contains('2'));
     let mut seed = 0x123456789abcdef0u64;

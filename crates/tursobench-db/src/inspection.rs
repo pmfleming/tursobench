@@ -3,7 +3,7 @@
 use crate::{
     Diagnostic,
     browse::describe,
-    connection::{failure, from_engine},
+    connection::{failure, from_engine, text_column},
 };
 use turso::Connection;
 use tursobench_core::{
@@ -279,9 +279,7 @@ async fn table_names(
     let mut rows = c.query(sql, ()).await.map_err(failure)?;
     let (mut names, mut bytes) = (Vec::new(), 0);
     while let Some(row) = rows.next().await.map_err(failure)? {
-        let turso::Value::Text(name) = row.get_value(0).map_err(failure)? else {
-            return Err(Failure::input("Unexpected schema name"));
-        };
+        let name = text_column(&row, 0, "schema name")?;
         bytes += name.len();
         if names.len() == max || bytes > max_bytes {
             return Ok((names, true));

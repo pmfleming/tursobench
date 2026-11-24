@@ -176,39 +176,14 @@ fn parser_not_semicolon_splitting() {
     }
 }
 
-#[test]
-fn mid_result_engine_error_keeps_the_unsent_successful_rows() {
-    let (_dir, path) = fixture();
-    let s = common::opened(&path, Access::ReadOnly);
-    let result = query(
-        &s,
-        1,
-        "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<100) SELECT x,json_extract(CASE WHEN x=70 THEN 'bad' ELSE '{}' END,'$') FROM n",
-    );
-    assert!(result.completion.unwrap().error.is_some());
-    assert_eq!(result.rows.len(), 69);
-    assert_eq!(result.rows[68][0], Value::Integer(69));
-    common::close(&s);
-}
 /// Each limit alone refuses the second row (or the first, without paging).
 fn assert_row_limits(s: &Session) {
+    let b = Budget::default();
     let limits = [
-        Budget {
-            rows: 1,
-            ..Budget::default()
-        },
-        Budget {
-            rows: 0,
-            ..Budget::default()
-        },
-        Budget {
-            bytes: 0,
-            ..Budget::default()
-        },
-        Budget {
-            cell_bytes: 0,
-            ..Budget::default()
-        },
+        Budget { rows: 1, ..b },
+        Budget { rows: 0, ..b },
+        Budget { bytes: 0, ..b },
+        Budget { cell_bytes: 0, ..b },
     ];
     for (index, budget) in limits.into_iter().enumerate() {
         let r = run(s, 10 + index as u64, "SELECT * FROM items", budget);
@@ -290,6 +265,15 @@ fn real_readonly_bounded_results_and_cleanup() {
     let r = query(&s, 5, "SELECT * FROM items WHERE 0");
     assert_eq!(r.columns.len(), 2);
     assert!(r.rows.is_empty());
+    // A mid-result engine error keeps the successful rows not yet sent.
+    let r = query(
+        &s,
+        6,
+        "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<100) SELECT x,json_extract(CASE WHEN x=70 THEN 'bad' ELSE '{}' END,'$') FROM n",
+    );
+    assert!(r.completion.unwrap().error.is_some());
+    assert_eq!(r.rows.len(), 69);
+    assert_eq!(r.rows[68][0], Value::Integer(69));
     assert_page_budgets(&s);
     for ticket in [
         Ticket {

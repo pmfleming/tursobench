@@ -1,6 +1,6 @@
 //! Draft edit commits and the persistent editor transaction they sit beside.
 use crate::common::{self, Client};
-use tursobench_core::{Access, CommitOutcome, Edit, ErrorKind, Failure, TransactionState, Value};
+use tursobench_core::{Access, Edit, ErrorKind, TransactionState, Value};
 use tursobench_db::Operation;
 fn fixture() -> (tempfile::TempDir, Client) {
     let (dir, path) = common::database(
@@ -14,7 +14,7 @@ fn fixture() -> (tempfile::TempDir, Client) {
     (dir, client)
 }
 #[test]
-fn composite_changed_keys_null_blob_and_defaults() {
+fn composite_changed_keys_null_blob_defaults_and_infinite_originals() {
     let (_dir, mut h) = fixture();
     h.sql(
         "CREATE TABLE nullable_keys(a TEXT, b INTEGER, data TEXT COLLATE NOCASE, PRIMARY KEY(a,b))",
@@ -29,64 +29,43 @@ fn composite_changed_keys_null_blob_and_defaults() {
     let (table, page) = h.browse("items", 0);
     let rows = page.rows;
     assert!(table.editable());
-    assert!(matches!(
-        h.commit(
-            table.clone(),
-            vec![Edit::Update {
-                original: rows[0].clone(),
-                changes: vec![
-                    (0, Value::Integer(3)),
-                    (1, Value::Text("changed".into())),
-                    (2, Value::Blob(vec![1, 2, 3])),
-                    (3, Value::Text(String::new()))
-                ]
-            }]
-        ),
-        CommitOutcome::Committed { operations: 1 }
-    ));
+    let changes = vec![
+        (0, Value::Integer(3)),
+        (1, Value::Text("changed".into())),
+        (2, Value::Blob(vec![1, 2, 3])),
+        (3, Value::Text(String::new())),
+    ];
+    let original = rows[0].clone();
+    let update = h.commit(table.clone(), vec![Edit::Update { original, changes }]);
+    common::committed(&update, Some(1));
     let (_, page) = h.browse("items", 0);
     let rows = page.rows;
     assert_eq!(rows[1][0], Value::Integer(3));
     assert_eq!(rows[1][2], Value::Blob(vec![1, 2, 3]));
     assert_eq!(rows[1][3], Value::Text(String::new()));
-    assert!(matches!(
-        h.commit(
-            table.clone(),
-            vec![Edit::Insert {
-                values: vec![
-                    Some(Value::Integer(4)),
-                    Some(Value::Text("default".into())),
-                    Some(Value::Null),
-                    None
-                ]
-            }]
-        ),
-        CommitOutcome::Committed { .. }
-    ));
+    let values = vec![
+        Some(Value::Integer(4)),
+        Some(Value::Text("default".into())),
+        Some(Value::Null),
+        None,
+    ];
+    common::committed(
+        &h.commit(table.clone(), vec![Edit::Insert { values }]),
+        None,
+    );
     assert_eq!(
         h.sql("SELECT label FROM items WHERE a=4").rows,
         vec![vec![Value::Text("default".into())]]
     );
-    assert!(matches!(
-        h.commit(
-            table,
-            vec![Edit::Delete {
-                original: rows[0].clone()
-            }]
-        ),
-        CommitOutcome::Committed { .. }
-    ));
+    let original = rows[0].clone();
+    common::committed(&h.commit(table, vec![Edit::Delete { original }]), None);
     assert_eq!(h.count("items"), 2);
-}
-
-#[test]
-fn infinite_original_values_can_be_matched_for_updates_and_deletes() {
-    let (_dir, mut c) = fixture();
-    c.sql("CREATE TABLE extremes(id INTEGER PRIMARY KEY, value REAL)");
-    c.sql("INSERT INTO extremes VALUES(1,1e999),(2,-1e999)");
-    let (table, page) = c.browse("extremes", 0);
+    // Infinite original values still match for updates and deletes.
+    h.sql("CREATE TABLE extremes(id INTEGER PRIMARY KEY, value REAL)");
+    h.sql("INSERT INTO extremes VALUES(1,1e999),(2,-1e999)");
+    let (table, page) = h.browse("extremes", 0);
     assert!(matches!(page.rows[0][1],Value::Real(n) if n.is_infinite()));
-    let outcome = c.commit(
+    let outcome = h.commit(
         table,
         vec![
             Edit::Update {
@@ -98,15 +77,12 @@ fn infinite_original_values_can_be_matched_for_updates_and_deletes() {
             },
         ],
     );
-    assert!(
-        matches!(outcome, CommitOutcome::Committed { operations: 2 }),
-        "{outcome:?}"
-    );
+    common::committed(&outcome, Some(2));
     assert_eq!(
-        c.sql("SELECT id,value FROM extremes").rows,
+        h.sql("SELECT id,value FROM extremes").rows,
         vec![vec![Value::Integer(1), Value::Real(1.0)]]
     );
-    c.close();
+    h.close();
 }
 #[test]
 fn rejected_batches_preserve_rows_across_conflicts_constraints_and_transactions() {
@@ -163,10 +139,7 @@ fn rejected_batches_preserve_rows_across_conflicts_constraints_and_transactions(
                 last,
             ],
         );
-        assert!(
-            matches!(outcome, CommitOutcome::Rejected(Failure {kind: actual, ..}) if actual == kind),
-            "{outcome:?}"
-        );
+        common::rejected(&outcome, kind);
         assert_eq!(
             h.sql("SELECT a,b,data,label FROM items ORDER BY a").rows,
             original

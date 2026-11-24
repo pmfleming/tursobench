@@ -241,10 +241,9 @@ mod tests {
                 .is_err()
         );
         drop(s);
-        assert_eq!(
-            Store::open(&path).unwrap().payload(),
-            Some(r#"{"font_size":18}"#)
-        );
+        let saved = Some(r#"{"font_size":18}"#);
+        assert_eq!(Store::read_file(&path).unwrap().as_deref(), saved);
+        assert_eq!(Store::open(&path).unwrap().payload(), saved);
     }
     #[test]
     fn runtime_corruption_and_external_changes_cannot_be_overwritten() {

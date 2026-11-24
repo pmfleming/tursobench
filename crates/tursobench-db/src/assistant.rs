@@ -4,7 +4,7 @@
 //! Replies travel over a per-call channel, not the UI event stream.
 use crate::{
     Operation, Request,
-    connection::{failure, from_engine},
+    connection::{failure, from_engine, text_column},
     sql,
 };
 use serde_json::{Value as Json, json};
@@ -175,12 +175,10 @@ async fn validate_views(c: &Connection, text: &str) -> Result<(), Failure> {
     let mut views = std::collections::HashMap::new();
     let mut bytes = 0usize;
     while let Some(row) = rows.next().await.map_err(failure)? {
-        let turso::Value::Text(name) = row.get_value(0).map_err(failure)? else {
-            return Err(Failure::input("Unexpected view name"));
-        };
-        let turso::Value::Text(ddl) = row.get_value(1).map_err(failure)? else {
-            return Err(Failure::input("Unexpected view definition"));
-        };
+        let (name, ddl) = (
+            text_column(&row, 0, "view name")?,
+            text_column(&row, 1, "view definition")?,
+        );
         bytes = bytes.saturating_add(name.len()).saturating_add(ddl.len());
         if bytes > crate::COMMAND_BYTES {
             return Err(Failure::input(
