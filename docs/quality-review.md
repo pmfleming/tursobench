@@ -1,3 +1,141 @@
+# Quality audit and refactor — 2026-11-24
+
+Baseline: `1bd2022` (the 2026-11-19 pass). Measured with the same frozen
+`rqlens` as that pass (`/home/laufan/Projects/rust-quality-lens` at `f9e5d8b`,
+SHA-256 `6147c4070e9352a6c70190e27b6f2c051cb2220d4427c8196708bc33fda4c0cf`);
+the baseline evidence is that pass's final measurement, whose sources match
+`1bd2022`. Both runs use the unchanged source roots (`crates`,
+`tools/engine-spike/src`), including tests, with no exclusions, lint
+suppressions or `#[allow]` attributes. The after figures include `ff96fce`
+(dragging a folded column's line, +79 lines), which was committed during the pass.
+
+| Measurement | Before | After |
+| --- | ---: | ---: |
+| Maximum cognitive complexity | 33 | 26 |
+| Sum of cognitive complexity | 6,715 | 6,206 |
+| Functions above cognitive 25 | 8 | 1 |
+| Maximum cyclomatic complexity | 65 | 65 |
+| Sum of cyclomatic complexity | 8,985 | 9,092 |
+| Decision points (cyclomatic − 1, summed) | 6,934 | 6,846 |
+| Sum of function Halstead effort | 48,414,135 | 45,785,372 |
+| Duplicated source lines | 1,299 (2.36%) | 620 (1.15%) |
+| Sum of module locality risk ↓ | 514.5 | 411.0 |
+| First-party module dependency edges | 562 | 531 |
+| Mean observed module leverage | 28.72 | 26.90 |
+| Authored Rust modules | 125 | 126 |
+| Physical Rust lines | 57,692 | 56,909 |
+| Literal `.clone()` / `.cloned()` calls | 542 / 40 | 478 / 32 |
+| Unsafe blocks (undocumented) | 3 (0) | 3 (0) |
+| Wildcard imports | 8 | 0 |
+| Escape-hatch score | 46 | 30 |
+| Catalogued tests | 330 | 316 |
+| Test/helper function lines | 15,012 | 14,550 |
+| Functions with no coverage | 111 | 65 |
+| Lines coverage (%) | 86.66 | 90.45 |
+| Regions coverage (%) | 86.31 | 90.17 |
+| Functions coverage (%) | 88.05 | 91.87 |
+
+The remaining cognitive 26 is `shell::App::shell`, which was left alone while
+the column-drag work in `shell.rs`, `workspace.rs`, `tiling.rs` and
+`presentation.rs` was uncommitted; the maximum cyclomatic 65 is still
+`icons::marks`, the one-arm-per-icon match kept so the compiler checks every
+icon has a drawing. The cyclomatic sum rises only because there are 195 more
+functions, each with a base of one; branching falls by 88 decision points.
+Mean leverage falls because, in this rqlens version, a module's leverage is
+ten points per dependent module (capped at 100): removing 31 dependency edges
+to lower locality risk necessarily lowers it. No edge was added to raise it.
+
+The changes address these findings:
+
+- **Database worker and crates:** worker request handlers moved beside what
+  they use (`worker/transfer.rs`, `worker/reads.rs`; diagnostics build their own
+  SQL; the assistant tool opens its own connection), taking the worker's
+  locality risk from 18 to 6. `access` is a public module instead of root
+  re-exports. One `sql::parse_first` replaces ten parser call sites; edit and
+  filter binders borrow values and typed-JSON rows are moved, not copied. All
+  eight `use super::*` test imports are explicit.
+- **Assistant:** one `Spec::serve` builds every agent's launch spec, so the
+  chat, relay tests and fake agents no longer reach into `claude`/`codex`.
+  `Profile` holds its vendor rather than copies of its fields; one
+  `change_sharing` replaces two loops over every workspace; the chat and copied
+  HTML share one inline Markdown parser. Assistant `.clone()` sites fall from
+  116 to 83.
+- **Records views:** the inspector's record fields, JSON detail text, grid
+  status bar, cells, context menu (now a table), draft presentation and page
+  trimming are split into named steps, with “Go to row” and the undo checkpoint
+  moved to the modules whose data they change. Grid actions carry a cell and
+  fetch its value only when clicked, removing per-frame foreign-key clones.
+  `draft_bytes` reuses core's `DraftBatch::bytes`.
+- **Query tools:** filters use one quote-aware scanner for AND, OR and IN
+  instead of the SQL tokenizer; transfers use `DatabaseWorkspace::request`;
+  workspace requests live with the workspace in `sessions.rs`.
+- **Shell and navigation:** the access-mode dialog, ribbon styling, zoom button
+  and overview each moved to the module that already had their dependencies
+  (ribbon locality 12 → 3, sidebar 9 → 3). Sidebar column and index rows reuse
+  the table and definition rows; saved queries and history share one action.
+- **Platform:** `Preferences::normalize` delegates to the assistant and
+  map-layout types that own those fields; discovery roots have constructors;
+  inspection polling, discovery events and the system-theme reader are split by
+  source. `Appearance::update` no longer clones the palette map every frame.
+- **Tests:** overlapping journeys merged with their assertions kept (paging,
+  bulk deletion and worker termination, the SQL divider, relationship zoom,
+  token entry, workspace limits, read-only VACUUM/ATTACH, the diagram and
+  assistant location/budget cases, vendor switching, Codex and ACP, the relay
+  tests); four Claude stand-in scripts are one; tables replace repeated cases.
+  New focused tests cover the transfer window, filter facets and chips, the
+  profiling and administration windows, completion, ribbon actions, the cell
+  menu, the large-value viewer, agent account settings, typed-JSON import,
+  preference reads and system-theme parsing. Two code paths previously reached
+  only by timing (a catalog refresh and a map reload requested while one is in
+  flight) are now triggered on purpose.
+
+Bugs fixed:
+
+- The 2026-11-19 pass dropped the transfer window's “New output file” field,
+  so whole-table export, statement export and verified backup could never be
+  enabled. The field is back, with an accessible label, and a test types into it
+  and exports, previews, maps, imports and checkpoints.
+- With the sidebar hidden, the ribbon's Find and Save query and Ctrl S in the
+  editor switched an invisible sidebar panel; they now reveal the sidebar.
+- A custom ACP agent with an executable path could show as “Not installed”.
+- Copied HTML ended bold text at inline code, unlike the chat panel.
+- The connection and settings “both themes” tests only ever checked the dark
+  theme, because `App::new` re-applied the system theme.
+
+Smaller behavioural notes: applying or clearing an AND/OR/IN expression clears
+a stale filter error and closes the chip editor like other filter changes;
+changing the default assistant sharing normalizes preferences before saving;
+dead browser names in discovery's skip list, a never-successful second window
+lookup in `browse_table`, a duplicate diagram load and the unused non-ribbon
+Run all menu branch were removed.
+
+Coverage changes from 35,128/40,534 to 36,581/40,442 lines and 57,018/66,060 to
+61,623/68,341 regions; uncovered lines fall from 5,406 to 3,861. No branch or
+mutation coverage was measured and no runtime speedup is claimed. Leverage and
+locality describe observed dependencies; dependencies used only inside macro
+arguments are not resolved, which is why the interaction-test module's
+locality rose from 9 to 12 when one such check became a closure.
+
+Validation passed on the merged branch: formatting, workspace Clippy across all
+targets with warnings denied, workspace tests (all pass; the same five ignored
+tests: the manual frame profile and live agent tests), workspace build, engine
+spike, and the desktop, startup discovery and local-project smokes. On the
+assistant branch before merging, the assistant capture script's 11 scenes were
+compared pixel by pixel against the baseline; the only differences are the temporary path and the number of
+discovered databases.
+
+Local evidence is under `target/quality-refactor-20261124/`: frozen `rqlens`,
+`before/` and `after/` evidence, `compare.py`, `comparison.json`, `files.py`,
+`group.py`, the per-area findings and delegate briefs, `lens.sh` and logs.
+Reproduce from the checkout being measured (set `project_root` in `after.toml`):
+
+```sh
+nix develop --command bash target/quality-refactor-20261124/lens.sh all after
+nix develop --command python3 target/quality-refactor-20261124/compare.py
+```
+
+---
+
 # Quality audit and refactor — 2026-11-19
 
 Baseline: `9cb3500` (movable columns and the assistant tile). Measured with the
