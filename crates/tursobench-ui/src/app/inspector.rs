@@ -16,6 +16,8 @@ enum RecordAction {
     Revert(usize),
     /// Read the column's blobs through this lens from now on.
     Lens(usize, Lens),
+    /// Open the field in the value view.
+    Open(usize),
 }
 /// The widths every field of a record shares: its name and, when wide, its declared type.
 #[derive(Clone, Copy)]
@@ -187,30 +189,38 @@ fn record_wrap(
     Some(ui.painter().layout_job(job))
 }
 
-/// The lenses a previewed field could use, as selectable icons at the right
-/// of its first line; returns the one clicked.
-fn lens_buttons(
+/// At the right of a previewed field's first line: the lenses it could use,
+/// as selectable icons, then the icon that opens it. Returns what was clicked.
+fn preview_tools(
     ui: &mut egui::Ui,
     row: egui::Rect,
     value: &mut egui::Rect,
     col: usize,
     preview: &Preview,
-) -> Option<Lens> {
-    if preview.offered.len() < 2 {
-        return None;
-    }
-    let mut clicked = None;
-    for &lens in preview.offered.iter().rev() {
+) -> Option<RecordAction> {
+    let slot = |value: &mut egui::Rect, gap: f32| {
+        value.max.x -= gap;
         let rect = egui::Rect::from_min_max(
             egui::pos2(value.right() - 24.0, row.top()),
             egui::pos2(value.right(), row.top() + 24.0),
         );
         value.max.x -= 24.0;
+        rect
+    };
+    let mut child = line_child(ui, slot(value, 0.0), ("open", col));
+    let open = icons::line_control(&mut child, Icon::Fit, "Open value", "Enter", None);
+    let mut clicked = open.clicked().then_some(RecordAction::Open(col));
+    if preview.offered.len() < 2 {
+        return clicked;
+    }
+    for (i, &lens) in preview.offered.iter().rev().enumerate() {
+        let rect = slot(value, if i == 0 { 6.0 } else { 0.0 });
         let selected = lens == preview.lens;
         let mut child = line_child(ui, rect, ("lens", col, lens.name()));
-        let response = icons::line_control(&mut child, lens.icon(), lens.name(), "", selected);
+        let response =
+            icons::line_control(&mut child, lens.icon(), lens.name(), "", Some(selected));
         if response.clicked() {
-            clicked = Some(lens);
+            clicked = Some(RecordAction::Lens(col, lens));
         }
     }
     clicked
@@ -420,6 +430,7 @@ impl App {
                     .lenses
                     .insert(col, lens);
             }
+            Some(RecordAction::Open(col)) => self.open_value(row, col),
             None => {}
         }
         if !self.database.workspace.enabled {
@@ -427,18 +438,18 @@ impl App {
             self.record_relationships(ui, row);
         }
     }
-    /// A double-clicked field is edited in place; a value too large for that
-    /// opens in full, and any other in the detached cell editor.
+    /// A double-clicked field is edited in place; a blob or deferred value
+    /// opens in the value view, and any other in the detached cell editor.
     fn edit_record_field(&mut self, row: usize, col: usize) {
-        self.open_cell(row, col);
-        self.start_inline(row, col);
-        if self.database.document.tools.inline.is_some() {
+        let rows = &self.database.document.result.rows;
+        if let Some(Value::Blob(_) | Value::Deferred(_)) = rows.get(row).and_then(|v| v.get(col)) {
+            self.open_value(row, col);
             return;
         }
-        let rows = &self.database.document.result.rows;
-        match rows.get(row).and_then(|values| values.get(col)) {
-            Some(Value::Deferred(cell)) => self.open_large_value((**cell).clone()),
-            _ => self.database.document.ui.inspector_detached = true,
+        self.open_cell(row, col);
+        self.start_inline(row, col);
+        if self.database.document.tools.inline.is_none() {
+            self.database.document.ui.inspector_detached = true;
         }
     }
     /// Whether the record tile is the workspace's active tile.
@@ -556,9 +567,7 @@ impl App {
             value_rect.max.x -= 24.0;
         }
         if let Some(preview) = &preview {
-            if let Some(lens) = lens_buttons(ui, rect, &mut value_rect, col, preview) {
-                action = Some(RecordAction::Lens(col, lens));
-            }
+            action = preview_tools(ui, rect, &mut value_rect, col, preview).or(action);
             let body = egui::Rect::from_min_max(
                 rect.min + egui::vec2(8.0, 26.0),
                 rect.max - egui::vec2(8.0, 4.0),

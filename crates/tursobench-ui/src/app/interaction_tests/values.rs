@@ -1,0 +1,256 @@
+//! The record tile's value view, through the real worker.
+use super::{App, browse_and_wait, connected, draw, egui, frame, key_event, wait_until};
+use crate::app::value::{CHUNK, View};
+use tursobench_blob::encode::Format;
+use tursobench_core::{EventKind, Failure, Value};
+
+/// A table whose `data` is over the 64 KiB a page keeps in memory, with
+/// "seam" written across its first chunk boundary, beside a short blob.
+fn deferred() -> (tempfile::TempDir, egui::Context, App, Vec<u8>) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("values.db");
+    let mut big = vec![0u8; 3 * CHUNK as usize];
+    big[CHUNK as usize - 2..CHUNK as usize + 2].copy_from_slice(b"seam");
+    big[0..4].copy_from_slice(&[0x00, 0x66, 0x6a, 0x73]);
+    let bytes = big.clone();
+    crate::test_support::run(async move {
+        let db = turso::Builder::new_local(path.to_str().unwrap())
+            .build()
+            .await?;
+        let c = db.connect()?;
+        c.execute(
+            "CREATE TABLE v(id INTEGER PRIMARY KEY, data BLOB, small BLOB)",
+            (),
+        )
+        .await?;
+        let params = turso::params![big, vec![0u8, 255, 122]];
+        c.execute("INSERT INTO v VALUES(1, ?1, ?2)", params).await?;
+        Ok::<_, turso::Error>(())
+    })
+    .unwrap();
+    let (ctx, mut app) = connected(&dir.path().join("values.db"), true);
+    browse_and_wait(&mut app, &ctx, "v");
+    (dir, ctx, app, bytes)
+}
+
+fn view(app: &App) -> &View {
+    app.database
+        .document
+        .tools
+        .values
+        .view
+        .as_ref()
+        .expect("value open")
+}
+fn view_mut(app: &mut App) -> &mut View {
+    app.database
+        .document
+        .tools
+        .values
+        .view
+        .as_mut()
+        .expect("value open")
+}
+/// Draw and poll until `done`, as the app would between frames.
+fn settle_value(app: &mut App, ctx: &egui::Context, done: impl Fn(&App) -> bool) {
+    for _ in 0..500 {
+        draw(app, ctx);
+        if done(app) {
+            return;
+        }
+        wait_until(app, ctx, |a| {
+            a.database.document.tools.values.ticket.is_none()
+        });
+    }
+    panic!("the value view never settled: {}", view(app).message);
+}
+/// Take keyboard focus from the sidebar search, as clicking the tile would.
+fn unfocus(app: &mut App, ctx: &egui::Context) {
+    app.sidebar_search.focus = false;
+    ctx.memory_mut(|m| {
+        if let Some(id) = m.focused() {
+            m.surrender_focus(id);
+        }
+    });
+}
+fn copied(output: &egui::FullOutput) -> Vec<String> {
+    output
+        .platform_output
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            egui::OutputCommand::CopyText(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_deferred_value_pages_finds_copies_and_saves_by_handle() {
+    let (dir, ctx, mut app, bytes) = deferred();
+    unfocus(&mut app, &ctx);
+    assert!(matches!(
+        &app.database.document.result.rows[0][1],
+        Value::Deferred(_)
+    ));
+    app.open_value(0, 1);
+    // Only the head is in memory; the first chunk is read for the lines shown.
+    settle_value(&mut app, &ctx, |a| view(a).byte(100).is_some());
+    let output = draw(&mut app, &ctx);
+    let lines: Vec<_> = super::texts(&output)
+        .map(|t| t.galley.job.text.clone())
+        .collect();
+    assert!(
+        lines.iter().any(|t| t.starts_with("000000  00 66 6a 73")),
+        "{lines:?}"
+    );
+    assert!(lines.iter().any(|t| t == "1 936 352 768"), "{lines:?}");
+    // A search finds bytes split across the boundary between two chunks.
+    view_mut(&mut app).find = Some("seam".into());
+    app.find_value();
+    settle_value(&mut app, &ctx, |a| view(a).found.is_some());
+    assert_eq!(view(&app).selection(), CHUNK - 2..=CHUNK + 1);
+    settle_value(&mut app, &ctx, |a| view(a).bytes(CHUNK - 2, 4).is_some());
+    // Ctrl C copies the selection as shown; the characters column copies text.
+    // (With the find input open, Ctrl C copies from it instead.)
+    view_mut(&mut app).find = None;
+    unfocus(&mut app, &ctx);
+    let output = frame(&mut app, &ctx, vec![egui::Event::Copy]);
+    assert_eq!(copied(&output), ["73 65 61 6d"]);
+    view_mut(&mut app).characters = true;
+    let output = frame(&mut app, &ctx, vec![egui::Event::Copy]);
+    assert_eq!(copied(&output), ["seam"]);
+    // Copying the whole value as Base64 loads it first.
+    view_mut(&mut app).move_to(0, false);
+    view_mut(&mut app).message.clear();
+    app.copy_value(&ctx, Format::Base64, false);
+    settle_value(&mut app, &ctx, |a| view(a).message.starts_with("Copied"));
+    assert_eq!(
+        view(&app).message,
+        format!("Copied {} bytes as Base64", bytes.len())
+    );
+    // Saving writes the exact bytes through the session.
+    let path = dir.path().join("saved.bin");
+    app.value_saved_to(path.clone());
+    settle_value(&mut app, &ctx, |a| view(a).message.starts_with("Saved"));
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    // An expired backing is reported, and nothing more is asked of it.
+    let expired = Failure::input("Value backing expired or belongs to another session");
+    app.value_event(&ctx, EventKind::Failed(expired));
+    assert!(view(&app).expired);
+    let sequence = app.database.sequence;
+    view_mut(&mut app).want = Some(crate::app::value::Want::Load);
+    app.drive_value();
+    assert_eq!(app.database.sequence, sequence);
+    app.close();
+}
+
+#[test]
+fn values_in_memory_open_with_enter_and_close_with_escape() {
+    let (_dir, ctx, mut app, _) = deferred();
+    app.open_record_window(0, 2);
+    draw(&mut app, &ctx);
+    unfocus(&mut app, &ctx);
+    let sequence = app.database.sequence;
+    frame(
+        &mut app,
+        &ctx,
+        vec![key_event(egui::Key::Enter, true, egui::Modifiers::NONE)],
+    );
+    assert_eq!((view(&app).row, view(&app).col), (0, 2));
+    let output = draw(&mut app, &ctx);
+    let lines: Vec<_> = super::texts(&output)
+        .map(|t| t.galley.job.text.clone())
+        .collect();
+    assert!(
+        lines.iter().any(|t| t.starts_with("0000  00 ff 7a")),
+        "{lines:?}"
+    );
+    assert_eq!(
+        app.database.sequence, sequence,
+        "bytes in memory need no request"
+    );
+    // Ctrl F opens find; Esc closes it, then the value.
+    frame(
+        &mut app,
+        &ctx,
+        vec![key_event(egui::Key::F, true, egui::Modifiers::COMMAND)],
+    );
+    assert!(view(&app).find.is_some());
+    view_mut(&mut app).find = Some("ff 7a".into());
+    frame(
+        &mut app,
+        &ctx,
+        vec![key_event(egui::Key::Enter, true, egui::Modifiers::NONE)],
+    );
+    assert_eq!(view(&app).selection(), 1..=2);
+    frame(
+        &mut app,
+        &ctx,
+        vec![key_event(egui::Key::Escape, true, egui::Modifiers::NONE)],
+    );
+    assert!(view(&app).find.is_none());
+    frame(
+        &mut app,
+        &ctx,
+        vec![key_event(egui::Key::Escape, true, egui::Modifiers::NONE)],
+    );
+    assert!(!app.value_open());
+    // Ctrl G goes to an offset typed in the footer.
+    app.open_value(0, 2);
+    frame(
+        &mut app,
+        &ctx,
+        vec![key_event(egui::Key::G, true, egui::Modifiers::COMMAND)],
+    );
+    view_mut(&mut app).goto = Some("0x2".into());
+    frame(
+        &mut app,
+        &ctx,
+        vec![key_event(egui::Key::Enter, true, egui::Modifiers::NONE)],
+    );
+    assert_eq!(view(&app).cursor, 2);
+    // Arrows move the cursor while the value is open.
+    frame(
+        &mut app,
+        &ctx,
+        vec![key_event(egui::Key::ArrowLeft, true, egui::Modifiers::NONE)],
+    );
+    assert_eq!(view(&app).cursor, 1);
+    app.close();
+}
+
+#[test]
+fn a_value_without_backing_or_session_says_so() {
+    let (ctx, mut app) = crate::app::test_ui::app();
+    let cell = |handle| {
+        Value::Deferred(Box::new(tursobench_core::DeferredCell {
+            handle,
+            kind: tursobench_core::LargeKind::Text,
+            bytes: 40_000_000,
+            head: b"head".to_vec(),
+        }))
+    };
+    let document = &mut app.database.document;
+    document.result.columns = vec![tursobench_core::Column {
+        name: "body".into(),
+        declared_type: None,
+    }];
+    document.result.rows = vec![vec![cell(None)], vec![cell(Some(7))]];
+    app.open_value(0, 0);
+    assert!(view(&app).message.contains("64 MiB"));
+    app.open_value(1, 0);
+    app.drive_value();
+    assert_eq!(view(&app).message, "The source session is closed");
+    // Chunks for another value are ignored.
+    let chunk = EventKind::ValueChunk {
+        handle: 8,
+        offset: 0,
+        bytes: vec![1; 10],
+        total: 40_000_000,
+    };
+    app.value_event(&ctx, chunk);
+    assert_eq!(view(&app).byte(4), None);
+    app.value_event(&ctx, EventKind::ValueSaved("/tmp/value".into()));
+    assert_eq!(view(&app).message, "Saved to /tmp/value");
+}

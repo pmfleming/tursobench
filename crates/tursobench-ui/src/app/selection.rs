@@ -202,6 +202,13 @@ impl App {
         inline.is_some_and(|e| e.row == row && e.column == column)
     }
     pub(super) fn start_inline(&mut self, row: usize, column: usize) {
+        // A blob or deferred value opens in the record tile's value view.
+        let rows = &self.database.document.result.rows;
+        if let Some(Value::Blob(_) | Value::Deferred(_)) = rows.get(row).and_then(|r| r.get(column))
+        {
+            self.open_value(row, column);
+            return;
+        }
         if !self.can_edit() {
             self.open_cell(row, column);
             return;

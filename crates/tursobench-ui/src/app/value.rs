@@ -1,8 +1,12 @@
 //! Blob and deferred values: what they are, in the words every view shares,
 //! and the lenses that read them in the record tile.
+mod hex;
+mod inspect;
 mod job;
 mod preview;
 mod summary;
+mod tile;
+mod view;
 
 use super::icons::Icon;
 use std::sync::Arc;
@@ -12,6 +16,8 @@ pub(super) use preview::{HEIGHT as PREVIEW_HEIGHT, Preview};
 #[cfg(test)]
 pub(super) use summary::MADE as SUMMARIES_MADE;
 pub(super) use summary::Summary;
+#[cfg(test)]
+pub(super) use view::{CHUNK, View, Want};
 
 /// A way of reading a value's bytes. Choosing one never changes the value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,6 +74,8 @@ pub(super) struct Target {
     pub drafts: u64,
     pub row: usize,
     pub col: usize,
+    /// A decode of the whole value, rather than the preview's.
+    pub whole: bool,
 }
 
 /// A document's value decoding: the selected value's decode and its thread.
@@ -75,6 +83,9 @@ pub(super) struct Target {
 pub(super) struct Values {
     decoder: job::Decoder,
     decode: Option<(Target, u64, Decoded)>,
+    /// The field open in the value view, and its request in flight.
+    pub view: Option<view::View>,
+    pub ticket: Option<tursobench_core::Ticket>,
 }
 impl Values {
     /// The decoded tree of the value at `target`: started on first request,

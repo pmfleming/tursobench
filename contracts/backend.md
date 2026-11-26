@@ -104,9 +104,14 @@ be described without reading its backing.
 Private anonymous files back at most 64 MiB/value, 256 MiB/session and 1,024 files,
 with FIFO expiration. Unsupported sizes/storage failures remain explicitly
 unavailable. The OS reclaims anonymous backing on process termination on Linux.
-Viewer requests read at most 64 KiB (UI 16 KiB), search the current chunk and save
-exact bytes with atomic no-overwrite publication. Deferred originals cannot be
-staged or exported as fabricated text. Original SQL is never rerun to obtain them.
+Viewer requests read at most 64 KiB; the record tile pages a value in 64 KiB
+chunks and keeps at most 16 of them. `LoadValue` reads a whole value of at most
+16 MiB for a lens and refuses larger ones. `FindValue` searches the whole backing
+from an offset for 1–1,024 bytes, overlapping its 64 KiB reads so a match across
+a chunk boundary is found. `SaveValue` writes exact bytes with atomic
+no-overwrite publication. An expired handle fails each request. Deferred
+originals cannot be staged or exported as fabricated text. Original SQL is never
+rerun to obtain them.
 Catalog discovery has an independent 10,000-object / 8 MiB budget; tables/views
 come first, truncation is visible, and DDL over 16 KiB loads separately on demand.
 

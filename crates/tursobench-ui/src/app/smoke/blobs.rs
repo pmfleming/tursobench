@@ -11,9 +11,12 @@ struct Scene {
     size: [f32; 2],
     table: &'static str,
     field: Option<usize>,
+    /// Open the field in the value view.
+    open: bool,
 }
 // Fields of `blob_fields`, in table order.
 const META: usize = 6;
+const PAYLOAD: usize = 7;
 const SESSION: usize = 8;
 const NOTE: usize = 9;
 const WIDE: [f32; 2] = [1800.0, 1000.0];
@@ -24,42 +27,70 @@ const SCENES: &[Scene] = &[
         size: WIDE,
         table: "blob_fields",
         field: None,
+        open: false,
     },
     Scene {
         name: "blob-fields-laptop.png",
         size: LAPTOP,
         table: "blob_fields",
         field: None,
+        open: false,
     },
     Scene {
         name: "blob-hex-preview.png",
         size: WIDE,
         table: "blob_fields",
         field: Some(SESSION),
+        open: false,
     },
     Scene {
         name: "blob-hex-preview-laptop.png",
         size: LAPTOP,
         table: "blob_fields",
         field: Some(SESSION),
+        open: false,
     },
     Scene {
         name: "blob-tree-preview.png",
         size: WIDE,
         table: "blob_fields",
         field: Some(META),
+        open: false,
     },
     Scene {
         name: "blob-text-preview.png",
         size: LAPTOP,
         table: "blob_fields",
         field: Some(NOTE),
+        open: false,
+    },
+    Scene {
+        name: "blob-value-hex.png",
+        size: WIDE,
+        table: "blob_fields",
+        field: Some(PAYLOAD),
+        open: true,
+    },
+    Scene {
+        name: "blob-value-hex-laptop.png",
+        size: LAPTOP,
+        table: "blob_fields",
+        field: Some(PAYLOAD),
+        open: true,
+    },
+    Scene {
+        name: "blob-value-tree.png",
+        size: WIDE,
+        table: "blob_fields",
+        field: Some(META),
+        open: true,
     },
     Scene {
         name: "blob-grid.png",
         size: WIDE,
         table: "blobs",
         field: None,
+        open: false,
     },
 ];
 
@@ -88,6 +119,10 @@ impl App {
                 let field = SCENES[smoke.scene].field.unwrap_or(0);
                 self.select_cell(0, field, false);
                 self.database.document.tools.record_scroll_to = Some(field);
+                self.close_value();
+                if SCENES[smoke.scene].open {
+                    self.open_value(0, field);
+                }
                 smoke.stage = 82;
             }
             82 => smoke.capture_after(ctx, 15, SCENES[smoke.scene].name, 83),

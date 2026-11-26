@@ -3287,5 +3287,6 @@ mod discoverability;
 
 mod panels;
 mod tiles;
+mod values;
 
 mod assistant;

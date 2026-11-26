@@ -54,6 +54,7 @@ impl App {
                     drafts: document.draft_revision,
                     row,
                     col,
+                    whole: false,
                 };
                 let work = || tree_work(value);
                 Body::Tree(document.tools.values.tree(ctx, target, work))
@@ -138,7 +139,7 @@ impl Preview {
     }
 }
 
-fn font(ui: &egui::Ui) -> egui::FontId {
+pub(in crate::app) fn font(ui: &egui::Ui) -> egui::FontId {
     crate::appearance::monospace(ui.ctx(), 11.5)
 }
 
@@ -170,7 +171,7 @@ fn hex(
     let per = bytes_per_line(ui, rect.width());
     let row = rect.height() / LINES as f32;
     for (line, chunk) in bytes.chunks(per).take(LINES).enumerate() {
-        let job = hex_line(ui, line * per, chunk, per, color, tokens.faint);
+        let job = hex_line(ui, (line * per) as u64, 4, chunk, per, color, tokens.faint);
         let galley = painter.layout_job(job);
         let at = rect.min + egui::vec2(0.0, row * line as f32 + (row - galley.size().y) / 2.0);
         painter.galley(at, galley, color);
@@ -180,7 +181,8 @@ fn hex(
 /// One line of the hex lens: offset, bytes and characters.
 pub(in crate::app) fn hex_line(
     ui: &egui::Ui,
-    offset: usize,
+    offset: u64,
+    digits: usize,
     chunk: &[u8],
     per: usize,
     color: egui::Color32,
@@ -190,7 +192,7 @@ pub(in crate::app) fn hex_line(
     let mut job = egui::text::LayoutJob::default();
     let mut add =
         |text: &str, color| job.append(text, 0.0, egui::TextFormat::simple(font.clone(), color));
-    add(&format!("{offset:04x}  "), faint);
+    add(&format!("{offset:0digits$x}  "), faint);
     for i in 0..per {
         let gap = if i > 0 && i % 8 == 0 {
             "  "

@@ -83,6 +83,8 @@ pub(super) enum Icon {
     Warning,
     /// Braces: a value read as a tree. Drawn as the parameters icon.
     Tree,
+    /// A chevron pointing left: back to the list.
+    Back,
 }
 
 pub(super) fn button(ui: &mut egui::Ui, icon: Icon, name: &str, shortcut: &str) -> egui::Response {
@@ -257,15 +259,15 @@ pub(super) fn control(
     widget(ui, icon, name, shortcut, Some(selected), label, 1.0)
 }
 
-/// A selectable control sized for a 24-point record line.
+/// A control sized for a 24-point record line; selectable with `selected`.
 pub(super) fn line_control(
     ui: &mut egui::Ui,
     icon: Icon,
     name: &str,
     shortcut: &str,
-    selected: bool,
+    selected: Option<bool>,
 ) -> egui::Response {
-    widget(ui, icon, name, shortcut, Some(selected), false, 24.0 / 28.0)
+    widget(ui, icon, name, shortcut, selected, false, 24.0 / 28.0)
 }
 
 fn widget(
@@ -587,6 +589,7 @@ fn marks(icon: Icon) -> &'static [Mark] {
             Line("12,12.6 12,15"),
         ],
         Icon::Tree => marks(Icon::Parameters),
+        Icon::Back => &[Line("15,5 8,12 15,19")],
         Icon::Warning => &[
             Line("12,3.75 21,19.5 3,19.5 12,3.75"),
             Line("12,9.75 12,14.25"),

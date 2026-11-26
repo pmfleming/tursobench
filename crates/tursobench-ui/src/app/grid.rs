@@ -227,10 +227,11 @@ impl App {
         if let Some(action) = action {
             self.grid_action(ui, action);
         }
-        if let Some(cell) = self.inspected_deferred().cloned()
+        if let Some((row, col)) = self.database.document.inspect
+            && self.inspected_deferred().is_some()
             && ui.button("View large value…").clicked()
         {
-            self.open_large_value(cell);
+            self.open_value(row, col);
         }
         self.hover_context(ui.ctx());
         let ui_state = &self.database.document.ui;

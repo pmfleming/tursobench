@@ -158,6 +158,18 @@ fn large_values_keep_rows_and_save_exact_original_bytes() {
         .chunk
         .unwrap();
     assert_eq!(chunk, (99990, b"0000000000".to_vec()));
+    let loaded = c.run(Operation::LoadValue { handle }).loaded.unwrap();
+    assert_eq!(loaded, vec![b'0'; 100000]);
+    let find = |c: &mut Client, needle: &[u8], from| {
+        let operation = Operation::FindValue {
+            handle,
+            needle: needle.to_vec(),
+            from,
+        };
+        c.run(operation).found.unwrap()
+    };
+    assert_eq!(find(&mut c, b"00", 99_000), Some(99_000));
+    assert_eq!(find(&mut c, b"1", 0), None);
     let destination = dir.path().join("value.txt");
     assert!(
         c.run(Operation::SaveValue {

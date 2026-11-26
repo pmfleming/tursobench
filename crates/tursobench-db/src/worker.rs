@@ -399,6 +399,12 @@ impl<'a> Worker<'a> {
                 bytes,
             } => self.depot.read(handle, offset, bytes),
             Operation::SaveValue { handle, path } => self.depot.save(handle, &path),
+            Operation::LoadValue { handle } => self.depot.load(handle),
+            Operation::FindValue {
+                handle,
+                needle,
+                from,
+            } => self.depot.find(handle, &needle, from),
             Operation::PreviewImport {
                 path,
                 format,

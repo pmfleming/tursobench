@@ -554,6 +554,16 @@ pub enum EventKind {
         total: u64,
     },
     ValueSaved(String),
+    /// A whole deferred value, read for a lens.
+    ValueLoaded {
+        handle: u64,
+        bytes: Vec<u8>,
+    },
+    /// Where a search of a deferred value first matched at or after its start.
+    ValueFound {
+        handle: u64,
+        offset: Option<u64>,
+    },
     Invalidated {
         schema: bool,
         source_request: u64,

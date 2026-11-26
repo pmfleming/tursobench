@@ -868,6 +868,11 @@ impl App {
                         .resizable(false)
                         .show(ui, |ui| self.staged_edit_dock(ui));
                 }
+                // The tile's second level: one value filling the body.
+                if self.value_open() {
+                    self.value_view_ui(ui);
+                    return;
+                }
                 let row = self
                     .database
                     .document

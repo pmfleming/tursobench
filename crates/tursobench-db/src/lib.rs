@@ -134,6 +134,16 @@ pub enum Operation {
         handle: u64,
         path: PathBuf,
     },
+    /// The whole of a deferred value, up to 16 MiB.
+    LoadValue {
+        handle: u64,
+    },
+    /// The first occurrence of `needle` in a deferred value at or after `from`.
+    FindValue {
+        handle: u64,
+        needle: Vec<u8>,
+        from: u64,
+    },
     Definition(String),
     Execute {
         sql: String,
@@ -257,6 +267,7 @@ impl Operation {
                     ..
                 } => path.as_os_str().len() + kinds.len() + null_marker.len(),
                 Self::SaveValue { path, .. } | Self::BackupAndClose(path) => path.as_os_str().len(),
+                Self::FindValue { needle, .. } => needle.len(),
                 Self::Inspect(s) | Self::Count(s) | Self::Definition(s) => s.len(),
                 Self::Assistant { tool, .. } => tool.bytes(),
                 _ => 0,
