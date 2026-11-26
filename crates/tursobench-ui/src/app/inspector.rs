@@ -444,8 +444,8 @@ impl App {
     /// A double-clicked field is edited in place; a blob or deferred value
     /// opens in the value view, and any other in the detached cell editor.
     fn edit_record_field(&mut self, row: usize, col: usize) {
-        let rows = &self.database.document.result.rows;
-        if let Some(Value::Blob(_) | Value::Deferred(_)) = rows.get(row).and_then(|v| v.get(col)) {
+        // The value shown decides: a blob staged as NULL edits as NULL.
+        if let Some(Value::Blob(_) | Value::Deferred(_)) = self.field_value(row, col) {
             self.open_value(row, col);
             return;
         }
@@ -642,9 +642,24 @@ impl App {
                     let state = &mut self.database.document.ui;
                     let rows = state.nav != shell::Nav::Overview;
                     ui.horizontal_wrapped(|ui| detail_modes(ui, &mut state.inspector, rows));
-                    egui::ScrollArea::vertical().show(ui, |ui| self.inspector_content(ui));
+                    if self.value_in_dialog()
+                        && self.database.document.ui.inspector == shell::DetailMode::Record
+                    {
+                        // The value view pages and lays out to a fixed height.
+                        let height = (ctx.content_rect().height() - 260.0).clamp(240.0, 560.0);
+                        let size = egui::vec2(ui.available_width(), height);
+                        ui.allocate_ui(size, |ui| {
+                            ui.set_min_height(height);
+                            self.value_view_ui(ui, true);
+                        });
+                    } else {
+                        egui::ScrollArea::vertical().show(ui, |ui| self.inspector_content(ui));
+                    }
                 });
             self.database.document.ui.inspector_open = open;
+            if !open && self.value_in_dialog() {
+                self.close_value();
+            }
         }
         if self.database.tools.help {
             let mut open = true;

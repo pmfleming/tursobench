@@ -10,6 +10,9 @@ use tursobench_blob::{image::Picture, sniff::ImageFormat};
 
 /// Textures kept; the least recently shown is freed first.
 pub(in crate::app) const TEXTURES: usize = 8;
+/// Images that failed to decode, remembered so they are not decoded again;
+/// the oldest is forgotten first.
+const FAILURES: usize = 32;
 
 /// How large an image is decoded for where it is shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,6 +91,8 @@ pub(in crate::app) struct Images {
     states: Vec<((Target, Size), State)>,
     /// Ready images, least recently shown first.
     order: VecDeque<(Target, Size)>,
+    /// How the last copy to the clipboard went, until it is reported.
+    pub copied: Option<Result<(), String>>,
     #[cfg(test)]
     pub uploads: usize,
 }
@@ -147,6 +152,12 @@ impl Images {
                         egui::ColorImage::from_rgba_unmultiplied(picture.size, &picture.rgba);
                     ctx.copy_image(image);
                     self.states.remove(index);
+                    self.copied = Some(Ok(()));
+                }
+                // A copy is not kept, so a failed one can be tried again.
+                Err(reason) if key.1 == Size::Copy => {
+                    self.states.remove(index);
+                    self.copied = Some(Err(reason));
                 }
                 Ok(picture) => {
                     let image =
@@ -161,9 +172,28 @@ impl Images {
                     self.order.push_back(key);
                     self.evict();
                 }
-                Err(reason) => self.states[index].1 = State::Failed(reason),
+                Err(reason) => {
+                    self.states[index].1 = State::Failed(reason);
+                    self.forget_failures();
+                }
             }
         }
+    }
+
+    /// Forget the oldest failures past the limit.
+    fn forget_failures(&mut self) {
+        let failed = |s: &State| matches!(s, State::Failed(_));
+        let mut extra = self
+            .states
+            .iter()
+            .filter(|(_, s)| failed(s))
+            .count()
+            .saturating_sub(FAILURES);
+        self.states.retain(|(_, s)| {
+            let forget = extra > 0 && failed(s);
+            extra -= usize::from(forget);
+            !forget
+        });
     }
 
     /// Free the least recently shown textures past the limit.
@@ -188,6 +218,15 @@ impl Images {
         }
     }
 
+    /// Failures remembered, and decodes not yet answered.
+    #[cfg(test)]
+    pub fn failures_and_pending(&self) -> (usize, usize) {
+        let count = |f: fn(&State) -> bool| self.states.iter().filter(|(_, s)| f(s)).count();
+        (
+            count(|s| matches!(s, State::Failed(_))),
+            count(|s| matches!(s, State::Pending(_))),
+        )
+    }
     /// Textures held now.
     #[cfg(test)]
     pub fn textures(&self) -> usize {
@@ -241,7 +280,7 @@ pub(in crate::app) fn fit(rect: egui::Rect, size: egui::Vec2) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Images, Shown, Size, TEXTURES, Target};
+    use super::{FAILURES, Images, Shown, Size, TEXTURES, Target};
     use eframe::egui;
     use std::sync::Arc;
     use tursobench_blob::sniff::ImageFormat;
@@ -310,6 +349,38 @@ mod tests {
         assert!(matches!(
             images.get(&ctx, target(300), Size::Thumb, || None),
             Shown::Failed(_)
+        ));
+    }
+
+    #[test]
+    fn failures_stay_bounded_and_a_failed_copy_is_reported_and_tried_again() {
+        let ctx = egui::Context::default();
+        let mut images = Images::default();
+        let garbage = || Some((Arc::from(&b"\x89PNG\r\n\x1a\nxx"[..]), ImageFormat::Png));
+        for row in 0..FAILURES + 10 {
+            images.get(&ctx, target(row), Size::Thumb, garbage);
+        }
+        for _ in 0..500 {
+            images.poll(&ctx);
+            if images.failures_and_pending().1 == 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(images.failures_and_pending(), (FAILURES, 0));
+        // A copy that fails says so, and is not remembered as failed.
+        images.get(&ctx, target(0), Size::Copy, garbage);
+        for _ in 0..500 {
+            images.poll(&ctx);
+            if images.copied.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(matches!(images.copied.take(), Some(Err(_))));
+        assert!(matches!(
+            images.get(&ctx, target(0), Size::Copy, garbage),
+            Shown::Pending
         ));
     }
 }

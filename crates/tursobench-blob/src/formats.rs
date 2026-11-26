@@ -79,6 +79,11 @@ pub fn signature(head: &[u8], len: u64) -> Option<Format> {
     .then_some(Format::Bson)
 }
 
+/// How deep a reader may recurse, map keys included. Past the tree's depth
+/// limit nodes are no longer kept but the value is still read to its end, so
+/// this bounds the stack, not the tree.
+const NESTING: usize = 128;
+
 /// Builds a tree within the limits.
 pub(crate) struct Builder<'a> {
     limits: &'a Limits,
@@ -86,6 +91,8 @@ pub(crate) struct Builder<'a> {
     nodes: Vec<Node>,
     text: usize,
     stopped: bool,
+    /// The nesting of the value this builder reads a map key of.
+    base: usize,
 }
 impl<'a> Builder<'a> {
     fn new(limits: &'a Limits, cancel: &'a AtomicBool) -> Self {
@@ -95,7 +102,22 @@ impl<'a> Builder<'a> {
             nodes: Vec::new(),
             text: 0,
             stopped: false,
+            base: 0,
         }
+    }
+    /// A builder for a map key read at `depth`, nested where the key is.
+    fn key(&self, depth: usize) -> Builder<'a> {
+        Builder {
+            base: self.base + depth + 1,
+            ..Builder::new(self.limits, self.cancel)
+        }
+    }
+    /// Refuse a value nested deeper than a reader may recurse.
+    fn enter(&self, depth: usize) -> Result<(), Error> {
+        if self.base + depth > NESTING {
+            return Err(Error::Invalid("The value is nested too deeply to read"));
+        }
+        Ok(())
     }
     /// Whether another node may be added; cancelling fails the read.
     fn room(&mut self, depth: usize) -> Result<bool, Error> {
@@ -227,6 +249,7 @@ mod bson {
         key: Option<String>,
         array: bool,
     ) -> Result<usize, Error> {
+        b.enter(depth)?;
         let len = usize::try_from(i32_at(bytes, at)?)
             .map_err(|_| Error::Invalid("Negative BSON length"))?;
         let end = at
@@ -331,6 +354,7 @@ mod msgpack {
         depth: usize,
         key: Option<String>,
     ) -> Result<usize, Error> {
+        b.enter(depth)?;
         let first = *bytes
             .get(at)
             .ok_or(Error::Invalid("The value ends inside an element"))?;
@@ -424,7 +448,7 @@ mod msgpack {
         let index = b.open(depth, key, map)?;
         for _ in 0..len {
             let name = if map {
-                let mut keys = Builder::new(b.limits, b.cancel);
+                let mut keys = b.key(depth);
                 at = item(&mut keys, bytes, at, 0, None)?;
                 Some(super::key_text(&keys.finish()))
             } else {
@@ -468,11 +492,23 @@ mod cbor {
         depth: usize,
         key: Option<String>,
     ) -> Result<usize, Error> {
-        let first = *bytes
-            .get(at)
-            .ok_or(Error::Invalid("The value ends inside an element"))?;
-        let (major, info) = (first >> 5, first & 0x1f);
-        let (arg, at) = argument(bytes, at + 1, info)?;
+        b.enter(depth)?;
+        // A tag only marks the item after it: skip tags without recursing.
+        let mut at = at;
+        let (major, info, arg) = loop {
+            let first = *bytes
+                .get(at)
+                .ok_or(Error::Invalid("The value ends inside an element"))?;
+            let (major, info) = (first >> 5, first & 0x1f);
+            let (arg, next) = argument(bytes, at + 1, info)?;
+            at = next;
+            if b.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(Error::Cancelled);
+            }
+            if !(major == 6 && arg.is_some()) {
+                break (major, info, arg);
+            }
+        };
         let (item, next) = match (major, arg) {
             (0, Some(n)) => (number(n), at),
             (1, Some(n)) => (number(-1 - i128::from(n)), at),
@@ -495,8 +531,6 @@ mod cbor {
                 (item, at + raw.len())
             }
             (4 | 5, _) => return container(b, bytes, at, arg, depth, key, major == 5),
-            // A tag: its content, read as the item it tags.
-            (6, Some(_)) => return item(b, bytes, at, depth, key),
             (7, _) => (simple(info, arg)?, at),
             _ => return Err(Error::Invalid("Indefinite CBOR strings are not read")),
         };
@@ -553,7 +587,7 @@ mod cbor {
                 _ => {}
             }
             let name = if map {
-                let mut keys = Builder::new(b.limits, b.cancel);
+                let mut keys = b.key(depth);
                 at = item(&mut keys, bytes, at, 0, None)?;
                 Some(super::key_text(&keys.finish()))
             } else {
@@ -771,6 +805,18 @@ mod plist {
             };
             b.scalar(place.depth, place.key, item)
         }
+        /// The string object `index`, as a dictionary key.
+        fn key(&self, index: usize) -> Result<String, Error> {
+            let at = self.offset(index)?;
+            let marker = *self
+                .bytes
+                .get(at)
+                .ok_or(Error::Invalid("plist offset out of range"))?;
+            if !matches!(marker >> 4, 0x5 | 0x6) {
+                return Err(Error::Invalid("plist dictionary key is not a string"));
+            }
+            self.string(at, marker)
+        }
         /// An ASCII or UTF-16 string object.
         fn string(&self, at: usize, marker: u8) -> Result<String, Error> {
             let (len, start) = self.length(at, marker & 0xf)?;
@@ -808,17 +854,9 @@ mod plist {
             }
             let reference = |i: usize| uint(self.bytes, start + i * self.ref_size, self.ref_size);
             for i in 0..len {
+                // Dictionary keys are strings, so a key never recurses.
                 let key = if dict {
-                    let mut keys = Builder::new(b.limits, b.cancel);
-                    self.object(
-                        &mut keys,
-                        reference(i)?,
-                        Place {
-                            depth: depth + 1,
-                            key: None,
-                        },
-                    )?;
-                    Some(super::key_text(&keys.finish()))
+                    Some(b.text(&self.key(reference(i)?)?))
                 } else {
                     None
                 };
@@ -914,6 +952,54 @@ mod tests {
         assert_eq!(probe(proto, &cancel), Some(Format::Protobuf));
         assert_eq!(probe(&samples()[0].1, &cancel), Some(Format::MessagePack));
         assert_eq!(probe(b"\x01", &cancel), None);
+    }
+
+    /// Deeply nested values are refused, not read until the stack runs out,
+    /// whether they nest as items, as map keys or as CBOR tags.
+    #[test]
+    fn deep_nesting_is_refused_without_recursing_to_the_end() {
+        let cancel = AtomicBool::new(false);
+        let limits = Limits::default();
+        let deep = 200_000;
+        // A one-element array inside another, `deep` times, around a 0.
+        let mut arrays = vec![0x91; deep];
+        arrays.push(0x00);
+        assert!(decode(Format::MessagePack, &arrays, &limits, &cancel).is_err());
+        let mut cbor_arrays = vec![0x81; deep];
+        cbor_arrays.push(0x00);
+        assert!(decode(Format::Cbor, &cbor_arrays, &limits, &cancel).is_err());
+        // A one-entry map whose key is itself a one-entry map, `deep` times.
+        let mut keys = vec![0x81; deep];
+        keys.extend([0x00, 0x00]);
+        assert!(decode(Format::MessagePack, &keys, &limits, &cancel).is_err());
+        let mut cbor_keys = vec![0xa1; deep];
+        cbor_keys.extend([0x00, 0x00]);
+        assert!(decode(Format::Cbor, &cbor_keys, &limits, &cancel).is_err());
+        assert_eq!(probe(&arrays, &cancel), None);
+        assert_eq!(probe(&keys, &cancel), None);
+        // Tags only mark the item after them, so any number of them is read.
+        let mut tags = vec![0xc6; deep];
+        tags.push(0x01);
+        let tree = decode(Format::Cbor, &tags, &limits, &cancel).unwrap();
+        assert_eq!(tree.json(), "1");
+        // BSON documents nested in documents.
+        let mut nested = vec![0u8; 5];
+        nested[..4].copy_from_slice(&5i32.to_le_bytes());
+        for _ in 0..20_000 {
+            let mut outer = (0i32).to_le_bytes().to_vec();
+            outer.extend(b"\x03a\0");
+            outer.extend(&nested);
+            outer.push(0);
+            let len = outer.len() as i32;
+            outer[..4].copy_from_slice(&len.to_le_bytes());
+            nested = outer;
+        }
+        assert!(decode(Format::Bson, &nested, &limits, &cancel).is_err());
+        // Nesting within the limit still reads.
+        let mut shallow = vec![0x91; 100];
+        shallow.push(0x00);
+        let tree = decode(Format::MessagePack, &shallow, &limits, &cancel).unwrap();
+        assert!(!tree.complete);
     }
 
     #[test]

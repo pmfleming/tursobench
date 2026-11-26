@@ -209,7 +209,7 @@ impl App {
             }
             if let Some(surface) = surfaces.into_iter().find(|open| **open) {
                 *surface = false;
-            } else if self.value_open() && self.record_tile_active() {
+            } else if self.value_open() && (self.record_tile_active() || self.value_in_dialog()) {
                 // The value view's find, go-to and message close before the value.
                 self.escape_value(ctx);
             } else {

@@ -1,5 +1,7 @@
 //! The record tile's value view, through the real worker.
-use super::{App, browse_and_wait, connected, draw, egui, frame, key_event, wait_until};
+use super::{
+    App, browse_and_wait, connected, draw, egui, execute_and_wait, frame, key_event, wait_until,
+};
 use crate::app::value::{CHUNK, View};
 use tursobench_blob::encode::Format;
 use tursobench_core::{EventKind, Failure, Value};
@@ -420,4 +422,107 @@ fn a_file_replaces_a_value_only_within_the_edit_limit() {
     );
     let refused = crate::app::files::read_at_most(&large, limit).unwrap_err();
     assert!(refused.contains("over the 64 KiB"), "{refused}");
+}
+
+#[test]
+fn edit_keys_act_only_in_the_hex_lens_and_keep_its_place() {
+    use crate::app::value::Lens;
+    let wide = format!("X'{}'", "ab".repeat(400));
+    let (_dir, ctx, mut app) = super::fixture(
+        &[
+            "CREATE TABLE v(id INTEGER PRIMARY KEY, small BLOB, note BLOB, empty BLOB, wide BLOB)",
+            &format!(
+                "INSERT INTO v VALUES(1, X'00FF7A', CAST('plain text stored as a blob' AS BLOB), X'', {wide})"
+            ),
+        ],
+        true,
+    );
+    browse_and_wait(&mut app, &ctx, "v");
+    unfocus(&mut app, &ctx);
+    let staged = |app: &App, col| app.field_value(0, col).cloned();
+    // Typing or Delete in the text lens stages nothing.
+    assert_eq!(app.value_offer(&ctx, 0, 2).unwrap().lens, Lens::Text);
+    app.open_value(0, 2);
+    draw(&mut app, &ctx);
+    frame(&mut app, &ctx, vec![egui::Event::Text("a".into())]);
+    frame(
+        &mut app,
+        &ctx,
+        vec![key_event(egui::Key::Delete, true, egui::Modifiers::NONE)],
+    );
+    assert!(
+        !app.database.document.has_drafts(),
+        "the text lens is read only"
+    );
+    app.close_value();
+    // A half-typed byte deleted, then another digit: a new byte, no panic.
+    app.open_value(0, 3);
+    draw(&mut app, &ctx);
+    frame(&mut app, &ctx, vec![egui::Event::Text("a".into())]);
+    assert_eq!(staged(&app, 3), Some(Value::Blob(vec![0xa0])));
+    frame(
+        &mut app,
+        &ctx,
+        vec![key_event(egui::Key::Delete, true, egui::Modifiers::NONE)],
+    );
+    assert_eq!(staged(&app, 3), Some(Value::Blob(vec![])));
+    frame(&mut app, &ctx, vec![egui::Event::Text("b".into())]);
+    assert_eq!(staged(&app, 3), Some(Value::Blob(vec![0xb0])));
+    app.close_value();
+    // A staged keystroke keeps the lines shown: the cursor's line stays put.
+    app.open_value(0, 4);
+    draw(&mut app, &ctx);
+    let (per, lines) = (view(&app).per as u64, view(&app).lines as u64);
+    assert!(lines > 1, "the test needs more than one line shown");
+    view_mut(&mut app).move_to(per * (lines - 1), false);
+    frame(&mut app, &ctx, vec![egui::Event::Text("1".into())]);
+    assert!(app.database.document.has_drafts());
+    assert_eq!(
+        (view(&app).top, view(&app).cursor),
+        (0, per * (lines - 1)),
+        "the edited line stays where it was"
+    );
+    assert!(view(&app).half);
+    // A blob staged as NULL is edited as NULL: Enter opens the field's editor.
+    app.revert_grid_draft(0, None);
+    app.close_value();
+    app.open_value(0, 1);
+    app.stage_value_null();
+    assert!(!app.value_open());
+    assert_eq!(staged(&app, 1), Some(Value::Null));
+    app.start_inline(0, 1);
+    assert!(app.database.document.tools.inline.is_some());
+    app.close();
+}
+
+#[test]
+fn a_value_from_query_results_opens_in_the_detached_inspector() {
+    let (_dir, ctx, mut app) = super::fixture(&["CREATE TABLE t(x)"], false);
+    execute_and_wait(&mut app, &ctx, "SELECT X'00FF7A' AS b");
+    let kind = app.database.document.kind;
+    assert_ne!(kind, crate::app::tiling::Kind::Data, "a query result");
+    // As clicking the result's grid would, focus the result.
+    app.database.workspace.focused = app.database.document.id;
+    unfocus(&mut app, &ctx);
+    app.open_value(0, 0);
+    let ui = &app.database.document.ui;
+    assert!(app.value_in_dialog() && ui.inspector_open && ui.inspector_detached);
+    // A window's first frame only measures it.
+    draw(&mut app, &ctx);
+    let output = draw(&mut app, &ctx);
+    let lines: Vec<_> = super::texts(&output)
+        .map(|t| t.galley.job.text.clone())
+        .collect();
+    assert!(
+        lines.iter().any(|t| t.starts_with("0000  00 ff 7a")),
+        "{lines:?}"
+    );
+    // Escape closes the value, leaving the inspector open.
+    frame(
+        &mut app,
+        &ctx,
+        vec![key_event(egui::Key::Escape, true, egui::Modifiers::NONE)],
+    );
+    assert!(!app.value_open() && app.database.document.ui.inspector_open);
+    app.close();
 }

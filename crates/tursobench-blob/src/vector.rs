@@ -172,32 +172,39 @@ impl Vector {
     }
     /// The Euclidean norm, smallest and largest value.
     pub fn stats(&self) -> (f64, f64, f64) {
-        let numbers = self.numbers();
-        let norm = numbers.iter().map(|x| x * x).sum::<f64>().sqrt();
-        let min = numbers.iter().copied().fold(f64::INFINITY, f64::min);
-        let max = numbers.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        (norm, min, max)
+        stats(&self.numbers())
     }
     /// The values in `n` buckets, each its value of greatest magnitude, for bars.
     pub fn buckets(&self, n: usize) -> Vec<f64> {
-        let numbers = self.numbers();
-        let n = n.clamp(1, numbers.len().max(1));
-        (0..n)
-            .map(|b| {
-                let range = b * numbers.len() / n
-                    ..((b + 1) * numbers.len() / n).max(b * numbers.len() / n + 1);
-                numbers
-                    .get(range)
-                    .unwrap_or_default()
-                    .iter()
-                    .copied()
-                    .fold(
-                        0.0,
-                        |best: f64, x| if x.abs() > best.abs() { x } else { best },
-                    )
-            })
-            .collect()
+        buckets(&self.numbers(), n)
     }
+}
+
+/// The Euclidean norm, smallest and largest of `numbers`.
+pub fn stats(numbers: &[f64]) -> (f64, f64, f64) {
+    let norm = numbers.iter().map(|x| x * x).sum::<f64>().sqrt();
+    let min = numbers.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = numbers.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    (norm, min, max)
+}
+/// `numbers` in `n` buckets, each its value of greatest magnitude, for bars.
+pub fn buckets(numbers: &[f64], n: usize) -> Vec<f64> {
+    let n = n.clamp(1, numbers.len().max(1));
+    (0..n)
+        .map(|b| {
+            let range =
+                b * numbers.len() / n..((b + 1) * numbers.len() / n).max(b * numbers.len() / n + 1);
+            numbers
+                .get(range)
+                .unwrap_or_default()
+                .iter()
+                .copied()
+                .fold(
+                    0.0,
+                    |best: f64, x| if x.abs() > best.abs() { x } else { best },
+                )
+        })
+        .collect()
 }
 
 #[cfg(test)]

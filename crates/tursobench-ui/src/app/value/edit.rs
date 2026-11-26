@@ -48,7 +48,8 @@ pub(in crate::app) fn type_into(
     }
     for digit in typed.chars().filter_map(|c| c.to_digit(16)) {
         let digit = digit as u8;
-        if half {
+        // A half-typed byte that is gone starts a new one.
+        if half && at < out.len() {
             out[at] = out[at] & 0xf0 | digit;
             at += 1;
             half = false;
@@ -71,21 +72,24 @@ impl App {
         refusal(self.can_edit(), value, &view.source)
     }
 
-    /// Stage `bytes` as the open field's new blob, refused past the edit limit.
-    pub(in crate::app) fn stage_value_bytes(&mut self, bytes: Vec<u8>) {
+    /// Stage `bytes` as the open field's new blob, refused past the edit
+    /// limit; returns whether it was staged.
+    pub(in crate::app) fn stage_value_bytes(&mut self, bytes: Vec<u8>) -> bool {
         let Some(view) = self.database.document.tools.values.view.as_mut() else {
-            return;
+            return false;
         };
         let value = Value::Blob(bytes);
         if value.bytes() > EDIT_BYTES {
             let size = super::summary::byte_size(value.bytes() as u64);
             view.message =
                 format!("{size} is over the 64 KiB a staged blob may hold · nothing was staged");
-            return;
+            (view.half, view.edit_cursor) = (false, None);
+            return false;
         }
         let (row, col) = (view.row, view.col);
         view.message.clear();
         self.stage_cell(row, col, value);
+        true
     }
 
     /// Stage NULL for the open field, closing the value.
@@ -145,7 +149,7 @@ impl App {
         };
         view.half = half;
         view.edit_cursor = Some(cursor as u64);
-        self.stage_value_bytes(out);
+        let _ = self.stage_value_bytes(out);
         true
     }
 
@@ -165,7 +169,8 @@ impl App {
         let mut out = bytes.to_vec();
         out.drain(start..=end);
         view.edit_cursor = Some(start as u64);
-        self.stage_value_bytes(out);
+        view.half = false;
+        let _ = self.stage_value_bytes(out);
     }
 
     /// Choose a file whose bytes replace the open value, read on the
@@ -206,7 +211,9 @@ impl App {
         };
         view.load = None;
         match result {
-            Ok(Some(bytes)) => self.stage_value_bytes(bytes),
+            Ok(Some(bytes)) => {
+                let _ = self.stage_value_bytes(bytes);
+            }
             Ok(None) => {}
             Err(e) => view.message = e,
         }
@@ -250,6 +257,15 @@ mod tests {
         assert_eq!(
             type_into(&bytes, 0, false, "A", true, true),
             (vec![b'A', 0x00, 0xff, 0x7a], 1, false)
+        );
+        // A half-typed byte deleted since starts a new byte, without a panic.
+        assert_eq!(
+            type_into(&[], 0, true, "b", false, false),
+            (vec![0xb0], 0, true)
+        );
+        assert_eq!(
+            type_into(&bytes, 3, true, "c", false, false),
+            (vec![0x00, 0xff, 0x7a, 0xc0], 3, true)
         );
     }
 

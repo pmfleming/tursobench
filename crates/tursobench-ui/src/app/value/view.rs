@@ -5,7 +5,12 @@ use std::{
     collections::{HashMap, VecDeque},
     sync::Arc,
 };
-use tursobench_blob::{Order, encode::Format};
+use tursobench_blob::{
+    Order,
+    encode::Format,
+    tree::{Line, Tree},
+    vector::Vector,
+};
 use tursobench_core::{LargeKind, Value};
 
 /// How much of a value one request reads.
@@ -83,6 +88,65 @@ impl Chunks {
     }
 }
 
+/// A vector's values, their norm, minimum and maximum, and its bars.
+pub(in crate::app) type VectorDrawn = (Arc<[f64]>, (f64, f64, f64), Arc<[f64]>);
+
+/// What a lens draws from a decoded value, worked out once for that value
+/// rather than every frame. The decoded value is held so its address
+/// identifies it.
+#[derive(Default)]
+pub(in crate::app) enum Drawn {
+    #[default]
+    None,
+    Tree(Arc<Tree>, Arc<[Line]>),
+    Vector {
+        vector: Arc<Vector>,
+        numbers: Arc<[f64]>,
+        stats: (f64, f64, f64),
+        /// The bars for the last width drawn: how many, and their values.
+        buckets: (usize, Arc<[f64]>),
+    },
+}
+impl Drawn {
+    /// The printed lines of `tree`.
+    pub fn lines(&mut self, tree: &Arc<Tree>) -> Arc<[Line]> {
+        if let Self::Tree(held, lines) = self
+            && Arc::ptr_eq(held, tree)
+        {
+            return lines.clone();
+        }
+        let lines: Arc<[Line]> = tree.pretty(usize::MAX).into();
+        *self = Self::Tree(tree.clone(), lines.clone());
+        lines
+    }
+    /// The values, their norm, minimum and maximum, and `n` bars of `vector`.
+    pub fn vector(&mut self, vector: &Arc<Vector>, n: usize) -> VectorDrawn {
+        use tursobench_blob::vector::{buckets, stats};
+        if let Self::Vector {
+            vector: held,
+            numbers,
+            stats,
+            buckets: bars,
+        } = self
+            && Arc::ptr_eq(held, vector)
+        {
+            if bars.0 != n {
+                *bars = (n, buckets(numbers, n).into());
+            }
+            return (numbers.clone(), *stats, bars.1.clone());
+        }
+        let numbers: Arc<[f64]> = vector.numbers().into();
+        let (summary, bars): (_, Arc<[f64]>) = (stats(&numbers), buckets(&numbers, n).into());
+        *self = Self::Vector {
+            vector: vector.clone(),
+            numbers: numbers.clone(),
+            stats: summary,
+            buckets: (n, bars.clone()),
+        };
+        (numbers, summary, bars)
+    }
+}
+
 /// What the request in flight asked for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::app) enum Want {
@@ -122,6 +186,9 @@ pub(in crate::app) struct View {
     pub goto: Option<String>,
     pub message: String,
     pub expired: bool,
+    /// Reading the value failed: the view stops asking for chunks or the
+    /// whole value on its own until it is opened again.
+    pub stalled: bool,
     /// The request in flight, and what the view wants next.
     pub pending: Option<Want>,
     pub want: Option<Want>,
@@ -150,6 +217,7 @@ pub(in crate::app) struct View {
     pub entropy: HashMap<(u64, u64), f32>,
     /// A file chosen to replace the value, being read.
     pub load: Option<std::sync::mpsc::Receiver<Loaded>>,
+    pub drawn: Drawn,
 }
 impl View {
     pub fn new(
@@ -187,6 +255,7 @@ impl View {
             goto: None,
             message,
             expired: false,
+            stalled: false,
             pending: None,
             want: None,
             needle: Vec::new(),
@@ -204,6 +273,7 @@ impl View {
             edit_cursor: None,
             entropy: HashMap::new(),
             load: None,
+            drawn: Drawn::None,
         })
     }
 
@@ -260,6 +330,8 @@ impl View {
     /// Move the cursor to `at`, extending the selection with `extend`, and
     /// scroll so the cursor shows.
     pub fn move_to(&mut self, at: u64, extend: bool) {
+        // Moving ends a half-typed byte: the next digit starts a new one.
+        self.half = false;
         self.cursor = at.min(self.last());
         if !extend {
             self.anchor = self.cursor;
@@ -304,8 +376,31 @@ impl View {
         self.move_to(to, shift);
         true
     }
+    /// Ask for the whole value for a lens, unless it is held, on its way,
+    /// or reading it has failed.
+    pub fn want_whole(&mut self) {
+        if !self.stalled && self.pending.is_none() && self.loaded.is_none() {
+            self.want = Some(Want::Load);
+        }
+    }
+    /// A request for `asked` failed with `message`. A read the view makes
+    /// on its own is not made again, so a lasting failure is not retried
+    /// every frame.
+    pub fn failed(&mut self, asked: Option<Want>, message: String) {
+        self.expired |= message.contains("expired");
+        self.stalled |= matches!(asked, Some(Want::Load | Want::Chunk(_)));
+        self.copy = None;
+        self.message = if self.expired {
+            "The value is no longer held · refresh to read it again".into()
+        } else {
+            message
+        };
+    }
     /// The chunk to read next for the lines shown, if one is missing.
     pub fn missing_chunk(&self) -> Option<u64> {
+        if self.stalled {
+            return None;
+        }
         let Source::Deferred {
             handle: Some(_),
             len,
@@ -327,7 +422,7 @@ impl View {
 
 #[cfg(test)]
 mod tests {
-    use super::{CHUNK, Chunks, Source, View};
+    use super::{CHUNK, Chunks, Source, View, Want};
     use eframe::egui::Key;
     use std::sync::Arc;
     use tursobench_core::{DeferredCell, LargeKind, Value};
@@ -411,5 +506,40 @@ mod tests {
         assert_eq!(v.missing_chunk(), Some(3));
         assert_eq!(v.bytes(3 * CHUNK - 2, 4), None);
         assert!(matches!(v.source, Source::Deferred { len, .. } if len == 3 * CHUNK + 5));
+    }
+
+    #[test]
+    fn a_failed_read_is_not_asked_for_again_every_frame() {
+        let cell = DeferredCell {
+            handle: Some(3),
+            kind: LargeKind::Text,
+            bytes: 2 * CHUNK,
+            head: vec![b'a'; 64],
+        };
+        let mut v = View::new(0, 0, &Value::Deferred(Box::new(cell)), (None, 0)).unwrap();
+        v.want_whole();
+        assert_eq!(v.want.take(), Some(Want::Load));
+        v.pending = Some(Want::Load);
+        // The whole value could not be read: no more loads or chunks on its own.
+        let asked = v.pending.take();
+        v.failed(asked, "Input: disk error".into());
+        assert!(v.stalled && v.message.contains("disk error"));
+        v.want_whole();
+        assert_eq!((v.want, v.missing_chunk()), (None, None));
+        // A value that expired says how to read it again.
+        let mut v = View::new(0, 0, &Value::Blob(vec![1, 2]), (None, 0)).unwrap();
+        v.failed(Some(Want::Find), "Value backing expired".into());
+        assert!(v.expired && !v.stalled && v.message.contains("refresh"));
+    }
+
+    #[test]
+    fn moving_the_cursor_ends_a_half_typed_byte() {
+        let mut v = view(100);
+        v.half = true;
+        v.key(Key::ArrowRight, false, false);
+        assert!(!v.half);
+        v.half = true;
+        v.move_to(40, false);
+        assert!(!v.half);
     }
 }

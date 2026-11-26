@@ -70,8 +70,17 @@ impl App {
             return;
         };
         self.open_record_window(row, col);
-        self.database.document.ui.inspector_detached = false;
+        // Table data opens the value in the record tile; any other result
+        // keeps the detached inspector, which shows it instead.
+        if self.database.document.kind == crate::app::tiling::Kind::Data {
+            self.database.document.ui.inspector_detached = false;
+        }
         self.database.document.tools.values.view = Some(view);
+    }
+    /// Whether the open value shows in the detached inspector rather than
+    /// the record tile, which shows table data only.
+    pub(in crate::app) fn value_in_dialog(&self) -> bool {
+        self.value_open() && self.database.document.kind != crate::app::tiling::Kind::Data
     }
     pub(in crate::app) fn close_value(&mut self) {
         self.database.document.tools.values.view = None;
@@ -98,6 +107,7 @@ impl App {
             view.top,
             view.insert,
             view.half,
+            (view.per, view.lines),
         );
         let next = row
             .and_then(|row| Some((row, self.shown_value(row, col)?)))
@@ -107,8 +117,10 @@ impl App {
         values.view = next.map(|mut view| {
             (view.order, view.characters, view.lens) = (order, characters, lens);
             if same {
-                (view.top, view.insert, view.half) = (place.1, place.2, place.3);
+                // The geometry as last painted, so the cursor stays in view.
+                (view.top, view.insert, (view.per, view.lines)) = (place.1, place.2, place.4);
                 view.move_to(place.0, false);
+                view.half = place.3;
             }
             view
         });
@@ -123,12 +135,14 @@ impl App {
     }
 
     /// The value view: header, body through the lens, and footer.
-    pub(in crate::app) fn value_view_ui(&mut self, ui: &mut egui::Ui) {
+    /// `keys` says whether the surface showing it takes the keyboard.
+    pub(in crate::app) fn value_view_ui(&mut self, ui: &mut egui::Ui, keys: bool) {
         if !self.sync_value_view() {
             return;
         }
         self.poll_value_save();
         self.poll_value_load();
+        self.poll_value_copy();
         let Some(offer) = self.value_lens(ui.ctx()) else {
             self.close_value();
             return;
@@ -158,8 +172,8 @@ impl App {
             Lens::Vector => self.vector_body(ui),
             Lens::Contents => self.contents_body(ui, kind),
         }
-        if self.record_tile_active() {
-            self.value_keys(ui.ctx());
+        if keys {
+            self.value_keys(ui.ctx(), lens);
         }
         self.drive_value();
     }
@@ -451,8 +465,10 @@ impl App {
     /// The tree lens: the whole value decoded off the UI thread, printed as JSON.
     fn tree_body(&mut self, ui: &mut egui::Ui, format: Option<Format>) {
         let work = |bytes| format.map(|format| Work::Tree(bytes, format));
-        if let Some(Decoded::Tree(tree)) = self.decode_open(ui, Lens::Tree, work) {
-            tree_rows(ui, &tree);
+        if let Some(Decoded::Tree(tree)) = self.decode_open(ui, Lens::Tree, work)
+            && let Some(view) = self.value_view()
+        {
+            tree_rows(ui, &view.drawn.lines(&tree), tree.complete);
         }
     }
 
@@ -463,17 +479,16 @@ impl App {
         else {
             return;
         };
+        let Some(view) = self.value_view() else {
+            return;
+        };
         let tokens = crate::appearance::Tokens::of(ui.ctx());
         let (rect, _) =
             ui.allocate_exact_size(egui::vec2(ui.available_width(), 72.0), egui::Sense::hover());
         let chart = rect.shrink2(egui::vec2(4.0, 6.0));
-        super::preview::bars(
-            ui,
-            ui.painter(),
-            chart,
-            &vector.buckets((chart.width() / 3.0) as usize),
-        );
-        let (norm, min, max) = vector.stats();
+        let (numbers, (norm, min, max), bars) =
+            view.drawn.vector(&vector, (chart.width() / 3.0) as usize);
+        super::preview::bars(ui, ui.painter(), chart, &bars);
         let stats = format!(
             "{} × {}   ‖v‖ {}   min {}   max {}",
             vector.layout.name(),
@@ -488,7 +503,6 @@ impl App {
                 .size(11.0)
                 .color(tokens.faint),
         );
-        let numbers = vector.numbers();
         let plain = ui.visuals().text_color();
         egui::ScrollArea::vertical()
             .id_salt("value-vector")
@@ -521,21 +535,22 @@ impl App {
         let Some(Decoded::Contents(contents)) = self.decode_open(ui, Lens::Contents, work) else {
             return;
         };
-        if let Some(view) = self.value_view() {
-            let inner = Summary::describe_kind(contents.kind);
-            let first = if contents.truncated {
-                " · first 16 MiB of contents"
-            } else {
-                ""
-            };
-            view.note = format!(
-                "{} › {inner} · {}{first}",
-                contents.compression.name(),
-                super::summary::byte_size(contents.len as u64)
-            );
-        }
+        let Some(view) = self.value_view() else {
+            return;
+        };
+        let inner = Summary::describe_kind(contents.kind);
+        let first = if contents.truncated {
+            " · first 16 MiB of contents"
+        } else {
+            ""
+        };
+        view.note = format!(
+            "{} › {inner} · {}{first}",
+            contents.compression.name(),
+            super::summary::byte_size(contents.len as u64)
+        );
         if let Some(tree) = &contents.tree {
-            return tree_rows(ui, tree);
+            return tree_rows(ui, &view.drawn.lines(tree), tree.complete);
         }
         if let Some(text) = &contents.text {
             egui::ScrollArea::vertical()
@@ -632,7 +647,7 @@ impl App {
         let Some(bytes) = view.whole() else {
             return;
         };
-        view.message = "Copied the image".into();
+        view.message = "Reading the image to copy".into();
         let target = Target {
             result,
             drafts,
@@ -695,8 +710,10 @@ impl App {
         });
     }
 
-    /// Keys while a value is open and nothing else takes them.
-    fn value_keys(&mut self, ctx: &egui::Context) {
+    /// Keys while a value is open and nothing else takes them. Finding,
+    /// moving and editing act on the hex lens's cursor, so only that lens
+    /// takes them; elsewhere a copy takes the whole value.
+    fn value_keys(&mut self, ctx: &egui::Context, lens: Lens) {
         if egui::Popup::is_any_open(ctx) || self.database.ui.palette_open {
             return;
         }
@@ -706,6 +723,16 @@ impl App {
             return self.submit_value_input(ctx);
         }
         if ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        if lens != Lens::Hex {
+            let copy = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy)));
+            if copy
+                && lens == Lens::Text
+                && let Some(len) = self.value_view().map(|v| v.source.len())
+            {
+                self.copy_range(ctx, CopyFormat::Text, 0, len);
+            }
             return;
         }
         if pressed(egui::Key::F, command) {
@@ -896,6 +923,18 @@ impl App {
             Err(e) => self.value_message(&format!("Could not open the save dialog: {e}")),
         }
     }
+    /// Say whether the image was copied, once its decode is done.
+    fn poll_value_copy(&mut self) {
+        let values = &mut self.database.document.tools.values;
+        if let Some(outcome) = values.images.copied.take()
+            && let Some(view) = values.view.as_mut()
+        {
+            view.message = match outcome {
+                Ok(()) => "Copied the image".into(),
+                Err(reason) => format!("Could not copy the image: {reason}"),
+            };
+        }
+    }
     fn value_message(&mut self, message: &str) {
         if let Some(view) = self.value_view() {
             view.message = message.into();
@@ -984,7 +1023,7 @@ impl App {
         };
         if let Some(view) = self.value_view() {
             view.pending = None;
-            view.message = message;
+            view.failed(Some(want), message);
         }
     }
 
@@ -995,7 +1034,7 @@ impl App {
         let Some(view) = values.view.as_mut() else {
             return;
         };
-        view.pending = None;
+        let asked = view.pending.take();
         let ours = view.source.handle();
         let mut copy = None;
         match kind {
@@ -1014,14 +1053,7 @@ impl App {
             EventKind::ValueFound { handle, offset } if ours == Some(handle) => found(view, offset),
             EventKind::ValueSaved(path) => view.message = format!("Saved to {path}"),
             EventKind::Failed(error) => {
-                let message = error.to_string();
-                view.expired |= message.contains("expired");
-                view.copy = None;
-                view.message = if view.expired {
-                    "The value is no longer held · refresh to read it again".into()
-                } else {
-                    message
-                };
+                view.failed(asked, error.to_string());
             }
             _ => {}
         }
@@ -1091,9 +1123,10 @@ fn loading(ui: &mut egui::Ui, view: &mut View) {
         let text = "Over the 16 MiB a lens reads · use hex or save to file";
         return icons::empty_state(ui, Icon::Warning, text);
     }
-    if view.pending.is_none() && view.loaded.is_none() {
-        view.want = Some(Want::Load);
+    if view.stalled && view.loaded.is_none() {
+        return icons::empty_state(ui, Icon::Warning, "The value could not be read");
     }
+    view.want_whole();
     let rect = ui.available_rect_before_wrap();
     let color = crate::appearance::Tokens::of(ui.ctx()).raised;
     for i in 0..((rect.height() / hex::LINE) as usize).min(12) {
@@ -1245,9 +1278,9 @@ fn real(n: f64) -> String {
     tursobench_blob::inspect::real(n)
 }
 
-/// A tree's lines, in the SQL editor's colours, only those in view drawn.
-fn tree_rows(ui: &mut egui::Ui, tree: &tursobench_blob::tree::Tree) {
-    let lines = tree.pretty(usize::MAX);
+/// A tree's printed lines, in the SQL editor's colours, only those in view
+/// drawn; `complete` is false when the tree stopped at its limits.
+fn tree_rows(ui: &mut egui::Ui, lines: &[tursobench_blob::tree::Line], complete: bool) {
     let key = ui.visuals().hyperlink_color;
     let value = crate::appearance::Tokens::of(ui.ctx()).relationship;
     let plain = ui.visuals().text_color();
@@ -1275,7 +1308,7 @@ fn tree_rows(ui: &mut egui::Ui, tree: &tursobench_blob::tree::Tree) {
                 text_row(ui, job);
             }
         });
-    if !tree.complete {
+    if !complete {
         let tokens = crate::appearance::Tokens::of(ui.ctx());
         ui.label(
             egui::RichText::new("Showing the first 10,000 nodes")
