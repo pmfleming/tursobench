@@ -870,7 +870,7 @@ impl App {
                 }
                 // The tile's second level: one value filling the body.
                 if self.value_open() {
-                    self.value_view_ui(ui);
+                    self.value_view_ui(ui, self.record_tile_active());
                     return;
                 }
                 let row = self
