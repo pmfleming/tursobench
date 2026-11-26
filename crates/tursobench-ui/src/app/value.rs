@@ -3,6 +3,7 @@
 mod hex;
 mod inspect;
 mod job;
+mod lens;
 mod preview;
 mod summary;
 mod tile;
@@ -25,14 +26,16 @@ pub(super) enum Lens {
     Hex,
     Text,
     Tree,
+    Image,
 }
 impl Lens {
-    pub const ALL: [Self; 3] = [Self::Hex, Self::Text, Self::Tree];
+    pub const ALL: [Self; 4] = [Self::Hex, Self::Text, Self::Tree, Self::Image];
     pub fn icon(self) -> Icon {
         match self {
             Self::Hex => Icon::Bytecode,
             Self::Text => Icon::Text,
             Self::Tree => Icon::Tree,
+            Self::Image => Icon::Image,
         }
     }
     pub fn name(self) -> &'static str {
@@ -40,6 +43,7 @@ impl Lens {
             Self::Hex => "Hex",
             Self::Text => "Text",
             Self::Tree => "Tree",
+            Self::Image => "Image",
         }
     }
     /// The lenses that suit a kind of value, the automatic one first.
@@ -47,6 +51,7 @@ impl Lens {
         match kind {
             Kind::Text(_) => &[Self::Text, Self::Hex],
             Kind::Jsonb => &[Self::Tree, Self::Hex],
+            Kind::Image { .. } => &[Self::Image, Self::Hex],
             _ => &[Self::Hex],
         }
     }
@@ -68,7 +73,7 @@ pub(super) enum Decoded {
 }
 
 /// Which value a decode belongs to: the result, its drafts, and the cell.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Target {
     pub result: Option<tursobench_core::Ticket>,
     pub drafts: u64,
@@ -83,6 +88,8 @@ pub(super) struct Target {
 pub(super) struct Values {
     decoder: job::Decoder,
     decode: Option<(Target, u64, Decoded)>,
+    /// Images decoded for rows, previews and the value view.
+    pub images: lens::Images,
     /// The field open in the value view, and its request in flight.
     pub view: Option<view::View>,
     pub ticket: Option<tursobench_core::Ticket>,

@@ -124,7 +124,7 @@ impl CellAppearance<'_> {
         let color = self.text_color(ui, tokens);
         if let Some(summary) = &self.summary {
             let inner = rect.shrink2(egui::vec2(CELL_INSET - 2.0, 0.0));
-            summary.paint(ui, inner, color, true);
+            summary.paint(ui, inner, color, true, None);
         } else if !styled {
             self.paint_text(ui, &painter, rect, color);
         }

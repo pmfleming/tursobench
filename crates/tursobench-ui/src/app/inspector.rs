@@ -99,6 +99,7 @@ impl RecordField<'_> {
         rect: egui::Rect,
         style: super::columns::CellStyle,
         wrapped: Option<std::sync::Arc<egui::Galley>>,
+        thumb: Option<(egui::TextureId, egui::Vec2)>,
     ) {
         let tokens = crate::appearance::Tokens::of(ui.ctx());
         if let Some(galley) = wrapped {
@@ -118,7 +119,7 @@ impl RecordField<'_> {
                 ui.visuals().text_color()
             };
             let line = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), 24.0));
-            summary.paint(ui, line, color, false);
+            summary.paint(ui, line, color, false, thumb);
             return;
         }
         if !self.staged() && style.paint(ui, rect, self.name, self.shown) {
@@ -489,6 +490,9 @@ impl App {
             name_width: (ui.available_width() * 0.32).clamp(48.0, if wide { 180.0 } else { 124.0 }),
             wide,
         };
+        let document = &mut self.database.document;
+        let (result, drafts) = (document.result.current, document.draft_revision);
+        document.tools.values.images.keep_row(result, drafts, row);
         let row_spacing = ui.spacing().item_spacing.y;
         ui.spacing_mut().item_spacing.y = 0.0;
         let mut action = None;
@@ -511,6 +515,7 @@ impl App {
         scroll: bool,
     ) -> Option<RecordAction> {
         let preview = self.field_preview(ui.ctx(), row, col);
+        let thumb = self.record_thumbnail(ui.ctx(), row, col);
         // Field paths keep these borrows apart from the inline editor used below.
         let values = &self.database.document.result.rows[row];
         let header = self.database.document.column_header(col);
@@ -594,7 +599,7 @@ impl App {
             };
         }
         let style = self.database.document.tools.columns.style(col);
-        field.value(ui, value_rect, style, wrapped);
+        field.value(ui, value_rect, style, wrapped, thumb);
         let action = field.action(&response).or(action);
         response.on_hover_ui(|ui| {
             ui.label(format!("{} · {}", field.name, kind_name(field.shown)));

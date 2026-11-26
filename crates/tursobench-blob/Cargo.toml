@@ -6,6 +6,8 @@ license.workspace = true
 description = "Bounded, read-only readers for untrusted database value bytes"
 
 [dependencies]
+# Decoders for the image lens; GIF and WebP add gif, color_quant and image-webp.
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico"] }
 
 [dev-dependencies]
 turso.workspace = true

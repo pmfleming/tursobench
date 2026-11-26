@@ -131,6 +131,11 @@ pub(in crate::app) struct View {
     pub find_from: u64,
     pub save: Option<std::sync::mpsc::Receiver<Result<super::super::files::SaveResult, String>>>,
     pub lens: Option<Lens>,
+    /// The image lens's scale of its texture, `None` to fit, and its pan.
+    pub zoom: Option<f32>,
+    pub pan: eframe::egui::Vec2,
+    /// The image shown, as last painted: what it is, its texture size and scale.
+    pub image: Option<(super::lens::Meta, eframe::egui::Vec2, f32)>,
 }
 impl View {
     pub fn new(
@@ -176,6 +181,9 @@ impl View {
             find_from: 0,
             save: None,
             lens: None,
+            zoom: None,
+            pan: eframe::egui::Vec2::ZERO,
+            image: None,
         })
     }
 

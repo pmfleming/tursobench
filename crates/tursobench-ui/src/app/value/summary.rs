@@ -98,8 +98,15 @@ impl Summary {
         galleys
     }
 
-    /// The icon, then the parts, vertically centred in `rect`.
-    pub fn paint(&self, ui: &egui::Ui, rect: egui::Rect, color: egui::Color32, monospace: bool) {
+    /// The icon, or the value's thumbnail, then the parts, vertically centred in `rect`.
+    pub fn paint(
+        &self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        color: egui::Color32,
+        monospace: bool,
+        thumb: Option<(egui::TextureId, egui::Vec2)>,
+    ) {
         let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
         let tokens = crate::appearance::Tokens::of(ui.ctx());
         let icon = if matches!(self.icon, Icon::Warning) {
@@ -108,7 +115,14 @@ impl Summary {
             tokens.faint
         };
         let at = rect.left_center() + egui::vec2(7.0, 0.0);
-        super::super::presentation::icon_at(&painter, at, 13.0, self.icon, icon);
+        match thumb {
+            Some((id, size)) => {
+                let slot = egui::Rect::from_center_size(at, egui::Vec2::splat(16.0));
+                let scale = super::lens::fit(slot, size);
+                super::lens::paint_image(ui, slot, id, size, scale, egui::Vec2::ZERO);
+            }
+            None => super::super::presentation::icon_at(&painter, at, 13.0, self.icon, icon),
+        }
         let size = if monospace { 12.0 } else { 12.5 };
         let mut x = rect.left() + 20.0;
         for (gap, galley) in self.layout(ui, size, monospace, color, rect.right() - x) {

@@ -1,10 +1,14 @@
 //! The selected field's preview: 72 points under its line, through a lens.
 //! Hex and text use bytes already in memory; a tree comes from the decoder.
-use super::{Decoded, Lens, Summary, Target, job::Work};
+use super::{
+    Decoded, Lens, Summary, Target,
+    job::Work,
+    lens::{self, Shown, Size},
+};
 use crate::app::{App, presentation};
 use eframe::egui;
 use std::sync::Arc;
-use tursobench_blob::{Kind, text, tree};
+use tursobench_blob::{Kind, sniff::ImageFormat, text, tree};
 use tursobench_core::{LargeKind, Value};
 
 /// How much a selected field grows to show its preview.
@@ -18,6 +22,7 @@ pub(in crate::app) enum Body {
     Hex(Vec<u8>),
     Text(String),
     Tree(Decoded),
+    Image(Shown),
 }
 
 /// A selected field's lens, the lenses it could use, and what it shows.
@@ -59,12 +64,82 @@ impl App {
                 let work = || tree_work(value);
                 Body::Tree(document.tools.values.tree(ctx, target, work))
             }
+            Lens::Image => {
+                let target = Target {
+                    result: document.result.current,
+                    drafts: document.draft_revision,
+                    row,
+                    col,
+                    whole: false,
+                };
+                let bytes = || image_bytes(value, kind);
+                Body::Image(
+                    document
+                        .tools
+                        .values
+                        .images
+                        .get(ctx, target, Size::Preview, bytes),
+                )
+            }
         };
         Some(Preview {
             lens,
             offered: Lens::offered(kind),
             body,
         })
+    }
+}
+
+impl App {
+    /// The thumbnail of field `col` of `row` when it holds an image in
+    /// memory, once decoded off the UI thread.
+    pub(in crate::app) fn record_thumbnail(
+        &mut self,
+        ctx: &egui::Context,
+        row: usize,
+        col: usize,
+    ) -> Option<(egui::TextureId, egui::Vec2)> {
+        let document = &mut self.database.document;
+        let values = document.result.rows.get(row)?;
+        let value = document
+            .drafts
+            .as_ref()
+            .and_then(|d| d.displayed(values, col))
+            .unwrap_or(values.get(col)?);
+        let Value::Blob(_) = value else {
+            return None;
+        };
+        let kind = Summary::of(ctx, value)?.kind;
+        let Kind::Image { .. } = kind else {
+            return None;
+        };
+        let target = Target {
+            result: document.result.current,
+            drafts: document.draft_revision,
+            row,
+            col,
+            whole: false,
+        };
+        let bytes = || image_bytes(value, kind);
+        match document
+            .tools
+            .values
+            .images
+            .get(ctx, target, Size::Thumb, bytes)
+        {
+            Shown::Ready(id, size, _) => Some((id, size)),
+            _ => None,
+        }
+    }
+}
+
+/// An image's bytes and format, when the whole value is in memory.
+pub(in crate::app) fn image_bytes(value: &Value, kind: Kind) -> Option<(Arc<[u8]>, ImageFormat)> {
+    match (value, kind) {
+        (Value::Blob(bytes), Kind::Image { format, .. }) => {
+            Some((Arc::from(bytes.as_slice()), format))
+        }
+        _ => None,
     }
 }
 
@@ -125,6 +200,17 @@ impl Preview {
                 let text = format!("Not readable as {}: {reason}", self.lens.name());
                 wrapped(ui, &painter, rect, &text, tokens.faint);
             }
+            Body::Image(Shown::Ready(id, size, _)) => {
+                // Up to the preview's height, at most four times the image's own size.
+                let scale = lens::fit(rect, *size).min(4.0);
+                let area = egui::Rect::from_min_size(rect.min, *size * scale);
+                lens::paint_image(ui, area, *id, *size, scale, egui::Vec2::ZERO);
+            }
+            Body::Image(Shown::Pending) => {
+                let square = egui::Rect::from_min_size(rect.min, egui::Vec2::splat(rect.height()));
+                painter.rect_filled(square, 3.0, tokens.raised);
+            }
+            Body::Image(Shown::Failed(reason)) => wrapped(ui, &painter, rect, reason, tokens.faint),
         }
     }
     /// What the preview shows, for accessibility.
@@ -133,8 +219,13 @@ impl Preview {
             Body::Hex(bytes) => format!("{} preview of {} bytes", self.lens.name(), bytes.len()),
             Body::Text(text) => text.chars().take(200).collect(),
             Body::Tree(Decoded::Tree(tree)) => tree.json().chars().take(200).collect(),
-            Body::Tree(Decoded::Pending) => "Reading".into(),
-            Body::Tree(Decoded::Failed(reason)) => reason.clone(),
+            Body::Tree(Decoded::Pending) | Body::Image(Shown::Pending) => "Reading".into(),
+            Body::Tree(Decoded::Failed(reason)) | Body::Image(Shown::Failed(reason)) => {
+                reason.clone()
+            }
+            Body::Image(Shown::Ready(_, _, meta)) => {
+                format!("Image, {} × {}, {}", meta.width, meta.height, meta.color)
+            }
         }
     }
 }

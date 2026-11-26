@@ -5,6 +5,7 @@
 //! read from the bytes themselves.
 #![forbid(unsafe_code)]
 pub mod encode;
+pub mod image;
 pub mod inspect;
 pub mod sniff;
 pub mod text;

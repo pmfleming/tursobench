@@ -3,6 +3,7 @@
 use super::{
     Decoded, Lens, Summary, Target, hex, inspect,
     job::Work,
+    lens::{self, Shown, Size},
     view::{CHUNK, CLIPBOARD, LOAD, Source, View, Want},
 };
 use crate::app::{
@@ -22,6 +23,7 @@ enum Header {
     Lens(Lens),
     Find,
     Copy(Format),
+    CopyImage,
     Save,
 }
 
@@ -124,6 +126,7 @@ impl App {
             Lens::Hex => self.hex_body(ui),
             Lens::Text => self.text_body(ui, kind),
             Lens::Tree => self.tree_body(ui),
+            Lens::Image => self.image_body(ui),
         }
         if self.record_tile_active() {
             self.value_keys(ui.ctx());
@@ -171,7 +174,9 @@ impl App {
         if line_button(ui, slot(0.0), Icon::Export, "Save to file…", "", None) {
             action = Some(Header::Save);
         }
-        action = self.copy_menu(ui, slot(0.0)).map(Header::Copy).or(action);
+        action = self
+            .copy_menu(ui, slot(0.0), lens == Lens::Image)
+            .or(action);
         if lens == Lens::Hex && line_button(ui, slot(0.0), Icon::Search, "Find", "Ctrl F", None) {
             action = Some(Header::Find);
         }
@@ -201,20 +206,24 @@ impl App {
                 egui::pos2(label.right(), rect.top()),
                 egui::pos2(right - 4.0, rect.bottom()),
             );
-            summary.paint(ui, rest, ui.visuals().text_color(), false);
+            summary.paint(ui, rest, ui.visuals().text_color(), false, None);
         }
         action
     }
 
-    /// The copy-as icon and its menu of formats; returns the format chosen.
-    fn copy_menu(&mut self, ui: &mut egui::Ui, rect: egui::Rect) -> Option<Format> {
+    /// The copy-as icon and its menu of formats, with the image itself for
+    /// the image lens; returns what was chosen.
+    fn copy_menu(&mut self, ui: &mut egui::Ui, rect: egui::Rect, image: bool) -> Option<Header> {
         let mut child = ui.new_child(egui::UiBuilder::new().id_salt("value-copy").max_rect(rect));
         let response = icons::line_control(&mut child, Icon::Copy, "Copy as…", "", None);
         let mut chosen = None;
         egui::Popup::menu(&response).show(|ui| {
+            if image && ui.button("Image").clicked() {
+                chosen = Some(Header::CopyImage);
+            }
             for format in Format::ALL {
                 if ui.button(format.name()).clicked() {
-                    chosen = Some(format);
+                    chosen = Some(Header::Copy(format));
                 }
             }
         });
@@ -241,6 +250,7 @@ impl App {
                 }
             }
             Header::Copy(format) => self.copy_value(ctx, format, false),
+            Header::CopyImage => self.copy_image(ctx),
             Header::Save => self.save_value(ctx),
         }
     }
@@ -383,6 +393,81 @@ impl App {
             });
     }
 
+    /// The value's image, decoded off the UI thread: fitted, or at the
+    /// footer's zoom, and moved by dragging.
+    fn image_body(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let document = &mut self.database.document;
+        let (result, drafts) = (document.result.current, document.draft_revision);
+        let values = &mut document.tools.values;
+        let Some(view) = values.view.as_mut() else {
+            return;
+        };
+        let (row, col) = (view.row, view.col);
+        let Some(bytes) = view.whole() else {
+            return loading(ui, view);
+        };
+        let target = Target {
+            result,
+            drafts,
+            row,
+            col,
+            whole: true,
+        };
+        let image = || match tursobench_blob::sniff(&bytes, bytes.len() as u64) {
+            Kind::Image { format, .. } => Some((bytes.clone(), format)),
+            _ => None,
+        };
+        let (id, size, meta) = match values.images.get(&ctx, target, Size::Full, image) {
+            Shown::Ready(id, size, meta) => (id, size, meta),
+            Shown::Pending => return icons::empty_state(ui, Icon::Image, "Reading"),
+            Shown::Failed(reason) => return icons::empty_state(ui, Icon::Image, &reason),
+        };
+        let Some(view) = values.view.as_mut() else {
+            return;
+        };
+        let rect = ui.available_rect_before_wrap();
+        let response = ui.interact(rect, ui.scope_id().with("value-image"), egui::Sense::drag());
+        if response.dragged() {
+            view.pan += response.drag_delta();
+        }
+        let scale = view
+            .zoom
+            .unwrap_or_else(|| lens::fit(rect.shrink(8.0), size));
+        lens::paint_image(ui, rect, id, size, scale, view.pan);
+        view.image = Some((meta, size, scale));
+        let label = format!("Image, {} × {}, {}", meta.width, meta.height, meta.color);
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, &label));
+        ui.allocate_rect(rect, egui::Sense::hover());
+    }
+
+    /// Decode the whole image again and put it on the clipboard.
+    fn copy_image(&mut self, ctx: &egui::Context) {
+        let document = &mut self.database.document;
+        let (result, drafts) = (document.result.current, document.draft_revision);
+        let values = &mut document.tools.values;
+        let Some(view) = values.view.as_mut() else {
+            return;
+        };
+        let (row, col) = (view.row, view.col);
+        let Some(bytes) = view.whole() else {
+            return;
+        };
+        view.message = "Copied the image".into();
+        let target = Target {
+            result,
+            drafts,
+            row,
+            col,
+            whole: true,
+        };
+        let image = || match tursobench_blob::sniff(&bytes, bytes.len() as u64) {
+            Kind::Image { format, .. } => Some((bytes.clone(), format)),
+            _ => None,
+        };
+        values.images.get(ctx, target, Size::Copy, image);
+    }
+
     /// The footer: offset, selection and readings, or the find or go-to input.
     fn value_footer(&mut self, ui: &mut egui::Ui, lens: Lens) {
         let wide = ui.available_width() >= 480.0;
@@ -413,6 +498,9 @@ impl App {
                         .color(tokens.faint),
                 );
                 return;
+            }
+            if let (Lens::Image, Some(image)) = (lens, view.image) {
+                return image_footer(ui, view, image);
             }
             if lens != Lens::Hex {
                 let size = super::summary::byte_size(view.source.len());
@@ -827,6 +915,50 @@ fn footer_readings(ui: &mut egui::Ui, view: &mut View, wide: bool) {
         let chip = ui.add(egui::Button::new(mono(text.into(), ui.visuals().text_color())).small());
         if chip.on_hover_text("Byte order · click to swap").clicked() {
             view.order = other;
+        }
+    });
+}
+
+/// The image's colour and frames, then the zoom: the Relationships tile's
+/// − percentage + control, and 1:1.
+fn image_footer(
+    ui: &mut egui::Ui,
+    view: &mut View,
+    (meta, size, scale): (lens::Meta, egui::Vec2, f32),
+) {
+    let tokens = crate::appearance::Tokens::of(ui.ctx());
+    let text = |text: String| egui::RichText::new(text).size(11.5);
+    let about = format!(
+        "{} × {}  {}  {}",
+        meta.width,
+        meta.height,
+        meta.color,
+        meta.frames()
+    );
+    ui.label(text(about).color(tokens.faint));
+    // The texture may be scaled down from the image: zoom is shown against the image.
+    let actual = |scale: f32| scale * size.x / meta.width.max(1) as f32;
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        if ui
+            .add(egui::Button::new(text("1:1".into())).small())
+            .on_hover_text("Actual size")
+            .clicked()
+        {
+            view.zoom = Some(meta.width as f32 / size.x.max(1.0));
+            view.pan = egui::Vec2::ZERO;
+        }
+        if icons::line_control(ui, Icon::Plus, "Zoom in", "", None).clicked() {
+            view.zoom = Some(scale * 1.25);
+        }
+        let percent = format!("{:.0}%", actual(scale) * 100.0);
+        let fit = ui.add(egui::Button::new(text(percent)).frame(false));
+        if fit.on_hover_text("Current zoom · click to fit").clicked() {
+            view.zoom = None;
+            view.pan = egui::Vec2::ZERO;
+        }
+        if icons::line_control(ui, Icon::Minimize, "Zoom out", "", None).clicked() {
+            view.zoom = Some(scale * 0.8);
         }
     });
 }

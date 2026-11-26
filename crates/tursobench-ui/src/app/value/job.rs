@@ -8,7 +8,11 @@ use std::{
         mpsc::{self, Receiver, Sender},
     },
 };
-use tursobench_blob::tree::{self, Limits, Tree};
+use tursobench_blob::{
+    image::{self, Picture},
+    sniff::ImageFormat,
+    tree::{self, Limits, Tree},
+};
 
 /// What a job decodes.
 pub(in crate::app) enum Work {
@@ -16,6 +20,8 @@ pub(in crate::app) enum Work {
     Jsonb(Arc<[u8]>),
     /// The first bytes of a longer JSONB value `len` bytes long.
     JsonbPrefix(Arc<[u8]>, u64),
+    /// An image, scaled to fit a square this many pixels a side.
+    Image(Arc<[u8]>, ImageFormat, u32),
 }
 impl Work {
     fn run(&self, cancel: &AtomicBool) -> Output {
@@ -33,6 +39,9 @@ impl Work {
                     .map(Arc::new)
                     .ok_or_else(|| "Not valid JSONB".to_owned()),
             ),
+            Self::Image(bytes, format, fit) => {
+                Output::Image(image::decode(bytes, *format, *fit, cancel).map(Arc::new))
+            }
         }
     }
 }
@@ -41,6 +50,7 @@ impl Work {
 #[derive(Clone)]
 pub(in crate::app) enum Output {
     Tree(Result<Arc<Tree>, String>),
+    Image(Result<Arc<Picture>, String>),
 }
 
 struct Job {
@@ -78,6 +88,31 @@ impl Decoder {
             let _ = jobs.send(job);
         }
         self.current
+    }
+    /// Add `work` behind the jobs already waiting; returns its id. Jobs
+    /// queued together are cancelled together.
+    pub fn queue(&mut self, ctx: &eframe::egui::Context, work: Work) -> u64 {
+        self.current += 1;
+        let job = Job {
+            id: self.current,
+            work,
+            cancel: self.cancel.clone(),
+        };
+        let (jobs, _) = self.channel.get_or_insert_with(|| spawn(ctx.clone()));
+        let _ = jobs.send(job);
+        self.current
+    }
+    /// Every result delivered since the last poll.
+    pub fn poll_all(&mut self) -> Vec<(u64, Output)> {
+        let Some((_, results)) = self.channel.as_ref() else {
+            return Vec::new();
+        };
+        results.try_iter().collect()
+    }
+    /// Cancel every queued job; later jobs are not affected.
+    pub fn cancel_queued(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+        self.cancel = Arc::new(AtomicBool::new(false));
     }
     /// Stop the job under way, if any; its result is never delivered.
     pub fn cancel(&mut self) {
@@ -129,6 +164,7 @@ fn failed(work: &Work) -> Output {
     let reason = "The decoder stopped on malformed input".to_owned();
     match work {
         Work::Jsonb(_) | Work::JsonbPrefix(..) => Output::Tree(Err(reason)),
+        Work::Image(..) => Output::Image(Err(reason)),
     }
 }
 

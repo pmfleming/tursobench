@@ -15,10 +15,12 @@ struct Scene {
     open: bool,
 }
 // Fields of `blob_fields`, in table order.
+const AVATAR: usize = 3;
 const META: usize = 6;
 const PAYLOAD: usize = 7;
 const SESSION: usize = 8;
 const NOTE: usize = 9;
+const PHOTO: usize = 10;
 const WIDE: [f32; 2] = [1800.0, 1000.0];
 const LAPTOP: [f32; 2] = [1366.0, 768.0];
 const SCENES: &[Scene] = &[
@@ -83,6 +85,20 @@ const SCENES: &[Scene] = &[
         size: WIDE,
         table: "blob_fields",
         field: Some(META),
+        open: true,
+    },
+    Scene {
+        name: "blob-image-preview.png",
+        size: WIDE,
+        table: "blob_fields",
+        field: Some(AVATAR),
+        open: false,
+    },
+    Scene {
+        name: "blob-value-image.png",
+        size: WIDE,
+        table: "blob_fields",
+        field: Some(PHOTO),
         open: true,
     },
     Scene {
