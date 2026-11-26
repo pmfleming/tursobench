@@ -1,6 +1,6 @@
 //! Engine-independent application data, not a multi-engine abstraction.
 mod edits;
-pub use edits::{BoundEdit, CommitOutcome, DraftBatch, Edit};
+pub use edits::{BoundEdit, CommitOutcome, DraftBatch, EDIT_BYTES, Edit};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

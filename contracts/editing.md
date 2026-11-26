@@ -16,6 +16,17 @@ SQL NULL. Text remains text; blobs remain byte arrays. New non-finite reals and 
 can be matched for updates/deletes; deferred originals require complete data.
 Bulk deletion stages unique selected rows through the same atomic path. At most 1,000 operations and 8 MiB per batch.
 
+The record tile's value view reads a value through lenses (hex, text, tree,
+image, vector, contents). A lens is presentation only: it never changes stored
+data, row copies or exports, and never changes a value's storage class. Editing
+there applies only to a blob held in memory in an editable row: typed hex digits
+or characters overwrite or insert bytes, Delete removes the selection, and a file
+replaces the value; each stages a BLOB through the same per-cell staging as any
+other edit, shown in the pending colour, and writes nothing until commit. A
+replacement over the 64 KiB edit limit is refused with the reason and stages
+nothing. Set NULL stages NULL. Text is not edited as bytes, and deferred values
+cannot be staged.
+
 Spreadsheet paste and fill prepare the entire operation before publishing drafts.
 Rectangle destinations use visible column order and retained row identities;
 hidden columns are never implicit destinations. A multi-cell selection must match

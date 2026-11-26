@@ -93,6 +93,9 @@ pub(in crate::app) enum Want {
     Save,
 }
 
+/// A chosen file's bytes, or why they could not be read.
+pub(in crate::app) type Loaded = Result<Result<Option<Vec<u8>>, String>, String>;
+
 /// A field open in the value view.
 pub(in crate::app) struct View {
     pub row: usize,
@@ -138,6 +141,14 @@ pub(in crate::app) struct View {
     pub image: Option<(super::lens::Meta, eframe::egui::Vec2, f32)>,
     /// What the contents lens found, for the footer.
     pub note: String,
+    /// Typing inserts bytes rather than replacing them.
+    pub insert: bool,
+    /// A hex byte has had its first digit typed.
+    pub half: bool,
+    /// Where the cursor goes once a staged edit is shown.
+    pub edit_cursor: Option<u64>,
+    /// A file chosen to replace the value, being read.
+    pub load: Option<std::sync::mpsc::Receiver<Loaded>>,
 }
 impl View {
     pub fn new(
@@ -187,6 +198,10 @@ impl View {
             pan: eframe::egui::Vec2::ZERO,
             image: None,
             note: String::new(),
+            insert: false,
+            half: false,
+            edit_cursor: None,
+            load: None,
         })
     }
 

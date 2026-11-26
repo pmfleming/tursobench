@@ -87,6 +87,8 @@ pub(super) enum Icon {
     Back,
     /// Bars of differing heights: a vector's values.
     Vector,
+    /// An arrow up from a line: bytes brought in from a file.
+    Import,
 }
 
 pub(super) fn button(ui: &mut egui::Ui, icon: Icon, name: &str, shortcut: &str) -> egui::Response {
@@ -592,6 +594,11 @@ fn marks(icon: Icon) -> &'static [Mark] {
         ],
         Icon::Tree => marks(Icon::Parameters),
         Icon::Back => &[Line("15,5 8,12 15,19")],
+        Icon::Import => &[
+            Line("12,20.25 12,9"),
+            Line("7.2,13.5 12,8.7 16.8,13.5"),
+            Line("4.5,4.2 19.5,4.2"),
+        ],
         Icon::Vector => &[
             Line("3.75,19.5 3.75,12"),
             Line("7.875,19.5 7.875,6"),

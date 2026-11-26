@@ -322,6 +322,39 @@ pub(in crate::app) fn hex_line(
     color: egui::Color32,
     faint: egui::Color32,
 ) -> egui::text::LayoutJob {
+    let colors = Colors {
+        text: color,
+        faint,
+        pending: color,
+    };
+    hex_line_marked(ui, offset, digits, chunk, per, colors, &[])
+}
+
+/// The colours of a hex line: bytes, offsets and zeros, and staged changes.
+#[derive(Clone, Copy)]
+pub(in crate::app) struct Colors {
+    pub text: egui::Color32,
+    pub faint: egui::Color32,
+    pub pending: egui::Color32,
+}
+
+/// One line of the hex lens, with each byte `changed` from the stored value
+/// in the pending colour, in both columns.
+pub(in crate::app) fn hex_line_marked(
+    ui: &egui::Ui,
+    offset: u64,
+    digits: usize,
+    chunk: &[u8],
+    per: usize,
+    colors: Colors,
+    changed: &[bool],
+) -> egui::text::LayoutJob {
+    let Colors {
+        text: color,
+        faint,
+        pending,
+    } = colors;
+    let staged = |i: usize| changed.get(i).copied().unwrap_or(false);
     let font = font(ui);
     let mut job = egui::text::LayoutJob::default();
     let mut add =
@@ -337,18 +370,25 @@ pub(in crate::app) fn hex_line(
         };
         add(gap, color);
         match chunk.get(i) {
+            Some(_) if staged(i) => add(&format!("{:02x}", chunk[i]), pending),
             Some(0) => add("00", faint),
             Some(b) => add(&format!("{b:02x}"), color),
             None => add("  ", color),
         }
     }
     add("  ", color);
-    for &b in chunk {
-        if b.is_ascii_graphic() || b == b' ' {
-            add(&char::from(b).to_string(), color);
+    for (i, &b) in chunk.iter().enumerate() {
+        let shown = if b.is_ascii_graphic() || b == b' ' {
+            char::from(b).to_string()
         } else {
-            add(".", faint);
-        }
+            ".".into()
+        };
+        let tone = match (staged(i), shown.as_str()) {
+            (true, _) => pending,
+            (false, ".") => faint,
+            _ => color,
+        };
+        add(&shown, tone);
     }
     job
 }

@@ -326,3 +326,98 @@ fn vectors_trees_without_a_signature_and_compressed_contents_find_their_lenses()
     assert!(shown.iter().any(|t| t == "hello"), "{shown:?}");
     app.close();
 }
+
+#[test]
+fn hex_edits_stage_a_blob_that_stays_a_blob_and_write_only_on_commit() {
+    // Rows holding a deferred value cannot be edited: commits compare whole originals.
+    let (_dir, ctx, mut app) = super::fixture(
+        &[
+            "CREATE TABLE v(id INTEGER PRIMARY KEY, n INTEGER, small BLOB)",
+            "INSERT INTO v VALUES(1, 7, X'00FF7A')",
+        ],
+        true,
+    );
+    browse_and_wait(&mut app, &ctx, "v");
+    unfocus(&mut app, &ctx);
+    app.open_value(0, 2);
+    draw(&mut app, &ctx);
+    let sequence = app.database.sequence;
+    // Two hex digits overwrite the byte under the cursor; nothing is written.
+    frame(&mut app, &ctx, vec![egui::Event::Text("ab".into())]);
+    let staged = |app: &App| app.field_value(0, 2).cloned();
+    assert_eq!(staged(&app), Some(Value::Blob(vec![0xab, 0xff, 0x7a])));
+    assert_eq!(app.database.sequence, sequence, "staging writes nothing");
+    draw(&mut app, &ctx);
+    assert_eq!(
+        view(&app).cursor,
+        1,
+        "the cursor moves on past the typed byte"
+    );
+    // Insert mode puts typed characters between the bytes.
+    frame(
+        &mut app,
+        &ctx,
+        vec![key_event(egui::Key::Insert, true, egui::Modifiers::NONE)],
+    );
+    view_mut(&mut app).characters = true;
+    frame(&mut app, &ctx, vec![egui::Event::Text("Z".into())]);
+    assert_eq!(
+        staged(&app),
+        Some(Value::Blob(vec![0xab, b'Z', 0xff, 0x7a]))
+    );
+    // Changed bytes are drawn in the pending colour.
+    let output = draw(&mut app, &ctx);
+    let pending = crate::appearance::Tokens::of(&ctx).pending;
+    let marked = super::texts(&output).any(|t| {
+        t.galley.job.text.starts_with("0000")
+            && t.galley
+                .job
+                .sections
+                .iter()
+                .any(|s| s.format.color == pending)
+    });
+    assert!(marked);
+    // A replacement past the edit limit is refused with the reason.
+    app.stage_value_bytes(vec![0; 70_000]);
+    assert!(
+        view(&app).message.contains("over the 64 KiB"),
+        "{}",
+        view(&app).message
+    );
+    assert_eq!(
+        staged(&app),
+        Some(Value::Blob(vec![0xab, b'Z', 0xff, 0x7a]))
+    );
+    // Reverting restores the stored bytes.
+    app.revert_grid_draft(0, Some(2));
+    draw(&mut app, &ctx);
+    assert_eq!(staged(&app), Some(Value::Blob(vec![0x00, 0xff, 0x7a])));
+    // Deleting the selection, then committing, stores a blob.
+    view_mut(&mut app).select(1, 2);
+    app.delete_value_selection();
+    assert_eq!(staged(&app), Some(Value::Blob(vec![0x00])));
+    app.commit_drafts();
+    super::wait(&mut app, &ctx);
+    super::execute_and_wait(&mut app, &ctx, "SELECT typeof(small), hex(small) FROM v");
+    let rows = &app.database.document.result.rows;
+    assert_eq!(
+        rows[0],
+        [Value::Text("blob".into()), Value::Text("00".into())]
+    );
+    app.close();
+}
+
+#[test]
+fn a_file_replaces_a_value_only_within_the_edit_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let (small, large) = (dir.path().join("small.bin"), dir.path().join("large.bin"));
+    std::fs::write(&small, [1, 2, 3]).unwrap();
+    std::fs::write(&large, vec![0; 70_000]).unwrap();
+    let limit = tursobench_core::EDIT_BYTES;
+    assert_eq!(
+        crate::app::files::read_at_most(&small, limit).unwrap(),
+        [1, 2, 3]
+    );
+    let refused = crate::app::files::read_at_most(&large, limit).unwrap_err();
+    assert!(refused.contains("over the 64 KiB"), "{refused}");
+}

@@ -26,6 +26,14 @@ enum Header {
     Copy(CopyFormat),
     CopyImage,
     Save,
+    Load,
+}
+
+/// What the hex lens's menu asked for.
+enum Edit {
+    Null,
+    Insert,
+    Delete,
 }
 
 impl App {
@@ -78,6 +86,14 @@ impl App {
             return true;
         }
         let (col, order, characters, lens) = (view.col, view.order, view.characters, view.lens);
+        // A staged edit of the same field keeps the place in the value.
+        let same = row == Some(view.row);
+        let place = (
+            view.edit_cursor.unwrap_or(view.cursor),
+            view.top,
+            view.insert,
+            view.half,
+        );
         let next = row
             .and_then(|row| Some((row, self.shown_value(row, col)?)))
             .and_then(|(row, value)| View::new(row, col, value, from));
@@ -85,6 +101,10 @@ impl App {
         values.ticket = None;
         values.view = next.map(|mut view| {
             (view.order, view.characters, view.lens) = (order, characters, lens);
+            if same {
+                (view.top, view.insert, view.half) = (place.1, place.2, place.3);
+                view.move_to(place.0, false);
+            }
             view
         });
         values.view.is_some()
@@ -103,12 +123,14 @@ impl App {
             return;
         }
         self.poll_value_save();
+        self.poll_value_load();
         let Some(offer) = self.value_lens(ui.ctx()) else {
             self.close_value();
             return;
         };
         let (kind, lens) = (offer.kind, offer.lens);
-        if let Some(header) = self.value_header(ui, &offer) {
+        let editable = self.value_refusal().is_none();
+        if let Some(header) = self.value_header(ui, &offer, editable) {
             self.header_action(ui.ctx(), header);
             if !self.value_open() {
                 return;
@@ -120,7 +142,11 @@ impl App {
             .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(4, 0)))
             .show(ui, |ui| self.value_footer(ui, lens));
         match lens {
-            Lens::Hex => self.hex_body(ui),
+            Lens::Hex => {
+                if let Some(edit) = self.hex_body(ui, editable) {
+                    self.value_edit(edit);
+                }
+            }
             Lens::Text => self.text_body(ui, kind),
             Lens::Tree => self.tree_body(ui, offer.format),
             Lens::Image => self.image_body(ui),
@@ -134,7 +160,7 @@ impl App {
     }
 
     /// The field's own row as the header: back, name, summary and tools.
-    fn value_header(&mut self, ui: &mut egui::Ui, offer: &Offer) -> Option<Header> {
+    fn value_header(&mut self, ui: &mut egui::Ui, offer: &Offer, editable: bool) -> Option<Header> {
         let lens = offer.lens;
         let view = self.database.document.tools.values.view.as_ref()?;
         let name = self
@@ -173,6 +199,9 @@ impl App {
             right -= 24.0 + gap;
             egui::Rect::from_min_size(egui::pos2(right, rect.top()), egui::vec2(24.0, 24.0))
         };
+        if editable && line_button(ui, slot(0.0), Icon::Import, "Replace from file…", "", None) {
+            action = Some(Header::Load);
+        }
         if line_button(ui, slot(0.0), Icon::Export, "Save to file…", "", None) {
             action = Some(Header::Save);
         }
@@ -254,15 +283,25 @@ impl App {
             Header::Copy(format) => self.copy_value(ctx, format, false),
             Header::CopyImage => self.copy_image(ctx),
             Header::Save => self.save_value(ctx),
+            Header::Load => self.replace_value_from_file(ctx),
         }
     }
 
     /// The paged hex lens, with click and drag selection, the wheel and a scroll bar.
-    fn hex_body(&mut self, ui: &mut egui::Ui) {
+    fn hex_body(&mut self, ui: &mut egui::Ui, editable: bool) -> Option<Edit> {
         let color = ui.visuals().text_color();
         let rect = ui.available_rect_before_wrap();
-        let Some(view) = self.value_view() else {
-            return;
+        let document = &mut self.database.document;
+        let view = document.tools.values.view.as_mut()?;
+        // Bytes that differ from the stored value are staged changes.
+        let stored = match document
+            .result
+            .rows
+            .get(view.row)
+            .and_then(|r| r.get(view.col))
+        {
+            Some(Value::Blob(bytes)) => Some(bytes.as_slice()),
+            _ => None,
         };
         let body = egui::Rect::from_min_max(
             rect.min + egui::vec2(4.0, 2.0),
@@ -275,21 +314,7 @@ impl App {
             ui.scope_id().with("value-hex"),
             egui::Sense::click_and_drag(),
         );
-        if let Some(pos) = response.interact_pointer_pos()
-            && (response.clicked() || response.dragged() || response.drag_started())
-            && let Some((at, characters)) = grid.hit(pos, view.top)
-        {
-            let extend =
-                response.dragged() && !response.drag_started() || ui.input(|i| i.modifiers.shift);
-            view.characters = characters;
-            view.move_to(at, extend);
-        }
-        if response.hovered() {
-            let delta = ui.input(|i| i.smooth_scroll_delta.y);
-            if delta != 0.0 {
-                view.scroll_to_line(view.top as i64 - (delta / hex::LINE).round() as i64);
-            }
-        }
+        hex_pointer(ui, &grid, &response, view);
         let total = view.source.len().div_ceil(grid.per as u64).max(1);
         let track = egui::Rect::from_min_max(
             egui::pos2(rect.right() - 8.0, body.top()),
@@ -298,10 +323,27 @@ impl App {
         if let Some(line) = hex::scrollbar(ui, track, view.top, grid.lines(), total) {
             view.scroll_to_line(line);
         }
-        hex::paint(ui, &grid, view, color);
+        let changed =
+            |at: u64| stored.is_some_and(|s| s.get(at as usize) != view.byte(at).as_ref());
+        hex::paint(ui, &grid, view, color, &changed);
         let label = format!("Byte {} of {}", view.cursor, view.source.len());
         response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Grid, true, &label));
+        let edit = hex_menu(&response, editable, view.insert);
         ui.allocate_rect(rect, egui::Sense::hover());
+        edit
+    }
+
+    /// Apply an edit chosen from the hex lens's menu.
+    fn value_edit(&mut self, edit: Edit) {
+        match edit {
+            Edit::Null => self.stage_value_null(),
+            Edit::Insert => {
+                if let Some(view) = self.value_view() {
+                    view.insert = !view.insert;
+                }
+            }
+            Edit::Delete => self.delete_value_selection(),
+        }
     }
 
     /// The text lens: the value's text, wrapped, from memory or loaded whole.
@@ -635,6 +677,9 @@ impl App {
         if pressed(egui::Key::F, command) {
             return self.header_action(ctx, Header::Find);
         }
+        if self.value_edit_keys(ctx) {
+            return;
+        }
         if pressed(egui::Key::G, command) {
             if let Some(view) = self.value_view() {
                 view.goto = Some(String::new());
@@ -950,6 +995,48 @@ impl App {
             self.copy_range(ctx, format, at, len);
         }
     }
+}
+
+/// A click or drag on the hex lens moves the cursor or extends the
+/// selection; the wheel scrolls it.
+fn hex_pointer(ui: &egui::Ui, grid: &hex::Grid, response: &egui::Response, view: &mut View) {
+    let pressed = response.clicked() || response.dragged() || response.drag_started();
+    if let Some(pos) = response.interact_pointer_pos().filter(|_| pressed)
+        && let Some((at, characters)) = grid.hit(pos, view.top)
+    {
+        let extend =
+            response.dragged() && !response.drag_started() || ui.input(|i| i.modifiers.shift);
+        view.characters = characters;
+        view.move_to(at, extend);
+    }
+    let delta = ui.input(|i| i.smooth_scroll_delta.y);
+    if response.hovered() && delta != 0.0 {
+        view.scroll_to_line(view.top as i64 - (delta / hex::LINE).round() as i64);
+    }
+}
+
+/// The hex lens's menu of edits, enabled when the value can be edited.
+fn hex_menu(response: &egui::Response, editable: bool, insert: bool) -> Option<Edit> {
+    let mut edit = None;
+    response.context_menu(|ui| {
+        ui.add_enabled_ui(editable, |ui| {
+            let mode = if insert {
+                "Overwrite bytes"
+            } else {
+                "Insert bytes"
+            };
+            for (label, chosen) in [
+                (mode, Edit::Insert),
+                ("Delete selected bytes", Edit::Delete),
+                ("Set NULL", Edit::Null),
+            ] {
+                if ui.button(label).clicked() {
+                    edit = Some(chosen);
+                }
+            }
+        });
+    });
+    edit
 }
 
 /// Select a match, or say there is none after the cursor.

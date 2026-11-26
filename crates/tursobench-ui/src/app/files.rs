@@ -52,6 +52,24 @@ pub(super) fn save_value_dialog(name: &str, bytes: Option<std::sync::Arc<[u8]>>)
     Ok(Some(path))
 }
 
+/// The bytes of the file at `path`, refused when it holds more than `limit`.
+pub(super) fn read_at_most(path: &std::path::Path, limit: usize) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let file =
+        std::fs::File::open(path).map_err(|e| format!("Could not open {}: {e}", path.display()))?;
+    let mut bytes = Vec::new();
+    file.take(limit as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("Could not read {}: {e}", path.display()))?;
+    if bytes.len() > limit {
+        return Err(format!(
+            "{} is over the 64 KiB a staged blob may hold · nothing was staged",
+            path.display()
+        ));
+    }
+    Ok(bytes)
+}
+
 /// Write `bytes` to a file that must not exist yet.
 pub(super) fn write_new(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
     use std::io::Write;

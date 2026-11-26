@@ -1,5 +1,6 @@
 //! Blob and deferred values: what they are, in the words every view shares,
 //! and the lenses that read them in the record tile.
+mod edit;
 mod hex;
 mod inspect;
 mod job;

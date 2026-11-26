@@ -94,7 +94,13 @@ impl Grid {
 
 /// Paint the lines of `view` shown in `grid`: selected bytes on the grid's
 /// selection fill, the cursor outlined, unloaded lines as placeholders.
-pub(in crate::app) fn paint(ui: &egui::Ui, grid: &Grid, view: &View, color: egui::Color32) {
+pub(in crate::app) fn paint(
+    ui: &egui::Ui,
+    grid: &Grid,
+    view: &View,
+    color: egui::Color32,
+    changed: &dyn Fn(u64) -> bool,
+) {
     let painter = ui
         .painter()
         .with_clip_rect(grid.rect.intersect(ui.clip_rect()));
@@ -127,15 +133,16 @@ pub(in crate::app) fn paint(ui: &egui::Ui, grid: &Grid, view: &View, color: egui
                 painter.rect_stroke(cell, 1.0, selection.stroke, egui::StrokeKind::Inside);
             }
         }
-        let job = preview::hex_line(
-            ui,
-            offset,
-            grid.digits,
-            &bytes,
-            grid.per,
-            color,
-            tokens.faint,
-        );
+        let colors = preview::Colors {
+            text: color,
+            faint: tokens.faint,
+            pending: tokens.pending,
+        };
+        let marks: Vec<bool> = (0..bytes.len())
+            .map(|i| changed(offset + i as u64))
+            .collect();
+        let job =
+            preview::hex_line_marked(ui, offset, grid.digits, &bytes, grid.per, colors, &marks);
         let galley = painter.layout_job(job);
         let y = grid.line_top(line) + (LINE - galley.size().y) / 2.0;
         painter.galley(egui::pos2(grid.rect.left(), y), galley, color);
