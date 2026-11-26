@@ -158,6 +158,18 @@ fn large_values_keep_rows_and_save_exact_original_bytes() {
         .chunk
         .unwrap();
     assert_eq!(chunk, (99990, b"0000000000".to_vec()));
+    let loaded = c.run(Operation::LoadValue { handle }).loaded.unwrap();
+    assert_eq!(loaded, vec![b'0'; 100000]);
+    let find = |c: &mut Client, needle: &[u8], from| {
+        let operation = Operation::FindValue {
+            handle,
+            needle: needle.to_vec(),
+            from,
+        };
+        c.run(operation).found.unwrap()
+    };
+    assert_eq!(find(&mut c, b"00", 99_000), Some(99_000));
+    assert_eq!(find(&mut c, b"1", 0), None);
     let destination = dir.path().join("value.txt");
     assert!(
         c.run(Operation::SaveValue {
@@ -173,6 +185,35 @@ fn large_values_keep_rows_and_save_exact_original_bytes() {
     let second = c.browse("t", 100).1;
     assert_eq!(second.rows.len(), 51);
     assert_eq!(second.rows[0][0], Value::Integer(101));
+    c.close();
+}
+
+#[test]
+fn deferred_blobs_keep_their_first_bytes_beside_the_handle() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("blobs.db");
+    common::block_on(common::blob_fixtures::blobs(&path)).unwrap();
+    let mut c = Client::open(&path, Access::ReadOnly);
+    let rows = c.browse("blobs", 0).1.rows;
+    let samples = common::blob_fixtures::blob_samples();
+    assert_eq!(rows.len(), samples.len());
+    for (row, (kind, data)) in rows.iter().zip(&samples) {
+        assert_eq!(row[1], Value::Text((*kind).into()));
+        match &row[2] {
+            Value::Blob(bytes) => assert!(bytes == data && data.len() <= 64 * 1024, "{kind}"),
+            Value::Deferred(cell) => {
+                assert_eq!(cell.head, data[..64], "{kind}");
+                assert_eq!(cell.bytes, data.len() as u64);
+                let read = Operation::ReadValue {
+                    handle: cell.handle.unwrap(),
+                    offset: 0,
+                    bytes: 64,
+                };
+                assert_eq!(c.run(read).chunk.unwrap(), (0, cell.head.clone()));
+            }
+            other => panic!("{kind}: {other:?}"),
+        }
+    }
     c.close();
 }
 

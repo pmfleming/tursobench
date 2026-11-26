@@ -397,6 +397,58 @@ impl App {
             }
         }
     }
+    /// Relationships as one 24-point line, its parent and referring counts
+    /// beside it, that opens to the record's references below.
+    pub(super) fn relationships_line(&mut self, ui: &mut egui::Ui, row: usize, height: f32) {
+        let id = ui.make_persistent_id("record-relationships-section");
+        let mut state =
+            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), egui::Sense::click());
+        let parents = self
+            .database
+            .document
+            .browse_inspection()
+            .map_or(0, |info| info.foreign_keys.len());
+        let referring = self.incoming_keys().len();
+        let plural = if parents == 1 { "" } else { "s" };
+        let counts = format!("{parents} parent{plural} · {referring} referring");
+        let open = state.is_open();
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::Role::Button, true, open, "Relationships")
+        });
+        if response.clicked() {
+            state.toggle(ui);
+        }
+        let marker = egui::Rect::from_center_size(
+            rect.left_center() + egui::vec2(8.0, 0.0),
+            egui::Vec2::splat(9.0),
+        );
+        let marker = ui.interact(marker, id.with("marker"), egui::Sense::hover());
+        let openness = state.openness(ui.ctx());
+        egui::collapsing_header::paint_default_icon(ui, openness, &marker);
+        let tokens = crate::appearance::Tokens::of(ui.ctx());
+        let label = egui::Rect::from_min_max(rect.min + egui::vec2(20.0, 0.0), rect.max);
+        super::presentation::text_at(ui, label, "Relationships", ui.visuals().text_color(), 12.5);
+        let after = super::presentation::text_width(ui, "Relationships", 12.5) + 30.0;
+        let link = label.left_center() + egui::vec2(after, 0.0);
+        super::presentation::icon_at(ui.painter(), link, 12.0, Icon::Link, tokens.faint);
+        // Narrow tiles keep the numbers and name them on hover.
+        let rest = egui::Rect::from_min_max(link + egui::vec2(10.0, -12.0), rect.max);
+        let short = format!("{parents} · {referring}");
+        let wide = super::presentation::text_width(ui, counts.as_str(), 12.0) <= rest.width();
+        let shown = if wide { &counts } else { &short };
+        super::presentation::text_at(ui, rest, shown, tokens.faint, 12.0);
+        response.on_hover_text(counts);
+        state.show_body_unindented(ui, |ui| {
+            ui.set_min_height(height);
+            egui::ScrollArea::vertical()
+                .id_salt("record-relationships-scroll")
+                .max_height(height)
+                .auto_shrink([false, true])
+                .show(ui, |ui| self.record_relationships(ui, row));
+        });
+    }
     /// A link to the record `key` points to, then its column mapping; returns
     /// whether the link was clicked.
     fn parent_link(

@@ -39,7 +39,7 @@ impl Document {
                 Target::Page,
             ),
             (self.tools.inspection_ticket, Target::Inspection),
-            (self.tools.large.ticket, Target::Value),
+            (self.tools.values.ticket, Target::Value),
             (self.result.current, Target::Result),
         ]
         .into_iter()
@@ -97,7 +97,7 @@ impl App {
         match target {
             Target::Snapshot => self.snapshot_event(event.kind),
             Target::Transfer => self.transfer_event(event.kind),
-            Target::Value => self.value_event(event.kind),
+            Target::Value => self.value_event(ctx, event.kind),
             Target::Context => self.context_event(event),
             Target::Page => self.page_event(event),
             Target::Count => self.count_event(event),

@@ -48,7 +48,9 @@ Eligible primary-key tables commit staged edits atomically, checking original va
 ![Record tile showing the selected row's fields, typed values and relationships section](docs/assets/ui/readme/record.png)
 
 Inspect and edit the selected row field by field, including columns hidden in the grid.
-Expand Relationships to follow or count outgoing references and incoming dependants.
+Each blob says what it is (image, text, UUID, JSONB, vector, compressed contents and more);
+the selected one previews in place, and Enter opens it as a paged hex, text, tree, image or
+vector view with find, copy-as and save. Relationships is one line at the foot of the tile.
 
 Record shares live rows and staged edits with Table data; NULL, text, numeric and BLOB values retain their types.
 Related-row lookups use declared FK mappings, including composite keys and parent collation/affinity.

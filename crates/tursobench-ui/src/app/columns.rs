@@ -16,6 +16,8 @@ pub(super) struct Columns {
     pub manual: BTreeSet<usize>,
     pub refit: bool,
     pub visuals: BTreeMap<usize, CellStyle>,
+    /// The lens chosen for a column's blobs; automatic when absent.
+    pub lenses: BTreeMap<usize, super::value::Lens>,
     natural: Vec<f32>,
     measured_rows: usize,
 }
@@ -216,6 +218,10 @@ impl Columns {
     pub fn style(&self, column: usize) -> CellStyle {
         self.visuals.get(&column).copied().unwrap_or_default()
     }
+    /// The lens chosen for a column's blobs, if the user picked one.
+    pub fn lens(&self, column: usize) -> Option<super::value::Lens> {
+        self.lenses.get(&column).copied()
+    }
 
     pub fn fit(&mut self, i: usize) {
         self.manual.remove(&i);
@@ -246,6 +252,23 @@ impl Columns {
             let style = self.visuals.entry(i).or_default();
             for (value, label) in CellStyle::ALL {
                 ui.selectable_value(style, value, label);
+            }
+            // How the column's blobs read in the record tile.
+            ui.separator();
+            let chosen = self.lenses.get(&i).copied();
+            if ui
+                .selectable_label(chosen.is_none(), "Automatic lens")
+                .clicked()
+            {
+                self.lenses.remove(&i);
+            }
+            for lens in super::value::Lens::ALL {
+                if ui
+                    .selectable_label(chosen == Some(lens), lens.name())
+                    .clicked()
+                {
+                    self.lenses.insert(i, lens);
+                }
             }
         });
         if ui.button("Fit contents").clicked() {
@@ -298,10 +321,15 @@ impl Columns {
     fn measure(&mut self, ui: &egui::Ui, result: &ResultSet, keyed: &[bool]) {
         let font = crate::appearance::monospace(ui.ctx(), 12.0);
         let value_width = |v: &Value| {
-            let galley =
-                ui.painter()
-                    .layout_no_wrap(v.preview(), font.clone(), ui.visuals().text_color());
-            galley.size().x + 18.0
+            // A blob's summary follows its icon.
+            let (text, icon) = match super::value::Summary::of(ui.ctx(), v) {
+                Some(summary) => (summary.text(), 14.0),
+                None => (v.preview(), 0.0),
+            };
+            let galley = ui
+                .painter()
+                .layout_no_wrap(text, font.clone(), ui.visuals().text_color());
+            galley.size().x + 18.0 + icon
         };
         self.natural = result
             .columns

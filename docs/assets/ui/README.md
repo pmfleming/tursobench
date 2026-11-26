@@ -122,6 +122,36 @@ Reproduce with:
 nix develop -c bash scripts/capture-assistant.sh target/assistant-captures
 ```
 
+## Record tile and blob viewer — native Wayland
+
+The `blob-viewer/` captures come from `scripts/capture-blob-viewer.sh`: the
+synthetic `blob_fields` and `blobs` tables of `tests/fixtures/generate.py`,
+browsed read-only under headless Weston/Mesa with isolated preferences, at
+1800×1000 and (files ending `-laptop`) 1366×768.
+
+- Field rows: [wide](blob-viewer/blob-fields.png), [laptop](blob-viewer/blob-fields-laptop.png).
+- Previews in place: [hex](blob-viewer/blob-hex-preview.png) and
+  [at laptop width](blob-viewer/blob-hex-preview-laptop.png),
+  [JSONB tree](blob-viewer/blob-tree-preview.png),
+  [text](blob-viewer/blob-text-preview-laptop.png),
+  [image](blob-viewer/blob-image-preview.png),
+  [vector](blob-viewer/blob-vector-preview.png),
+  [geometry](blob-viewer/blob-geometry-preview.png).
+- The value view: [paged hex](blob-viewer/blob-value-hex.png) and
+  [at laptop width](blob-viewer/blob-value-hex-laptop.png),
+  [expanded with readings](blob-viewer/blob-value-expanded.png),
+  [gzip contents](blob-viewer/blob-value-contents.png),
+  [tree](blob-viewer/blob-value-tree.png), [image](blob-viewer/blob-value-image.png),
+  [vector](blob-viewer/blob-value-vector.png).
+- [Grid cells](blob-viewer/blob-grid.png) with the same summaries.
+
+Reproduce after building the desktop binary:
+
+```sh
+nix develop -c cargo build --locked -p tursobench-ui
+nix develop -c env TURSOBENCH_BINARY=target/debug/tursobench bash scripts/capture-blob-viewer.sh
+```
+
 ## Spreadsheet editing — native Wayland
 
 The `spreadsheet/` captures were taken on 2026-11-12 with synthetic data and

@@ -7,12 +7,17 @@ use super::{
 use eframe::egui;
 use tursobench_core::Value;
 
+use super::value::{Lens, Preview, Summary};
 use results::{code_view, detail_text};
 enum RecordAction {
     Inspect(usize),
     Edit(usize),
     Stage(usize, Value),
     Revert(usize),
+    /// Read the column's blobs through this lens from now on.
+    Lens(usize, Lens),
+    /// Open the field in the value view.
+    Open(usize),
 }
 /// The widths every field of a record shares: its name and, when wide, its declared type.
 #[derive(Clone, Copy)]
@@ -27,6 +32,8 @@ struct RecordField<'a> {
     shown: &'a Value,
     foreign: bool,
     selected: bool,
+    /// The column's name or type says it holds vectors.
+    vector: bool,
 }
 impl RecordField<'_> {
     fn staged(&self) -> bool {
@@ -34,7 +41,9 @@ impl RecordField<'_> {
     }
     fn describe(&self, ui: &egui::Ui, response: &egui::Response) {
         let kind = kind_name(self.shown);
-        let text = format!("{} · {kind} · {}", self.name, self.shown.preview());
+        let shown = Summary::of(ui.ctx(), self.shown)
+            .map_or_else(|| self.shown.preview(), |summary| summary.text());
+        let text = format!("{} · {kind} · {shown}", self.name);
         response.widget_info(|| {
             egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), self.selected, &text)
         });
@@ -92,6 +101,7 @@ impl RecordField<'_> {
         rect: egui::Rect,
         style: super::columns::CellStyle,
         wrapped: Option<std::sync::Arc<egui::Galley>>,
+        thumb: Option<(egui::TextureId, egui::Vec2)>,
     ) {
         let tokens = crate::appearance::Tokens::of(ui.ctx());
         if let Some(galley) = wrapped {
@@ -104,16 +114,14 @@ impl RecordField<'_> {
             painter.galley(rect.min + egui::vec2(0.0, 4.0), galley, color);
             return;
         }
-        let compact = match self.shown {
-            Value::Blob(bytes) => Some((Icon::Bytecode, byte_size(bytes.len() as u64))),
-            Value::Deferred(cell) => Some((Icon::Export, byte_size(cell.bytes))),
-            _ => None,
-        };
-        if let Some((icon, caption)) = compact {
-            let at = rect.left_center() + egui::vec2(7.0, 0.0);
-            presentation::icon_at(ui.painter(), at, 13.0, icon, tokens.faint);
-            let text = egui::Rect::from_min_max(rect.min + egui::vec2(20.0, 0.0), rect.max);
-            presentation::text_at(ui, text, &caption, tokens.faint, 12.5);
+        if let Some(summary) = Summary::for_column(ui.ctx(), self.shown, self.vector) {
+            let color = if self.staged() {
+                tokens.pending
+            } else {
+                ui.visuals().text_color()
+            };
+            let line = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), 24.0));
+            summary.paint(ui, line, color, false, thumb);
             return;
         }
         if !self.staged() && style.paint(ui, rect, self.name, self.shown) {
@@ -136,20 +144,7 @@ impl RecordField<'_> {
         );
     }
 }
-fn byte_size(bytes: u64) -> String {
-    if bytes < 1024 {
-        return format!("{bytes} bytes");
-    }
-    let (unit, divisor) = if bytes >= 1024 * 1024 * 1024 {
-        ("GB", 1024.0 * 1024.0 * 1024.0)
-    } else if bytes >= 1024 * 1024 {
-        ("MB", 1024.0 * 1024.0)
-    } else {
-        ("KB", 1024.0)
-    };
-    format!("{:.1} {unit}", bytes as f64 / divisor)
-}
-fn record_tooltip(value: &Value) -> String {
+fn record_tooltip(ctx: &egui::Context, value: &Value) -> String {
     match value {
         Value::Text(text) => {
             let mut chars = text.chars();
@@ -161,7 +156,9 @@ fn record_tooltip(value: &Value) -> String {
                 detail_text(value)
             }
         }
-        Value::Blob(_) | Value::Deferred(_) => value.preview(),
+        Value::Blob(_) | Value::Deferred(_) => Summary::of(ctx, value)
+            .map(|summary| summary.description.clone())
+            .unwrap_or_default(),
         _ => detail_text(value),
     }
 }
@@ -195,6 +192,42 @@ fn record_wrap(
     Some(ui.painter().layout_job(job))
 }
 
+/// At the right of a previewed field's first line: the lenses it could use,
+/// as selectable icons, then the icon that opens it. Returns what was clicked.
+fn preview_tools(
+    ui: &mut egui::Ui,
+    row: egui::Rect,
+    value: &mut egui::Rect,
+    col: usize,
+    preview: &Preview,
+) -> Option<RecordAction> {
+    let slot = |value: &mut egui::Rect, gap: f32| {
+        value.max.x -= gap;
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(value.right() - 24.0, row.top()),
+            egui::pos2(value.right(), row.top() + 24.0),
+        );
+        value.max.x -= 24.0;
+        rect
+    };
+    let mut child = line_child(ui, slot(value, 0.0), ("open", col));
+    let open = icons::line_control(&mut child, Icon::Fit, "Open value", "Enter", None);
+    let mut clicked = open.clicked().then_some(RecordAction::Open(col));
+    if preview.offered.len() < 2 {
+        return clicked;
+    }
+    for (i, &lens) in preview.offered.iter().rev().enumerate() {
+        let rect = slot(value, if i == 0 { 6.0 } else { 0.0 });
+        let selected = lens == preview.lens;
+        let mut child = line_child(ui, rect, ("lens", col, lens.name()));
+        let response =
+            icons::line_control(&mut child, lens.icon(), lens.name(), "", Some(selected));
+        if response.clicked() {
+            clicked = Some(RecordAction::Lens(col, lens));
+        }
+    }
+    clicked
+}
 /// A record field's declared type, at the right of its first line.
 fn type_label(ui: &egui::Ui, row: egui::Rect, declared: &str) {
     let rect = egui::Rect::from_min_max(
@@ -219,17 +252,20 @@ fn revert_button(
         egui::pos2(value.right(), row.top() + 24.0),
     );
     let label = format!("Revert {name} draft");
-    ui.scope_builder(
-        egui::UiBuilder::new()
-            .id_salt(("revert", col))
-            .max_rect(rect),
-        |ui| {
-            ui.add_enabled_ui(enabled, |ui| icons::button(ui, Icon::Undo, &label, ""))
-                .inner
-                .clicked()
-        },
-    )
-    .inner
+    let mut child = line_child(ui, rect, ("revert", col));
+    child
+        .add_enabled_ui(enabled, |ui| icons::button(ui, Icon::Undo, &label, ""))
+        .inner
+        .clicked()
+}
+/// A child for a control on a field's first line. It allocates nothing in
+/// the field list, so a field that grows below the line keeps its height.
+fn line_child(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+) -> egui::Ui {
+    ui.new_child(egui::UiBuilder::new().id_salt(salt).max_rect(rect))
 }
 /// A value as typed JSON; a non-finite real, which JSON cannot hold, says so.
 fn typed_text(value: &Value) -> String {
@@ -389,6 +425,15 @@ impl App {
                 self.stage_cell(row, col, value);
                 self.database.document.tools.inline = None;
             }
+            Some(RecordAction::Lens(col, lens)) => {
+                self.database
+                    .document
+                    .tools
+                    .columns
+                    .lenses
+                    .insert(col, lens);
+            }
+            Some(RecordAction::Open(col)) => self.open_value(row, col),
             None => {}
         }
         if !self.database.workspace.enabled {
@@ -396,18 +441,18 @@ impl App {
             self.record_relationships(ui, row);
         }
     }
-    /// A double-clicked field is edited in place; a value too large for that
-    /// opens in full, and any other in the detached cell editor.
+    /// A double-clicked field is edited in place; a blob or deferred value
+    /// opens in the value view, and any other in the detached cell editor.
     fn edit_record_field(&mut self, row: usize, col: usize) {
-        self.open_cell(row, col);
-        self.start_inline(row, col);
-        if self.database.document.tools.inline.is_some() {
+        let rows = &self.database.document.result.rows;
+        if let Some(Value::Blob(_) | Value::Deferred(_)) = rows.get(row).and_then(|v| v.get(col)) {
+            self.open_value(row, col);
             return;
         }
-        let rows = &self.database.document.result.rows;
-        match rows.get(row).and_then(|values| values.get(col)) {
-            Some(Value::Deferred(cell)) => self.open_large_value((**cell).clone()),
-            _ => self.database.document.ui.inspector_detached = true,
+        self.open_cell(row, col);
+        self.start_inline(row, col);
+        if self.database.document.tools.inline.is_none() {
+            self.database.document.ui.inspector_detached = true;
         }
     }
     /// Whether the record tile is the workspace's active tile.
@@ -447,6 +492,9 @@ impl App {
             name_width: (ui.available_width() * 0.32).clamp(48.0, if wide { 180.0 } else { 124.0 }),
             wide,
         };
+        let document = &mut self.database.document;
+        let (result, drafts) = (document.result.current, document.draft_revision);
+        document.tools.values.images.keep_row(result, drafts, row);
         let row_spacing = ui.spacing().item_spacing.y;
         ui.spacing_mut().item_spacing.y = 0.0;
         let mut action = None;
@@ -468,6 +516,8 @@ impl App {
         layout: FieldLayout,
         scroll: bool,
     ) -> Option<RecordAction> {
+        let preview = self.field_preview(ui.ctx(), row, col);
+        let thumb = self.record_thumbnail(ui.ctx(), row, col);
         // Field paths keep these borrows apart from the inline editor used below.
         let values = &self.database.document.result.rows[row];
         let header = self.database.document.column_header(col);
@@ -480,6 +530,7 @@ impl App {
                 .and_then(|d| d.displayed(values, col))
                 .unwrap_or(&values[col]),
             foreign: header.is_foreign(),
+            vector: super::value::vector_hint(&header.column.name, header.declared_type()),
             selected: self.database.document.inspect == Some((row, col)),
         };
         let editing = self.editing_at(row, col);
@@ -494,9 +545,11 @@ impl App {
             field.selected && !editing,
             staged,
         );
-        let height = wrapped
-            .as_ref()
-            .map_or(24.0, |g| (g.size().y + 8.0).max(24.0));
+        let height = match (&preview, &wrapped) {
+            (Some(_), _) => 24.0 + super::value::PREVIEW_HEIGHT + 6.0,
+            (None, Some(galley)) => (galley.size().y + 8.0).max(24.0),
+            (None, None) => 24.0,
+        };
         let (rect, response) = ui.allocate_exact_size(
             egui::vec2(ui.available_width(), height),
             egui::Sense::click(),
@@ -521,6 +574,22 @@ impl App {
             }
             value_rect.max.x -= 24.0;
         }
+        if let Some(preview) = &preview {
+            action = preview_tools(ui, rect, &mut value_rect, col, preview).or(action);
+            let body = egui::Rect::from_min_max(
+                rect.min + egui::vec2(8.0, 26.0),
+                rect.max - egui::vec2(8.0, 4.0),
+            );
+            preview.paint(ui, body, staged);
+            let area = ui.interact(
+                body,
+                ui.scope_id().with(("preview", col)),
+                egui::Sense::hover(),
+            );
+            area.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::Role::Label, true, preview.describe())
+            });
+        }
         let here = editing && (!self.database.workspace.enabled || self.record_tile_active());
         if here && let Some(inline) = self.database.document.tools.inline.as_mut() {
             return match inline.record_field(ui, value_rect, col) {
@@ -533,13 +602,27 @@ impl App {
             };
         }
         let style = self.database.document.tools.columns.style(col);
-        field.value(ui, value_rect, style, wrapped);
+        field.value(ui, value_rect, style, wrapped, thumb);
         let action = field.action(&response).or(action);
         response.on_hover_ui(|ui| {
             ui.label(format!("{} · {}", field.name, kind_name(field.shown)));
-            ui.label(record_tooltip(field.shown));
+            ui.label(record_tooltip(ui.ctx(), field.shown));
         });
         action
+    }
+    /// The selected field's preview, when it holds a blob or deferred value;
+    /// a decode under way for any other value stops.
+    fn field_preview(&mut self, ctx: &egui::Context, row: usize, col: usize) -> Option<Preview> {
+        if self.database.document.inspect != Some((row, col)) {
+            return None;
+        }
+        let preview = (!self.editing_at(row, col))
+            .then(|| self.record_preview(ctx, row, col))
+            .flatten();
+        if preview.as_ref().is_none_or(|p| !p.decodes()) {
+            self.database.document.tools.values.idle();
+        }
+        preview
     }
     pub(super) fn inspection_surfaces(&mut self, ctx: &egui::Context) {
         if self.database.document.ui.inspector_detached && self.database.document.ui.inspector_open
@@ -641,6 +724,30 @@ const HELP: &[(&str, &[HelpRow])] = &[
             ),
             (&["Ctrl Space"], "Completions"),
             (&["Ctrl S"], "Save query"),
+        ],
+    ),
+    (
+        "Record value",
+        &[
+            (
+                &["Enter", "Double-click"],
+                "Open a blob or large value in the record tile · Esc returns",
+            ),
+            (&["Arrows", "Shift Arrows"], "Move · extend the selection"),
+            (&["PgUp", "PgDn", "Home", "End"], "Page · line start or end"),
+            (&["Ctrl Home", "Ctrl End"], "First or last byte"),
+            (&["Tab"], "Swap between the bytes and characters columns"),
+            (&["Ctrl F"], "Find bytes (00 ff) or text after the cursor"),
+            (&["Ctrl G"], "Go to an offset · or click the footer offset"),
+            (&["Ctrl C"], "Copy the selection as shown"),
+            (
+                &["0–9", "a–f", "Insert", "Delete"],
+                "Overwrite or insert bytes in an editable blob · staged, never written until commit",
+            ),
+            (
+                &[],
+                "Lenses read the same bytes as hex, text, a tree, an image, a vector or inflated contents; choosing one never changes the value.",
+            ),
         ],
     ),
     (
@@ -771,23 +878,21 @@ fn kind_name(value: &Value) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{Value, byte_size, detail_text, egui, record_tooltip, record_wrap};
+    use super::{Value, detail_text, egui, record_tooltip, record_wrap};
     #[test]
     fn long_selected_text_is_bounded_and_byte_captions_keep_sizes() {
-        assert_eq!(byte_size(3), "3 bytes");
-        assert_eq!(byte_size(4_404_019), "4.2 MB");
+        let ctx = egui::Context::default();
         let large = Value::Text("λ".repeat(100_000));
-        let tooltip = record_tooltip(&large);
+        let tooltip = record_tooltip(&ctx, &large);
         assert!(tooltip.starts_with(&"λ".repeat(4096)));
         assert!(tooltip.ends_with("full value"));
         assert!(tooltip.len() < 8300);
         assert_eq!(
-            record_tooltip(&Value::Blob(vec![0; 100_000])),
-            "[blob: 100000 bytes]"
+            record_tooltip(&ctx, &Value::Blob(vec![0; 100_000])),
+            "97.7 KB in no recognised format"
         );
         let json = Value::Text(r#"{"n":123456789012345678901,"n":1}"#.into());
-        assert_eq!(record_tooltip(&json), detail_text(&json));
-        let ctx = egui::Context::default();
+        assert_eq!(record_tooltip(&ctx, &json), detail_text(&json));
         crate::app::test_ui::render(&ctx, egui::vec2(396.0, 244.0), vec![], |ui| {
             let value = Value::Text("long λ text\n".repeat(100_000));
             let galley = record_wrap(ui, &value, 200.0, true, false).unwrap();

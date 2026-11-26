@@ -41,6 +41,7 @@ pub(crate) mod tiling;
 mod tools;
 mod transfers;
 mod usability;
+mod value;
 pub(crate) mod workspace;
 use eframe::egui;
 
@@ -510,7 +511,6 @@ impl App {
     }
     pub fn render(&mut self, ui: &mut egui::Ui) {
         ui.push_id(self.database.id, |ui| self.shell(ui));
-        self.large_value_ui(ui.ctx());
         self.transfer_ui(ui.ctx());
         self.profile_ui(ui.ctx());
         self.admin_ui(ui.ctx());

@@ -1,8 +1,7 @@
-//! Result value editors, bounded value viewing, and clipboard/export presentation.
+//! Result value editors and clipboard/export presentation.
 use super::{App, shell};
 use eframe::egui;
-use tursobench_core::{DeferredCell, EventKind, LargeKind, Ticket, Value};
-use tursobench_db::Operation;
+use tursobench_core::{Ticket, Value};
 
 use crate::export::{self, Format};
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -292,152 +291,11 @@ impl App {
         }
     }
 }
-#[derive(Default)]
-pub(super) struct Viewer {
-    cell: Option<DeferredCell>,
-    pub ticket: Option<Ticket>,
-    offset: u64,
-    data: Vec<u8>,
-    path: String,
-    search: String,
-    message: String,
-}
-impl Viewer {
-    /// A chunk of the value from a chosen offset, a search within it, and
-    /// saving the whole value; returns whether to load the chunk or save.
-    fn contents(&mut self, ui: &mut egui::Ui, cell: &DeferredCell) -> (bool, bool) {
-        let idle = self.ticket.is_none();
-        ui.label(format!(
-            "{:?} · {} bytes · immutable result snapshot",
-            cell.kind, cell.bytes
-        ));
-        let load = ui.horizontal(|ui| {
-            ui.label("Byte offset");
-            ui.add(egui::DragValue::new(&mut self.offset).range(0..=cell.bytes));
-            ui.add_enabled(idle, egui::Button::new("Load 16 KiB"))
-                .clicked()
-        });
-        let text = if cell.kind == LargeKind::Text {
-            String::from_utf8_lossy(&self.data).into_owned()
-        } else {
-            export::hex(&self.data)
-        };
-        ui.label("Find in this chunk");
-        ui.text_edit_singleline(&mut self.search);
-        if !self.search.is_empty() {
-            ui.label(text.find(&self.search).map_or_else(
-                || "No match in chunk".into(),
-                |i| format!("Match at preview position {i}"),
-            ));
-        }
-        code_view(ui, &text, 12);
-        ui.small("Chunk boundaries may split a UTF-8 character. Saving preserves the exact original bytes.");
-        ui.text_edit_singleline(&mut self.path);
-        let savable = idle && !self.path.is_empty() && cell.handle.is_some();
-        let save = ui.add_enabled(savable, egui::Button::new("Save full value to new file"));
-        if !idle {
-            ui.spinner();
-        }
-        if !self.message.is_empty() {
-            ui.label(&self.message);
-        }
-        (load.inner, save.clicked())
-    }
-}
-impl App {
-    pub(super) fn open_large_value(&mut self, cell: DeferredCell) {
-        self.database.document.tools.large = Viewer {
-            cell: Some(cell),
-            ..Default::default()
-        };
-        self.load_value_chunk();
-    }
-    fn value_request(&mut self, operation: Operation) {
-        if self.database.document.tools.large.ticket.is_some() {
-            return;
-        }
-        let outcome = self.database.request(operation);
-        let large = &mut self.database.document.tools.large;
-        match outcome {
-            Some(Ok(ticket)) => large.ticket = Some(ticket),
-            Some(Err(e)) => large.message = e.to_string(),
-            None => large.message = "The source session is closed".into(),
-        }
-    }
-    fn load_value_chunk(&mut self) {
-        let viewer = &self.database.document.tools.large;
-        if let Some(handle) = viewer.cell.as_ref().and_then(|c| c.handle) {
-            self.value_request(Operation::ReadValue {
-                handle,
-                offset: viewer.offset,
-                bytes: 16 * 1024,
-            });
-        } else {
-            self.database.document.tools.large.message =
-                "Full value unavailable: it exceeded the spool limit or temporary storage failed"
-                    .into();
-        }
-    }
-    pub(super) fn value_event(&mut self, kind: EventKind) {
-        let viewer = &mut self.database.document.tools.large;
-        match kind {
-            EventKind::ValueChunk {
-                handle,
-                offset,
-                bytes,
-                ..
-            } if viewer
-                .cell
-                .as_ref()
-                .is_some_and(|c| c.handle == Some(handle)) =>
-            {
-                viewer.offset = offset;
-                viewer.data = bytes;
-                viewer.message.clear();
-            }
-            EventKind::ValueSaved(path) => viewer.message = format!("Saved full value to {path}"),
-            EventKind::Failed(e) => viewer.message = e.to_string(),
-            _ => return,
-        }
-        viewer.ticket = None;
-    }
-    pub(super) fn large_value_ui(&mut self, ctx: &egui::Context) {
-        let viewer = &mut self.database.document.tools.large;
-        let Some(cell) = viewer.cell.take() else {
-            return;
-        };
-        let mut open = true;
-        let (mut load, mut save) = (false, false);
-        egui::Window::new("Full value")
-            .id(egui::Id::unique(("large-value", self.database.document.id)))
-            .open(&mut open)
-            .default_width(660.0)
-            .vscroll(true)
-            .show(ctx, |ui| (load, save) = viewer.contents(ui, &cell));
-        // Closing the window forgets the value.
-        if !open {
-            return;
-        }
-        let handle = cell.handle;
-        viewer.cell = Some(cell);
-        if load {
-            self.load_value_chunk();
-        }
-        if save && let Some(handle) = handle {
-            self.value_request(Operation::SaveValue {
-                handle,
-                path: self.database.document.tools.large.path.clone().into(),
-            });
-        }
-    }
-}
 #[cfg(test)]
 mod tests {
-    use super::{
-        CellEditor, CellKind, DeferredCell, EventKind, LargeKind, Value, detail_text, egui, export,
-    };
+    use super::{CellEditor, CellKind, Value, detail_text, egui, export};
     use crate::app::test_ui;
-    use tursobench_core::{Column, Failure};
+    use tursobench_core::Column;
     #[test]
     fn json_detail_preserves_raw_numbers_duplicate_keys_and_string_tokens() {
         let raw = r#"{"n":123456789012345678901,"n":1,"s":"a\\\"b","empty":[]}"#;
@@ -514,42 +372,5 @@ mod tests {
         let row: Vec<_> = copied[0].lines().collect();
         assert_eq!(row, ["\"n\"\t\"label\"", "\"7\"\t\"tab\there\""]);
         assert_eq!(copied[1], "tab\there");
-    }
-    #[test]
-    fn large_values_load_by_handle_and_report_chunks_saves_and_failures() {
-        let (ctx, mut app) = test_ui::app();
-        let cell = |handle| DeferredCell {
-            handle,
-            kind: LargeKind::Text,
-            bytes: 40_000,
-        };
-        app.open_large_value(cell(None));
-        let message = |app: &crate::app::App| app.database.document.tools.large.message.clone();
-        assert!(message(&app).starts_with("Full value unavailable"));
-        app.open_large_value(cell(Some(7)));
-        assert_eq!(message(&app), "The source session is closed");
-        let chunk = |handle| EventKind::ValueChunk {
-            handle,
-            offset: 16,
-            bytes: b"a chunk".to_vec(),
-            total: 40_000,
-        };
-        app.value_event(chunk(8));
-        assert!(app.database.document.tools.large.data.is_empty());
-        app.value_event(chunk(7));
-        let viewer = &app.database.document.tools.large;
-        let loaded = (viewer.offset, &viewer.data[..], viewer.message.as_str());
-        assert_eq!(loaded, (16, &b"a chunk"[..], ""));
-        app.database.document.tools.large.search = "chunk".into();
-        let size = egui::vec2(800.0, 600.0);
-        let mut draw = |ui: &mut egui::Ui| app.large_value_ui(ui.ctx());
-        test_ui::render(&ctx, size, vec![], &mut draw);
-        let output = test_ui::render(&ctx, size, vec![], draw);
-        let found = "Match at preview position 2";
-        assert!(test_ui::texts(&output).any(|t| t.galley.text() == found));
-        app.value_event(EventKind::ValueSaved("/tmp/value".into()));
-        assert_eq!(message(&app), "Saved full value to /tmp/value");
-        app.value_event(EventKind::Failed(Failure::input("disk full")));
-        assert!(message(&app).contains("disk full"));
     }
 }

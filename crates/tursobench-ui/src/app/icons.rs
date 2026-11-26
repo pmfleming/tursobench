@@ -71,6 +71,26 @@ pub(super) enum Icon {
     Check,
     /// A five-point star: favourites.
     Star,
+    /// A framed picture: an image value.
+    Image,
+    /// A capital T: text stored as bytes.
+    Text,
+    /// A number sign: an identifier or digest.
+    Hash,
+    /// A zipped page: compressed contents.
+    Contents,
+    /// A warning triangle.
+    Warning,
+    /// Braces: a value read as a tree. Drawn as the parameters icon.
+    Tree,
+    /// A chevron pointing left: back to the list.
+    Back,
+    /// Bars of differing heights: a vector's values.
+    Vector,
+    /// An arrow up from a line: bytes brought in from a file.
+    Import,
+    /// A closed outline: a geometry.
+    Geometry,
 }
 
 pub(super) fn button(ui: &mut egui::Ui, icon: Icon, name: &str, shortcut: &str) -> egui::Response {
@@ -243,6 +263,17 @@ pub(super) fn control(
     label: bool,
 ) -> egui::Response {
     widget(ui, icon, name, shortcut, Some(selected), label, 1.0)
+}
+
+/// A control sized for a 24-point record line; selectable with `selected`.
+pub(super) fn line_control(
+    ui: &mut egui::Ui,
+    icon: Icon,
+    name: &str,
+    shortcut: &str,
+    selected: Option<bool>,
+) -> egui::Response {
+    widget(ui, icon, name, shortcut, selected, false, 24.0 / 28.0)
 }
 
 fn widget(
@@ -541,6 +572,48 @@ fn marks(icon: Icon) -> &'static [Mark] {
         Icon::Stop => &[Rect(6., 6., 12., 12.)],
         Icon::Check => &[Line("4,12.5 9.5,18 20,6.5")],
         Icon::Star => &[Drawn(|pen| pen.line(star_points(12., 12.6, 9.5)))],
+        Icon::Image => &[
+            Rect(3., 4.5, 18., 15.),
+            Circle(8.4, 9.6, 1.65),
+            Line("3.9,17.4 9,12.9 12.6,15.9 15.9,12.3 20.4,16.8"),
+        ],
+        Icon::Text => &[
+            Line("4.5,6.75 4.5,4.5 19.5,4.5 19.5,6.75"),
+            Line("12,4.5 12,19.5"),
+            Line("9.3,19.5 14.7,19.5"),
+        ],
+        Icon::Hash => &[
+            Line("9,3.75 6.9,20.25"),
+            Line("17.1,3.75 15,20.25"),
+            Line("3.9,9 20.4,9"),
+            Line("3.3,15 19.8,15"),
+        ],
+        Icon::Contents => &[
+            Rect(4.5, 3., 15., 18.),
+            Line("12,3 12,5.4"),
+            Line("12,7.8 12,10.2"),
+            Line("12,12.6 12,15"),
+        ],
+        Icon::Tree => marks(Icon::Parameters),
+        Icon::Back => &[Line("15,5 8,12 15,19")],
+        Icon::Geometry => &[Line("4,18 8,5 19,8 20,16 11,20 4,18")],
+        Icon::Import => &[
+            Line("12,20.25 12,9"),
+            Line("7.2,13.5 12,8.7 16.8,13.5"),
+            Line("4.5,4.2 19.5,4.2"),
+        ],
+        Icon::Vector => &[
+            Line("3.75,19.5 3.75,12"),
+            Line("7.875,19.5 7.875,6"),
+            Line("12,19.5 12,14.25"),
+            Line("16.125,19.5 16.125,9"),
+            Line("20.25,19.5 20.25,15.75"),
+        ],
+        Icon::Warning => &[
+            Line("12,3.75 21,19.5 3,19.5 12,3.75"),
+            Line("12,9.75 12,14.25"),
+            Line("12,16.9 12,17.25"),
+        ],
     }
 }
 

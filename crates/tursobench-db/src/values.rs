@@ -4,10 +4,16 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     path::Path,
 };
-use tursobench_core::{DeferredCell, EventKind, Failure, LargeKind, Value};
+use tursobench_core::{DEFERRED_HEAD, DeferredCell, EventKind, Failure, LargeKind, Value};
 
 const TOTAL: usize = 256 * 1024 * 1024;
 const CELL: usize = 64 * 1024 * 1024;
+/// The most of one value a lens may load whole.
+pub(crate) const LOAD: usize = 16 * 1024 * 1024;
+/// The longest byte sequence a search looks for.
+pub(crate) const NEEDLE: usize = 1024;
+/// How much of a value a viewer reads, or a search scans, at a time.
+const CHUNK: usize = 64 * 1024;
 pub(crate) struct Depot {
     files: VecDeque<(u64, std::fs::File, usize)>,
     next: u64,
@@ -59,6 +65,7 @@ impl Depot {
             handle,
             kind,
             bytes: bytes as u64,
+            head: data[..bytes.min(DEFERRED_HEAD)].to_vec(),
         }))
     }
     fn backing(&mut self, id: u64) -> Result<(&mut std::fs::File, usize), Failure> {
@@ -75,7 +82,7 @@ impl Depot {
         offset: u64,
         size: usize,
     ) -> Result<EventKind, Failure> {
-        if size == 0 || size > 64 * 1024 {
+        if size == 0 || size > CHUNK {
             return Err(Failure::input("Value chunks require 1–65536 bytes"));
         }
         let (file, total) = self.backing(handle)?;
@@ -91,6 +98,55 @@ impl Depot {
             bytes: data,
             total: total as u64,
         })
+    }
+    /// The whole of value `handle`, when it is at most [`LOAD`] bytes.
+    pub(crate) fn load(&mut self, handle: u64) -> Result<EventKind, Failure> {
+        let (file, total) = self.backing(handle)?;
+        if total > LOAD {
+            return Err(Failure::input(
+                "The value exceeds the 16 MiB a lens may load; page through it as hex or save it",
+            ));
+        }
+        file.seek(SeekFrom::Start(0)).map_err(input)?;
+        let mut bytes = vec![0; total];
+        file.read_exact(&mut bytes).map_err(input)?;
+        Ok(EventKind::ValueLoaded { handle, bytes })
+    }
+    /// The first occurrence of `needle` in value `handle` at or after `from`,
+    /// scanning chunk by chunk with an overlap, so a match across a chunk
+    /// boundary is found.
+    pub(crate) fn find(
+        &mut self,
+        handle: u64,
+        needle: &[u8],
+        from: u64,
+    ) -> Result<EventKind, Failure> {
+        if needle.is_empty() || needle.len() > NEEDLE {
+            return Err(Failure::input("Searches look for 1–1024 bytes"));
+        }
+        let (file, total) = self.backing(handle)?;
+        let mut start = from.min(total as u64);
+        file.seek(SeekFrom::Start(start)).map_err(input)?;
+        let mut window: Vec<u8> = Vec::with_capacity(CHUNK + needle.len());
+        let mut chunk = vec![0; CHUNK];
+        loop {
+            let read = file.read(&mut chunk).map_err(input)?;
+            if read == 0 {
+                return Ok(EventKind::ValueFound {
+                    handle,
+                    offset: None,
+                });
+            }
+            window.extend_from_slice(&chunk[..read]);
+            if let Some(at) = window.windows(needle.len()).position(|w| w == needle) {
+                let offset = Some(start + at as u64);
+                return Ok(EventKind::ValueFound { handle, offset });
+            }
+            // Keep the last bytes, which may begin a match the next chunk ends.
+            let keep = window.len().min(needle.len() - 1);
+            start += (window.len() - keep) as u64;
+            window.drain(..window.len() - keep);
+        }
     }
     /// Writes value `handle` to a new file at `path`, answering with the saved event.
     pub(crate) fn save(&mut self, handle: u64, path: &Path) -> Result<EventKind, Failure> {
@@ -109,7 +165,7 @@ fn input(e: impl std::fmt::Display) -> Failure {
 
 #[cfg(test)]
 mod tests {
-    use super::{CELL, Depot, TOTAL};
+    use super::{CELL, CHUNK, Depot, LOAD, TOTAL};
     use tursobench_core::{EventKind, Value};
     fn handle(value: Value) -> u64 {
         let Value::Deferred(cell) = value else {
@@ -147,5 +203,59 @@ mod tests {
         );
         assert!(depot.read(last, 2, 1).is_err());
         assert!(depot.read(last, 0, 65537).is_err());
+    }
+    #[test]
+    fn whole_values_load_under_the_cap_and_searches_cross_chunk_boundaries() {
+        let mut depot = Depot::default();
+        let mut bytes = vec![0u8; 3 * CHUNK];
+        // A needle split across the first chunk boundary, then one inside the third chunk.
+        bytes[CHUNK - 2..CHUNK + 2].copy_from_slice(b"seam");
+        bytes[2 * CHUNK + 10..2 * CHUNK + 14].copy_from_slice(b"seam");
+        let id = handle(depot.defer(Value::Blob(bytes.clone())));
+        let found = |depot: &mut Depot, from| match depot.find(id, b"seam", from) {
+            Ok(EventKind::ValueFound { offset, .. }) => offset,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(found(&mut depot, 0), Some(CHUNK as u64 - 2));
+        assert_eq!(
+            found(&mut depot, CHUNK as u64 - 1),
+            Some(2 * CHUNK as u64 + 10)
+        );
+        assert_eq!(found(&mut depot, 2 * CHUNK as u64 + 11), None);
+        assert_eq!(found(&mut depot, u64::MAX), None);
+        assert!(depot.find(id, b"", 0).is_err());
+        assert!(depot.find(id, &[1; 1025], 0).is_err());
+        assert!(
+            matches!(depot.load(id), Ok(EventKind::ValueLoaded { bytes: loaded, .. }) if loaded == bytes)
+        );
+        let large = handle(depot.defer(Value::Blob(vec![1; LOAD + 1])));
+        assert!(depot.load(large).is_err());
+        assert!(depot.load(9999).is_err());
+        assert!(depot.find(9999, b"x", 0).is_err());
+    }
+    #[test]
+    fn deferred_values_keep_their_first_bytes_even_without_backing() {
+        let mut depot = Depot::default();
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend((0..200).map(|i| i as u8));
+        let Value::Deferred(cell) = depot.defer(Value::Blob(png.clone())) else {
+            panic!("expected deferred value")
+        };
+        assert_eq!(cell.head, png[..64]);
+        assert_eq!(cell.bytes, png.len() as u64);
+        let Value::Deferred(cell) = depot.defer(Value::Text("short".into())) else {
+            panic!("expected deferred value")
+        };
+        assert_eq!(cell.head, b"short");
+        let mut oversized = vec![0x1f, 0x8b, 0x08];
+        oversized.resize(CELL + 1, 0);
+        let Value::Deferred(cell) = depot.defer(Value::Blob(oversized)) else {
+            panic!("expected deferred value")
+        };
+        assert_eq!(
+            (cell.handle, &cell.head[..3]),
+            (None, &[0x1f, 0x8b, 0x08][..])
+        );
+        assert_eq!(cell.head.len(), 64);
     }
 }

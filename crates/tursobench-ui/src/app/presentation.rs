@@ -225,6 +225,27 @@ fn aligned_text(
         .galley(pos, galley, color);
 }
 
+/// One row of a loading placeholder: quiet bars where a name, a value and a
+/// type will be, varying in width from row to row.
+pub(super) fn placeholder_row(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    index: usize,
+    color: egui::Color32,
+) {
+    for (x, width) in [
+        (4.0, 13.0),
+        (25.0, 60.0 + (index % 3) as f32 * 16.0),
+        (rect.width() - 52.0, 44.0),
+    ] {
+        let top = rect.top() + (rect.height() - 9.0) / 2.0;
+        painter.rect_filled(
+            egui::Rect::from_min_size(egui::pos2(rect.left() + x, top), egui::vec2(width, 9.0)),
+            3.0,
+            color,
+        );
+    }
+}
 /// A collapsed area: a thin strip with a grip. `name` is its tooltip and
 /// accessible name; a click reopens the area. One that senses drags can be moved.
 pub(super) fn fold_line(

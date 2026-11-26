@@ -155,6 +155,8 @@ fn storage_class(value: &Value) -> Result<&'static str, Failure> {
         }
     })
 }
+/// The most a staged value may hold, counted as [`Value::bytes`] counts it.
+pub const EDIT_BYTES: usize = 64 * 1024;
 /// Parameters bound so far; each bound value becomes the next `?N`.
 #[derive(Default)]
 struct Binder {
@@ -163,7 +165,7 @@ struct Binder {
 impl Binder {
     fn bind(&mut self, value: &Value) -> Result<String, Failure> {
         if matches!(value, Value::Deferred(_))
-            || value.bytes() > 64 * 1024
+            || value.bytes() > EDIT_BYTES
             || matches!(value, Value::Real(n) if n.is_nan())
         {
             return Err(Failure::input("Edit value is oversized or non-finite"));

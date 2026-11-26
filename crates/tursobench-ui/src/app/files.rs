@@ -7,22 +7,80 @@ use std::{
 };
 
 pub(super) type PickResult = Result<Option<PathBuf>, String>;
+/// A file a value was saved to, `None` when the dialog was cancelled.
+pub(super) type SaveResult = Result<Option<PathBuf>, String>;
 
 fn start_picker(
     wake: egui::Context,
     pick: impl FnOnce() -> Option<PathBuf> + Send + std::panic::UnwindSafe + 'static,
 ) -> std::io::Result<Receiver<PickResult>> {
+    start_task(wake, "database-file-picker", pick)
+}
+
+/// Run `task` on its own thread, catching a panic, and wake the UI when it ends.
+pub(super) fn start_task<T: Send + 'static>(
+    wake: egui::Context,
+    name: &str,
+    task: impl FnOnce() -> T + Send + std::panic::UnwindSafe + 'static,
+) -> std::io::Result<Receiver<Result<T, String>>> {
     let (tx, rx) = mpsc::sync_channel(1);
     std::thread::Builder::new()
-        .name("database-file-picker".into())
+        .name(name.into())
         .spawn(move || {
-            let result = std::panic::catch_unwind(pick)
+            let result = std::panic::catch_unwind(task)
                 .map_err(|_| "The file chooser stopped unexpectedly".into());
             let _ = tx.send(result);
             // Wake the UI on failure as well as selection/cancellation.
             wake.request_repaint();
         })?;
     Ok(rx)
+}
+
+/// Ask where to save a value named `name`; with `bytes`, write them there as
+/// a new file. Runs on the dialog's own thread.
+pub(super) fn save_value_dialog(name: &str, bytes: Option<std::sync::Arc<[u8]>>) -> SaveResult {
+    let Some(path) = rfd::FileDialog::new()
+        .set_title("Save value to file")
+        .set_file_name(name)
+        .save_file()
+    else {
+        return Ok(None);
+    };
+    if let Some(bytes) = bytes {
+        write_new(&path, &bytes)?;
+    }
+    Ok(Some(path))
+}
+
+/// The bytes of the file at `path`, refused when it holds more than `limit`.
+pub(super) fn read_at_most(path: &std::path::Path, limit: usize) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let file =
+        std::fs::File::open(path).map_err(|e| format!("Could not open {}: {e}", path.display()))?;
+    let mut bytes = Vec::new();
+    file.take(limit as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("Could not read {}: {e}", path.display()))?;
+    if bytes.len() > limit {
+        return Err(format!(
+            "{} is over the 64 KiB a staged blob may hold · nothing was staged",
+            path.display()
+        ));
+    }
+    Ok(bytes)
+}
+
+/// Write `bytes` to a file that must not exist yet.
+pub(super) fn write_new(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|e| format!("Could not create {}: {e}", path.display()))?;
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|e| format!("Could not write {}: {e}", path.display()))
 }
 
 impl App {

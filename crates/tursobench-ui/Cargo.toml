@@ -15,6 +15,7 @@ x11 = ["eframe/x11", "winit/x11"]
 
 [dependencies]
 tursobench-core.workspace = true
+tursobench-blob.workspace = true
 tursobench-db.workspace = true
 tursobench-assistant.workspace = true
 eframe.workspace = true

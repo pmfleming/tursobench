@@ -7,7 +7,7 @@ use std::{collections::BTreeMap, ops::Range};
 #[derive(Default)]
 pub(super) struct ViewTools {
     pub spreadsheet: super::spreadsheet::State,
-    pub large: results::Viewer,
+    pub values: super::value::Values,
     pub filtered_count: Option<i64>,
     pub draft_ui: super::editing::Presentation,
     pub sql_focus: Option<eframe::egui::Id>,
@@ -207,7 +207,7 @@ impl Document {
     pub fn disconnect(&mut self) {
         self.tools.spreadsheet = Default::default();
         self.active = None;
-        self.tools.large.ticket = None;
+        self.tools.values.ticket = None;
         self.tools.inspection_ticket = None;
         self.tools.context.pending = None;
         self.tools.pages.pending = None;
