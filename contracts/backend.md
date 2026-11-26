@@ -98,7 +98,9 @@ can exceed the chunk target. Budgets estimate owned data, not allocator overhead
 Engine allocations and one incoming row are unbounded; there is no hostile-file,
 hard memory, hard deadline or hard shutdown guarantee.
 
-Oversized text/blob cells are typed Deferred handles, with original kind/length.
+Oversized text/blob cells are typed Deferred handles, with original kind/length
+and the first 64 bytes, kept even when no backing could be made, so a value can
+be described without reading its backing.
 Private anonymous files back at most 64 MiB/value, 256 MiB/session and 1,024 files,
 with FIFO expiration. Unsupported sizes/storage failures remain explicitly
 unavailable. The OS reclaims anonymous backing on process termination on Linux.

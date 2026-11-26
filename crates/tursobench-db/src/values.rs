@@ -4,7 +4,7 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     path::Path,
 };
-use tursobench_core::{DeferredCell, EventKind, Failure, LargeKind, Value};
+use tursobench_core::{DEFERRED_HEAD, DeferredCell, EventKind, Failure, LargeKind, Value};
 
 const TOTAL: usize = 256 * 1024 * 1024;
 const CELL: usize = 64 * 1024 * 1024;
@@ -59,6 +59,7 @@ impl Depot {
             handle,
             kind,
             bytes: bytes as u64,
+            head: data[..bytes.min(DEFERRED_HEAD)].to_vec(),
         }))
     }
     fn backing(&mut self, id: u64) -> Result<(&mut std::fs::File, usize), Failure> {
@@ -147,5 +148,30 @@ mod tests {
         );
         assert!(depot.read(last, 2, 1).is_err());
         assert!(depot.read(last, 0, 65537).is_err());
+    }
+    #[test]
+    fn deferred_values_keep_their_first_bytes_even_without_backing() {
+        let mut depot = Depot::default();
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend((0..200).map(|i| i as u8));
+        let Value::Deferred(cell) = depot.defer(Value::Blob(png.clone())) else {
+            panic!("expected deferred value")
+        };
+        assert_eq!(cell.head, png[..64]);
+        assert_eq!(cell.bytes, png.len() as u64);
+        let Value::Deferred(cell) = depot.defer(Value::Text("short".into())) else {
+            panic!("expected deferred value")
+        };
+        assert_eq!(cell.head, b"short");
+        let mut oversized = vec![0x1f, 0x8b, 0x08];
+        oversized.resize(CELL + 1, 0);
+        let Value::Deferred(cell) = depot.defer(Value::Blob(oversized)) else {
+            panic!("expected deferred value")
+        };
+        assert_eq!(
+            (cell.handle, &cell.head[..3]),
+            (None, &[0x1f, 0x8b, 0x08][..])
+        );
+        assert_eq!(cell.head.len(), 64);
     }
 }

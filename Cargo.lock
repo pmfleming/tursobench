@@ -4779,6 +4779,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "tursobench-blob"
+version = "0.1.0"
+
+[[package]]
 name = "tursobench-core"
 version = "0.1.0"
 dependencies = [

@@ -5,6 +5,7 @@ use tursobench_core::{
 };
 use tursobench_db::{Operation, Request, Session};
 
+pub mod blob_fixtures;
 pub mod local_fixtures;
 
 mod fixture;

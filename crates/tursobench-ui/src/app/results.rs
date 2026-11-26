@@ -522,6 +522,7 @@ mod tests {
             handle,
             kind: LargeKind::Text,
             bytes: 40_000,
+            head: vec![],
         };
         app.open_large_value(cell(None));
         let message = |app: &crate::app::App| app.database.document.tools.large.message.clone();

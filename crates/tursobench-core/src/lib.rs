@@ -18,7 +18,13 @@ pub struct DeferredCell {
     pub handle: Option<u64>,
     pub kind: LargeKind,
     pub bytes: u64,
+    /// The value's first [`DEFERRED_HEAD`] bytes, kept so the value can be
+    /// described without reading its backing.
+    #[serde(default)]
+    pub head: Vec<u8>,
 }
+/// How many leading bytes of a deferred value stay in memory.
+pub const DEFERRED_HEAD: usize = 64;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LargeKind {
     Text,
@@ -66,7 +72,7 @@ impl Value {
             + match self {
                 Self::Text(s) => s.len(),
                 Self::Blob(b) => b.len(),
-                Self::Deferred(_) => std::mem::size_of::<DeferredCell>(),
+                Self::Deferred(cell) => std::mem::size_of::<DeferredCell>() + cell.head.len(),
                 _ => 0,
             }
     }
@@ -631,6 +637,26 @@ mod tests {
             serde_json::from_str::<Value>(&serde_json::to_string(&value).unwrap()).unwrap(),
             value
         );
+    }
+    #[test]
+    fn deferred_heads_survive_serde_and_older_cells_read_without_one() {
+        let cell = super::DeferredCell {
+            handle: Some(3),
+            kind: super::LargeKind::Blob,
+            bytes: 100_000,
+            head: b"\x89PNG\r\n\x1a\n".to_vec(),
+        };
+        let value = Value::Deferred(Box::new(cell.clone()));
+        let json = serde_json::to_string(&value).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&json).unwrap(), value);
+        assert_eq!(
+            value.bytes(),
+            std::mem::size_of::<Value>() + std::mem::size_of::<super::DeferredCell>() + 8
+        );
+        let older = r#"{"handle":3,"kind":"Blob","bytes":100000}"#;
+        let older: super::DeferredCell = serde_json::from_str(older).unwrap();
+        assert_eq!(older.head, Vec::<u8>::new());
+        assert_eq!((older.handle, older.bytes), (cell.handle, cell.bytes));
     }
     #[test]
     fn convenient_bindings_keep_integer_text_null_and_blob_types() {
