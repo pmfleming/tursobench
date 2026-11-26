@@ -619,8 +619,7 @@ impl App {
         let preview = (!self.editing_at(row, col))
             .then(|| self.record_preview(ctx, row, col))
             .flatten();
-        let decoding = |lens| matches!(lens, Lens::Tree | Lens::Vector | Lens::Contents);
-        if preview.as_ref().is_none_or(|p| !decoding(p.lens)) {
+        if preview.as_ref().is_none_or(|p| !p.decodes()) {
             self.database.document.tools.values.idle();
         }
         preview
@@ -725,6 +724,30 @@ const HELP: &[(&str, &[HelpRow])] = &[
             ),
             (&["Ctrl Space"], "Completions"),
             (&["Ctrl S"], "Save query"),
+        ],
+    ),
+    (
+        "Record value",
+        &[
+            (
+                &["Enter", "Double-click"],
+                "Open a blob or large value in the record tile · Esc returns",
+            ),
+            (&["Arrows", "Shift Arrows"], "Move · extend the selection"),
+            (&["PgUp", "PgDn", "Home", "End"], "Page · line start or end"),
+            (&["Ctrl Home", "Ctrl End"], "First or last byte"),
+            (&["Tab"], "Swap between the bytes and characters columns"),
+            (&["Ctrl F"], "Find bytes (00 ff) or text after the cursor"),
+            (&["Ctrl G"], "Go to an offset · or click the footer offset"),
+            (&["Ctrl C"], "Copy the selection as shown"),
+            (
+                &["0–9", "a–f", "Insert", "Delete"],
+                "Overwrite or insert bytes in an editable blob · staged, never written until commit",
+            ),
+            (
+                &[],
+                "Lenses read the same bytes as hex, text, a tree, an image, a vector or inflated contents; choosing one never changes the value.",
+            ),
         ],
     ),
     (

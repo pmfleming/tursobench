@@ -205,9 +205,10 @@ with sqlite3.connect(path) as c:
     c.executemany("INSERT INTO blobs(kind, data) VALUES (?, ?)", blob_samples())
     # One record holding a value of each kind, as the record tile shows them.
     c.execute("CREATE TABLE blob_fields(id INTEGER PRIMARY KEY, name TEXT, data BLOB, avatar BLOB, token BLOB, "
-              "embedding BLOB, meta BLOB, payload BLOB, session BLOB, note BLOB, photo BLOB)")
+              "embedding BLOB, meta BLOB, payload BLOB, session BLOB, note BLOB, photo BLOB, place BLOB)")
     pick = lambda kind: f"(SELECT data FROM blobs WHERE kind = '{kind}')"
     c.execute("INSERT INTO blob_fields SELECT id, kind, " + ", ".join(pick(k) for k in (
-        "short bytes", "png", "uuid", "float32 vector", "jsonb", "large gzip", "messagepack", "utf-8 text", "jpeg"))
+        "short bytes", "png", "uuid", "float32 vector", "jsonb", "large gzip", "messagepack", "utf-8 text", "jpeg",
+        "geopackage point"))
               + " FROM blobs WHERE id <= 3")
 print(f"Created closed fixture {path}: {rows} items; SQLite generator {sqlite3.sqlite_version}")

@@ -66,7 +66,7 @@ impl Lens {
     /// and a format found by parsing without a signature never leads.
     pub fn offered(kind: Kind, weak: Weak) -> Vec<Self> {
         let mut lenses = match kind {
-            Kind::Text(_) => vec![Self::Text, Self::Hex],
+            Kind::Text(_) | Kind::Geometry { .. } => vec![Self::Text, Self::Hex],
             Kind::Jsonb | Kind::Structured(_) => vec![Self::Tree, Self::Hex],
             Kind::Image { .. } => vec![Self::Image, Self::Hex],
             Kind::Vector { .. } => vec![Self::Vector, Self::Hex],
@@ -120,6 +120,8 @@ pub(super) enum Decoded {
     Tree(Arc<Tree>),
     Vector(Arc<tursobench_blob::vector::Vector>),
     Contents(Arc<job::Contents>),
+    /// Text a decoder wrote, such as a geometry's WKT.
+    Text(Arc<str>),
     Failed(String),
 }
 
@@ -169,6 +171,8 @@ impl Values {
                         job::Output::Tree(Ok(tree)) => Decoded::Tree(tree),
                         job::Output::Vector(Ok(vector)) => Decoded::Vector(vector),
                         job::Output::Contents(Ok(contents)) => Decoded::Contents(contents),
+                        job::Output::Text(Ok(text)) => Decoded::Text(text),
+                        job::Output::Text(Err(e)) => Decoded::Failed(e),
                         job::Output::Tree(Err(e))
                         | job::Output::Vector(Err(e))
                         | job::Output::Contents(Err(e)) => Decoded::Failed(e),

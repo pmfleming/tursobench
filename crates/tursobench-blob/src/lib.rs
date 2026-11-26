@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 pub mod encode;
 pub mod formats;
+pub mod geometry;
 pub mod image;
 pub mod inflate;
 pub mod inspect;

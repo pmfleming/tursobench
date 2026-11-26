@@ -32,6 +32,8 @@ pub(in crate::app) enum Work {
     Contents(Arc<[u8]>, Compression),
     /// Formats without a signature, tried against the whole value.
     Probe(Arc<[u8]>),
+    /// A geometry, written out as WKT.
+    Wkt(Arc<[u8]>),
 }
 
 /// Inflated contents, and what they are.
@@ -67,6 +69,7 @@ impl Work {
                 Output::Contents(contents(bytes, *compression, cancel).map(Arc::new))
             }
             Self::Probe(bytes) => Output::Probe(formats::probe(bytes, cancel)),
+            Self::Wkt(bytes) => Output::Text(tursobench_blob::geometry::wkt(bytes).map(Arc::from)),
         }
     }
 }
@@ -123,6 +126,7 @@ pub(in crate::app) enum Output {
     Vector(Result<Arc<Vector>, String>),
     Contents(Result<Arc<Contents>, String>),
     Probe(Option<Format>),
+    Text(Result<Arc<str>, String>),
 }
 
 struct Job {
@@ -240,6 +244,7 @@ fn failed(work: &Work) -> Output {
         Work::Vector(_) => Output::Vector(Err(reason)),
         Work::Contents(..) => Output::Contents(Err(reason)),
         Work::Probe(_) => Output::Probe(None),
+        Work::Wkt(_) => Output::Text(Err(reason)),
     }
 }
 

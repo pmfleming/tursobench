@@ -169,6 +169,26 @@ fn utf8(bytes: &[u8]) -> Option<String> {
     })
 }
 
+/// Shannon entropy in bits per byte, from 0 (one value) to 8 (uniform).
+pub fn entropy(bytes: &[u8]) -> f32 {
+    if bytes.is_empty() {
+        return 0.0;
+    }
+    let mut counts = [0u32; 256];
+    for &b in bytes {
+        counts[usize::from(b)] += 1;
+    }
+    let total = bytes.len() as f32;
+    counts
+        .iter()
+        .filter(|&&n| n > 0)
+        .map(|&n| {
+            let p = n as f32 / total;
+            -p * p.log2()
+        })
+        .sum()
+}
+
 /// Seconds since 1970 as a UTC date and time, `2031-05-12 11:46:08`.
 pub fn utc(seconds: i64) -> String {
     let (days, time) = (seconds.div_euclid(86_400), seconds.rem_euclid(86_400));
@@ -240,6 +260,10 @@ mod tests {
         assert_eq!(utc(951_782_400), "2000-02-29 00:00:00");
         assert_eq!(leb128(&[0xE5, 0x8E, 0x26]), Some((624_485, 3)));
         assert_eq!(leb128(&[0x80; 10]), None);
+        assert_eq!(super::entropy(&[7; 100]), 0.0);
+        let uniform: Vec<u8> = (0..=255).collect();
+        assert!((super::entropy(&uniform) - 8.0).abs() < 1e-4);
+        assert_eq!(super::entropy(&[]), 0.0);
         assert_eq!(
             leb128(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01]),
             Some((u64::MAX, 10))

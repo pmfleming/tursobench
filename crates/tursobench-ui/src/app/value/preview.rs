@@ -71,6 +71,9 @@ impl App {
         };
         let body = match offer.lens {
             Lens::Hex => Body::Hex(bytes(value).iter().copied().take(32 * LINES).collect()),
+            Lens::Text if matches!(kind, Kind::Geometry { .. }) => {
+                Body::Decoded(decode(in_memory(value).map(Work::Wkt)))
+            }
             Lens::Text => Body::Text(text_of(value, kind)),
             Lens::Tree => Body::Decoded(decode(tree_work(value, offer.format))),
             Lens::Vector => Body::Decoded(decode(in_memory(value).map(Work::Vector))),
@@ -214,6 +217,7 @@ impl Preview {
             Body::Decoded(Decoded::Contents(contents)) => {
                 contents_preview(ui, &painter, rect, contents, color);
             }
+            Body::Decoded(Decoded::Text(text)) => wrapped(ui, &painter, rect, text, color),
             Body::Decoded(Decoded::Pending) => {
                 let row = rect.height() / LINES as f32;
                 for i in 0..LINES - 1 {
@@ -241,6 +245,10 @@ impl Preview {
             Body::Image(Shown::Failed(reason)) => wrapped(ui, &painter, rect, reason, tokens.faint),
         }
     }
+    /// Whether the preview shows the work of the decode thread.
+    pub fn decodes(&self) -> bool {
+        matches!(self.body, Body::Decoded(_))
+    }
     /// What the preview shows, for accessibility.
     pub fn describe(&self) -> String {
         match &self.body {
@@ -262,6 +270,7 @@ impl Preview {
                     contents.len
                 )
             }
+            Body::Decoded(Decoded::Text(text)) => text.chars().take(200).collect(),
             Body::Decoded(Decoded::Pending) | Body::Image(Shown::Pending) => "Reading".into(),
             Body::Decoded(Decoded::Failed(reason)) | Body::Image(Shown::Failed(reason)) => {
                 reason.clone()

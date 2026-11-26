@@ -78,7 +78,6 @@ impl Chunks {
     pub fn get(&self, index: u64) -> Option<&Arc<[u8]>> {
         self.map.get(&index)
     }
-    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.map.len()
     }
@@ -147,6 +146,8 @@ pub(in crate::app) struct View {
     pub half: bool,
     /// Where the cursor goes once a staged edit is shown.
     pub edit_cursor: Option<u64>,
+    /// Entropy of the minimap's segments: segment size and index, bits per byte.
+    pub entropy: HashMap<(u64, u64), f32>,
     /// A file chosen to replace the value, being read.
     pub load: Option<std::sync::mpsc::Receiver<Loaded>>,
 }
@@ -201,6 +202,7 @@ impl View {
             insert: false,
             half: false,
             edit_cursor: None,
+            entropy: HashMap::new(),
             load: None,
         })
     }

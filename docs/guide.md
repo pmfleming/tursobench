@@ -228,6 +228,48 @@ insert JSON uses one entry per column: JSON `null` omits that column (DEFAULT);
 Query parameters are not persisted. History **does** store SQL literals: clear
 history if they contain sensitive information.
 
+### Reading values in the Record tile
+
+Every field in the Record tile says what its value is. A blob shows its bytes
+when they are short, otherwise what they are and how large: an image's format
+and size (with a thumbnail), text, a UUID, a digest, SQLite JSONB, BSON, a
+binary plist, CBOR, a Turso vector, gzip/zlib/zstd contents, a geometry, or one
+of about 40 other named formats. A value too large to keep in a page keeps its
+first 64 bytes, so it is described the same way. Grid cells show the same
+summary. Nothing is decoded while the grid paints.
+
+Selecting a blob grows its row by a short preview through a **lens**: hex, text,
+a JSON tree, the image, a vector's bars, inflated contents or a geometry's WKT.
+The lens icons at the right of the row switch lens; the choice is remembered for
+the column and is also under the column header's **Cell appearance** menu. A
+plain float32 vector is read as one automatically only when the column's name or
+declared type says it holds vectors. A format without a signature (MessagePack,
+untagged CBOR, protobuf) is offered as a possible tree once it parses the whole
+value, never chosen on its own.
+
+**Enter**, a double-click, or the open icon fills the tile with the value. The
+header is the field's own row: back, name, summary, the lenses, find, copy as
+(hex, Base64, SQL literal, text, C array, or the image) and save to file. Esc
+or the back chevron returns; the ribbon's record stepper stays on the same field.
+The hex lens pages a large value from the session in 64 KiB chunks and keeps 16
+of them, with offsets, characters, a selection, and a footer reading the bytes
+at the cursor as numbers in either byte order. Click the footer's offset, or
+press Ctrl G, to go to an offset; Ctrl F finds bytes (`66 6a 73`) or text after
+the cursor across the whole value. A tile wider than about 820 points adds an
+entropy strip and the full list of readings.
+
+Decoders run off the interface thread, each bounded: images to 16 MiB encoded,
+8,192 pixels a side and 64 MiB decoded (eight textures kept); trees to 10,000
+nodes, 64 levels and 1 MiB of text; contents to 16 MiB inflated, one level; a
+lens loads at most 16 MiB of a value. Copies stop at the 2 MiB clipboard budget.
+
+In an editable table, a blob held in memory can be changed in the value view:
+type hex digits or characters over the bytes, Insert switches to inserting,
+Delete removes the selection, **Replace from file** loads up to 64 KiB, and the
+hex lens's context menu also sets NULL. Changed bytes show in the pending
+colour. Edits are staged like any cell edit and written only on Commit; a blob
+stays a blob. A lens never changes a stored value, a row copy or an export.
+
 ### Spreadsheet editing
 
 Use the **Edit cells** icon at the end of the Table data ribbon, or right-click a cell, for paste, mapped new-row

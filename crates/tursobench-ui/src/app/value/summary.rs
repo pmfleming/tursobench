@@ -176,6 +176,7 @@ impl Summary {
             Kind::Compressed(compression) => compression.name().into(),
             Kind::Named(named) => named.name.into(),
             Kind::Vector { layout, .. } => format!("{} vector", layout.name()),
+            Kind::Geometry { shape, .. } => shape.to_lowercase(),
             _ => "bytes".into(),
         }
     }
@@ -399,6 +400,12 @@ fn describe(head: &[u8], tail: &[u8], len: u64) -> Summary {
             Icon::Tree,
             sized(format.name().into()),
             format!("{}, {size}", format.name()),
+        ),
+        Kind::Geometry { container, shape } => Summary::new(
+            kind,
+            Icon::Geometry,
+            sized(shape.into()),
+            format!("A {} {}, {size}", container.name(), shape.to_lowercase()),
         ),
         Kind::Vector { layout, dims } => Summary::new(
             kind,

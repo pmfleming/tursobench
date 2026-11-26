@@ -89,6 +89,8 @@ pub(super) enum Icon {
     Vector,
     /// An arrow up from a line: bytes brought in from a file.
     Import,
+    /// A closed outline: a geometry.
+    Geometry,
 }
 
 pub(super) fn button(ui: &mut egui::Ui, icon: Icon, name: &str, shortcut: &str) -> egui::Response {
@@ -594,6 +596,7 @@ fn marks(icon: Icon) -> &'static [Mark] {
         ],
         Icon::Tree => marks(Icon::Parameters),
         Icon::Back => &[Line("15,5 8,12 15,19")],
+        Icon::Geometry => &[Line("4,18 8,5 19,8 20,16 11,20 4,18")],
         Icon::Import => &[
             Line("12,20.25 12,9"),
             Line("7.2,13.5 12,8.7 16.8,13.5"),

@@ -1,3 +1,19 @@
+# Record tile and blob viewer — 2026-11-26
+
+The blob viewer (redesign v13) added the `tursobench-blob` crate and the record
+tile's `app/value` modules. Measured with the same frozen `rqlens` as the pass
+below, over the same source roots including tests: no function in the new code
+is above cognitive complexity 17, and the only function above 25 is still
+`shell::App::shell` (26), unchanged. The new crate is `#![forbid(unsafe_code)]`;
+no `unsafe` block, `#[allow]` attribute or wildcard import was added anywhere.
+Every reader of value bytes is bounded (see `contracts/backend.md` and the
+guide's "Reading values in the Record tile"), runs off the interface thread
+inside `catch_unwind` except the 64-byte summary sniff, which is also caught,
+and is tested against truncated, oversized and random input; JSONB and vectors
+are also checked against the engine's own `json()` and `vector_extract()`.
+
+---
+
 # Quality audit and refactor — 2026-11-24
 
 Baseline: `1bd2022` (the 2026-11-19 pass). Measured with the same frozen

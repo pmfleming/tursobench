@@ -86,6 +86,11 @@ pub enum Kind {
     Jsonb,
     /// BSON, a binary plist or tagged CBOR, by its signature.
     Structured(crate::formats::Format),
+    /// A geometry in a GeoPackage, SpatiaLite or plain WKB blob.
+    Geometry {
+        container: crate::geometry::Container,
+        shape: &'static str,
+    },
     /// A vector in a Turso layout named by its type byte.
     Vector {
         layout: crate::vector::Layout,
@@ -108,6 +113,7 @@ impl Kind {
                 _ => "cbor",
             },
             Self::Vector { .. } => "vec",
+            Self::Geometry { .. } => "wkb",
             Self::Compressed(compression) => compression.extension(),
             Self::Named(named) => named.extension,
             Self::Empty | Self::Uuid { .. } | Self::Digest | Self::Unknown => "bin",
@@ -144,6 +150,9 @@ pub fn sniff_tail(head: &[u8], tail: &[u8], len: u64) -> Kind {
     }
     if let Some(format) = crate::formats::signature(head, len) {
         return Kind::Structured(format);
+    }
+    if let Some((container, shape)) = crate::geometry::detect(head, tail, len) {
+        return Kind::Geometry { container, shape };
     }
     if let Some(encoding) = crate::text::detect(head, len) {
         return Kind::Text(encoding);

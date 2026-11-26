@@ -18,6 +18,11 @@ use tursobench_blob::{Kind, Order, encode::Format as CopyFormat, formats::Format
 use tursobench_core::{EventKind, Value};
 use tursobench_db::Operation;
 
+/// The tile width from which the hex lens adds its inspector list.
+const EXPANDED: f32 = 820.0;
+/// The width of the expanded tile's entropy strip and inspector list.
+const SIDE: f32 = 250.0;
+
 /// What the header asked for.
 enum Header {
     Back,
@@ -303,9 +308,16 @@ impl App {
             Some(Value::Blob(bytes)) => Some(bytes.as_slice()),
             _ => None,
         };
+        // An expanded tile adds an entropy strip and the full inspector list.
+        let side = (rect.width() >= EXPANDED).then(|| {
+            egui::Rect::from_min_max(egui::pos2(rect.right() - SIDE, rect.top()), rect.max)
+        });
+        let main = side.map_or(rect, |side| {
+            egui::Rect::from_min_max(rect.min, egui::pos2(side.left(), rect.bottom()))
+        });
         let body = egui::Rect::from_min_max(
-            rect.min + egui::vec2(4.0, 2.0),
-            rect.max - egui::vec2(12.0, 2.0),
+            main.min + egui::vec2(4.0, 2.0),
+            main.max - egui::vec2(12.0, 2.0),
         );
         let grid = hex::Grid::new(ui, body, view.source.len());
         (view.per, view.lines) = (grid.per, grid.lines());
@@ -317,8 +329,8 @@ impl App {
         hex_pointer(ui, &grid, &response, view);
         let total = view.source.len().div_ceil(grid.per as u64).max(1);
         let track = egui::Rect::from_min_max(
-            egui::pos2(rect.right() - 8.0, body.top()),
-            egui::pos2(rect.right() - 4.0, body.bottom()),
+            egui::pos2(main.right() - 8.0, body.top()),
+            egui::pos2(main.right() - 4.0, body.bottom()),
         );
         if let Some(line) = hex::scrollbar(ui, track, view.top, grid.lines(), total) {
             view.scroll_to_line(line);
@@ -326,6 +338,16 @@ impl App {
         let changed =
             |at: u64| stored.is_some_and(|s| s.get(at as usize) != view.byte(at).as_ref());
         hex::paint(ui, &grid, view, color, &changed);
+        if let Some(side) = side {
+            let strip =
+                egui::Rect::from_x_y_ranges(side.left() + 2.0..=side.left() + 12.0, body.y_range());
+            if let Some(line) = inspect::minimap(ui, strip, view) {
+                view.scroll_to_line(line);
+            }
+            let list =
+                egui::Rect::from_min_max(egui::pos2(side.left() + 18.0, side.top()), side.max);
+            inspect::list(ui, list, view);
+        }
         let label = format!("Byte {} of {}", view.cursor, view.source.len());
         response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Grid, true, &label));
         let edit = hex_menu(&response, editable, view.insert);
@@ -348,6 +370,17 @@ impl App {
 
     /// The text lens: the value's text, wrapped, from memory or loaded whole.
     fn text_body(&mut self, ui: &mut egui::Ui, kind: Kind) {
+        if let Kind::Geometry { .. } = kind {
+            if let Some(Decoded::Text(wkt)) =
+                self.decode_open(ui, Lens::Text, |b| Some(Work::Wkt(b)))
+            {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(wkt.as_ref()).monospace().size(12.0))
+                        .wrap(),
+                );
+            }
+            return;
+        }
         let Some(view) = self.value_view() else {
             return;
         };
@@ -617,6 +650,7 @@ impl App {
     /// The footer: offset, selection and readings, or the find or go-to input.
     fn value_footer(&mut self, ui: &mut egui::Ui, lens: Lens) {
         let wide = ui.available_width() >= 480.0;
+        let expanded = ui.available_width() >= EXPANDED;
         let tokens = crate::appearance::Tokens::of(ui.ctx());
         let Some(view) = self.value_view() else {
             return;
@@ -657,7 +691,7 @@ impl App {
                 ui.label(egui::RichText::new(note).size(11.5).color(tokens.faint));
                 return;
             }
-            footer_readings(ui, view, wide);
+            footer_readings(ui, view, wide, expanded);
         });
     }
 
@@ -1077,7 +1111,7 @@ fn loading(ui: &mut egui::Ui, view: &mut View) {
 
 /// The cursor's offset (click to go to another), the selection's size, the
 /// readings, and the byte order.
-fn footer_readings(ui: &mut egui::Ui, view: &mut View, wide: bool) {
+fn footer_readings(ui: &mut egui::Ui, view: &mut View, wide: bool, expanded: bool) {
     let tokens = crate::appearance::Tokens::of(ui.ctx());
     let mono = |text: String, color| {
         egui::RichText::new(text)
@@ -1103,6 +1137,22 @@ fn footer_readings(ui: &mut egui::Ui, view: &mut View, wide: bool) {
         ui.label(mono(value, ui.visuals().text_color()));
     }
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        // Expanded, the list holds the byte order; the footer says how much is held.
+        if expanded {
+            let size = super::summary::byte_size(view.source.len());
+            let held = match view.source {
+                Source::Deferred { len, .. } => {
+                    format!(
+                        "{size} · {} of {} chunks held",
+                        view.chunks.len(),
+                        len.div_ceil(CHUNK)
+                    )
+                }
+                Source::Bytes(_) => size,
+            };
+            ui.label(mono(held, tokens.faint));
+            return;
+        }
         let (text, other) = match view.order {
             Order::Little => ("LE", Order::Big),
             Order::Big => ("BE", Order::Little),
