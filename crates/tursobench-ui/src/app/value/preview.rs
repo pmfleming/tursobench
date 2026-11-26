@@ -2,13 +2,14 @@
 //! Hex and text use bytes already in memory; a tree comes from the decoder.
 use super::{
     Decoded, Lens, Summary, Target,
+    job::Contents,
     job::Work,
     lens::{self, Shown, Size},
 };
 use crate::app::{App, presentation};
 use eframe::egui;
 use std::sync::Arc;
-use tursobench_blob::{Kind, sniff::ImageFormat, text, tree};
+use tursobench_blob::{Kind, formats::Format, sniff::ImageFormat, text, tree};
 use tursobench_core::{LargeKind, Value};
 
 /// How much a selected field grows to show its preview.
@@ -21,26 +22,28 @@ pub(in crate::app) enum Body {
     /// The first bytes of the value.
     Hex(Vec<u8>),
     Text(String),
-    Tree(Decoded),
+    /// A tree, a vector or inflated contents, decoded off the UI thread.
+    Decoded(Decoded),
     Image(Shown),
 }
 
 /// A selected field's lens, the lenses it could use, and what it shows.
 pub(in crate::app) struct Preview {
     pub lens: Lens,
-    pub offered: &'static [Lens],
+    pub offered: Vec<Lens>,
     pub body: Body,
 }
 
 impl App {
     /// The preview of the selected field `col` of `row`, when it holds a blob
-    /// or deferred value; reading a tree starts or polls its decode.
+    /// or deferred value; a lens that decodes starts or polls its decode.
     pub(in crate::app) fn record_preview(
         &mut self,
         ctx: &egui::Context,
         row: usize,
         col: usize,
     ) -> Option<Preview> {
+        let offer = self.value_offer(ctx, row, col)?;
         let document = &mut self.database.document;
         let values = document.result.rows.get(row)?;
         let value = document
@@ -48,30 +51,31 @@ impl App {
             .as_ref()
             .and_then(|d| d.displayed(values, col))
             .unwrap_or(values.get(col)?);
-        let kind = Summary::of(ctx, value)?.kind;
-        let lens = Lens::resolve(kind, document.tools.columns.lens(col));
-        let body = match lens {
+        if matches!(value, Value::Text(_)) {
+            return None;
+        }
+        let target = Target {
+            result: document.result.current,
+            drafts: document.draft_revision,
+            row,
+            col,
+            whole: false,
+        };
+        let kind = offer.kind;
+        let mut decode = |work: Option<Work>| match work {
+            Some(work) => document
+                .tools
+                .values
+                .decode(ctx, target, offer.lens, || work),
+            None => Decoded::Failed("Open the value to read it".into()),
+        };
+        let body = match offer.lens {
             Lens::Hex => Body::Hex(bytes(value).iter().copied().take(32 * LINES).collect()),
             Lens::Text => Body::Text(text_of(value, kind)),
-            Lens::Tree => {
-                let target = Target {
-                    result: document.result.current,
-                    drafts: document.draft_revision,
-                    row,
-                    col,
-                    whole: false,
-                };
-                let work = || tree_work(value);
-                Body::Tree(document.tools.values.tree(ctx, target, work))
-            }
+            Lens::Tree => Body::Decoded(decode(tree_work(value, offer.format))),
+            Lens::Vector => Body::Decoded(decode(in_memory(value).map(Work::Vector))),
+            Lens::Contents => Body::Decoded(decode(contents_work(value, kind))),
             Lens::Image => {
-                let target = Target {
-                    result: document.result.current,
-                    drafts: document.draft_revision,
-                    row,
-                    col,
-                    whole: false,
-                };
                 let bytes = || image_bytes(value, kind);
                 Body::Image(
                     document
@@ -83,10 +87,24 @@ impl App {
             }
         };
         Some(Preview {
-            lens,
-            offered: Lens::offered(kind),
+            lens: offer.lens,
+            offered: offer.lenses,
             body,
         })
+    }
+}
+
+/// A whole value in memory.
+fn in_memory(value: &Value) -> Option<Arc<[u8]>> {
+    match value {
+        Value::Blob(bytes) => Some(Arc::from(bytes.as_slice())),
+        _ => None,
+    }
+}
+fn contents_work(value: &Value, kind: Kind) -> Option<Work> {
+    match kind {
+        Kind::Compressed(compression) => in_memory(value).map(|b| Work::Contents(b, compression)),
+        _ => None,
     }
 }
 
@@ -165,10 +183,16 @@ fn text_of(value: &Value, kind: Kind) -> String {
     }
 }
 
-fn tree_work(value: &Value) -> Work {
-    match value {
-        Value::Deferred(cell) => Work::JsonbPrefix(Arc::from(cell.head.as_slice()), cell.bytes),
-        other => Work::Jsonb(Arc::from(bytes(other))),
+/// The tree decode for a value: whole when in memory; for a deferred
+/// JSONB value, its first bytes.
+fn tree_work(value: &Value, format: Option<Format>) -> Option<Work> {
+    match (value, format?) {
+        (Value::Deferred(cell), Format::Jsonb) => Some(Work::JsonbPrefix(
+            Arc::from(cell.head.as_slice()),
+            cell.bytes,
+        )),
+        (Value::Deferred(_), _) => None,
+        (other, format) => Some(Work::Tree(Arc::from(bytes(other)), format)),
     }
 }
 
@@ -185,8 +209,12 @@ impl Preview {
         match &self.body {
             Body::Hex(bytes) => hex(ui, &painter, rect, bytes, color),
             Body::Text(text) => wrapped(ui, &painter, rect, text, color),
-            Body::Tree(Decoded::Tree(tree)) => lines(ui, &painter, rect, tree, color),
-            Body::Tree(Decoded::Pending) => {
+            Body::Decoded(Decoded::Tree(tree)) => lines(ui, &painter, rect, tree, color),
+            Body::Decoded(Decoded::Vector(vector)) => vector_preview(ui, &painter, rect, vector),
+            Body::Decoded(Decoded::Contents(contents)) => {
+                contents_preview(ui, &painter, rect, contents, color);
+            }
+            Body::Decoded(Decoded::Pending) => {
                 let row = rect.height() / LINES as f32;
                 for i in 0..LINES - 1 {
                     let line = egui::Rect::from_min_size(
@@ -196,7 +224,7 @@ impl Preview {
                     presentation::placeholder_row(&painter, line, i, tokens.raised);
                 }
             }
-            Body::Tree(Decoded::Failed(reason)) => {
+            Body::Decoded(Decoded::Failed(reason)) => {
                 let text = format!("Not readable as {}: {reason}", self.lens.name());
                 wrapped(ui, &painter, rect, &text, tokens.faint);
             }
@@ -218,9 +246,24 @@ impl Preview {
         match &self.body {
             Body::Hex(bytes) => format!("{} preview of {} bytes", self.lens.name(), bytes.len()),
             Body::Text(text) => text.chars().take(200).collect(),
-            Body::Tree(Decoded::Tree(tree)) => tree.json().chars().take(200).collect(),
-            Body::Tree(Decoded::Pending) | Body::Image(Shown::Pending) => "Reading".into(),
-            Body::Tree(Decoded::Failed(reason)) | Body::Image(Shown::Failed(reason)) => {
+            Body::Decoded(Decoded::Tree(tree)) => tree.json().chars().take(200).collect(),
+            Body::Decoded(Decoded::Vector(vector)) => {
+                let (norm, min, max) = vector.stats();
+                format!(
+                    "{} × {}, norm {norm:.3}, from {min:.3} to {max:.3}",
+                    vector.layout.name(),
+                    vector.dims
+                )
+            }
+            Body::Decoded(Decoded::Contents(contents)) => {
+                format!(
+                    "{} contents, {} bytes",
+                    contents.compression.name(),
+                    contents.len
+                )
+            }
+            Body::Decoded(Decoded::Pending) | Body::Image(Shown::Pending) => "Reading".into(),
+            Body::Decoded(Decoded::Failed(reason)) | Body::Image(Shown::Failed(reason)) => {
                 reason.clone()
             }
             Body::Image(Shown::Ready(_, _, meta)) => {
@@ -364,4 +407,82 @@ fn lines(
         let at = rect.min + egui::vec2(0.0, row * i as f32 + (row - galley.size().y) / 2.0);
         painter.galley(at, galley, color);
     }
+}
+
+/// A vector's values as bars about a centre line, then its first values.
+pub(in crate::app) fn bars(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    values: &[f64],
+) {
+    let tokens = crate::appearance::Tokens::of(ui.ctx());
+    let peak = values
+        .iter()
+        .fold(0f64, |m, v| m.max(v.abs()))
+        .max(f64::MIN_POSITIVE);
+    let middle = rect.center().y;
+    painter.hline(
+        rect.x_range(),
+        middle,
+        egui::Stroke::new(1.0, tokens.line_soft),
+    );
+    let step = rect.width() / values.len().max(1) as f32;
+    let stroke = egui::Stroke::new((step * 0.7).max(1.0), tokens.primary);
+    for (i, value) in values.iter().enumerate() {
+        let x = rect.left() + (i as f32 + 0.5) * step;
+        let height = (value / peak) as f32 * rect.height() / 2.0;
+        painter.line_segment(
+            [egui::pos2(x, middle), egui::pos2(x, middle - height)],
+            stroke,
+        );
+    }
+}
+
+fn vector_preview(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    vector: &tursobench_blob::vector::Vector,
+) {
+    let tokens = crate::appearance::Tokens::of(ui.ctx());
+    let chart = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), rect.height() - 22.0));
+    let count = (rect.width() / 3.0) as usize;
+    bars(ui, painter, chart, &vector.buckets(count));
+    let numbers = vector.numbers();
+    let shown: Vec<String> = numbers.iter().take(12).map(|v| format!("{v:.4}")).collect();
+    let more = if numbers.len() > 12 { " …" } else { "" };
+    let line = format!("[0]  {}{more}", shown.join("  "));
+    let mut job = egui::text::LayoutJob::simple_singleline(line, font(ui), tokens.faint);
+    job.wrap.max_width = rect.width();
+    job.wrap.max_rows = 1;
+    job.wrap.overflow_character = Some('…');
+    painter.galley(
+        egui::pos2(rect.left(), rect.bottom() - 16.0),
+        painter.layout_job(job),
+        tokens.faint,
+    );
+}
+
+/// The first lines of inflated contents: their tree, their text, or their bytes.
+fn contents_preview(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    contents: &Contents,
+    color: egui::Color32,
+) {
+    if let Some(tree) = &contents.tree {
+        return lines(ui, painter, rect, tree, color);
+    }
+    if let Some(text) = &contents.text {
+        return wrapped(ui, painter, rect, text, color);
+    }
+    hex(
+        ui,
+        painter,
+        rect,
+        &contents.bytes[..contents.bytes.len().min(32 * LINES)],
+        color,
+    );
 }

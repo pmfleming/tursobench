@@ -85,6 +85,8 @@ pub(super) enum Icon {
     Tree,
     /// A chevron pointing left: back to the list.
     Back,
+    /// Bars of differing heights: a vector's values.
+    Vector,
 }
 
 pub(super) fn button(ui: &mut egui::Ui, icon: Icon, name: &str, shortcut: &str) -> egui::Response {
@@ -590,6 +592,13 @@ fn marks(icon: Icon) -> &'static [Mark] {
         ],
         Icon::Tree => marks(Icon::Parameters),
         Icon::Back => &[Line("15,5 8,12 15,19")],
+        Icon::Vector => &[
+            Line("3.75,19.5 3.75,12"),
+            Line("7.875,19.5 7.875,6"),
+            Line("12,19.5 12,14.25"),
+            Line("16.125,19.5 16.125,9"),
+            Line("20.25,19.5 20.25,15.75"),
+        ],
         Icon::Warning => &[
             Line("12,3.75 21,19.5 3,19.5 12,3.75"),
             Line("12,9.75 12,14.25"),

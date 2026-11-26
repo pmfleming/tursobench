@@ -8,6 +8,9 @@ description = "Bounded, read-only readers for untrusted database value bytes"
 [dependencies]
 # Decoders for the image lens; GIF and WebP add gif, color_quant and image-webp.
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico"] }
+# The contents lens; both are already built for the engine and its search index.
+flate2 = "=1.1.10"
+zstd = { version = "=0.14.3", default-features = false }
 
 [dev-dependencies]
 turso.workspace = true

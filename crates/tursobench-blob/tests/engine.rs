@@ -131,3 +131,58 @@ fn mutated_jsonb_never_panics_and_valid_trees_stay_bounded() {
         }
     }
 }
+
+#[test]
+fn vectors_read_back_as_the_engines_vector_extract() {
+    use tursobench_blob::vector::{self, Layout};
+    let c = engine();
+    let mut rng = Rng(0xabcd_0042);
+    for dims in [1usize, 3, 8, 9, 17, 64] {
+        let numbers: Vec<String> = (0..dims)
+            .map(|_| format!("{:.4}", (rng.below(20_000) as f64 - 10_000.0) / 1_000.0))
+            .collect();
+        let text = format!("[{}]", numbers.join(","));
+        for (function, expected) in [
+            ("vector32", Layout::F32),
+            ("vector64", Layout::F64),
+            ("vector1bit", Layout::OneBit),
+            ("vector8", Layout::EightBit),
+            ("vector32_sparse", Layout::Sparse),
+        ] {
+            let sql = format!("SELECT {function}(?1), vector_extract({function}(?1))");
+            let values = query(&c, &sql, &text);
+            let (turso::Value::Blob(blob), turso::Value::Text(extracted)) =
+                (&values[0], &values[1])
+            else {
+                panic!("{function}: {values:?}");
+            };
+            let read =
+                vector::read(blob, true).unwrap_or_else(|e| panic!("{function} {text}: {e}"));
+            // vector32 stores plain float32, which only the column's hint names.
+            let tail = &blob[blob.len().saturating_sub(8)..];
+            let named = vector::layout(tail, blob.len() as u64).map(|(layout, _)| layout);
+            if function != "vector32" {
+                assert_eq!(named, Some(expected), "{function} {text}");
+            }
+            assert_eq!(
+                (read.layout, read.dims),
+                (expected, dims),
+                "{function} {text}"
+            );
+            assert_eq!(&read.text(), extracted, "{function} {text}");
+        }
+    }
+}
+
+#[test]
+fn random_bytes_never_panic_the_vector_reader() {
+    let mut rng = Rng(0x7777);
+    for _ in 0..5000 {
+        let len = rng.below(80) as usize;
+        let mut bytes: Vec<u8> = (0..len).map(|_| rng.next() as u8).collect();
+        if let Some(last) = bytes.last_mut() {
+            *last = [1, 2, 3, 4, 9][rng.below(5) as usize];
+        }
+        let _ = tursobench_blob::vector::read(&bytes, rng.below(2) == 0);
+    }
+}

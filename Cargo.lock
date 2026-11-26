@@ -4813,9 +4813,11 @@ dependencies = [
 name = "tursobench-blob"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "image",
  "tokio",
  "turso",
+ "zstd",
 ]
 
 [[package]]

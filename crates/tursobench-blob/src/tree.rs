@@ -32,6 +32,8 @@ pub enum Item {
     Number(String),
     /// The body of a JSON string, escapes included.
     Text(String),
+    /// Bytes: up to 16 as hexadecimal, and how many there are.
+    Bytes(String, usize),
     /// An array of this many elements.
     Array(usize),
     /// An object of this many members.
@@ -550,6 +552,7 @@ fn scalar(item: &Item) -> (String, Part) {
         Item::Bool(b) => (b.to_string(), Part::Literal),
         Item::Number(n) => (n.clone(), Part::Number),
         Item::Text(t) => (format!("\"{t}\""), Part::Text),
+        Item::Bytes(hex, len) => (format!("h'{hex}' ({len} bytes)"), Part::Literal),
         Item::Array(_) | Item::Object(_) => (String::new(), Part::Punctuation),
     }
 }

@@ -9,30 +9,50 @@ use std::{
     },
 };
 use tursobench_blob::{
+    Kind,
+    formats::{self, Format},
     image::{self, Picture},
-    sniff::ImageFormat,
+    inflate,
+    sniff::{Compression, ImageFormat},
     tree::{self, Limits, Tree},
+    vector::{self, Vector},
 };
 
 /// What a job decodes.
 pub(in crate::app) enum Work {
-    /// A whole JSONB value.
-    Jsonb(Arc<[u8]>),
+    /// A whole value in a structured format.
+    Tree(Arc<[u8]>, Format),
     /// The first bytes of a longer JSONB value `len` bytes long.
     JsonbPrefix(Arc<[u8]>, u64),
     /// An image, scaled to fit a square this many pixels a side.
     Image(Arc<[u8]>, ImageFormat, u32),
+    /// A vector; plain float32 when no type byte names another layout.
+    Vector(Arc<[u8]>),
+    /// Compressed contents, inflated and read again.
+    Contents(Arc<[u8]>, Compression),
+    /// Formats without a signature, tried against the whole value.
+    Probe(Arc<[u8]>),
+}
+
+/// Inflated contents, and what they are.
+pub(in crate::app) struct Contents {
+    pub compression: Compression,
+    pub kind: Kind,
+    pub len: usize,
+    pub truncated: bool,
+    /// The contents as text, when they are text: at most 1 MiB.
+    pub text: Option<String>,
+    /// The contents as a tree, when they are a structured format.
+    pub tree: Option<Arc<Tree>>,
+    pub bytes: Arc<[u8]>,
 }
 impl Work {
     fn run(&self, cancel: &AtomicBool) -> Output {
         match self {
-            Self::Jsonb(bytes) => Output::Tree(
-                tree::jsonb(bytes, &Limits::default(), cancel)
+            Self::Tree(bytes, format) => Output::Tree(
+                formats::decode(*format, bytes, &Limits::default(), cancel)
                     .map(Arc::new)
-                    .map_err(|e| match e {
-                        tree::Error::Invalid(reason) => reason.to_owned(),
-                        tree::Error::Cancelled => "Cancelled".to_owned(),
-                    }),
+                    .map_err(reason),
             ),
             Self::JsonbPrefix(head, len) => Output::Tree(
                 tree::jsonb_prefix(head, *len)
@@ -42,8 +62,57 @@ impl Work {
             Self::Image(bytes, format, fit) => {
                 Output::Image(image::decode(bytes, *format, *fit, cancel).map(Arc::new))
             }
+            Self::Vector(bytes) => Output::Vector(vector::read(bytes, true).map(Arc::new)),
+            Self::Contents(bytes, compression) => {
+                Output::Contents(contents(bytes, *compression, cancel).map(Arc::new))
+            }
+            Self::Probe(bytes) => Output::Probe(formats::probe(bytes, cancel)),
         }
     }
+}
+
+fn reason(error: tree::Error) -> String {
+    match error {
+        tree::Error::Invalid(reason) => reason.to_owned(),
+        tree::Error::Cancelled => "Cancelled".to_owned(),
+    }
+}
+
+/// Inflate one level, then read the contents again: as text, a tree, or bytes.
+fn contents(
+    bytes: &[u8],
+    compression: Compression,
+    cancel: &AtomicBool,
+) -> Result<Contents, String> {
+    let inflated = inflate::inflate(bytes, compression, inflate::OUT, cancel)?;
+    let bytes: Arc<[u8]> = Arc::from(inflated.bytes);
+    let len = bytes.len() as u64;
+    let kind =
+        tursobench_blob::sniff::sniff_tail(&bytes, &bytes[bytes.len().saturating_sub(8)..], len);
+    let format = match kind {
+        Kind::Jsonb => Some(Format::Jsonb),
+        Kind::Structured(format) => Some(format),
+        _ => None,
+    };
+    let tree = format
+        .and_then(|format| formats::decode(format, &bytes, &Limits::default(), cancel).ok())
+        .map(Arc::new);
+    let text = match kind {
+        Kind::Text(encoding) => Some(tursobench_blob::text::decode(
+            &bytes[..bytes.len().min(1 << 20)],
+            encoding,
+        )),
+        _ => None,
+    };
+    Ok(Contents {
+        compression,
+        kind,
+        len: bytes.len(),
+        truncated: inflated.truncated,
+        text,
+        tree,
+        bytes,
+    })
 }
 
 /// What a job produced.
@@ -51,6 +120,9 @@ impl Work {
 pub(in crate::app) enum Output {
     Tree(Result<Arc<Tree>, String>),
     Image(Result<Arc<Picture>, String>),
+    Vector(Result<Arc<Vector>, String>),
+    Contents(Result<Arc<Contents>, String>),
+    Probe(Option<Format>),
 }
 
 struct Job {
@@ -163,14 +235,17 @@ fn spawn(ctx: eframe::egui::Context) -> Channel {
 fn failed(work: &Work) -> Output {
     let reason = "The decoder stopped on malformed input".to_owned();
     match work {
-        Work::Jsonb(_) | Work::JsonbPrefix(..) => Output::Tree(Err(reason)),
+        Work::Tree(..) | Work::JsonbPrefix(..) => Output::Tree(Err(reason)),
         Work::Image(..) => Output::Image(Err(reason)),
+        Work::Vector(_) => Output::Vector(Err(reason)),
+        Work::Contents(..) => Output::Contents(Err(reason)),
+        Work::Probe(_) => Output::Probe(None),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Decoder, Output, Work};
+    use super::{Decoder, Format, Output, Work};
     use std::sync::Arc;
 
     fn wait(decoder: &mut Decoder, id: u64) -> Output {
@@ -192,15 +267,15 @@ mod tests {
         let ctx = eframe::egui::Context::default();
         let mut decoder = Decoder::default();
         let object: Arc<[u8]> = Arc::from(&b"\x4c\x17a\x131"[..]);
-        let stale = decoder.submit(&ctx, Work::Jsonb(Arc::from(&b"\x00"[..])));
-        let id = decoder.submit(&ctx, Work::Jsonb(object));
+        let stale = decoder.submit(&ctx, Work::Tree(Arc::from(&b"\x00"[..]), Format::Jsonb));
+        let id = decoder.submit(&ctx, Work::Tree(object, Format::Jsonb));
         assert!(stale < id);
         let Output::Tree(Ok(tree)) = wait(&mut decoder, id) else {
             panic!("expected a tree")
         };
         assert_eq!(tree.json(), r#"{"a":1}"#);
         assert!(decoder.poll(stale).is_none());
-        let id = decoder.submit(&ctx, Work::Jsonb(Arc::from(&b"\x1f"[..])));
+        let id = decoder.submit(&ctx, Work::Tree(Arc::from(&b"\x1f"[..]), Format::Jsonb));
         assert!(matches!(wait(&mut decoder, id), Output::Tree(Err(_))));
         let id = decoder.submit(
             &ctx,

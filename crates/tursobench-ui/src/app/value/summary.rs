@@ -137,6 +137,48 @@ impl Summary {
         }
     }
 
+    /// The summary of a value in a column; plain float32 is named a vector
+    /// only where the column's name or type says it holds vectors.
+    pub fn for_column(ctx: &egui::Context, value: &Value, vector: bool) -> Option<Arc<Self>> {
+        let summary = Self::of(ctx, value)?;
+        Some(match value {
+            Value::Blob(bytes)
+                if vector
+                    && bytes.len() >= 8
+                    && bytes.len().is_multiple_of(4)
+                    && matches!(summary.kind, Kind::Unknown | Kind::Digest) =>
+            {
+                Arc::new(Self::plain_vector(bytes.len() as u64))
+            }
+            _ => summary,
+        })
+    }
+    /// Plain float32 in a column whose name or type says it holds vectors.
+    pub fn plain_vector(len: u64) -> Self {
+        let size = byte_size(len);
+        Self::new(
+            Kind::Unknown,
+            Icon::Vector,
+            vec![
+                (format!("f32 × {}", len / 4), Tone::Plain),
+                (size.clone(), Tone::Faint),
+            ],
+            format!("Plain float32, {size}: the column's name or type says it holds vectors"),
+        )
+    }
+    /// A kind in a word or two, as the contents lens names what it found.
+    pub fn describe_kind(kind: Kind) -> String {
+        match kind {
+            Kind::Text(encoding) => format!("text ({})", encoding.name()),
+            Kind::Jsonb => "JSONB".into(),
+            Kind::Structured(format) => format.name().into(),
+            Kind::Image { format, .. } => format.name().into(),
+            Kind::Compressed(compression) => compression.name().into(),
+            Kind::Named(named) => named.name.into(),
+            Kind::Vector { layout, .. } => format!("{} vector", layout.name()),
+            _ => "bytes".into(),
+        }
+    }
     fn new(kind: Kind, icon: Icon, parts: Vec<(String, Tone)>, description: String) -> Self {
         Self {
             kind,
@@ -152,21 +194,25 @@ impl Summary {
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct Key {
     head: Vec<u8>,
+    /// A blob's last bytes, which hold a vector's type.
+    tail: Vec<u8>,
     len: u64,
     text: bool,
     held: bool,
 }
 impl Key {
     fn of(value: &Value) -> Option<Self> {
-        let (head, len, text, held) = match value {
+        let (head, tail, len, text, held) = match value {
             Value::Blob(bytes) => (
                 &bytes[..bytes.len().min(HEAD)],
+                &bytes[bytes.len().saturating_sub(8)..],
                 bytes.len() as u64,
                 false,
                 true,
             ),
             Value::Deferred(cell) => (
                 &cell.head[..cell.head.len().min(HEAD)],
+                &[][..],
                 cell.bytes,
                 cell.kind == LargeKind::Text,
                 cell.handle.is_some(),
@@ -175,6 +221,7 @@ impl Key {
         };
         Some(Self {
             head: head.to_vec(),
+            tail: tail.to_vec(),
             len,
             text,
             held,
@@ -199,7 +246,7 @@ impl Cache {
         // Bytes are untrusted: a reader that panics leaves only the size.
         let made = std::panic::catch_unwind(|| match value {
             Value::Deferred(cell) => deferred(cell),
-            _ => describe(&key.head, key.len),
+            _ => describe(&key.head, &key.tail, key.len),
         });
         let summary = Arc::new(made.unwrap_or_else(|_| {
             let size = byte_size(key.len);
@@ -282,12 +329,12 @@ fn deferred(cell: &DeferredCell) -> Summary {
             format!("Text, {size}"),
         );
     }
-    describe(&cell.head, cell.bytes)
+    describe(&cell.head, &[], cell.bytes)
 }
 
-/// The summary of a blob `len` bytes long that starts with `head`.
-fn describe(head: &[u8], len: u64) -> Summary {
-    let kind = tursobench_blob::sniff(head, len);
+/// The summary of a blob `len` bytes long that starts with `head` and ends with `tail`.
+fn describe(head: &[u8], tail: &[u8], len: u64) -> Summary {
+    let kind = tursobench_blob::sniff::sniff_tail(head, tail, len);
     let size = byte_size(len);
     let sized = |text: String| vec![(text, Tone::Plain), (size.clone(), Tone::Faint)];
     match kind {
@@ -347,6 +394,18 @@ fn describe(head: &[u8], len: u64) -> Summary {
                 format!("SQLite JSONB, {size}"),
             )
         }
+        Kind::Structured(format) => Summary::new(
+            kind,
+            Icon::Tree,
+            sized(format.name().into()),
+            format!("{}, {size}", format.name()),
+        ),
+        Kind::Vector { layout, dims } => Summary::new(
+            kind,
+            Icon::Vector,
+            sized(format!("{} × {dims}", layout.name())),
+            format!("A {} vector of {dims} dimensions, {size}", layout.name()),
+        ),
         Kind::Compressed(compression) => Summary::new(
             kind,
             Icon::Contents,
@@ -484,10 +543,10 @@ mod tests {
                 assert!(summary.text().starts_with("00 ff"));
             }
         }
-        // A long value with the same first 64 bytes and length is the same summary.
+        // A long value with the same first 64 and last 8 bytes and length is the same summary.
         let mut long = vec![7u8; 100_000];
         Summary::of(&ctx, &Value::Blob(long.clone()));
-        long[99_999] = 8;
+        long[50_000] = 8;
         Summary::of(&ctx, &Value::Blob(long));
         assert_eq!(MADE.with(std::cell::Cell::get) - before, 51);
     }

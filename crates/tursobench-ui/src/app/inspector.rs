@@ -32,6 +32,8 @@ struct RecordField<'a> {
     shown: &'a Value,
     foreign: bool,
     selected: bool,
+    /// The column's name or type says it holds vectors.
+    vector: bool,
 }
 impl RecordField<'_> {
     fn staged(&self) -> bool {
@@ -112,7 +114,7 @@ impl RecordField<'_> {
             painter.galley(rect.min + egui::vec2(0.0, 4.0), galley, color);
             return;
         }
-        if let Some(summary) = Summary::of(ui.ctx(), self.shown) {
+        if let Some(summary) = Summary::for_column(ui.ctx(), self.shown, self.vector) {
             let color = if self.staged() {
                 tokens.pending
             } else {
@@ -528,6 +530,7 @@ impl App {
                 .and_then(|d| d.displayed(values, col))
                 .unwrap_or(&values[col]),
             foreign: header.is_foreign(),
+            vector: super::value::vector_hint(&header.column.name, header.declared_type()),
             selected: self.database.document.inspect == Some((row, col)),
         };
         let editing = self.editing_at(row, col);
@@ -616,7 +619,8 @@ impl App {
         let preview = (!self.editing_at(row, col))
             .then(|| self.record_preview(ctx, row, col))
             .flatten();
-        if preview.as_ref().is_none_or(|p| p.lens != Lens::Tree) {
+        let decoding = |lens| matches!(lens, Lens::Tree | Lens::Vector | Lens::Contents);
+        if preview.as_ref().is_none_or(|p| !decoding(p.lens)) {
             self.database.document.tools.values.idle();
         }
         preview

@@ -136,6 +136,8 @@ pub(in crate::app) struct View {
     pub pan: eframe::egui::Vec2,
     /// The image shown, as last painted: what it is, its texture size and scale.
     pub image: Option<(super::lens::Meta, eframe::egui::Vec2, f32)>,
+    /// What the contents lens found, for the footer.
+    pub note: String,
 }
 impl View {
     pub fn new(
@@ -184,6 +186,7 @@ impl View {
             zoom: None,
             pan: eframe::egui::Vec2::ZERO,
             image: None,
+            note: String::new(),
         })
     }
 

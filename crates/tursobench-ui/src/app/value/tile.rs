@@ -4,6 +4,7 @@ use super::{
     Decoded, Lens, Summary, Target, hex, inspect,
     job::Work,
     lens::{self, Shown, Size},
+    offer::Offer,
     view::{CHUNK, CLIPBOARD, LOAD, Source, View, Want},
 };
 use crate::app::{
@@ -13,7 +14,7 @@ use crate::app::{
 };
 use eframe::egui;
 use std::sync::Arc;
-use tursobench_blob::{Kind, Order, encode::Format, tree::Part};
+use tursobench_blob::{Kind, Order, encode::Format as CopyFormat, formats::Format, tree::Part};
 use tursobench_core::{EventKind, Value};
 use tursobench_db::Operation;
 
@@ -22,7 +23,7 @@ enum Header {
     Back,
     Lens(Lens),
     Find,
-    Copy(Format),
+    Copy(CopyFormat),
     CopyImage,
     Save,
 }
@@ -90,15 +91,10 @@ impl App {
     }
 
     /// The kind and lens of the open value.
-    fn value_lens(&self, ctx: &egui::Context) -> Option<(Kind, Lens)> {
+    fn value_lens(&mut self, ctx: &egui::Context) -> Option<Offer> {
         let view = self.database.document.tools.values.view.as_ref()?;
-        let value = self.shown_value(view.row, view.col)?;
-        let kind = match value {
-            Value::Text(_) => Kind::Text(tursobench_blob::text::Encoding::Utf8),
-            other => Summary::of(ctx, other)?.kind,
-        };
-        let chosen = self.database.document.tools.columns.lens(view.col);
-        Some((kind, Lens::resolve(kind, chosen)))
+        let (row, col) = (view.row, view.col);
+        self.value_offer(ctx, row, col)
     }
 
     /// The value view: header, body through the lens, and footer.
@@ -107,11 +103,12 @@ impl App {
             return;
         }
         self.poll_value_save();
-        let Some((kind, lens)) = self.value_lens(ui.ctx()) else {
+        let Some(offer) = self.value_lens(ui.ctx()) else {
             self.close_value();
             return;
         };
-        if let Some(header) = self.value_header(ui, kind, lens) {
+        let (kind, lens) = (offer.kind, offer.lens);
+        if let Some(header) = self.value_header(ui, &offer) {
             self.header_action(ui.ctx(), header);
             if !self.value_open() {
                 return;
@@ -125,8 +122,10 @@ impl App {
         match lens {
             Lens::Hex => self.hex_body(ui),
             Lens::Text => self.text_body(ui, kind),
-            Lens::Tree => self.tree_body(ui),
+            Lens::Tree => self.tree_body(ui, offer.format),
             Lens::Image => self.image_body(ui),
+            Lens::Vector => self.vector_body(ui),
+            Lens::Contents => self.contents_body(ui, kind),
         }
         if self.record_tile_active() {
             self.value_keys(ui.ctx());
@@ -135,7 +134,8 @@ impl App {
     }
 
     /// The field's own row as the header: back, name, summary and tools.
-    fn value_header(&mut self, ui: &mut egui::Ui, kind: Kind, lens: Lens) -> Option<Header> {
+    fn value_header(&mut self, ui: &mut egui::Ui, offer: &Offer) -> Option<Header> {
+        let lens = offer.lens;
         let view = self.database.document.tools.values.view.as_ref()?;
         let name = self
             .database
@@ -145,9 +145,11 @@ impl App {
             .get(view.col)?
             .name
             .clone();
+        let header = self.database.document.column_header(view.col);
+        let vector = super::vector_hint(&header.column.name, header.declared_type());
         let summary = self
             .shown_value(view.row, view.col)
-            .and_then(|value| Summary::of(ui.ctx(), value));
+            .and_then(|value| Summary::for_column(ui.ctx(), value, vector));
         let (rect, _) =
             ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), egui::Sense::hover());
         let tokens = crate::appearance::Tokens::of(ui.ctx());
@@ -180,7 +182,7 @@ impl App {
         if lens == Lens::Hex && line_button(ui, slot(0.0), Icon::Search, "Find", "Ctrl F", None) {
             action = Some(Header::Find);
         }
-        let offered = Lens::offered(kind);
+        let offered = &offer.lenses;
         for (i, &each) in offered
             .iter()
             .rev()
@@ -221,7 +223,7 @@ impl App {
             if image && ui.button("Image").clicked() {
                 chosen = Some(Header::CopyImage);
             }
-            for format in Format::ALL {
+            for format in CopyFormat::ALL {
                 if ui.button(format.name()).clicked() {
                     chosen = Some(Header::Copy(format));
                 }
@@ -324,15 +326,20 @@ impl App {
     }
 
     /// The tree lens: the whole value decoded off the UI thread, printed as JSON.
-    fn tree_body(&mut self, ui: &mut egui::Ui) {
+    /// The decode of the open value for `lens`, from the whole value once in memory.
+    fn decode_open(
+        &mut self,
+        ui: &mut egui::Ui,
+        lens: Lens,
+        work: impl FnOnce(Arc<[u8]>) -> Option<Work>,
+    ) -> Option<Decoded> {
         let document = &mut self.database.document;
         let values = &mut document.tools.values;
-        let Some(view) = values.view.as_mut() else {
-            return;
-        };
+        let view = values.view.as_mut()?;
         let (row, col) = (view.row, view.col);
         let Some(bytes) = view.whole() else {
-            return loading(ui, view);
+            loading(ui, view);
+            return None;
         };
         let target = Target {
             result: document.result.current,
@@ -341,54 +348,151 @@ impl App {
             col,
             whole: true,
         };
-        let decoded = values.tree(ui.ctx(), target, || Work::Jsonb(bytes));
-        let tree = match decoded {
-            Decoded::Tree(tree) => tree,
-            Decoded::Pending => return icons::empty_state(ui, Icon::Tree, "Reading"),
-            Decoded::Failed(reason) => {
-                return icons::empty_state(
-                    ui,
-                    Icon::Tree,
-                    &format!("Not readable as a tree: {reason}"),
-                );
-            }
+        let Some(work) = work(bytes) else {
+            icons::empty_state(
+                ui,
+                lens.icon(),
+                &format!("Not readable through {}", lens.name()),
+            );
+            return None;
         };
-        let lines = tree.pretty(usize::MAX);
-        let key = ui.visuals().hyperlink_color;
-        let value = crate::appearance::Tokens::of(ui.ctx()).relationship;
+        match values.decode(ui.ctx(), target, lens, || work) {
+            Decoded::Pending => {
+                icons::empty_state(ui, lens.icon(), "Reading");
+                None
+            }
+            Decoded::Failed(reason) => {
+                icons::empty_state(
+                    ui,
+                    lens.icon(),
+                    &format!("Not readable through {}: {reason}", lens.name()),
+                );
+                None
+            }
+            decoded => Some(decoded),
+        }
+    }
+
+    /// The tree lens: the whole value decoded off the UI thread, printed as JSON.
+    fn tree_body(&mut self, ui: &mut egui::Ui, format: Option<Format>) {
+        let work = |bytes| format.map(|format| Work::Tree(bytes, format));
+        if let Some(Decoded::Tree(tree)) = self.decode_open(ui, Lens::Tree, work) {
+            tree_rows(ui, &tree);
+        }
+    }
+
+    /// The vector lens: bars across the tile, the norm and range, then every value.
+    fn vector_body(&mut self, ui: &mut egui::Ui) {
+        let Some(Decoded::Vector(vector)) =
+            self.decode_open(ui, Lens::Vector, |b| Some(Work::Vector(b)))
+        else {
+            return;
+        };
+        let tokens = crate::appearance::Tokens::of(ui.ctx());
+        let (rect, _) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 72.0), egui::Sense::hover());
+        let chart = rect.shrink2(egui::vec2(4.0, 6.0));
+        super::preview::bars(
+            ui,
+            ui.painter(),
+            chart,
+            &vector.buckets((chart.width() / 3.0) as usize),
+        );
+        let (norm, min, max) = vector.stats();
+        let stats = format!(
+            "{} × {}   ‖v‖ {}   min {}   max {}",
+            vector.layout.name(),
+            vector.dims,
+            real(norm),
+            real(min),
+            real(max)
+        );
+        ui.label(
+            egui::RichText::new(stats)
+                .monospace()
+                .size(11.0)
+                .color(tokens.faint),
+        );
+        let numbers = vector.numbers();
         let plain = ui.visuals().text_color();
         egui::ScrollArea::vertical()
-            .id_salt("value-tree")
+            .id_salt("value-vector")
             .auto_shrink([false, false])
-            .show_rows(ui, hex::LINE, lines.len(), |ui, range| {
+            .show_rows(ui, hex::LINE, numbers.len(), |ui, range| {
                 ui.spacing_mut().item_spacing.y = 0.0;
-                for line in &lines[range] {
-                    let mut job = egui::text::LayoutJob::default();
+                for (i, number) in numbers
+                    .iter()
+                    .enumerate()
+                    .skip(range.start)
+                    .take(range.len())
+                {
+                    let line = format!("[{i}]  {}", real(*number));
                     let font = super::preview::font(ui);
-                    job.append(
-                        &"  ".repeat(line.depth),
-                        0.0,
-                        egui::TextFormat::simple(font.clone(), plain),
+                    text_row(
+                        ui,
+                        egui::text::LayoutJob::simple_singleline(line, font, plain),
                     );
-                    for (text, part) in &line.parts {
-                        let color = match part {
-                            Part::Key | Part::Literal => key,
-                            Part::Text | Part::Number => value,
-                            Part::Punctuation => plain,
-                        };
-                        job.append(text, 0.0, egui::TextFormat::simple(font.clone(), color));
-                    }
-                    let (rect, _) = ui.allocate_exact_size(
-                        egui::vec2(ui.available_width(), hex::LINE),
-                        egui::Sense::hover(),
+                }
+            });
+    }
+
+    /// The contents lens: inflated off the UI thread, read again as a tree,
+    /// text or bytes.
+    fn contents_body(&mut self, ui: &mut egui::Ui, kind: Kind) {
+        let work = |bytes| match kind {
+            Kind::Compressed(compression) => Some(Work::Contents(bytes, compression)),
+            _ => None,
+        };
+        let Some(Decoded::Contents(contents)) = self.decode_open(ui, Lens::Contents, work) else {
+            return;
+        };
+        if let Some(view) = self.value_view() {
+            let inner = Summary::describe_kind(contents.kind);
+            let first = if contents.truncated {
+                " · first 16 MiB of contents"
+            } else {
+                ""
+            };
+            view.note = format!(
+                "{} › {inner} · {}{first}",
+                contents.compression.name(),
+                super::summary::byte_size(contents.len as u64)
+            );
+        }
+        if let Some(tree) = &contents.tree {
+            return tree_rows(ui, tree);
+        }
+        if let Some(text) = &contents.text {
+            egui::ScrollArea::vertical()
+                .id_salt("value-contents")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.add(egui::Label::new(egui::RichText::new(text.as_str()).size(12.5)).wrap())
+                });
+            return;
+        }
+        let per = 16;
+        let tokens = crate::appearance::Tokens::of(ui.ctx());
+        let color = ui.visuals().text_color();
+        let lines = contents.bytes.len().div_ceil(per);
+        egui::ScrollArea::vertical()
+            .id_salt("value-contents-hex")
+            .auto_shrink([false, false])
+            .show_rows(ui, hex::LINE, lines, |ui, range| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                for line in range {
+                    let chunk =
+                        &contents.bytes[line * per..((line + 1) * per).min(contents.bytes.len())];
+                    let job = super::preview::hex_line(
+                        ui,
+                        (line * per) as u64,
+                        6,
+                        chunk,
+                        per,
+                        color,
+                        tokens.faint,
                     );
-                    job.wrap.max_width = rect.width() - 8.0;
-                    job.wrap.max_rows = 1;
-                    job.wrap.break_anywhere = true;
-                    job.wrap.overflow_character = Some('…');
-                    let galley = ui.painter().layout_job(job);
-                    let at = rect.left_top() + egui::vec2(4.0, (hex::LINE - galley.size().y) / 2.0);
-                    ui.painter().galley(at, galley, plain);
+                    text_row(ui, job);
                 }
             });
     }
@@ -503,8 +607,12 @@ impl App {
                 return image_footer(ui, view, image);
             }
             if lens != Lens::Hex {
-                let size = super::summary::byte_size(view.source.len());
-                ui.label(egui::RichText::new(size).size(11.5).color(tokens.faint));
+                let note = if lens == Lens::Contents && !view.note.is_empty() {
+                    view.note.clone()
+                } else {
+                    super::summary::byte_size(view.source.len())
+                };
+                ui.label(egui::RichText::new(note).size(11.5).color(tokens.faint));
                 return;
             }
             footer_readings(ui, view, wide);
@@ -536,9 +644,9 @@ impl App {
         if ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy))) {
             let characters = self.value_view().is_some_and(|v| v.characters);
             let format = if characters {
-                Format::Text
+                CopyFormat::Text
             } else {
-                Format::Hex
+                CopyFormat::Hex
             };
             return self.copy_value(ctx, format, true);
         }
@@ -635,7 +743,7 @@ impl App {
     pub(in crate::app) fn copy_value(
         &mut self,
         ctx: &egui::Context,
-        format: Format,
+        format: CopyFormat,
         selection: bool,
     ) {
         let Some(view) = self.value_view() else {
@@ -649,7 +757,7 @@ impl App {
         self.copy_range(ctx, format, at, len);
     }
     /// Copy `len` bytes from `at` as `format`, loading a deferred value first.
-    fn copy_range(&mut self, ctx: &egui::Context, format: Format, at: u64, len: u64) {
+    fn copy_range(&mut self, ctx: &egui::Context, format: CopyFormat, at: u64, len: u64) {
         let Some(view) = self.value_view() else {
             return;
         };
@@ -676,7 +784,7 @@ impl App {
         let ctx = ctx.clone();
         let extension = self
             .value_lens(&ctx)
-            .map_or("bin", |(kind, _)| kind.extension());
+            .map_or("bin", |offer| offer.kind.extension());
         let Some(view) = self.database.document.tools.values.view.as_ref() else {
             return;
         };
@@ -978,4 +1086,64 @@ fn line_button(
             .max_rect(rect),
     );
     icons::line_control(&mut child, icon, name, shortcut, selected).clicked()
+}
+
+/// One line of a lens's list, from the left, cut with an ellipsis.
+fn text_row(ui: &mut egui::Ui, mut job: egui::text::LayoutJob) {
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), hex::LINE),
+        egui::Sense::hover(),
+    );
+    job.wrap.max_width = rect.width() - 8.0;
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    job.wrap.overflow_character = Some('…');
+    let galley = ui.painter().layout_job(job);
+    let at = rect.left_top() + egui::vec2(4.0, (hex::LINE - galley.size().y) / 2.0);
+    ui.painter().galley(at, galley, ui.visuals().text_color());
+}
+
+/// A number as the inspector writes reals.
+fn real(n: f64) -> String {
+    tursobench_blob::inspect::real(n)
+}
+
+/// A tree's lines, in the SQL editor's colours, only those in view drawn.
+fn tree_rows(ui: &mut egui::Ui, tree: &tursobench_blob::tree::Tree) {
+    let lines = tree.pretty(usize::MAX);
+    let key = ui.visuals().hyperlink_color;
+    let value = crate::appearance::Tokens::of(ui.ctx()).relationship;
+    let plain = ui.visuals().text_color();
+    egui::ScrollArea::vertical()
+        .id_salt("value-tree")
+        .auto_shrink([false, false])
+        .show_rows(ui, hex::LINE, lines.len(), |ui, range| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            for line in &lines[range] {
+                let mut job = egui::text::LayoutJob::default();
+                let font = super::preview::font(ui);
+                job.append(
+                    &"  ".repeat(line.depth),
+                    0.0,
+                    egui::TextFormat::simple(font.clone(), plain),
+                );
+                for (text, part) in &line.parts {
+                    let color = match part {
+                        Part::Key | Part::Literal => key,
+                        Part::Text | Part::Number => value,
+                        Part::Punctuation => plain,
+                    };
+                    job.append(text, 0.0, egui::TextFormat::simple(font.clone(), color));
+                }
+                text_row(ui, job);
+            }
+        });
+    if !tree.complete {
+        let tokens = crate::appearance::Tokens::of(ui.ctx());
+        ui.label(
+            egui::RichText::new("Showing the first 10,000 nodes")
+                .size(11.5)
+                .color(tokens.faint),
+        );
+    }
 }

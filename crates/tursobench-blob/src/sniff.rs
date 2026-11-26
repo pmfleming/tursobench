@@ -84,6 +84,13 @@ pub enum Kind {
     Digest,
     /// A SQLite JSONB array or object that exactly fills the value.
     Jsonb,
+    /// BSON, a binary plist or tagged CBOR, by its signature.
+    Structured(crate::formats::Format),
+    /// A vector in a Turso layout named by its type byte.
+    Vector {
+        layout: crate::vector::Layout,
+        dims: usize,
+    },
     Compressed(Compression),
     Named(Named),
     Unknown,
@@ -95,6 +102,12 @@ impl Kind {
             Self::Image { format, .. } => format.extension(),
             Self::Text(_) => "txt",
             Self::Jsonb => "jsonb",
+            Self::Structured(format) => match format {
+                crate::formats::Format::Bson => "bson",
+                crate::formats::Format::Plist => "plist",
+                _ => "cbor",
+            },
+            Self::Vector { .. } => "vec",
             Self::Compressed(compression) => compression.extension(),
             Self::Named(named) => named.extension,
             Self::Empty | Self::Uuid { .. } | Self::Digest | Self::Unknown => "bin",
@@ -105,6 +118,12 @@ impl Kind {
 /// What a value `len` bytes long is, judged from `head`, its first bytes;
 /// bytes after the first [`HEAD`] are ignored.
 pub fn sniff(head: &[u8], len: u64) -> Kind {
+    sniff_tail(head, &[], len)
+}
+
+/// As [`sniff`], also reading `tail`, the value's last bytes when known,
+/// for a vector's type byte.
+pub fn sniff_tail(head: &[u8], tail: &[u8], len: u64) -> Kind {
     let head = &head[..head.len().min(HEAD)];
     if len == 0 {
         return Kind::Empty;
@@ -123,8 +142,14 @@ pub fn sniff(head: &[u8], len: u64) -> Kind {
     if crate::tree::jsonb_prefix(head, len).is_some() {
         return Kind::Jsonb;
     }
+    if let Some(format) = crate::formats::signature(head, len) {
+        return Kind::Structured(format);
+    }
     if let Some(encoding) = crate::text::detect(head, len) {
         return Kind::Text(encoding);
+    }
+    if let Some((layout, dims)) = crate::vector::layout(tail, len) {
+        return Kind::Vector { layout, dims };
     }
     // Two bytes of zlib header, or an MPEG audio frame header, are weaker
     // evidence than text.

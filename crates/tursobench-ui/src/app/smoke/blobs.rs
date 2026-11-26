@@ -16,6 +16,7 @@ struct Scene {
 }
 // Fields of `blob_fields`, in table order.
 const AVATAR: usize = 3;
+const EMBEDDING: usize = 5;
 const META: usize = 6;
 const PAYLOAD: usize = 7;
 const SESSION: usize = 8;
@@ -70,14 +71,14 @@ const SCENES: &[Scene] = &[
         name: "blob-value-hex.png",
         size: WIDE,
         table: "blob_fields",
-        field: Some(PAYLOAD),
+        field: Some(SESSION),
         open: true,
     },
     Scene {
         name: "blob-value-hex-laptop.png",
         size: LAPTOP,
         table: "blob_fields",
-        field: Some(PAYLOAD),
+        field: Some(SESSION),
         open: true,
     },
     Scene {
@@ -99,6 +100,27 @@ const SCENES: &[Scene] = &[
         size: WIDE,
         table: "blob_fields",
         field: Some(PHOTO),
+        open: true,
+    },
+    Scene {
+        name: "blob-value-contents.png",
+        size: WIDE,
+        table: "blob_fields",
+        field: Some(PAYLOAD),
+        open: true,
+    },
+    Scene {
+        name: "blob-vector-preview.png",
+        size: WIDE,
+        table: "blob_fields",
+        field: Some(EMBEDDING),
+        open: false,
+    },
+    Scene {
+        name: "blob-value-vector.png",
+        size: WIDE,
+        table: "blob_fields",
+        field: Some(EMBEDDING),
         open: true,
     },
     Scene {

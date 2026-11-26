@@ -5,12 +5,15 @@
 //! read from the bytes themselves.
 #![forbid(unsafe_code)]
 pub mod encode;
+pub mod formats;
 pub mod image;
+pub mod inflate;
 pub mod inspect;
 pub mod sniff;
 pub mod text;
 pub mod tree;
 pub mod uuid;
+pub mod vector;
 
 pub use sniff::{Kind, sniff};
 

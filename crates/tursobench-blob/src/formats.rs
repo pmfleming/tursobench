@@ -1,0 +1,950 @@
+//! BSON, binary property lists, CBOR, MessagePack and protobuf read into the
+//! same bounded tree as JSONB. Each must consume the value exactly.
+use crate::tree::{Error, Item, Limits, Node, Tree, escape};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// A structured format the tree lens reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Format {
+    Jsonb,
+    Bson,
+    Plist,
+    Cbor,
+    MessagePack,
+    Protobuf,
+}
+impl Format {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Jsonb => "JSONB",
+            Self::Bson => "BSON",
+            Self::Plist => "plist",
+            Self::Cbor => "CBOR",
+            Self::MessagePack => "MessagePack",
+            Self::Protobuf => "protobuf",
+        }
+    }
+}
+
+/// Read `bytes` as `format` into a tree.
+pub fn decode(
+    format: Format,
+    bytes: &[u8],
+    limits: &Limits,
+    cancel: &AtomicBool,
+) -> Result<Tree, Error> {
+    let mut b = Builder::new(limits, cancel);
+    let end = match format {
+        Format::Jsonb => return crate::tree::jsonb(bytes, limits, cancel),
+        Format::Bson => bson::document(&mut b, bytes, 0, 0, None, false)?,
+        Format::Plist => plist::read(&mut b, bytes)?,
+        Format::Cbor => cbor::item(&mut b, bytes, cbor::start(bytes), 0, None)?,
+        Format::MessagePack => msgpack::item(&mut b, bytes, 0, 0, None)?,
+        Format::Protobuf => protobuf::message(&mut b, bytes, 0, None)?,
+    };
+    if end != bytes.len() {
+        return Err(Error::Invalid("Bytes follow the value"));
+    }
+    Ok(b.finish())
+}
+
+/// A format with no signature that reads the whole value as a map, an
+/// array or a message: offered as a possible reading, never chosen.
+pub fn probe(bytes: &[u8], cancel: &AtomicBool) -> Option<Format> {
+    let limits = Limits::default();
+    let container = |tree: &Tree| matches!(tree.nodes.first().map(|n| &n.item), Some(Item::Object(n) | Item::Array(n)) if *n > 0);
+    [Format::MessagePack, Format::Cbor, Format::Protobuf]
+        .into_iter()
+        .find(|&format| decode(format, bytes, &limits, cancel).is_ok_and(|tree| container(&tree)))
+}
+
+/// A format recognised by its first bytes: BSON by its length field, a
+/// binary plist by its magic, CBOR by its self-describe tag.
+pub fn signature(head: &[u8], len: u64) -> Option<Format> {
+    if head.starts_with(b"bplist00") {
+        return Some(Format::Plist);
+    }
+    if head.starts_with(&[0xd9, 0xd9, 0xf7]) {
+        return Some(Format::Cbor);
+    }
+    let declared = u32::from_le_bytes(head.get(..4)?.try_into().ok()?);
+    let first = *head.get(4)?;
+    let key = head.get(5..)?.iter().take_while(|&&b| b != 0).count();
+    let plausible = matches!(first, 0x01..=0x0b | 0x0d | 0x0e | 0x10..=0x13);
+    (u64::from(declared) == len
+        && len >= 7
+        && plausible
+        && key > 0
+        && head[5..5 + key].iter().all(u8::is_ascii_graphic))
+    .then_some(Format::Bson)
+}
+
+/// Builds a tree within the limits.
+pub(crate) struct Builder<'a> {
+    limits: &'a Limits,
+    cancel: &'a AtomicBool,
+    nodes: Vec<Node>,
+    text: usize,
+    stopped: bool,
+}
+impl<'a> Builder<'a> {
+    fn new(limits: &'a Limits, cancel: &'a AtomicBool) -> Self {
+        Self {
+            limits,
+            cancel,
+            nodes: Vec::new(),
+            text: 0,
+            stopped: false,
+        }
+    }
+    /// Whether another node may be added; cancelling fails the read.
+    fn room(&mut self, depth: usize) -> Result<bool, Error> {
+        if self.cancel.load(Ordering::Relaxed) {
+            return Err(Error::Cancelled);
+        }
+        if self.nodes.len() >= self.limits.nodes
+            || depth > self.limits.depth
+            || self.text > self.limits.text
+        {
+            self.stopped = true;
+        }
+        Ok(!self.stopped)
+    }
+    fn scalar(&mut self, depth: usize, key: Option<String>, item: Item) -> Result<(), Error> {
+        if self.room(depth)? {
+            let end = self.nodes.len() + 1;
+            self.nodes.push(Node {
+                depth,
+                key,
+                item,
+                end,
+                cut: false,
+            });
+        }
+        Ok(())
+    }
+    /// Start an array or object; `None` once the limits are reached.
+    fn open(
+        &mut self,
+        depth: usize,
+        key: Option<String>,
+        object: bool,
+    ) -> Result<Option<usize>, Error> {
+        if !self.room(depth)? {
+            return Ok(None);
+        }
+        let item = if object {
+            Item::Object(0)
+        } else {
+            Item::Array(0)
+        };
+        self.nodes.push(Node {
+            depth,
+            key,
+            item,
+            end: self.nodes.len() + 1,
+            cut: false,
+        });
+        Ok(Some(self.nodes.len() - 1))
+    }
+    fn close(&mut self, index: Option<usize>, count: usize) {
+        let Some(index) = index else {
+            return;
+        };
+        let end = self.nodes.len();
+        let node = &mut self.nodes[index];
+        node.end = end;
+        node.cut = self.stopped;
+        node.item = match node.item {
+            Item::Object(_) => Item::Object(count),
+            _ => Item::Array(count),
+        };
+    }
+    /// Text as the body of a JSON string, counted against the text limit.
+    fn text(&mut self, raw: &str) -> String {
+        self.text += raw.len();
+        escape(raw)
+    }
+    fn finish(self) -> Tree {
+        Tree {
+            complete: !self.stopped,
+            nodes: self.nodes,
+        }
+    }
+}
+
+/// `n` bytes at `at`, or invalid.
+fn take(bytes: &[u8], at: usize, n: usize) -> Result<&[u8], Error> {
+    at.checked_add(n)
+        .and_then(|end| bytes.get(at..end))
+        .ok_or(Error::Invalid("The value ends inside an element"))
+}
+fn number(n: impl std::fmt::Display) -> Item {
+    Item::Number(n.to_string())
+}
+fn real(n: f64) -> Item {
+    if n.is_finite() {
+        Item::Number(format!("{n:?}"))
+    } else {
+        Item::Null
+    }
+}
+/// Up to 16 bytes as hexadecimal, with the full length.
+fn bytes_item(bytes: &[u8]) -> Item {
+    let more = if bytes.len() > 16 { "…" } else { "" };
+    Item::Bytes(
+        format!(
+            "{}{more}",
+            crate::encode::hex(&bytes[..bytes.len().min(16)], "")
+        ),
+        bytes.len(),
+    )
+}
+
+mod bson {
+    use super::{Builder, Error, Item, bytes_item, number, real, take};
+
+    fn i32_at(bytes: &[u8], at: usize) -> Result<i32, Error> {
+        Ok(i32::from_le_bytes(
+            take(bytes, at, 4)?.try_into().unwrap_or_default(),
+        ))
+    }
+    fn cstring(bytes: &[u8], at: usize) -> Result<(&str, usize), Error> {
+        let len = bytes
+            .get(at..)
+            .and_then(|rest| rest.iter().position(|&b| b == 0))
+            .ok_or(Error::Invalid("Unterminated BSON name"))?;
+        let text = std::str::from_utf8(&bytes[at..at + len])
+            .map_err(|_| Error::Invalid("BSON name is not UTF-8"))?;
+        Ok((text, at + len + 1))
+    }
+    /// A document (or array) at `at`; returns where it ends.
+    pub(super) fn document(
+        b: &mut Builder,
+        bytes: &[u8],
+        at: usize,
+        depth: usize,
+        key: Option<String>,
+        array: bool,
+    ) -> Result<usize, Error> {
+        let len = usize::try_from(i32_at(bytes, at)?)
+            .map_err(|_| Error::Invalid("Negative BSON length"))?;
+        let end = at
+            .checked_add(len)
+            .filter(|&e| len >= 5 && e <= bytes.len())
+            .ok_or(Error::Invalid("BSON length overruns the value"))?;
+        if bytes[end - 1] != 0 {
+            return Err(Error::Invalid("BSON document is not terminated"));
+        }
+        let index = b.open(depth, key, !array)?;
+        let (mut at, mut count) = (at + 4, 0);
+        while at < end - 1 {
+            let kind = bytes[at];
+            let (name, next) = cstring(bytes, at + 1)?;
+            let name = b.text(name);
+            at = element(b, bytes, kind, next, depth + 1, (!array).then_some(name))?;
+            count += 1;
+        }
+        if at != end - 1 {
+            return Err(Error::Invalid("BSON element overruns its document"));
+        }
+        b.close(index, count);
+        Ok(end)
+    }
+    fn element(
+        b: &mut Builder,
+        bytes: &[u8],
+        kind: u8,
+        at: usize,
+        depth: usize,
+        key: Option<String>,
+    ) -> Result<usize, Error> {
+        let string = |at| -> Result<(String, usize), Error> {
+            let len = usize::try_from(i32_at(bytes, at)?)
+                .map_err(|_| Error::Invalid("Negative BSON length"))?;
+            let raw = take(bytes, at + 4, len)?;
+            let (text, nul) = raw
+                .split_last()
+                .ok_or(Error::Invalid("Empty BSON string"))?;
+            let text = std::str::from_utf8(nul.to_owned().as_slice())
+                .map(str::to_owned)
+                .ok()
+                .filter(|_| *text == 0);
+            Ok((
+                text.ok_or(Error::Invalid("Invalid BSON string"))?,
+                at + 4 + len,
+            ))
+        };
+        let (item, next) = match kind {
+            0x01 => (
+                real(f64::from_le_bytes(
+                    take(bytes, at, 8)?.try_into().unwrap_or_default(),
+                )),
+                at + 8,
+            ),
+            0x02 | 0x0d | 0x0e => {
+                let (text, next) = string(at)?;
+                (Item::Text(b.text(&text)), next)
+            }
+            0x03 | 0x04 => return document(b, bytes, at, depth, key, kind == 0x04),
+            0x05 => {
+                let len = usize::try_from(i32_at(bytes, at)?)
+                    .map_err(|_| Error::Invalid("Negative BSON length"))?;
+                (bytes_item(take(bytes, at + 5, len)?), at + 5 + len)
+            }
+            0x06 | 0x0a | 0x7f | 0xff => (Item::Null, at),
+            0x07 => (bytes_item(take(bytes, at, 12)?), at + 12),
+            0x08 => (Item::Bool(take(bytes, at, 1)?[0] != 0), at + 1),
+            0x09 | 0x11 | 0x12 => (
+                number(i64::from_le_bytes(
+                    take(bytes, at, 8)?.try_into().unwrap_or_default(),
+                )),
+                at + 8,
+            ),
+            0x0b => {
+                let (pattern, next) = cstring(bytes, at)?;
+                let (_, next) = cstring(bytes, next)?;
+                (Item::Text(b.text(pattern)), next)
+            }
+            0x10 => (number(i32_at(bytes, at)?), at + 4),
+            0x13 => (bytes_item(take(bytes, at, 16)?), at + 16),
+            _ => return Err(Error::Invalid("Unknown BSON element type")),
+        };
+        b.scalar(depth, key, item)?;
+        Ok(next)
+    }
+}
+
+mod msgpack {
+    use super::{Builder, Error, Item, bytes_item, number, real, take};
+
+    fn uint(bytes: &[u8], at: usize, n: usize) -> Result<u64, Error> {
+        Ok(take(bytes, at, n)?
+            .iter()
+            .fold(0u64, |v, &b| v << 8 | u64::from(b)))
+    }
+    /// The item at `at`; returns where it ends.
+    pub(super) fn item(
+        b: &mut Builder,
+        bytes: &[u8],
+        at: usize,
+        depth: usize,
+        key: Option<String>,
+    ) -> Result<usize, Error> {
+        let first = *bytes
+            .get(at)
+            .ok_or(Error::Invalid("The value ends inside an element"))?;
+        let at = at + 1;
+        let sized = |n: usize| uint(bytes, at, n).map(|len| (len as usize, at + n));
+        let (item, next) = match first {
+            0x00..=0x7f => (number(first), at),
+            0xe0..=0xff => (number(first as i8), at),
+            0x80..=0x8f => {
+                return container(b, bytes, at, usize::from(first & 0x0f), depth, key, true);
+            }
+            0x90..=0x9f => {
+                return container(b, bytes, at, usize::from(first & 0x0f), depth, key, false);
+            }
+            0xdc..=0xdf => {
+                let (len, at) = sized(if first & 1 == 0 { 2 } else { 4 })?;
+                return container(b, bytes, at, len, depth, key, first >= 0xde);
+            }
+            0xa0..=0xbf => return text(b, bytes, at, usize::from(first & 0x1f), depth, key),
+            0xd9..=0xdb => {
+                let (len, at) = sized(1 << (first - 0xd9))?;
+                return text(b, bytes, at, len, depth, key);
+            }
+            0xc4..=0xc6 => {
+                let (len, at) = sized(1 << (first - 0xc4))?;
+                (bytes_item(take(bytes, at, len)?), at + len)
+            }
+            0xc7..=0xc9 => {
+                let (len, at) = sized(1 << (first - 0xc7))?;
+                (bytes_item(take(bytes, at + 1, len)?), at + 1 + len)
+            }
+            0xd4..=0xd8 => {
+                let len = 1 << (first - 0xd4);
+                (bytes_item(take(bytes, at + 1, len)?), at + 1 + len)
+            }
+            0xc0 => (Item::Null, at),
+            0xc2 | 0xc3 => (Item::Bool(first == 0xc3), at),
+            0xca => (
+                real(f64::from(f32::from_be_bytes(
+                    take(bytes, at, 4)?.try_into().unwrap_or_default(),
+                ))),
+                at + 4,
+            ),
+            0xcb => (
+                real(f64::from_be_bytes(
+                    take(bytes, at, 8)?.try_into().unwrap_or_default(),
+                )),
+                at + 8,
+            ),
+            0xcc..=0xcf => {
+                let n = 1 << (first - 0xcc);
+                (number(uint(bytes, at, n)?), at + n)
+            }
+            0xd0..=0xd3 => {
+                let n = 1 << (first - 0xd0);
+                let raw = uint(bytes, at, n)?;
+                let shift = 64 - 8 * n as u32;
+                (number(((raw << shift) as i64) >> shift), at + n)
+            }
+            _ => return Err(Error::Invalid("Reserved MessagePack type")),
+        };
+        b.scalar(depth, key, item)?;
+        Ok(next)
+    }
+    fn text(
+        b: &mut Builder,
+        bytes: &[u8],
+        at: usize,
+        len: usize,
+        depth: usize,
+        key: Option<String>,
+    ) -> Result<usize, Error> {
+        let raw = std::str::from_utf8(take(bytes, at, len)?)
+            .map_err(|_| Error::Invalid("MessagePack string is not UTF-8"))?;
+        let text = b.text(raw);
+        b.scalar(depth, key, Item::Text(text))?;
+        Ok(at + len)
+    }
+    fn container(
+        b: &mut Builder,
+        bytes: &[u8],
+        mut at: usize,
+        len: usize,
+        depth: usize,
+        key: Option<String>,
+        map: bool,
+    ) -> Result<usize, Error> {
+        if len > bytes.len() {
+            return Err(Error::Invalid("MessagePack length overruns the value"));
+        }
+        let index = b.open(depth, key, map)?;
+        for _ in 0..len {
+            let name = if map {
+                let mut keys = Builder::new(b.limits, b.cancel);
+                at = item(&mut keys, bytes, at, 0, None)?;
+                Some(super::key_text(&keys.finish()))
+            } else {
+                None
+            };
+            at = item(b, bytes, at, depth + 1, name)?;
+        }
+        b.close(index, len);
+        Ok(at)
+    }
+}
+
+mod cbor {
+    use super::{Builder, Error, Item, bytes_item, number, real, take};
+
+    /// Where the item starts, after a self-describe tag.
+    pub(super) fn start(bytes: &[u8]) -> usize {
+        if bytes.starts_with(&[0xd9, 0xd9, 0xf7]) {
+            3
+        } else {
+            0
+        }
+    }
+    /// The argument of a head: its value, and where the head ends; `None` for indefinite.
+    fn argument(bytes: &[u8], at: usize, info: u8) -> Result<(Option<u64>, usize), Error> {
+        let n = match info {
+            0..=23 => return Ok((Some(u64::from(info)), at)),
+            24..=27 => 1usize << (info - 24),
+            31 => return Ok((None, at)),
+            _ => return Err(Error::Invalid("Reserved CBOR argument")),
+        };
+        let value = take(bytes, at, n)?
+            .iter()
+            .fold(0u64, |v, &b| v << 8 | u64::from(b));
+        Ok((Some(value), at + n))
+    }
+    pub(super) fn item(
+        b: &mut Builder,
+        bytes: &[u8],
+        at: usize,
+        depth: usize,
+        key: Option<String>,
+    ) -> Result<usize, Error> {
+        let first = *bytes
+            .get(at)
+            .ok_or(Error::Invalid("The value ends inside an element"))?;
+        let (major, info) = (first >> 5, first & 0x1f);
+        let (arg, at) = argument(bytes, at + 1, info)?;
+        let (item, next) = match (major, arg) {
+            (0, Some(n)) => (number(n), at),
+            (1, Some(n)) => (number(-1 - i128::from(n)), at),
+            (2 | 3, Some(len)) => {
+                let raw = take(
+                    bytes,
+                    at,
+                    usize::try_from(len).map_err(|_| Error::Invalid("CBOR length"))?,
+                )?;
+                let item = if major == 2 {
+                    bytes_item(raw)
+                } else {
+                    Item::Text(
+                        b.text(
+                            std::str::from_utf8(raw)
+                                .map_err(|_| Error::Invalid("CBOR text is not UTF-8"))?,
+                        ),
+                    )
+                };
+                (item, at + raw.len())
+            }
+            (4 | 5, _) => return container(b, bytes, at, arg, depth, key, major == 5),
+            // A tag: its content, read as the item it tags.
+            (6, Some(_)) => return item(b, bytes, at, depth, key),
+            (7, _) => (simple(info, arg)?, at),
+            _ => return Err(Error::Invalid("Indefinite CBOR strings are not read")),
+        };
+        b.scalar(depth, key, item)?;
+        Ok(next)
+    }
+    fn simple(info: u8, arg: Option<u64>) -> Result<Item, Error> {
+        Ok(match (info, arg) {
+            (20 | 21, _) => Item::Bool(info == 21),
+            (22 | 23, _) => Item::Null,
+            (25, Some(half)) => real(half_float(half as u16)),
+            (26, Some(bits)) => real(f64::from(f32::from_bits(bits as u32))),
+            (27, Some(bits)) => real(f64::from_bits(bits)),
+            (0..=24, Some(n)) => number(n),
+            _ => return Err(Error::Invalid("Unexpected CBOR break")),
+        })
+    }
+    fn half_float(bits: u16) -> f64 {
+        let (sign, exponent, fraction) = (bits >> 15, (bits >> 10) & 0x1f, bits & 0x3ff);
+        let magnitude = match exponent {
+            0 => f64::from(fraction) * 2f64.powi(-24),
+            31 => {
+                if fraction == 0 {
+                    f64::INFINITY
+                } else {
+                    f64::NAN
+                }
+            }
+            _ => (1.0 + f64::from(fraction) / 1024.0) * 2f64.powi(i32::from(exponent) - 15),
+        };
+        if sign == 1 { -magnitude } else { magnitude }
+    }
+    fn container(
+        b: &mut Builder,
+        bytes: &[u8],
+        mut at: usize,
+        len: Option<u64>,
+        depth: usize,
+        key: Option<String>,
+        map: bool,
+    ) -> Result<usize, Error> {
+        if len.is_some_and(|len| len > bytes.len() as u64) {
+            return Err(Error::Invalid("CBOR length overruns the value"));
+        }
+        let index = b.open(depth, key, map)?;
+        let mut count = 0;
+        loop {
+            match len {
+                Some(len) if count as u64 == len => break,
+                None if bytes.get(at) == Some(&0xff) => {
+                    at += 1;
+                    break;
+                }
+                _ => {}
+            }
+            let name = if map {
+                let mut keys = Builder::new(b.limits, b.cancel);
+                at = item(&mut keys, bytes, at, 0, None)?;
+                Some(super::key_text(&keys.finish()))
+            } else {
+                None
+            };
+            at = item(b, bytes, at, depth + 1, name)?;
+            count += 1;
+        }
+        b.close(index, count);
+        Ok(at)
+    }
+}
+
+mod protobuf {
+    use super::{Builder, Error, Item, bytes_item, number, take};
+
+    fn varint(bytes: &[u8], at: usize) -> Result<(u64, usize), Error> {
+        let (value, len) = crate::inspect::leb128(bytes.get(at..).unwrap_or_default())
+            .ok_or(Error::Invalid("Invalid protobuf varint"))?;
+        Ok((value, at + len))
+    }
+    /// A message filling `bytes` from `at`: fields as members named by number.
+    pub(super) fn message(
+        b: &mut Builder,
+        bytes: &[u8],
+        depth: usize,
+        key: Option<String>,
+    ) -> Result<usize, Error> {
+        fields(bytes)?;
+        let index = b.open(depth, key, true)?;
+        let (mut at, mut count) = (0, 0);
+        while at < bytes.len() {
+            let (tag, next) = varint(bytes, at)?;
+            let name = Some((tag >> 3).to_string());
+            at = field(b, bytes, next, tag, depth + 1, name)?;
+            count += 1;
+        }
+        b.close(index, count);
+        Ok(at)
+    }
+    /// Whether `bytes` are a whole message: known wire types, field numbers from 1.
+    fn fields(bytes: &[u8]) -> Result<usize, Error> {
+        let (mut at, mut count) = (0, 0);
+        while at < bytes.len() {
+            let (tag, next) = varint(bytes, at)?;
+            if tag >> 3 == 0 || tag >> 3 > 536_870_911 {
+                return Err(Error::Invalid("Invalid protobuf field number"));
+            }
+            at = match tag & 7 {
+                0 => varint(bytes, next)?.1,
+                1 => next + take(bytes, next, 8)?.len(),
+                2 => {
+                    let (len, at) = varint(bytes, next)?;
+                    at + take(
+                        bytes,
+                        at,
+                        usize::try_from(len).map_err(|_| Error::Invalid("protobuf length"))?,
+                    )?
+                    .len()
+                }
+                5 => next + take(bytes, next, 4)?.len(),
+                _ => return Err(Error::Invalid("Unsupported protobuf wire type")),
+            };
+            count += 1;
+        }
+        Ok(count)
+    }
+    fn field(
+        b: &mut Builder,
+        bytes: &[u8],
+        at: usize,
+        tag: u64,
+        depth: usize,
+        key: Option<String>,
+    ) -> Result<usize, Error> {
+        let (item, next) = match tag & 7 {
+            0 => {
+                let (value, next) = varint(bytes, at)?;
+                (number(value), next)
+            }
+            1 => (
+                number(u64::from_le_bytes(
+                    take(bytes, at, 8)?.try_into().unwrap_or_default(),
+                )),
+                at + 8,
+            ),
+            5 => (
+                number(u32::from_le_bytes(
+                    take(bytes, at, 4)?.try_into().unwrap_or_default(),
+                )),
+                at + 4,
+            ),
+            _ => {
+                let (len, at) = varint(bytes, at)?;
+                let raw = take(bytes, at, len as usize)?;
+                // A nested message when it reads as one, else text, else bytes.
+                if !raw.is_empty() && fields(raw).is_ok() && depth < 64 {
+                    message(b, raw, depth, key)?;
+                    return Ok(at + raw.len());
+                }
+                let item = match std::str::from_utf8(raw) {
+                    Ok(text) => Item::Text(b.text(text)),
+                    Err(_) => bytes_item(raw),
+                };
+                (item, at + raw.len())
+            }
+        };
+        b.scalar(depth, key, item)?;
+        Ok(next)
+    }
+}
+
+mod plist {
+    use super::{Builder, Error, Item, bytes_item, number, real, take};
+
+    /// A binary plist: its bytes and the trailer's sizes and positions.
+    struct Plist<'a> {
+        bytes: &'a [u8],
+        offset_size: usize,
+        ref_size: usize,
+        objects: usize,
+        table: usize,
+    }
+    /// Where an object goes in the tree.
+    struct Place {
+        depth: usize,
+        key: Option<String>,
+    }
+    fn uint(bytes: &[u8], at: usize, n: usize) -> Result<usize, Error> {
+        let value = take(bytes, at, n)?
+            .iter()
+            .fold(0u64, |v, &b| v << 8 | u64::from(b));
+        usize::try_from(value).map_err(|_| Error::Invalid("plist number too large"))
+    }
+    pub(super) fn read(b: &mut Builder, bytes: &[u8]) -> Result<usize, Error> {
+        if !bytes.starts_with(b"bplist00") || bytes.len() < 40 {
+            return Err(Error::Invalid("Not a binary plist"));
+        }
+        let t = bytes.len() - 32;
+        let plist = Plist {
+            bytes,
+            offset_size: usize::from(bytes[t + 6]),
+            ref_size: usize::from(bytes[t + 7]),
+            objects: uint(bytes, t + 8, 8)?,
+            table: uint(bytes, t + 24, 8)?,
+        };
+        let top = uint(bytes, t + 16, 8)?;
+        let sizes = 1..=8;
+        if !sizes.contains(&plist.offset_size)
+            || !sizes.contains(&plist.ref_size)
+            || top >= plist.objects
+        {
+            return Err(Error::Invalid("Invalid plist trailer"));
+        }
+        plist.object(
+            b,
+            top,
+            Place {
+                depth: 0,
+                key: None,
+            },
+        )?;
+        Ok(bytes.len())
+    }
+    impl Plist<'_> {
+        fn offset(&self, index: usize) -> Result<usize, Error> {
+            if index >= self.objects {
+                return Err(Error::Invalid("plist reference out of range"));
+            }
+            uint(
+                self.bytes,
+                self.table + index * self.offset_size,
+                self.offset_size,
+            )
+        }
+        /// The length in a marker's low bits, or the integer object after it.
+        fn length(&self, at: usize, low: u8) -> Result<(usize, usize), Error> {
+            if low != 0xf {
+                return Ok((usize::from(low), at + 1));
+            }
+            let marker = *self
+                .bytes
+                .get(at + 1)
+                .ok_or(Error::Invalid("Truncated plist length"))?;
+            let n = 1usize << (marker & 0xf);
+            Ok((uint(self.bytes, at + 2, n)?, at + 2 + n))
+        }
+        fn object(&self, b: &mut Builder, index: usize, place: Place) -> Result<(), Error> {
+            let at = self.offset(index)?;
+            let bytes = self.bytes;
+            let marker = *bytes
+                .get(at)
+                .ok_or(Error::Invalid("plist offset out of range"))?;
+            let low = marker & 0xf;
+            let item = match marker >> 4 {
+                0x0 => match low {
+                    0x8 | 0x9 => Item::Bool(low == 0x9),
+                    _ => Item::Null,
+                },
+                0x1 => number(uint(bytes, at + 1, (1usize << low).min(8))? as i64),
+                0x2 if low == 2 => real(f64::from(f32::from_be_bytes(
+                    take(bytes, at + 1, 4)?.try_into().unwrap_or_default(),
+                ))),
+                0x2 | 0x3 => real(f64::from_be_bytes(
+                    take(bytes, at + 1, 8)?.try_into().unwrap_or_default(),
+                )),
+                0x4 => {
+                    let (len, start) = self.length(at, low)?;
+                    bytes_item(take(bytes, start, len)?)
+                }
+                0x5 | 0x6 => Item::Text(b.text(&self.string(at, marker)?)),
+                0x8 => number(uint(bytes, at + 1, usize::from(low) + 1)?),
+                0xa | 0xd => return self.collection(b, at, place, marker >> 4 == 0xd),
+                _ => return Err(Error::Invalid("Unsupported plist object")),
+            };
+            b.scalar(place.depth, place.key, item)
+        }
+        /// An ASCII or UTF-16 string object.
+        fn string(&self, at: usize, marker: u8) -> Result<String, Error> {
+            let (len, start) = self.length(at, marker & 0xf)?;
+            if marker >> 4 == 0x5 {
+                return Ok(String::from_utf8_lossy(take(self.bytes, start, len)?).into_owned());
+            }
+            let units = take(
+                self.bytes,
+                start,
+                len.checked_mul(2).ok_or(Error::Invalid("plist length"))?,
+            )?;
+            Ok(char::decode_utf16(
+                units
+                    .chunks_exact(2)
+                    .map(|u| u16::from_be_bytes([u[0], u[1]])),
+            )
+            .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
+            .collect())
+        }
+        fn collection(
+            &self,
+            b: &mut Builder,
+            at: usize,
+            place: Place,
+            dict: bool,
+        ) -> Result<(), Error> {
+            let (len, start) = self.length(at, self.bytes[at] & 0xf)?;
+            if len > self.objects {
+                return Err(Error::Invalid("plist collection larger than the plist"));
+            }
+            let depth = place.depth;
+            let index = b.open(depth, place.key, dict)?;
+            if index.is_none() {
+                return Ok(());
+            }
+            let reference = |i: usize| uint(self.bytes, start + i * self.ref_size, self.ref_size);
+            for i in 0..len {
+                let key = if dict {
+                    let mut keys = Builder::new(b.limits, b.cancel);
+                    self.object(
+                        &mut keys,
+                        reference(i)?,
+                        Place {
+                            depth: depth + 1,
+                            key: None,
+                        },
+                    )?;
+                    Some(super::key_text(&keys.finish()))
+                } else {
+                    None
+                };
+                let value = reference(if dict { len + i } else { i })?;
+                self.object(
+                    b,
+                    value,
+                    Place {
+                        depth: depth + 1,
+                        key,
+                    },
+                )?;
+            }
+            b.close(index, len);
+            Ok(())
+        }
+    }
+}
+
+/// A map key read as its own small tree, as the body of a JSON string.
+fn key_text(tree: &Tree) -> String {
+    match tree.nodes.first().map(|n| &n.item) {
+        Some(Item::Text(text)) => text.clone(),
+        _ => escape(&tree.json()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Format, decode, probe, signature};
+    use crate::tree::Limits;
+    use std::sync::atomic::AtomicBool;
+
+    /// `{"job":"export-812","rows":48213,"ok":true,"tags":["a",null]}` in each format,
+    /// built by hand.
+    fn samples() -> Vec<(Format, Vec<u8>)> {
+        let mut msgpack = vec![0x84, 0xa3];
+        msgpack.extend(b"job\xaaexport-812\xa4rows\xcd\xbc\x55\xa2ok\xc3\xa4tags\x92\xa1a\xc0");
+        let mut cbor = vec![0xd9, 0xd9, 0xf7, 0xa4, 0x63];
+        cbor.extend(b"job\x6aexport-812\x64rows\x19\xbc\x55\x62ok\xf5\x64tags\x82\x61a\xf6");
+        let mut bson_body = Vec::new();
+        bson_body.extend(b"\x02job\0\x0b\0\0\0export-812\0");
+        bson_body.extend(b"\x10rows\0");
+        bson_body.extend(48213i32.to_le_bytes());
+        bson_body.extend(b"\x08ok\0\x01");
+        bson_body.extend(b"\x04tags\0\x11\0\0\0\x020\0\x02\0\0\0a\0\x0a1\0\0");
+        bson_body.push(0);
+        let mut bson = ((bson_body.len() + 4) as i32).to_le_bytes().to_vec();
+        bson.extend(bson_body);
+        vec![
+            (Format::MessagePack, msgpack),
+            (Format::Cbor, cbor),
+            (Format::Bson, bson),
+        ]
+    }
+
+    #[test]
+    fn each_format_reads_into_the_same_tree() {
+        let cancel = AtomicBool::new(false);
+        for (format, bytes) in samples() {
+            let tree = decode(format, &bytes, &Limits::default(), &cancel)
+                .unwrap_or_else(|e| panic!("{format:?}: {e:?}"));
+            assert_eq!(
+                tree.json(),
+                r#"{"job":"export-812","rows":48213,"ok":true,"tags":["a",null]}"#,
+                "{format:?}"
+            );
+            let mut trailing = bytes.clone();
+            trailing.push(0);
+            assert!(
+                decode(format, &trailing, &Limits::default(), &cancel).is_err(),
+                "{format:?}"
+            );
+            assert!(
+                decode(
+                    format,
+                    &bytes[..bytes.len() - 1],
+                    &Limits::default(),
+                    &cancel
+                )
+                .is_err(),
+                "{format:?}"
+            );
+        }
+        let (bson, cbor) = (&samples()[2].1, &samples()[1].1);
+        assert_eq!(signature(bson, bson.len() as u64), Some(Format::Bson));
+        assert_eq!(signature(cbor, cbor.len() as u64), Some(Format::Cbor));
+        assert_eq!(signature(b"plain text here", 15), None);
+        // protobuf: field 1 = 150, field 2 = "testing".
+        let proto = b"\x08\x96\x01\x12\x07testing";
+        let tree = decode(Format::Protobuf, proto, &Limits::default(), &cancel).unwrap();
+        assert_eq!(tree.json(), r#"{"1":150,"2":"testing"}"#);
+        assert_eq!(probe(proto, &cancel), Some(Format::Protobuf));
+        assert_eq!(probe(&samples()[0].1, &cancel), Some(Format::MessagePack));
+        assert_eq!(probe(b"\x01", &cancel), None);
+    }
+
+    #[test]
+    fn random_input_never_panics_and_stays_bounded() {
+        let cancel = AtomicBool::new(false);
+        let limits = Limits {
+            nodes: 200,
+            ..Limits::default()
+        };
+        let mut state = 0x1234_5678_u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for (format, sample) in samples().into_iter().chain([
+            (Format::Protobuf, b"\x08\x96\x01\x12\x07testing".to_vec()),
+            (Format::Plist, b"bplist00".to_vec()),
+        ]) {
+            for _ in 0..3000 {
+                let mut bytes = sample.clone();
+                for _ in 0..=next() % 4 {
+                    let at = (next() as usize) % bytes.len();
+                    bytes[at] = next() as u8;
+                }
+                bytes.extend((0..next() % 40).map(|_| next() as u8));
+                if let Ok(tree) = decode(format, &bytes, &limits, &cancel) {
+                    assert!(tree.nodes.len() <= 200);
+                }
+            }
+        }
+    }
+}
