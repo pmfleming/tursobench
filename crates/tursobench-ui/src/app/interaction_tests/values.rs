@@ -586,3 +586,58 @@ fn typing_appends_keeps_the_hex_lens_and_stages_only_real_changes() {
     );
     app.close();
 }
+
+#[test]
+fn the_text_lens_says_where_it_stops_copies_what_it_shows_and_find_says_why() {
+    use crate::app::value::Lens;
+    // UTF-16LE text, and stored text over the 1 MiB the text lens lays out.
+    let utf16: String = "\u{feff}héllo"
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .map(|b| format!("{b:02X}"))
+        .collect();
+    let (_dir, ctx, mut app) = super::fixture(
+        &[
+            "CREATE TABLE v(id INTEGER PRIMARY KEY, wide BLOB, long BLOB, bytes BLOB)",
+            &format!(
+                "INSERT INTO v VALUES(1, X'{utf16}', CAST(hex(zeroblob(786432)) AS BLOB), X'00FF7A')"
+            ),
+        ],
+        true,
+    );
+    browse_and_wait(&mut app, &ctx, "v");
+    unfocus(&mut app, &ctx);
+    // Ctrl C in the text lens copies the decoded text, not the bytes.
+    assert_eq!(app.value_offer(&ctx, 0, 1).unwrap().lens, Lens::Text);
+    app.open_value(0, 1);
+    draw(&mut app, &ctx);
+    let output = frame(&mut app, &ctx, vec![egui::Event::Copy]);
+    assert_eq!(copied(&output), ["héllo"]);
+    app.close_value();
+    // Past 1 MiB the text lens stops, and its footer says so.
+    app.open_value(0, 2);
+    settle_value(&mut app, &ctx, |app| !view(app).note.is_empty());
+    assert_eq!(
+        view(&app).note,
+        "First 1 MiB of 1.5 MB · the hex lens reads the rest"
+    );
+    let output = draw(&mut app, &ctx);
+    assert!(super::texts(&output).any(|t| t.galley.job.text == view(&app).note));
+    app.close_value();
+    // A find with no match says so beside the open input.
+    app.open_value(0, 3);
+    draw(&mut app, &ctx);
+    view_mut(&mut app).find = Some("\"absent\"".into());
+    frame(
+        &mut app,
+        &ctx,
+        vec![key_event(egui::Key::Enter, true, egui::Modifiers::NONE)],
+    );
+    assert!(view(&app).find.is_some());
+    let output = draw(&mut app, &ctx);
+    assert!(
+        super::texts(&output).any(|t| t.galley.job.text == "No match after the cursor"),
+        "the reason shows while the input is open"
+    );
+    app.close();
+}

@@ -87,7 +87,11 @@ pub fn parse_hex(text: &str) -> Option<Vec<u8>> {
         .split_whitespace()
         .map(|word| word.strip_prefix("0x").unwrap_or(word))
         .collect();
-    if digits.is_empty() || !digits.len().is_multiple_of(2) {
+    // Only digits: `from_str_radix` would also take a sign, as in "+f".
+    if digits.is_empty()
+        || !digits.len().is_multiple_of(2)
+        || !digits.bytes().all(|b| b.is_ascii_hexdigit())
+    {
         return None;
     }
     (0..digits.len())
@@ -137,5 +141,8 @@ mod tests {
         assert_eq!(parse_hex("6"), None);
         assert_eq!(parse_hex("export"), None);
         assert_eq!(parse_hex("  "), None);
+        // A sign is not a digit.
+        assert_eq!(parse_hex("+f"), None);
+        assert_eq!(parse_hex("-1"), None);
     }
 }

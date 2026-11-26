@@ -8,6 +8,7 @@ use std::{
 use tursobench_blob::{
     Order,
     encode::Format,
+    text::Encoding,
     tree::{Line, Tree},
     vector::Vector,
 };
@@ -99,6 +100,8 @@ pub(in crate::app) enum Drawn {
     #[default]
     None,
     Tree(Arc<Tree>, Arc<[Line]>),
+    /// The text lens's text, from these bytes, and whether it was cut short.
+    Text(Arc<[u8]>, Arc<str>, bool),
     Vector {
         vector: Arc<Vector>,
         numbers: Arc<[f64]>,
@@ -118,6 +121,25 @@ impl Drawn {
         let lines: Arc<[Line]> = tree.pretty(usize::MAX).into();
         *self = Self::Tree(tree.clone(), lines.clone());
         lines
+    }
+    /// The text `bytes` show in `encoding` (`None` for stored text), cut
+    /// to at most `TEXT_SHOWN` bytes where a character starts; and whether
+    /// it was cut.
+    pub fn text(&mut self, bytes: &Arc<[u8]>, encoding: Option<Encoding>) -> (Arc<str>, bool) {
+        if let Self::Text(held, text, cut) = self
+            && Arc::ptr_eq(held, bytes)
+        {
+            return (text.clone(), *cut);
+        }
+        let shown = text_prefix(bytes, encoding);
+        let text: Arc<str> = match encoding {
+            Some(encoding) => tursobench_blob::text::decode(shown, encoding),
+            None => String::from_utf8_lossy(shown).into_owned(),
+        }
+        .into();
+        let cut = shown.len() < bytes.len();
+        *self = Self::Text(bytes.clone(), text.clone(), cut);
+        (text, cut)
     }
     /// The values, their norm, minimum and maximum, and `n` bars of `vector`.
     pub fn vector(&mut self, vector: &Arc<Vector>, n: usize) -> VectorDrawn {
@@ -145,6 +167,39 @@ impl Drawn {
         };
         (numbers, summary, bars)
     }
+}
+
+/// The most of a value the text lens lays out.
+pub(in crate::app) const TEXT_SHOWN: usize = 1024 * 1024;
+
+/// At most `TEXT_SHOWN` bytes of `bytes`, ending where a character
+/// starts, so the last character is never split.
+fn text_prefix(bytes: &[u8], encoding: Option<Encoding>) -> &[u8] {
+    if bytes.len() <= TEXT_SHOWN {
+        return bytes;
+    }
+    let mut end = TEXT_SHOWN;
+    match encoding {
+        Some(order @ (Encoding::Utf16Le | Encoding::Utf16Be)) => {
+            end &= !1;
+            let unit = [bytes[end - 2], bytes[end - 1]];
+            let unit = if order == Encoding::Utf16Le {
+                u16::from_le_bytes(unit)
+            } else {
+                u16::from_be_bytes(unit)
+            };
+            // The first half of a surrogate pair waits for its second.
+            if (0xd800..0xdc00).contains(&unit) {
+                end -= 2;
+            }
+        }
+        _ => {
+            while end > 0 && bytes[end] & 0xc0 == 0x80 {
+                end -= 1;
+            }
+        }
+    }
+    &bytes[..end]
 }
 
 /// What the request in flight asked for.
@@ -218,6 +273,8 @@ pub(in crate::app) struct View {
     /// A file chosen to replace the value, being read.
     pub load: Option<std::sync::mpsc::Receiver<Loaded>>,
     pub drawn: Drawn,
+    /// The text the text lens shows, which Ctrl C copies there.
+    pub shown: Option<Arc<str>>,
 }
 impl View {
     pub fn new(
@@ -274,6 +331,7 @@ impl View {
             entropy: HashMap::new(),
             load: None,
             drawn: Drawn::None,
+            shown: None,
         })
     }
 
@@ -430,9 +488,10 @@ impl View {
 
 #[cfg(test)]
 mod tests {
-    use super::{CHUNK, Chunks, Source, View, Want};
+    use super::{CHUNK, Chunks, Source, TEXT_SHOWN, View, Want, text_prefix};
     use eframe::egui::Key;
     use std::sync::Arc;
+    use tursobench_blob::text::Encoding;
     use tursobench_core::{DeferredCell, LargeKind, Value};
 
     fn view(len: usize) -> View {
@@ -549,5 +608,27 @@ mod tests {
         v.half = true;
         v.move_to(40, false);
         assert!(!v.half);
+    }
+
+    #[test]
+    fn long_text_is_cut_where_a_character_starts() {
+        // "é" is two bytes in UTF-8; one straddling the limit is left out whole.
+        let mut utf8 = vec![b'a'; TEXT_SHOWN - 1];
+        utf8.extend("é and more".as_bytes());
+        assert_eq!(text_prefix(&utf8, None).len(), TEXT_SHOWN - 1);
+        assert_eq!(text_prefix(b"short", None), b"short");
+        // A surrogate pair straddling the limit in UTF-16 is left out whole.
+        let mut utf16: Vec<u8> = "a"
+            .repeat(TEXT_SHOWN / 2 - 1)
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        utf16.extend("😀 more".encode_utf16().flat_map(u16::to_le_bytes));
+        let cut = text_prefix(&utf16, Some(Encoding::Utf16Le));
+        assert_eq!(cut.len(), TEXT_SHOWN - 2);
+        let mut v = View::new(0, 0, &Value::Blob(utf8.clone()), (None, 0)).unwrap();
+        let bytes = v.whole().unwrap();
+        let (text, cut) = v.drawn.text(&bytes, Some(Encoding::Utf8));
+        assert!(cut && !text.contains('\u{fffd}'));
     }
 }
