@@ -526,3 +526,157 @@ fn a_value_from_query_results_opens_in_the_detached_inspector() {
     assert!(!app.value_open() && app.database.document.ui.inspector_open);
     app.close();
 }
+
+#[test]
+fn typing_appends_keeps_the_hex_lens_and_stages_only_real_changes() {
+    use crate::app::value::Lens;
+    let (_dir, ctx, mut app) = super::fixture(
+        &[
+            "CREATE TABLE v(id INTEGER PRIMARY KEY, a BLOB, b BLOB, c BLOB)",
+            "INSERT INTO v VALUES(1, X'', X'', X'00FF')",
+        ],
+        true,
+    );
+    browse_and_wait(&mut app, &ctx, "v");
+    unfocus(&mut app, &ctx);
+    let staged = |app: &App, col| app.field_value(0, col).cloned();
+    let type_keys = |app: &mut App, keys: &str| {
+        for key in keys.chars() {
+            frame(app, &ctx, vec![egui::Event::Text(key.to_string())]);
+        }
+    };
+    // One key a frame, as typed: each byte is added after the last. After
+    // "4" the value is "@", which reads as text, but the lens stays hex.
+    app.open_value(0, 1);
+    draw(&mut app, &ctx);
+    type_keys(&mut app, "4");
+    draw(&mut app, &ctx);
+    assert_eq!(app.value_lens_now(&ctx), Some(Lens::Hex));
+    type_keys(&mut app, "1cafe");
+    assert_eq!(staged(&app, 1), Some(Value::Blob(vec![0x41, 0xca, 0xfe])));
+    draw(&mut app, &ctx);
+    assert_eq!(view(&app).cursor, 3, "the cursor waits past the last byte");
+    app.close_value();
+    // Insert mode adds bytes in the order typed.
+    app.open_value(0, 2);
+    draw(&mut app, &ctx);
+    frame(
+        &mut app,
+        &ctx,
+        vec![key_event(egui::Key::Insert, true, egui::Modifiers::NONE)],
+    );
+    type_keys(&mut app, "a0b1c2");
+    assert_eq!(staged(&app, 2), Some(Value::Blob(vec![0xa0, 0xb1, 0xc2])));
+    app.revert_grid_draft(0, None);
+    app.close_value();
+    // Keys that are not hex digits stage nothing, and typing the stored
+    // bytes back leaves no draft.
+    app.open_value(0, 3);
+    draw(&mut app, &ctx);
+    type_keys(&mut app, "g ");
+    assert!(!app.database.document.has_drafts(), "no byte changed");
+    type_keys(&mut app, "11");
+    assert_eq!(staged(&app, 3), Some(Value::Blob(vec![0x11, 0xff])));
+    draw(&mut app, &ctx);
+    view_mut(&mut app).move_to(0, false);
+    type_keys(&mut app, "00");
+    assert!(
+        !app.database.document.has_drafts(),
+        "the stored bytes again revert the draft"
+    );
+    app.close();
+}
+
+#[test]
+fn the_text_lens_says_where_it_stops_copies_what_it_shows_and_find_says_why() {
+    use crate::app::value::Lens;
+    // UTF-16LE text, and stored text over the 1 MiB the text lens lays out.
+    let utf16: String = "\u{feff}héllo"
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .map(|b| format!("{b:02X}"))
+        .collect();
+    let (_dir, ctx, mut app) = super::fixture(
+        &[
+            "CREATE TABLE v(id INTEGER PRIMARY KEY, wide BLOB, long BLOB, bytes BLOB)",
+            &format!(
+                "INSERT INTO v VALUES(1, X'{utf16}', CAST(hex(zeroblob(786432)) AS BLOB), X'00FF7A')"
+            ),
+        ],
+        true,
+    );
+    browse_and_wait(&mut app, &ctx, "v");
+    unfocus(&mut app, &ctx);
+    // Ctrl C in the text lens copies the decoded text, not the bytes.
+    assert_eq!(app.value_offer(&ctx, 0, 1).unwrap().lens, Lens::Text);
+    app.open_value(0, 1);
+    draw(&mut app, &ctx);
+    let output = frame(&mut app, &ctx, vec![egui::Event::Copy]);
+    assert_eq!(copied(&output), ["héllo"]);
+    app.close_value();
+    // Past 1 MiB the text lens stops, and its footer says so.
+    app.open_value(0, 2);
+    settle_value(&mut app, &ctx, |app| !view(app).note.is_empty());
+    assert_eq!(
+        view(&app).note,
+        "First 1 MiB of 1.5 MB · the hex lens reads the rest"
+    );
+    let output = draw(&mut app, &ctx);
+    assert!(super::texts(&output).any(|t| t.galley.job.text == view(&app).note));
+    app.close_value();
+    // A find with no match says so beside the open input.
+    app.open_value(0, 3);
+    draw(&mut app, &ctx);
+    view_mut(&mut app).find = Some("\"absent\"".into());
+    frame(
+        &mut app,
+        &ctx,
+        vec![key_event(egui::Key::Enter, true, egui::Modifiers::NONE)],
+    );
+    assert!(view(&app).find.is_some());
+    let output = draw(&mut app, &ctx);
+    assert!(
+        super::texts(&output).any(|t| t.galley.job.text == "No match after the cursor"),
+        "the reason shows while the input is open"
+    );
+    app.close();
+}
+
+#[test]
+fn plain_float32_outweighs_a_weak_signature_in_a_vector_column() {
+    use crate::app::value::Lens;
+    // 1.25, 0.5, 1.0, 1.0 as float32: the first two bytes read as a zlib header.
+    let floats: String = [
+        0x78, 0x9c, 0xa0, 0x3f, 0, 0, 0, 0x3f, 0, 0, 0x80, 0x3f, 0, 0, 0x80, 0x3f,
+    ]
+    .iter()
+    .map(|b| format!("{b:02X}"))
+    .collect();
+    let (_dir, ctx, mut app) = super::fixture(
+        &[
+            "CREATE TABLE v(id INTEGER PRIMARY KEY, embedding F32_BLOB(4), other BLOB)",
+            &format!("INSERT INTO v VALUES(1, X'{floats}', X'{floats}')"),
+        ],
+        false,
+    );
+    browse_and_wait(&mut app, &ctx, "v");
+    let offer = app.value_offer(&ctx, 0, 1).unwrap();
+    assert_eq!(
+        (offer.lens, offer.lenses),
+        (Lens::Vector, vec![Lens::Vector, Lens::Hex])
+    );
+    let summary = |app: &App, col| {
+        let header = app.database.document.column_header(col);
+        let hint = crate::app::value::vector_hint(&header.column.name, header.declared_type());
+        let value = app.field_value(0, col).unwrap();
+        crate::app::value::Summary::for_column(&ctx, value, hint).unwrap()
+    };
+    assert!(
+        summary(&app, 1).text().starts_with("f32 × 4"),
+        "{}",
+        summary(&app, 1).text()
+    );
+    // Without the column's word for it, the weak signature still names it.
+    assert_eq!(app.value_offer(&ctx, 0, 2).unwrap().lens, Lens::Contents);
+    app.close();
+}

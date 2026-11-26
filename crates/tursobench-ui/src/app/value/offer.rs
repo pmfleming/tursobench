@@ -40,18 +40,24 @@ impl App {
         let header = document.column_header(col);
         let hint = vector_hint(&header.column.name, header.declared_type());
         let value = self.field_value(row, col)?;
-        let kind = match value {
+        let mut kind = match value {
             Value::Text(_) => Kind::Text(Encoding::Utf8),
             other => Summary::of(ctx, other)?.kind,
         };
+        // In a vector column, plain float32 outweighs weak signatures.
+        let hinted = hint && matches!(value, Value::Blob(b) if super::summary::plain_vector(b));
+        if hinted {
+            kind = Kind::Unknown;
+        }
         let unnamed = matches!(kind, Kind::Unknown | Kind::Digest);
         let bytes = match value {
             Value::Blob(bytes) if unnamed => Some(Arc::<[u8]>::from(bytes.as_slice())),
             _ => None,
         };
-        let plain_vector = bytes
-            .as_ref()
-            .is_some_and(|b| b.len() >= 8 && b.len().is_multiple_of(4));
+        let plain_vector = hinted
+            || bytes
+                .as_ref()
+                .is_some_and(|b| b.len() >= 8 && b.len().is_multiple_of(4));
         let target = Target {
             result: document.result.current,
             drafts: document.draft_revision,

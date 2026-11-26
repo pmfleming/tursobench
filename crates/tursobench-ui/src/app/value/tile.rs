@@ -115,11 +115,13 @@ impl App {
         let values = &mut self.database.document.tools.values;
         values.ticket = None;
         values.view = next.map(|mut view| {
-            (view.order, view.characters, view.lens) = (order, characters, lens);
+            (view.order, view.characters) = (order, characters);
             if same {
-                // The geometry as last painted, so the cursor stays in view.
+                // A staged edit keeps the lens it was made in, and the
+                // geometry as last painted, so the cursor stays in view.
+                view.lens = lens;
                 (view.top, view.insert, (view.per, view.lines)) = (place.1, place.2, place.4);
-                view.move_to(place.0, false);
+                view.edit_at(place.0);
                 view.half = place.3;
             }
             view
@@ -127,11 +129,27 @@ impl App {
         values.view.is_some()
     }
 
-    /// The kind and lens of the open value.
+    /// The kind and lens of the open value. The lens is kept once shown, so
+    /// an edit that changes what the bytes look like does not change it.
     fn value_lens(&mut self, ctx: &egui::Context) -> Option<Offer> {
         let view = self.database.document.tools.values.view.as_ref()?;
-        let (row, col) = (view.row, view.col);
-        self.value_offer(ctx, row, col)
+        let (row, col, pinned) = (view.row, view.col, view.lens);
+        let mut offer = self.value_offer(ctx, row, col)?;
+        match pinned {
+            Some(lens) if offer.lenses.contains(&lens) => offer.lens = lens,
+            _ => {
+                if let Some(view) = self.value_view() {
+                    view.lens = Some(offer.lens);
+                }
+            }
+        }
+        Some(offer)
+    }
+
+    /// The lens the open value is shown through now.
+    #[cfg(test)]
+    pub(in crate::app) fn value_lens_now(&mut self, ctx: &egui::Context) -> Option<Lens> {
+        self.value_lens(ctx).map(|offer| offer.lens)
     }
 
     /// The value view: header, body through the lens, and footer.
@@ -284,6 +302,9 @@ impl App {
         match header {
             Header::Back => self.close_value(),
             Header::Lens(lens) => {
+                if let Some(view) = self.value_view() {
+                    view.lens = Some(lens);
+                }
                 if let Some(col) = self.value_view().map(|v| v.col) {
                     self.database
                         .document
@@ -392,6 +413,9 @@ impl App {
                     egui::Label::new(egui::RichText::new(wkt.as_ref()).monospace().size(12.0))
                         .wrap(),
                 );
+                if let Some(view) = self.value_view() {
+                    (view.shown, view.note) = (Some(wkt), String::new());
+                }
             }
             return;
         }
@@ -401,16 +425,24 @@ impl App {
         let Some(bytes) = view.whole() else {
             return loading(ui, view);
         };
-        let shown = &bytes[..bytes.len().min(1024 * 1024)];
-        let text = match kind {
-            Kind::Text(encoding) if !view.text => tursobench_blob::text::decode(shown, encoding),
-            _ => String::from_utf8_lossy(shown).into_owned(),
+        let encoding = match kind {
+            Kind::Text(encoding) if !view.text => Some(encoding),
+            _ => None,
         };
+        let (text, cut) = view.drawn.text(&bytes, encoding);
+        // Say when the text stops short of the value, and where the rest is.
+        view.note = if cut {
+            let size = super::summary::byte_size(view.source.len());
+            format!("First 1 MiB of {size} · the hex lens reads the rest")
+        } else {
+            String::new()
+        };
+        view.shown = Some(text.clone());
         egui::ScrollArea::vertical()
             .id_salt("value-text")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.add(egui::Label::new(egui::RichText::new(text).size(12.5)).wrap())
+                ui.add(egui::Label::new(egui::RichText::new(text.as_ref()).size(12.5)).wrap())
             });
     }
 
@@ -672,12 +704,8 @@ impl App {
         };
         ui.horizontal_centered(|ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
-            if let Some(query) = view.find.as_mut() {
-                let input = egui::TextEdit::singleline(query)
-                    .hint_text("Find bytes (00 ff) or text")
-                    .desired_width(ui.available_width() - 8.0);
-                ui.add(input).request_focus();
-                return;
+            if view.find.is_some() {
+                return find_input(ui, view);
             }
             if let Some(goto) = view.goto.as_mut() {
                 let input = egui::TextEdit::singleline(goto)
@@ -698,7 +726,7 @@ impl App {
                 return image_footer(ui, view, image);
             }
             if lens != Lens::Hex {
-                let note = if lens == Lens::Contents && !view.note.is_empty() {
+                let note = if matches!(lens, Lens::Contents | Lens::Text) && !view.note.is_empty() {
                     view.note.clone()
                 } else {
                     super::summary::byte_size(view.source.len())
@@ -727,11 +755,18 @@ impl App {
         }
         if lens != Lens::Hex {
             let copy = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy)));
+            // The text lens copies the text it shows, decoded as shown.
             if copy
                 && lens == Lens::Text
-                && let Some(len) = self.value_view().map(|v| v.source.len())
+                && let Some(view) = self.value_view()
+                && let Some(text) = view.shown.clone()
             {
-                self.copy_range(ctx, CopyFormat::Text, 0, len);
+                if text.len() > CLIPBOARD {
+                    view.message = "Over the 2 MiB clipboard budget · save to file instead".into();
+                } else {
+                    ctx.copy_text(text.to_string());
+                    view.message = "Copied the text shown".into();
+                }
             }
             return;
         }
@@ -818,8 +853,7 @@ impl App {
             return;
         };
         let query = view.find.clone().unwrap_or_default();
-        let needle = tursobench_blob::encode::parse_hex(&query)
-            .unwrap_or_else(|| query.clone().into_bytes());
+        let needle = needle(&query, view.characters);
         if needle.is_empty() || needle.len() > 1024 {
             view.message = "Find 1–1,024 bytes".into();
             return;
@@ -1105,6 +1139,48 @@ fn hex_menu(response: &egui::Response, editable: bool, insert: bool) -> Option<E
     edit
 }
 
+/// The find input, with why the last search found nothing beside it.
+fn find_input(ui: &mut egui::Ui, view: &mut View) {
+    let tokens = crate::appearance::Tokens::of(ui.ctx());
+    let message = view.message.clone();
+    let hint = if view.characters {
+        "Find text"
+    } else {
+        "Find bytes (00 ff), or \"text\""
+    };
+    let width = if message.is_empty() {
+        ui.available_width() - 8.0
+    } else {
+        ui.available_width() * 0.55
+    };
+    let Some(query) = view.find.as_mut() else {
+        return;
+    };
+    let input = egui::TextEdit::singleline(query)
+        .hint_text(hint)
+        .desired_width(width);
+    let response = ui.add(input);
+    response.request_focus();
+    if response.changed() {
+        view.message.clear();
+    } else if !message.is_empty() {
+        ui.label(egui::RichText::new(message).size(11.5).color(tokens.faint));
+    }
+}
+
+/// What to search for: text from the characters column or in quotes,
+/// otherwise bytes when the query is hex pairs, else text.
+fn needle(query: &str, characters: bool) -> Vec<u8> {
+    let quoted = query.len() >= 2 && query.starts_with('"') && query.ends_with('"');
+    if quoted {
+        return query.as_bytes()[1..query.len() - 1].to_vec();
+    }
+    if characters {
+        return query.as_bytes().to_vec();
+    }
+    tursobench_blob::encode::parse_hex(query).unwrap_or_else(|| query.as_bytes().to_vec())
+}
+
 /// Select a match, or say there is none after the cursor.
 fn found(view: &mut View, offset: Option<u64>) {
     match offset {
@@ -1315,5 +1391,21 @@ fn tree_rows(ui: &mut egui::Ui, lines: &[tursobench_blob::tree::Line], complete:
                 .size(11.5)
                 .color(tokens.faint),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::needle;
+
+    #[test]
+    fn find_reads_hex_pairs_as_bytes_unless_asked_for_text() {
+        assert_eq!(needle("00 ff", false), [0x00, 0xff]);
+        assert_eq!(needle("123456", false), [0x12, 0x34, 0x56]);
+        // From the characters column, or in quotes, the same digits are text.
+        assert_eq!(needle("123456", true), *b"123456");
+        assert_eq!(needle("\"cafe\"", false), *b"cafe");
+        assert_eq!(needle("seam", false), *b"seam");
+        assert_eq!(needle("+f", false), *b"+f");
     }
 }

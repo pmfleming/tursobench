@@ -73,8 +73,22 @@ impl App {
     }
 
     /// Stage `bytes` as the open field's new blob, refused past the edit
-    /// limit; returns whether it was staged.
+    /// limit; returns whether it was staged. Bytes equal to the stored value
+    /// revert the field's draft instead, so nothing unchanged is written.
     pub(in crate::app) fn stage_value_bytes(&mut self, bytes: Vec<u8>) -> bool {
+        let Some(view) = self.database.document.tools.values.view.as_ref() else {
+            return false;
+        };
+        let (row, col) = (view.row, view.col);
+        let rows = &self.database.document.result.rows;
+        if let Some(Value::Blob(stored)) = rows.get(row).and_then(|r| r.get(col))
+            && *stored == bytes
+        {
+            if self.field_value(row, col) != Some(&Value::Blob(bytes)) {
+                self.revert_grid_draft(row, Some(col));
+            }
+            return true;
+        }
         let Some(view) = self.database.document.tools.values.view.as_mut() else {
             return false;
         };
@@ -147,6 +161,13 @@ impl App {
         let Some((out, cursor, half)) = next else {
             return insert_key;
         };
+        // Keys that change no byte, such as a letter that is not a hex
+        // digit, move the cursor at most and stage nothing.
+        if *out == *bytes {
+            view.edit_at(cursor as u64);
+            view.half = half;
+            return true;
+        }
         view.half = half;
         view.edit_cursor = Some(cursor as u64);
         let _ = self.stage_value_bytes(out);
@@ -166,6 +187,10 @@ impl App {
             *range.start() as usize,
             (*range.end() as usize).min(bytes.len() - 1),
         );
+        // Only the place past the last byte is selected: nothing to delete.
+        if start > end {
+            return;
+        }
         let mut out = bytes.to_vec();
         out.drain(start..=end);
         view.edit_cursor = Some(start as u64);
