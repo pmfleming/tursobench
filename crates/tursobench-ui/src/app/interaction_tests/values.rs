@@ -526,3 +526,63 @@ fn a_value_from_query_results_opens_in_the_detached_inspector() {
     assert!(!app.value_open() && app.database.document.ui.inspector_open);
     app.close();
 }
+
+#[test]
+fn typing_appends_keeps_the_hex_lens_and_stages_only_real_changes() {
+    use crate::app::value::Lens;
+    let (_dir, ctx, mut app) = super::fixture(
+        &[
+            "CREATE TABLE v(id INTEGER PRIMARY KEY, a BLOB, b BLOB, c BLOB)",
+            "INSERT INTO v VALUES(1, X'', X'', X'00FF')",
+        ],
+        true,
+    );
+    browse_and_wait(&mut app, &ctx, "v");
+    unfocus(&mut app, &ctx);
+    let staged = |app: &App, col| app.field_value(0, col).cloned();
+    let type_keys = |app: &mut App, keys: &str| {
+        for key in keys.chars() {
+            frame(app, &ctx, vec![egui::Event::Text(key.to_string())]);
+        }
+    };
+    // One key a frame, as typed: each byte is added after the last. After
+    // "4" the value is "@", which reads as text, but the lens stays hex.
+    app.open_value(0, 1);
+    draw(&mut app, &ctx);
+    type_keys(&mut app, "4");
+    draw(&mut app, &ctx);
+    assert_eq!(app.value_lens_now(&ctx), Some(Lens::Hex));
+    type_keys(&mut app, "1cafe");
+    assert_eq!(staged(&app, 1), Some(Value::Blob(vec![0x41, 0xca, 0xfe])));
+    draw(&mut app, &ctx);
+    assert_eq!(view(&app).cursor, 3, "the cursor waits past the last byte");
+    app.close_value();
+    // Insert mode adds bytes in the order typed.
+    app.open_value(0, 2);
+    draw(&mut app, &ctx);
+    frame(
+        &mut app,
+        &ctx,
+        vec![key_event(egui::Key::Insert, true, egui::Modifiers::NONE)],
+    );
+    type_keys(&mut app, "a0b1c2");
+    assert_eq!(staged(&app, 2), Some(Value::Blob(vec![0xa0, 0xb1, 0xc2])));
+    app.revert_grid_draft(0, None);
+    app.close_value();
+    // Keys that are not hex digits stage nothing, and typing the stored
+    // bytes back leaves no draft.
+    app.open_value(0, 3);
+    draw(&mut app, &ctx);
+    type_keys(&mut app, "g ");
+    assert!(!app.database.document.has_drafts(), "no byte changed");
+    type_keys(&mut app, "11");
+    assert_eq!(staged(&app, 3), Some(Value::Blob(vec![0x11, 0xff])));
+    draw(&mut app, &ctx);
+    view_mut(&mut app).move_to(0, false);
+    type_keys(&mut app, "00");
+    assert!(
+        !app.database.document.has_drafts(),
+        "the stored bytes again revert the draft"
+    );
+    app.close();
+}

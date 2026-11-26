@@ -147,6 +147,19 @@ pub(in crate::app) fn paint(
         let y = grid.line_top(line) + (LINE - galley.size().y) / 2.0;
         painter.galley(egui::pos2(grid.rect.left(), y), galley, color);
     }
+    // The place past the last byte, where typing adds a byte, has an
+    // outline but no byte.
+    let end_line = len / per;
+    if view.cursor == len && (view.top..view.top + grid.lines() as u64).contains(&end_line) {
+        let line = (end_line - view.top) as usize;
+        let cell = grid.cell(line, (len % per) as usize, view.characters);
+        painter.rect_stroke(
+            cell.expand(1.0),
+            1.0,
+            selection.stroke,
+            egui::StrokeKind::Inside,
+        );
+    }
 }
 
 /// A thin scroll bar for `total` lines of which `shown` are visible from

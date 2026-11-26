@@ -115,11 +115,13 @@ impl App {
         let values = &mut self.database.document.tools.values;
         values.ticket = None;
         values.view = next.map(|mut view| {
-            (view.order, view.characters, view.lens) = (order, characters, lens);
+            (view.order, view.characters) = (order, characters);
             if same {
-                // The geometry as last painted, so the cursor stays in view.
+                // A staged edit keeps the lens it was made in, and the
+                // geometry as last painted, so the cursor stays in view.
+                view.lens = lens;
                 (view.top, view.insert, (view.per, view.lines)) = (place.1, place.2, place.4);
-                view.move_to(place.0, false);
+                view.edit_at(place.0);
                 view.half = place.3;
             }
             view
@@ -127,11 +129,27 @@ impl App {
         values.view.is_some()
     }
 
-    /// The kind and lens of the open value.
+    /// The kind and lens of the open value. The lens is kept once shown, so
+    /// an edit that changes what the bytes look like does not change it.
     fn value_lens(&mut self, ctx: &egui::Context) -> Option<Offer> {
         let view = self.database.document.tools.values.view.as_ref()?;
-        let (row, col) = (view.row, view.col);
-        self.value_offer(ctx, row, col)
+        let (row, col, pinned) = (view.row, view.col, view.lens);
+        let mut offer = self.value_offer(ctx, row, col)?;
+        match pinned {
+            Some(lens) if offer.lenses.contains(&lens) => offer.lens = lens,
+            _ => {
+                if let Some(view) = self.value_view() {
+                    view.lens = Some(offer.lens);
+                }
+            }
+        }
+        Some(offer)
+    }
+
+    /// The lens the open value is shown through now.
+    #[cfg(test)]
+    pub(in crate::app) fn value_lens_now(&mut self, ctx: &egui::Context) -> Option<Lens> {
+        self.value_lens(ctx).map(|offer| offer.lens)
     }
 
     /// The value view: header, body through the lens, and footer.
@@ -284,6 +302,9 @@ impl App {
         match header {
             Header::Back => self.close_value(),
             Header::Lens(lens) => {
+                if let Some(view) = self.value_view() {
+                    view.lens = Some(lens);
+                }
                 if let Some(col) = self.value_view().map(|v| v.col) {
                     self.database
                         .document

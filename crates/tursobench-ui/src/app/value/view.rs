@@ -309,12 +309,12 @@ impl View {
     pub fn selection(&self) -> std::ops::RangeInclusive<u64> {
         self.anchor.min(self.cursor)..=self.anchor.max(self.cursor)
     }
+    /// How many bytes are selected; the place past the last byte holds none.
     pub fn selected(&self) -> u64 {
-        if self.source.len() == 0 {
-            0
-        } else {
-            self.anchor.abs_diff(self.cursor) + 1
-        }
+        let range = self.selection();
+        (range.end() + 1)
+            .min(self.source.len())
+            .saturating_sub(*range.start())
     }
     fn last(&self) -> u64 {
         self.source.len().saturating_sub(1)
@@ -330,9 +330,17 @@ impl View {
     /// Move the cursor to `at`, extending the selection with `extend`, and
     /// scroll so the cursor shows.
     pub fn move_to(&mut self, at: u64, extend: bool) {
+        self.place(at.min(self.last()), extend);
+    }
+    /// Put the cursor at `at` after an edit. The place just past the last
+    /// byte is allowed there, so the next byte typed is added at the end.
+    pub fn edit_at(&mut self, at: u64) {
+        self.place(at.min(self.source.len()), false);
+    }
+    fn place(&mut self, at: u64, extend: bool) {
         // Moving ends a half-typed byte: the next digit starts a new one.
         self.half = false;
-        self.cursor = at.min(self.last());
+        self.cursor = at;
         if !extend {
             self.anchor = self.cursor;
         }
