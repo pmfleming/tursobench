@@ -499,20 +499,7 @@ fn loading_structure(ui: &mut egui::Ui) {
                     egui::Sense::hover(),
                 );
                 let color = crate::appearance::Tokens::of(ui.ctx()).raised;
-                for (x, width) in [
-                    (4.0, 13.0),
-                    (25.0, 60.0 + (i % 3) as f32 * 16.0),
-                    (rect.width() - 52.0, 44.0),
-                ] {
-                    ui.painter().rect_filled(
-                        egui::Rect::from_min_size(
-                            rect.min + egui::vec2(x, 6.0),
-                            egui::vec2(width, 9.0),
-                        ),
-                        3.0,
-                        color,
-                    );
-                }
+                crate::app::presentation::placeholder_row(ui.painter(), rect, i, color);
             }
         })
         .response;

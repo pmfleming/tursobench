@@ -12,6 +12,10 @@ struct Scene {
     table: &'static str,
     field: Option<usize>,
 }
+// Fields of `blob_fields`, in table order.
+const META: usize = 6;
+const SESSION: usize = 8;
+const NOTE: usize = 9;
 const WIDE: [f32; 2] = [1800.0, 1000.0];
 const LAPTOP: [f32; 2] = [1366.0, 768.0];
 const SCENES: &[Scene] = &[
@@ -26,6 +30,30 @@ const SCENES: &[Scene] = &[
         size: LAPTOP,
         table: "blob_fields",
         field: None,
+    },
+    Scene {
+        name: "blob-hex-preview.png",
+        size: WIDE,
+        table: "blob_fields",
+        field: Some(SESSION),
+    },
+    Scene {
+        name: "blob-hex-preview-laptop.png",
+        size: LAPTOP,
+        table: "blob_fields",
+        field: Some(SESSION),
+    },
+    Scene {
+        name: "blob-tree-preview.png",
+        size: WIDE,
+        table: "blob_fields",
+        field: Some(META),
+    },
+    Scene {
+        name: "blob-text-preview.png",
+        size: LAPTOP,
+        table: "blob_fields",
+        field: Some(NOTE),
     },
     Scene {
         name: "blob-grid.png",
@@ -59,6 +87,7 @@ impl App {
             81 if self.smoke_idle() => {
                 let field = SCENES[smoke.scene].field.unwrap_or(0);
                 self.select_cell(0, field, false);
+                self.database.document.tools.record_scroll_to = Some(field);
                 smoke.stage = 82;
             }
             82 => smoke.capture_after(ctx, 15, SCENES[smoke.scene].name, 83),

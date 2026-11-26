@@ -1846,6 +1846,91 @@ fn blob_cells_paint_cached_summaries_within_the_frame_budget() {
 }
 
 #[test]
+fn selected_blobs_preview_in_place_through_a_lens_the_column_remembers() {
+    let (_dir, ctx, mut app) = accessible(
+        &[
+            "CREATE TABLE b(id INTEGER PRIMARY KEY, meta BLOB, note BLOB, data BLOB, n INTEGER)",
+            r#"INSERT INTO b VALUES(1, jsonb('{"job":"export-812","rows":48213}'), CAST('Synthetic note' AS BLOB), X'00FF7A', 1)"#,
+            r#"INSERT INTO b VALUES(2, jsonb('[1,2,3]'), CAST('Second note' AS BLOB), X'01', 2)"#,
+        ],
+        "b",
+    );
+    let line = 24.0;
+    let grown = line + super::value::PREVIEW_HEIGHT + 6.0;
+    let field = |output: &egui::FullOutput, name: &str| {
+        let label = super::test_ui::nodes(output)
+            .iter()
+            .filter_map(|(_, node)| node.label())
+            .find(|label| label.starts_with(&format!("{name} · ")))
+            .unwrap_or_else(|| panic!("no field {name}"));
+        control(output, label)
+    };
+    // Each lens grows the selected row by the same height at either tile width.
+    for (col, name, lens) in [(1, "meta", "Tree"), (2, "note", "Text"), (3, "data", "Hex")] {
+        app.select_cell(0, col, false);
+        for width in [396.0, 550.0] {
+            let size = egui::vec2(width, 400.0);
+            let mut output =
+                super::test_ui::render(&ctx, size, vec![], |ui| app.record_inspector(ui, 0));
+            for _ in 0..100 {
+                if !label_exists(&output, "Reading") {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+                output =
+                    super::test_ui::render(&ctx, size, vec![], |ui| app.record_inspector(ui, 0));
+            }
+            assert_eq!(field(&output, name).height(), grown, "{name} at {width}");
+            assert_eq!(field(&output, "n").height(), line);
+            let offered = ["Tree", "Text", "Hex"]
+                .iter()
+                .filter(|l| label_exists(&output, l))
+                .count();
+            assert_eq!(offered, if lens == "Hex" { 0 } else { 2 }, "{name}");
+        }
+    }
+    // The tree preview prints the decoded JSONB.
+    app.select_cell(0, 1, false);
+    let mut shown = Vec::new();
+    for _ in 0..200 {
+        let output = draw_panel(&ctx, |ui| app.record_inspector(ui, 0));
+        shown = texts(&output).map(|t| t.galley.job.text.clone()).collect();
+        if shown.iter().any(|t| t.contains(r#""job": "export-812""#)) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        shown.iter().any(|t| t.contains(r#""job": "export-812""#)),
+        "{shown:?}"
+    );
+    // Choosing Hex for the column holds for its other records and survives moving away.
+    click_panel(&ctx, "Hex", |ui| app.record_inspector(ui, 0));
+    assert_eq!(
+        app.database.document.tools.columns.lens(1),
+        Some(super::value::Lens::Hex)
+    );
+    app.select_cell(0, 2, false);
+    app.select_cell(1, 1, false);
+    let output = draw_panel(&ctx, |ui| app.record_inspector(ui, 1));
+    let on = Some(egui::accesskit::Toggled::True);
+    let hex = super::test_ui::nodes(&output)
+        .iter()
+        .find(|(_, node)| node.label() == Some("Hex"))
+        .map(|(_, node)| node.toggled());
+    assert_eq!(hex, Some(on));
+    assert!(texts(&output).any(|t| t.galley.job.text.starts_with("0000")));
+    // Presentation never changes the stored value.
+    assert_retained(
+        &app,
+        1,
+        1,
+        Value::Blob(vec![0x6b, 0x13, b'1', 0x13, b'2', 0x13, b'3']),
+    );
+    app.close();
+}
+
+#[test]
 fn record_prioritizes_values_and_reads_related_rows_only_on_request() {
     let (_dir, ctx, mut app) = fixture(
         &[
@@ -3184,7 +3269,11 @@ fn record_structure_selection_value_visuals_and_revert_preserve_stored_values() 
     assert!(app.database.document.tools.scroll_to_column);
     assert_eq!(app.database.sequence, sequence);
     let output = draw_panel(&ctx, |ui| app.record_inspector(ui, 0));
-    assert!(texts(&output).any(|t| t.galley.job.text == "00 ff 2 bytes"));
+    let shown: Vec<_> = texts(&output).map(|t| t.galley.job.text.as_str()).collect();
+    assert!(
+        shown.contains(&"00 ff") && shown.contains(&"2 bytes"),
+        "{shown:?}"
+    );
     assert_retained(&app, 0, 4, Value::Blob(vec![0, 255]));
     app.close();
 }

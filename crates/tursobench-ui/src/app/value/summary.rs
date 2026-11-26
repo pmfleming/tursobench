@@ -23,6 +23,7 @@ pub(in crate::app) enum Tone {
 
 /// What a value is, as an icon and a few parts of text.
 pub(in crate::app) struct Summary {
+    pub kind: Kind,
     pub icon: Icon,
     pub parts: Vec<(String, Tone)>,
     /// What the bytes are, in a sentence, for tooltips.
@@ -46,8 +47,10 @@ impl Summary {
         parts.join(" ")
     }
 
-    /// The parts laid out on one line no wider than `width`, ending in an
-    /// ellipsis when cut. `monospace` sets every part in the code font, as grid cells are.
+    /// Each part laid out for one line no wider than `width` in all, with
+    /// the gap before it. The longest part gives way, ending in an ellipsis,
+    /// so a size or format name stays readable. `monospace` sets every part
+    /// in the code font, as grid cells are.
     pub fn layout(
         &self,
         ui: &egui::Ui,
@@ -55,13 +58,16 @@ impl Summary {
         monospace: bool,
         color: egui::Color32,
         width: f32,
-    ) -> Arc<egui::Galley> {
+    ) -> Vec<(f32, Arc<egui::Galley>)> {
         let ctx = ui.ctx();
         let faint = crate::appearance::Tokens::of(ctx).faint;
-        let mut job = egui::text::LayoutJob::default();
-        for (i, (text, tone)) in self.parts.iter().enumerate() {
-            let mono = monospace || matches!(tone, Tone::Mono | Tone::FaintMono);
-            let font = if mono {
+        let gap = size * 0.5;
+        let elastic = (0..self.parts.len())
+            .max_by_key(|&i| self.parts[i].0.chars().count())
+            .unwrap_or(0);
+        let job = |i: usize, width: f32| {
+            let (text, tone) = &self.parts[i];
+            let font = if monospace || matches!(tone, Tone::Mono | Tone::FaintMono) {
                 crate::appearance::monospace(ctx, size - 0.5)
             } else {
                 crate::appearance::proportional(ctx, size)
@@ -70,19 +76,26 @@ impl Summary {
                 Tone::Plain | Tone::Mono => color,
                 Tone::Faint | Tone::FaintMono => faint,
             };
-            // A real space keeps the laid-out text equal to `text()`; the gap widens it.
-            let (text, gap) = if i == 0 {
-                (text.clone(), 0.0)
-            } else {
-                (format!(" {text}"), size * 0.25)
-            };
-            job.append(&text, gap, egui::TextFormat::simple(font, color));
+            let mut job = egui::text::LayoutJob::simple_singleline(text.clone(), font, color);
+            job.wrap.max_width = width.max(1.0);
+            job.wrap.max_rows = 1;
+            job.wrap.break_anywhere = true;
+            job.wrap.overflow_character = Some('…');
+            ui.painter().layout_job(job)
+        };
+        let mut galleys: Vec<_> = (0..self.parts.len())
+            .map(|i| (if i == 0 { 0.0 } else { gap }, job(i, f32::INFINITY)))
+            .collect();
+        let fixed: f32 = galleys
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != elastic)
+            .map(|(_, (gap, galley))| gap + galley.size().x)
+            .sum();
+        if let Some((gap, galley)) = galleys.get_mut(elastic) {
+            *galley = job(elastic, width - fixed - *gap);
         }
-        job.wrap.max_width = width.max(1.0);
-        job.wrap.max_rows = 1;
-        job.wrap.break_anywhere = true;
-        job.wrap.overflow_character = Some('…');
-        ui.painter().layout_job(job)
+        galleys
     }
 
     /// The icon, then the parts, vertically centred in `rect`.
@@ -97,13 +110,22 @@ impl Summary {
         let at = rect.left_center() + egui::vec2(7.0, 0.0);
         super::super::presentation::icon_at(&painter, at, 13.0, self.icon, icon);
         let size = if monospace { 12.0 } else { 12.5 };
-        let galley = self.layout(ui, size, monospace, color, rect.width() - 20.0);
-        let pos = egui::pos2(rect.left() + 20.0, rect.center().y - galley.size().y / 2.0);
-        painter.galley(pos, galley, color);
+        let mut x = rect.left() + 20.0;
+        for (gap, galley) in self.layout(ui, size, monospace, color, rect.right() - x) {
+            x += gap;
+            let width = galley.size().x;
+            painter.galley(
+                egui::pos2(x, rect.center().y - galley.size().y / 2.0),
+                galley,
+                color,
+            );
+            x += width;
+        }
     }
 
-    fn new(icon: Icon, parts: Vec<(String, Tone)>, description: String) -> Self {
+    fn new(kind: Kind, icon: Icon, parts: Vec<(String, Tone)>, description: String) -> Self {
         Self {
+            kind,
             icon,
             parts,
             description,
@@ -160,10 +182,20 @@ impl Cache {
         }
         #[cfg(test)]
         MADE.with(|made| made.set(made.get() + 1));
-        let summary = Arc::new(match value {
+        // Bytes are untrusted: a reader that panics leaves only the size.
+        let made = std::panic::catch_unwind(|| match value {
             Value::Deferred(cell) => deferred(cell),
             _ => describe(&key.head, key.len),
         });
+        let summary = Arc::new(made.unwrap_or_else(|_| {
+            let size = byte_size(key.len);
+            Summary::new(
+                Kind::Unknown,
+                Icon::Bytecode,
+                vec![(size.clone(), Tone::Plain)],
+                format!("{size} that could not be described"),
+            )
+        }));
         self.0.insert(key, summary.clone());
         summary
     }
@@ -212,6 +244,7 @@ fn deferred(cell: &DeferredCell) -> Summary {
     let size = byte_size(cell.bytes);
     if cell.handle.is_none() {
         return Summary::new(
+            tursobench_blob::sniff(&cell.head, cell.bytes),
             Icon::Warning,
             vec![
                 (size.clone(), Tone::Plain),
@@ -226,6 +259,7 @@ fn deferred(cell: &DeferredCell) -> Summary {
             Err(e) => std::str::from_utf8(&cell.head[..e.valid_up_to()]).unwrap_or_default(),
         };
         return Summary::new(
+            Kind::Text(Encoding::Utf8),
             Icon::Text,
             vec![
                 (excerpt(valid, true), Tone::Plain),
@@ -244,6 +278,7 @@ fn describe(head: &[u8], len: u64) -> Summary {
     let sized = |text: String| vec![(text, Tone::Plain), (size.clone(), Tone::Faint)];
     match kind {
         Kind::Empty => Summary::new(
+            kind,
             Icon::Bytecode,
             vec![("empty".into(), Tone::Faint)],
             "An empty blob".into(),
@@ -260,7 +295,7 @@ fn describe(head: &[u8], len: u64) -> Summary {
                 ),
                 None => (name.to_owned(), format!("{name} image, {size}")),
             };
-            Summary::new(Icon::Image, sized(label), description)
+            Summary::new(kind, Icon::Image, sized(label), description)
         }
         Kind::Text(encoding) => {
             let partial = (head.len() as u64) < len;
@@ -270,37 +305,54 @@ fn describe(head: &[u8], len: u64) -> Summary {
                 parts.push((encoding.name().into(), Tone::Faint));
             }
             let description = format!("{} text stored as a blob, {size}", encoding.name());
-            Summary::new(Icon::Text, parts, description)
+            Summary::new(kind, Icon::Text, parts, description)
         }
         Kind::Uuid { version } => {
             let bytes: &[u8; 16] = head.try_into().unwrap_or(&[0; 16]);
             Summary::new(
+                kind,
                 Icon::Hash,
                 vec![(uuid::format(bytes, uuid::Layout::Standard), Tone::Mono)],
                 format!("UUID version {version}, 16 bytes"),
             )
         }
         Kind::Digest => Summary::new(
+            kind,
             Icon::Hash,
             vec![(hex(head, false), Tone::Mono)],
             format!("{size} that are not text: a digest or key"),
         ),
+        Kind::Jsonb => {
+            let json = tursobench_blob::tree::jsonb_prefix(head, len)
+                .map(|tree| tree.json())
+                .unwrap_or_default();
+            Summary::new(
+                kind,
+                Icon::Tree,
+                vec![(json, Tone::Mono), ("JSONB".into(), Tone::Faint)],
+                format!("SQLite JSONB, {size}"),
+            )
+        }
         Kind::Compressed(compression) => Summary::new(
+            kind,
             Icon::Contents,
             sized(compression.name().into()),
             format!("{}-compressed data, {size}", compression.name()),
         ),
         Kind::Named(named) => Summary::new(
+            kind,
             Icon::Bytecode,
             sized(named.name.into()),
             format!("{}, {size}", named.name),
         ),
         Kind::Unknown if len as usize <= SHORT => Summary::new(
+            kind,
             Icon::Bytecode,
             vec![(hex(head, true), Tone::Mono), (size.clone(), Tone::Faint)],
             format!("{size} in no recognised format"),
         ),
         Kind::Unknown => Summary::new(
+            kind,
             Icon::Bytecode,
             vec![
                 (size.clone(), Tone::Plain),
@@ -368,6 +420,10 @@ mod tests {
                 vec!["gzip", "5 bytes"],
             ),
             (Value::Blob(b"%PDF-1.7\n".to_vec()), vec!["PDF", "9 bytes"]),
+            (
+                Value::Blob(b"\x4c\x17a\x131".to_vec()),
+                vec![r#"{"a":1}"#, "JSONB"],
+            ),
             (
                 Value::Blob((0..=255).collect()),
                 vec![

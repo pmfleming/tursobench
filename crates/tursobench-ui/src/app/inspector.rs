@@ -7,13 +7,15 @@ use super::{
 use eframe::egui;
 use tursobench_core::Value;
 
-use super::value::Summary;
+use super::value::{Lens, Preview, Summary};
 use results::{code_view, detail_text};
 enum RecordAction {
     Inspect(usize),
     Edit(usize),
     Stage(usize, Value),
     Revert(usize),
+    /// Read the column's blobs through this lens from now on.
+    Lens(usize, Lens),
 }
 /// The widths every field of a record shares: its name and, when wide, its declared type.
 #[derive(Clone, Copy)]
@@ -185,6 +187,34 @@ fn record_wrap(
     Some(ui.painter().layout_job(job))
 }
 
+/// The lenses a previewed field could use, as selectable icons at the right
+/// of its first line; returns the one clicked.
+fn lens_buttons(
+    ui: &mut egui::Ui,
+    row: egui::Rect,
+    value: &mut egui::Rect,
+    col: usize,
+    preview: &Preview,
+) -> Option<Lens> {
+    if preview.offered.len() < 2 {
+        return None;
+    }
+    let mut clicked = None;
+    for &lens in preview.offered.iter().rev() {
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(value.right() - 24.0, row.top()),
+            egui::pos2(value.right(), row.top() + 24.0),
+        );
+        value.max.x -= 24.0;
+        let selected = lens == preview.lens;
+        let mut child = line_child(ui, rect, ("lens", col, lens.name()));
+        let response = icons::line_control(&mut child, lens.icon(), lens.name(), "", selected);
+        if response.clicked() {
+            clicked = Some(lens);
+        }
+    }
+    clicked
+}
 /// A record field's declared type, at the right of its first line.
 fn type_label(ui: &egui::Ui, row: egui::Rect, declared: &str) {
     let rect = egui::Rect::from_min_max(
@@ -209,17 +239,20 @@ fn revert_button(
         egui::pos2(value.right(), row.top() + 24.0),
     );
     let label = format!("Revert {name} draft");
-    ui.scope_builder(
-        egui::UiBuilder::new()
-            .id_salt(("revert", col))
-            .max_rect(rect),
-        |ui| {
-            ui.add_enabled_ui(enabled, |ui| icons::button(ui, Icon::Undo, &label, ""))
-                .inner
-                .clicked()
-        },
-    )
-    .inner
+    let mut child = line_child(ui, rect, ("revert", col));
+    child
+        .add_enabled_ui(enabled, |ui| icons::button(ui, Icon::Undo, &label, ""))
+        .inner
+        .clicked()
+}
+/// A child for a control on a field's first line. It allocates nothing in
+/// the field list, so a field that grows below the line keeps its height.
+fn line_child(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+) -> egui::Ui {
+    ui.new_child(egui::UiBuilder::new().id_salt(salt).max_rect(rect))
 }
 /// A value as typed JSON; a non-finite real, which JSON cannot hold, says so.
 fn typed_text(value: &Value) -> String {
@@ -379,6 +412,14 @@ impl App {
                 self.stage_cell(row, col, value);
                 self.database.document.tools.inline = None;
             }
+            Some(RecordAction::Lens(col, lens)) => {
+                self.database
+                    .document
+                    .tools
+                    .columns
+                    .lenses
+                    .insert(col, lens);
+            }
             None => {}
         }
         if !self.database.workspace.enabled {
@@ -458,6 +499,7 @@ impl App {
         layout: FieldLayout,
         scroll: bool,
     ) -> Option<RecordAction> {
+        let preview = self.field_preview(ui.ctx(), row, col);
         // Field paths keep these borrows apart from the inline editor used below.
         let values = &self.database.document.result.rows[row];
         let header = self.database.document.column_header(col);
@@ -484,9 +526,11 @@ impl App {
             field.selected && !editing,
             staged,
         );
-        let height = wrapped
-            .as_ref()
-            .map_or(24.0, |g| (g.size().y + 8.0).max(24.0));
+        let height = match (&preview, &wrapped) {
+            (Some(_), _) => 24.0 + super::value::PREVIEW_HEIGHT + 6.0,
+            (None, Some(galley)) => (galley.size().y + 8.0).max(24.0),
+            (None, None) => 24.0,
+        };
         let (rect, response) = ui.allocate_exact_size(
             egui::vec2(ui.available_width(), height),
             egui::Sense::click(),
@@ -511,6 +555,24 @@ impl App {
             }
             value_rect.max.x -= 24.0;
         }
+        if let Some(preview) = &preview {
+            if let Some(lens) = lens_buttons(ui, rect, &mut value_rect, col, preview) {
+                action = Some(RecordAction::Lens(col, lens));
+            }
+            let body = egui::Rect::from_min_max(
+                rect.min + egui::vec2(8.0, 26.0),
+                rect.max - egui::vec2(8.0, 4.0),
+            );
+            preview.paint(ui, body, staged);
+            let area = ui.interact(
+                body,
+                ui.scope_id().with(("preview", col)),
+                egui::Sense::hover(),
+            );
+            area.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::Role::Label, true, preview.describe())
+            });
+        }
         let here = editing && (!self.database.workspace.enabled || self.record_tile_active());
         if here && let Some(inline) = self.database.document.tools.inline.as_mut() {
             return match inline.record_field(ui, value_rect, col) {
@@ -530,6 +592,20 @@ impl App {
             ui.label(record_tooltip(ui.ctx(), field.shown));
         });
         action
+    }
+    /// The selected field's preview, when it holds a blob or deferred value;
+    /// a decode under way for any other value stops.
+    fn field_preview(&mut self, ctx: &egui::Context, row: usize, col: usize) -> Option<Preview> {
+        if self.database.document.inspect != Some((row, col)) {
+            return None;
+        }
+        let preview = (!self.editing_at(row, col))
+            .then(|| self.record_preview(ctx, row, col))
+            .flatten();
+        if preview.as_ref().is_none_or(|p| p.lens != Lens::Tree) {
+            self.database.document.tools.values.idle();
+        }
+        preview
     }
     pub(super) fn inspection_surfaces(&mut self, ctx: &egui::Context) {
         if self.database.document.ui.inspector_detached && self.database.document.ui.inspector_open

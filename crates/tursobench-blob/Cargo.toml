@@ -6,3 +6,7 @@ license.workspace = true
 description = "Bounded, read-only readers for untrusted database value bytes"
 
 [dependencies]
+
+[dev-dependencies]
+turso.workspace = true
+tokio.workspace = true

@@ -82,6 +82,8 @@ pub enum Kind {
     },
     /// 16, 20, 32 or 64 bytes that are not text: a hash or key, never named.
     Digest,
+    /// A SQLite JSONB array or object that exactly fills the value.
+    Jsonb,
     Compressed(Compression),
     Named(Named),
     Unknown,
@@ -92,6 +94,7 @@ impl Kind {
         match self {
             Self::Image { format, .. } => format.extension(),
             Self::Text(_) => "txt",
+            Self::Jsonb => "jsonb",
             Self::Compressed(compression) => compression.extension(),
             Self::Named(named) => named.extension,
             Self::Empty | Self::Uuid { .. } | Self::Digest | Self::Unknown => "bin",
@@ -114,6 +117,11 @@ pub fn sniff(head: &[u8], len: u64) -> Kind {
     }
     if let Some(named) = named(head) {
         return Kind::Named(named);
+    }
+    // A JSONB header whose size is the value's, and elements valid as far
+    // as the head goes, outweigh text that happens to read the same.
+    if crate::tree::jsonb_prefix(head, len).is_some() {
+        return Kind::Jsonb;
     }
     if let Some(encoding) = crate::text::detect(head, len) {
         return Kind::Text(encoding);
@@ -453,6 +461,10 @@ mod tests {
             assert_eq!(sniff(&bytes, len as u64), Kind::Digest, "{len}");
         }
         assert_eq!(sniff(&[0, 255, 122], 3), Kind::Unknown);
+        // {"a":1} as JSONB, and text that only looks like a JSONB header.
+        assert_eq!(sniff(b"\x4c\x17a\x131", 5), Kind::Jsonb);
+        assert_eq!(sniff(b"Lab12", 5), Kind::Text(Encoding::Utf8));
+        assert_eq!(Kind::Jsonb.extension(), "jsonb");
         assert_eq!(sniff(&[0u8; 24], 24), Kind::Unknown);
         assert_eq!(Kind::Digest.extension(), "bin");
     }

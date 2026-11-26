@@ -4781,6 +4781,10 @@ dependencies = [
 [[package]]
 name = "tursobench-blob"
 version = "0.1.0"
+dependencies = [
+ "tokio",
+ "turso",
+]
 
 [[package]]
 name = "tursobench-core"

@@ -7,6 +7,7 @@
 pub mod inspect;
 pub mod sniff;
 pub mod text;
+pub mod tree;
 pub mod uuid;
 
 pub use sniff::{Kind, sniff};

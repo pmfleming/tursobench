@@ -8,6 +8,7 @@ use std::{collections::BTreeMap, ops::Range};
 pub(super) struct ViewTools {
     pub spreadsheet: super::spreadsheet::State,
     pub large: results::Viewer,
+    pub values: super::value::Values,
     pub filtered_count: Option<i64>,
     pub draft_ui: super::editing::Presentation,
     pub sql_focus: Option<eframe::egui::Id>,
