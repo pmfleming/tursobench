@@ -41,6 +41,7 @@ pub(crate) mod tiling;
 mod tools;
 mod transfers;
 mod usability;
+mod value;
 pub(crate) mod workspace;
 use eframe::egui;
 

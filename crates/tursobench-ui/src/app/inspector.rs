@@ -7,6 +7,7 @@ use super::{
 use eframe::egui;
 use tursobench_core::Value;
 
+use super::value::Summary;
 use results::{code_view, detail_text};
 enum RecordAction {
     Inspect(usize),
@@ -34,7 +35,9 @@ impl RecordField<'_> {
     }
     fn describe(&self, ui: &egui::Ui, response: &egui::Response) {
         let kind = kind_name(self.shown);
-        let text = format!("{} · {kind} · {}", self.name, self.shown.preview());
+        let shown = Summary::of(ui.ctx(), self.shown)
+            .map_or_else(|| self.shown.preview(), |summary| summary.text());
+        let text = format!("{} · {kind} · {shown}", self.name);
         response.widget_info(|| {
             egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), self.selected, &text)
         });
@@ -104,16 +107,14 @@ impl RecordField<'_> {
             painter.galley(rect.min + egui::vec2(0.0, 4.0), galley, color);
             return;
         }
-        let compact = match self.shown {
-            Value::Blob(bytes) => Some((Icon::Bytecode, byte_size(bytes.len() as u64))),
-            Value::Deferred(cell) => Some((Icon::Export, byte_size(cell.bytes))),
-            _ => None,
-        };
-        if let Some((icon, caption)) = compact {
-            let at = rect.left_center() + egui::vec2(7.0, 0.0);
-            presentation::icon_at(ui.painter(), at, 13.0, icon, tokens.faint);
-            let text = egui::Rect::from_min_max(rect.min + egui::vec2(20.0, 0.0), rect.max);
-            presentation::text_at(ui, text, &caption, tokens.faint, 12.5);
+        if let Some(summary) = Summary::of(ui.ctx(), self.shown) {
+            let color = if self.staged() {
+                tokens.pending
+            } else {
+                ui.visuals().text_color()
+            };
+            let line = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), 24.0));
+            summary.paint(ui, line, color, false);
             return;
         }
         if !self.staged() && style.paint(ui, rect, self.name, self.shown) {
@@ -136,20 +137,7 @@ impl RecordField<'_> {
         );
     }
 }
-fn byte_size(bytes: u64) -> String {
-    if bytes < 1024 {
-        return format!("{bytes} bytes");
-    }
-    let (unit, divisor) = if bytes >= 1024 * 1024 * 1024 {
-        ("GB", 1024.0 * 1024.0 * 1024.0)
-    } else if bytes >= 1024 * 1024 {
-        ("MB", 1024.0 * 1024.0)
-    } else {
-        ("KB", 1024.0)
-    };
-    format!("{:.1} {unit}", bytes as f64 / divisor)
-}
-fn record_tooltip(value: &Value) -> String {
+fn record_tooltip(ctx: &egui::Context, value: &Value) -> String {
     match value {
         Value::Text(text) => {
             let mut chars = text.chars();
@@ -161,7 +149,9 @@ fn record_tooltip(value: &Value) -> String {
                 detail_text(value)
             }
         }
-        Value::Blob(_) | Value::Deferred(_) => value.preview(),
+        Value::Blob(_) | Value::Deferred(_) => Summary::of(ctx, value)
+            .map(|summary| summary.description.clone())
+            .unwrap_or_default(),
         _ => detail_text(value),
     }
 }
@@ -537,7 +527,7 @@ impl App {
         let action = field.action(&response).or(action);
         response.on_hover_ui(|ui| {
             ui.label(format!("{} · {}", field.name, kind_name(field.shown)));
-            ui.label(record_tooltip(field.shown));
+            ui.label(record_tooltip(ui.ctx(), field.shown));
         });
         action
     }
@@ -771,23 +761,21 @@ fn kind_name(value: &Value) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{Value, byte_size, detail_text, egui, record_tooltip, record_wrap};
+    use super::{Value, detail_text, egui, record_tooltip, record_wrap};
     #[test]
     fn long_selected_text_is_bounded_and_byte_captions_keep_sizes() {
-        assert_eq!(byte_size(3), "3 bytes");
-        assert_eq!(byte_size(4_404_019), "4.2 MB");
+        let ctx = egui::Context::default();
         let large = Value::Text("λ".repeat(100_000));
-        let tooltip = record_tooltip(&large);
+        let tooltip = record_tooltip(&ctx, &large);
         assert!(tooltip.starts_with(&"λ".repeat(4096)));
         assert!(tooltip.ends_with("full value"));
         assert!(tooltip.len() < 8300);
         assert_eq!(
-            record_tooltip(&Value::Blob(vec![0; 100_000])),
-            "[blob: 100000 bytes]"
+            record_tooltip(&ctx, &Value::Blob(vec![0; 100_000])),
+            "97.7 KB in no recognised format"
         );
         let json = Value::Text(r#"{"n":123456789012345678901,"n":1}"#.into());
-        assert_eq!(record_tooltip(&json), detail_text(&json));
-        let ctx = egui::Context::default();
+        assert_eq!(record_tooltip(&ctx, &json), detail_text(&json));
         crate::app::test_ui::render(&ctx, egui::vec2(396.0, 244.0), vec![], |ui| {
             let value = Value::Text("long λ text\n".repeat(100_000));
             let galley = record_wrap(ui, &value, 200.0, true, false).unwrap();

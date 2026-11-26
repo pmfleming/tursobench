@@ -4819,6 +4819,7 @@ dependencies = [
  "tokio",
  "turso",
  "tursobench-assistant",
+ "tursobench-blob",
  "tursobench-core",
  "tursobench-db",
  "winit",

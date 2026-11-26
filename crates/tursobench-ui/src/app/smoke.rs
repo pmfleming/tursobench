@@ -4,6 +4,7 @@ use tursobench_core::{ErrorKind, Value, quote_identifier};
 
 use std::time::{Duration, Instant};
 mod assistant;
+mod blobs;
 mod readme;
 
 pub(super) struct Smoke {
@@ -103,6 +104,9 @@ impl App {
             return;
         }
         if matches!(smoke.stage, 90..=93) && self.smoke_assistant(ctx, &mut smoke) {
+            return;
+        }
+        if matches!(smoke.stage, 80..=83) && self.smoke_blobs(ctx, &mut smoke) {
             return;
         }
         let stage = smoke.stage;
@@ -644,6 +648,8 @@ impl App {
         self.set_dark(ctx, true);
         if std::env::var_os("TURSOBENCH_ASSISTANT_CAPTURE").is_some() {
             90
+        } else if std::env::var_os("TURSOBENCH_BLOB_CAPTURE").is_some() {
+            80
         } else if smoke.readme {
             self.start_readme_capture();
             50

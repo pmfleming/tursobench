@@ -298,10 +298,15 @@ impl Columns {
     fn measure(&mut self, ui: &egui::Ui, result: &ResultSet, keyed: &[bool]) {
         let font = crate::appearance::monospace(ui.ctx(), 12.0);
         let value_width = |v: &Value| {
-            let galley =
-                ui.painter()
-                    .layout_no_wrap(v.preview(), font.clone(), ui.visuals().text_color());
-            galley.size().x + 18.0
+            // A blob's summary follows its icon.
+            let (text, icon) = match super::value::Summary::of(ui.ctx(), v) {
+                Some(summary) => (summary.text(), 14.0),
+                None => (v.preview(), 0.0),
+            };
+            let galley = ui
+                .painter()
+                .layout_no_wrap(text, font.clone(), ui.visuals().text_color());
+            galley.size().x + 18.0 + icon
         };
         self.natural = result
             .columns

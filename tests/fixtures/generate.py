@@ -203,4 +203,11 @@ with sqlite3.connect(path) as c:
     c.execute("CREATE VIEW item_names AS SELECT id, name FROM items")
     c.execute("CREATE TABLE blobs(id INTEGER PRIMARY KEY, kind TEXT NOT NULL, data BLOB)")
     c.executemany("INSERT INTO blobs(kind, data) VALUES (?, ?)", blob_samples())
+    # One record holding a value of each kind, as the record tile shows them.
+    c.execute("CREATE TABLE blob_fields(id INTEGER PRIMARY KEY, name TEXT, data BLOB, avatar BLOB, token BLOB, "
+              "embedding BLOB, meta BLOB, payload BLOB, session BLOB, note BLOB, photo BLOB)")
+    pick = lambda kind: f"(SELECT data FROM blobs WHERE kind = '{kind}')"
+    c.execute("INSERT INTO blob_fields SELECT id, kind, " + ", ".join(pick(k) for k in (
+        "short bytes", "png", "uuid", "float32 vector", "jsonb", "large gzip", "messagepack", "utf-8 text", "jpeg"))
+              + " FROM blobs WHERE id <= 3")
 print(f"Created closed fixture {path}: {rows} items; SQLite generator {sqlite3.sqlite_version}")

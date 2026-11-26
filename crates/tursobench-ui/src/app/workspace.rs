@@ -883,26 +883,14 @@ impl App {
                             .browse_inspection()
                             .is_some_and(|info| !info.foreign_keys.is_empty()))
                 {
-                    let relationship_height = (ui.available_height() * 0.35 - 32.0).max(0.0);
+                    let relationship_height = (ui.available_height() * 0.35 - 24.0).max(0.0);
                     egui::Panel::bottom("record-relationships")
                         .resizable(false)
                         .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(4, 0)))
                         .show(ui, |ui| {
-                            ui.separator();
-                            egui::CollapsingHeader::new("Relationships")
-                                .id_salt("record-relationships-section")
-                                .default_open(false)
-                                .show(ui, |ui| {
-                                    ui.set_min_height(relationship_height);
-                                    egui::ScrollArea::vertical()
-                                        .id_salt("record-relationships-scroll")
-                                        .max_height(relationship_height)
-                                        .auto_shrink([false, true])
-                                        .show(ui, |ui| self.record_relationships(ui, row));
-                                });
+                            self.relationships_line(ui, row, relationship_height)
                         });
                 }
-                ui.strong("Fields & values");
                 egui::ScrollArea::vertical()
                     .id_salt("record-scroll")
                     .auto_shrink([false, false])

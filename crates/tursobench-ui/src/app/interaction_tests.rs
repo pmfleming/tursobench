@@ -1816,6 +1816,36 @@ fn scroll_pages_append_evict_reload_and_reject_stale_or_draft_owned_fetches() {
 }
 
 #[test]
+fn blob_cells_paint_cached_summaries_within_the_frame_budget() {
+    let fill = "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<100) \
+                INSERT INTO b SELECT x, randomblob(200), zeroblob(x) FROM n";
+    let create = "CREATE TABLE b(id INTEGER PRIMARY KEY, data BLOB, zeros BLOB)";
+    let (_dir, ctx, mut app) = fixture(&[create, fill], false);
+    browse_and_wait(&mut app, &ctx, "b");
+    let output = settle(&mut app, &ctx, DESKTOP);
+    let shown: Vec<_> = texts(&output).map(|t| t.galley.job.text.clone()).collect();
+    assert!(
+        shown.iter().any(|t| t.starts_with("200 bytes")),
+        "{shown:?}"
+    );
+    assert!(!shown.iter().any(|t| t.contains("[blob:")), "{shown:?}");
+    let made = || super::value::SUMMARIES_MADE.with(std::cell::Cell::get);
+    let before = made();
+    let start = Instant::now();
+    for _ in 0..10 {
+        draw(&mut app, &ctx);
+    }
+    assert_eq!(
+        made(),
+        before,
+        "painting must reuse summaries, not sniff values"
+    );
+    let mean = start.elapsed() / 10;
+    assert!(mean < Duration::from_millis(500), "{mean:?} per frame");
+    app.close();
+}
+
+#[test]
 fn record_prioritizes_values_and_reads_related_rows_only_on_request() {
     let (_dir, ctx, mut app) = fixture(
         &[
@@ -1861,14 +1891,15 @@ fn record_prioritizes_values_and_reads_related_rows_only_on_request() {
     let sequence = app.database.sequence;
     for size in [LAPTOP, WIDE] {
         let output = settle(&mut app, &ctx, size);
-        let fields = texts(&output)
-            .find(|text| text.galley.job.text == "Fields & values")
-            .map(|text| text.pos)
-            .expect("field section heading");
+        // No heading: the first field starts the tile body, and
+        // Relationships is one line at its foot.
+        assert!(!texts(&output).any(|text| text.galley.job.text == "Fields & values"));
         let relationships = control(&output, "Relationships");
         let value = control(&output, "a · INTEGER · 7");
-        assert!(fields.y < value.top());
         assert!(value.bottom() < relationships.top());
+        assert_eq!(relationships.height(), 24.0);
+        let shown: Vec<_> = texts(&output).map(|t| t.galley.job.text.as_str()).collect();
+        assert!(shown.contains(&"0 parents · 1 referring"), "{shown:?}");
         assert!(value.width() > pane(&app, tiling::Kind::Record).width() * 0.9);
         assert_eq!(
             app.database.sequence, sequence,
@@ -3153,7 +3184,7 @@ fn record_structure_selection_value_visuals_and_revert_preserve_stored_values() 
     assert!(app.database.document.tools.scroll_to_column);
     assert_eq!(app.database.sequence, sequence);
     let output = draw_panel(&ctx, |ui| app.record_inspector(ui, 0));
-    assert!(texts(&output).any(|t| t.galley.job.text == "2 bytes"));
+    assert!(texts(&output).any(|t| t.galley.job.text == "00 ff 2 bytes"));
     assert_retained(&app, 0, 4, Value::Blob(vec![0, 255]));
     app.close();
 }

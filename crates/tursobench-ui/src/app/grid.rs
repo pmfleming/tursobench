@@ -40,9 +40,14 @@ struct CellAppearance<'a> {
     staged: bool,
     related: bool,
     row: usize,
+    /// What a blob or deferred value is; never decoded here.
+    summary: Option<std::sync::Arc<super::value::Summary>>,
 }
 impl CellAppearance<'_> {
     fn text(&self) -> String {
+        if let Some(summary) = &self.summary {
+            return summary.text();
+        }
         match self.value {
             Value::Null => self.null_display.to_owned(),
             Value::Text(s) if s.is_empty() => "(empty text)".into(),
@@ -117,7 +122,10 @@ impl CellAppearance<'_> {
         let styled = self.style.paint(ui, rect, self.column, self.value);
         let tokens = Tokens::of(ui.ctx());
         let color = self.text_color(ui, tokens);
-        if !styled {
+        if let Some(summary) = &self.summary {
+            let inner = rect.shrink2(egui::vec2(CELL_INSET - 2.0, 0.0));
+            summary.paint(ui, inner, color, true);
+        } else if !styled {
             self.paint_text(ui, &painter, rect, color);
         }
         let line = egui::Stroke::new(1.0, tokens.line_soft);
@@ -762,8 +770,10 @@ impl App {
             row,
             col,
         );
+        let value = staged.unwrap_or(&self.database.document.result.rows[row][col]);
         let appearance = CellAppearance {
-            value: staged.unwrap_or(&self.database.document.result.rows[row][col]),
+            value,
+            summary: super::value::Summary::of(ui.ctx(), value),
             column: &self.database.document.result.columns[col].name,
             null_display: &self.preferences.null_display,
             style: self.database.document.tools.columns.style(col),
@@ -801,10 +811,16 @@ impl App {
             selected: appearance.selected,
         };
         let action = click.action(ui, &response).or(dragged);
+        let summary = appearance.summary.clone();
         if response.hovered() && references.len() == 1 {
             self.database.document.tools.context.hovered = Some((row, col));
         }
-        let response = self.reference_hover(response, row, &references);
+        let response = match summary {
+            Some(summary) if references.is_empty() => {
+                response.on_hover_text(summary.description.as_str())
+            }
+            _ => self.reference_hover(response, row, &references),
+        };
         let mut menu = None;
         response.context_menu(|ui| menu = self.cell_menu(ui, row, col, editable, &references));
         menu.or(action)

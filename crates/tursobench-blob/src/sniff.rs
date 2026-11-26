@@ -118,9 +118,13 @@ pub fn sniff(head: &[u8], len: u64) -> Kind {
     if let Some(encoding) = crate::text::detect(head, len) {
         return Kind::Text(encoding);
     }
-    // Two bytes of zlib header are weaker evidence than text.
+    // Two bytes of zlib header, or an MPEG audio frame header, are weaker
+    // evidence than text.
     if zlib(head) {
         return Kind::Compressed(Compression::Zlib);
+    }
+    if let Some((name, extension)) = mp3_frame(head) {
+        return Kind::Named(Named { name, extension });
     }
     if len == 16
         && let Some(version) = crate::uuid::version(head)
@@ -290,8 +294,7 @@ fn named(head: &[u8]) -> Option<Named> {
                 .find(|((outer, offset, inner), ..)| at(0, outer) && at(*offset, inner))
                 .map(|&(_, name, extension)| (name, extension))
         })
-        .or_else(|| iso_media(head))
-        .or_else(|| mp3_frame(head))?;
+        .or_else(|| iso_media(head))?;
     Some(Named {
         name: found.0,
         extension: found.1,
@@ -426,6 +429,12 @@ mod tests {
     fn text_uuid_digest_empty_and_unknown_by_length() {
         assert_eq!(sniff(b"", 0), Kind::Empty);
         assert_eq!(sniff(b"hello", 5), Kind::Text(Encoding::Utf8));
+        // A UTF-16 byte-order mark is not an MPEG audio frame header.
+        let utf16: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain("hi there".encode_utf16().flat_map(u16::to_le_bytes))
+            .collect();
+        assert_eq!(sniff(&utf16, 18), Kind::Text(Encoding::Utf16Le));
         // Only the first 64 bytes are read, whatever is passed.
         let mut long = b"x".repeat(64);
         long.extend([0, 0, 0]);
