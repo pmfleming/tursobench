@@ -142,19 +142,14 @@ impl Summary {
     pub fn for_column(ctx: &egui::Context, value: &Value, vector: bool) -> Option<Arc<Self>> {
         let summary = Self::of(ctx, value)?;
         Some(match value {
-            Value::Blob(bytes)
-                if vector
-                    && bytes.len() >= 8
-                    && bytes.len().is_multiple_of(4)
-                    && matches!(summary.kind, Kind::Unknown | Kind::Digest) =>
-            {
+            Value::Blob(bytes) if vector && plain_vector(bytes) => {
                 Arc::new(Self::plain_vector(bytes.len() as u64))
             }
             _ => summary,
         })
     }
     /// Plain float32 in a column whose name or type says it holds vectors.
-    pub fn plain_vector(len: u64) -> Self {
+    fn plain_vector(len: u64) -> Self {
         let size = byte_size(len);
         Self::new(
             Kind::Unknown,
@@ -262,6 +257,16 @@ impl Cache {
         summary
     }
 }
+/// Whether `bytes` can be plain float32 that no signature names. The weak
+/// evidence of a zlib or MPEG frame header, or a UUID's length, does not
+/// count: in a vector column about one value in 1,200 starts that way.
+pub(in crate::app) fn plain_vector(bytes: &[u8]) -> bool {
+    let tail = &bytes[bytes.len().saturating_sub(8)..];
+    bytes.len() >= 8
+        && bytes.len().is_multiple_of(4)
+        && tursobench_blob::sniff::signed(bytes, tail, bytes.len() as u64) == Kind::Unknown
+}
+
 #[cfg(test)]
 thread_local! {
     /// How many summaries were made rather than found in the cache.

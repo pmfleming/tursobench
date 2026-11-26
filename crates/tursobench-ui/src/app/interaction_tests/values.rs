@@ -641,3 +641,42 @@ fn the_text_lens_says_where_it_stops_copies_what_it_shows_and_find_says_why() {
     );
     app.close();
 }
+
+#[test]
+fn plain_float32_outweighs_a_weak_signature_in_a_vector_column() {
+    use crate::app::value::Lens;
+    // 1.25, 0.5, 1.0, 1.0 as float32: the first two bytes read as a zlib header.
+    let floats: String = [
+        0x78, 0x9c, 0xa0, 0x3f, 0, 0, 0, 0x3f, 0, 0, 0x80, 0x3f, 0, 0, 0x80, 0x3f,
+    ]
+    .iter()
+    .map(|b| format!("{b:02X}"))
+    .collect();
+    let (_dir, ctx, mut app) = super::fixture(
+        &[
+            "CREATE TABLE v(id INTEGER PRIMARY KEY, embedding F32_BLOB(4), other BLOB)",
+            &format!("INSERT INTO v VALUES(1, X'{floats}', X'{floats}')"),
+        ],
+        false,
+    );
+    browse_and_wait(&mut app, &ctx, "v");
+    let offer = app.value_offer(&ctx, 0, 1).unwrap();
+    assert_eq!(
+        (offer.lens, offer.lenses),
+        (Lens::Vector, vec![Lens::Vector, Lens::Hex])
+    );
+    let summary = |app: &App, col| {
+        let header = app.database.document.column_header(col);
+        let hint = crate::app::value::vector_hint(&header.column.name, header.declared_type());
+        let value = app.field_value(0, col).unwrap();
+        crate::app::value::Summary::for_column(&ctx, value, hint).unwrap()
+    };
+    assert!(
+        summary(&app, 1).text().starts_with("f32 × 4"),
+        "{}",
+        summary(&app, 1).text()
+    );
+    // Without the column's word for it, the weak signature still names it.
+    assert_eq!(app.value_offer(&ctx, 0, 2).unwrap().lens, Lens::Contents);
+    app.close();
+}

@@ -72,7 +72,8 @@ impl Meta {
 
 enum State {
     Pending(u64),
-    Ready(egui::TextureHandle, Meta),
+    /// A texture, and the last pass it was asked for.
+    Ready(egui::TextureHandle, Meta, u64),
     Failed(String),
 }
 
@@ -108,10 +109,12 @@ impl Images {
     ) -> Shown {
         self.poll(ctx);
         let key = (target, size);
-        if let Some((_, state)) = self.states.iter().find(|(k, _)| *k == key) {
+        let pass = ctx.cumulative_pass_nr();
+        if let Some((_, state)) = self.states.iter_mut().find(|(k, _)| *k == key) {
             let shown = match state {
                 State::Pending(_) => Shown::Pending,
-                State::Ready(texture, meta) => {
+                State::Ready(texture, meta, asked) => {
+                    *asked = pass;
                     Shown::Ready(texture.id(), texture.size_vec2(), *meta)
                 }
                 State::Failed(reason) => Shown::Failed(reason.clone()),
@@ -168,9 +171,10 @@ impl Images {
                     {
                         self.uploads += 1;
                     }
-                    self.states[index].1 = State::Ready(texture, Meta::of(&picture));
+                    let pass = ctx.cumulative_pass_nr();
+                    self.states[index].1 = State::Ready(texture, Meta::of(&picture), pass);
                     self.order.push_back(key);
-                    self.evict();
+                    self.evict(pass);
                 }
                 Err(reason) => {
                     self.states[index].1 = State::Failed(reason);
@@ -196,10 +200,21 @@ impl Images {
         });
     }
 
-    /// Free the least recently shown textures past the limit.
-    fn evict(&mut self) {
+    /// Free the least recently shown textures past the limit. Textures asked
+    /// for in this pass or the one before are on screen and kept, even past
+    /// the limit, or a record showing more images than the limit would
+    /// decode and free them in turn forever.
+    fn evict(&mut self, pass: u64) {
         while self.order.len() > TEXTURES {
-            if let Some(old) = self.order.pop_front() {
+            let shown = |key: &(Target, Size)| {
+                self.states.iter().any(|(k, s)| {
+                    k == key && matches!(s, State::Ready(_, _, asked) if *asked + 1 >= pass)
+                })
+            };
+            let Some(at) = self.order.iter().position(|key| !shown(key)) else {
+                return;
+            };
+            if let Some(old) = self.order.remove(at) {
                 self.states.retain(|(k, _)| *k != old);
             }
         }
@@ -210,12 +225,22 @@ impl Images {
     pub fn keep_row(&mut self, result: Option<tursobench_core::Ticket>, drafts: u64, row: usize) {
         let stale =
             |k: &(Target, Size)| k.0.result != result || k.0.drafts != drafts || k.0.row != row;
-        let before = self.states.len();
-        self.states
-            .retain(|(k, s)| !(matches!(s, State::Pending(_)) && stale(k)));
-        if self.states.len() != before {
-            self.decoder.cancel_queued();
+        let pending = |s: &State| matches!(s, State::Pending(_));
+        if !self.states.iter().any(|(k, s)| pending(s) && stale(k)) {
+            return;
         }
+        // Queued jobs share one cancel flag, so cancelling the stale ones
+        // cancels every queued job: forget them all, and those still wanted
+        // are queued again when next asked for.
+        self.decoder.cancel_queued();
+        if self
+            .states
+            .iter()
+            .any(|((_, size), s)| pending(s) && *size == Size::Copy)
+        {
+            self.copied = Some(Err("the record changed before it was read".into()));
+        }
+        self.states.retain(|(_, s)| !pending(s));
     }
 
     /// Failures remembered, and decodes not yet answered.
@@ -298,10 +323,22 @@ mod tests {
             whole: false,
         }
     }
+    /// Run `f` in one frame, as the app asks for images while painting.
+    fn pass<T>(ctx: &egui::Context, f: impl FnOnce() -> T) -> T {
+        let mut value = None;
+        let mut f = Some(f);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {
+            value = f.take().map(|f| f());
+        });
+        output.textures_delta.clear();
+        value.expect("the frame ran")
+    }
     fn settle(images: &mut Images, ctx: &egui::Context, row: usize) -> Shown {
         for _ in 0..500 {
-            let shown = images.get(ctx, target(row), Size::Thumb, || {
-                Some((png(), ImageFormat::Png))
+            let shown = pass(ctx, || {
+                images.get(ctx, target(row), Size::Thumb, || {
+                    Some((png(), ImageFormat::Png))
+                })
             });
             if !matches!(shown, Shown::Pending) {
                 return shown;
@@ -382,5 +419,65 @@ mod tests {
             images.get(&ctx, target(0), Size::Copy, garbage),
             Shown::Pending
         ));
+    }
+
+    /// Wait for every queued decode, a frame at a time, asking for `rows`.
+    fn frames(images: &mut Images, ctx: &egui::Context, rows: std::ops::Range<usize>, n: usize) {
+        for _ in 0..n {
+            pass(ctx, || {
+                for row in rows.clone() {
+                    images.get(ctx, target(row), Size::Thumb, || {
+                        Some((png(), ImageFormat::Png))
+                    });
+                }
+            });
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn a_record_with_more_images_than_the_limit_decodes_each_once() {
+        let ctx = egui::Context::default();
+        let mut images = Images::default();
+        let shown = 0..TEXTURES + 1;
+        frames(&mut images, &ctx, shown.clone(), 300);
+        assert_eq!(
+            images.textures(),
+            TEXTURES + 1,
+            "every image on screen is kept"
+        );
+        let uploads = images.uploads;
+        frames(&mut images, &ctx, shown, 50);
+        assert_eq!(images.uploads, uploads, "nothing is decoded again");
+        // Off screen, the extra textures go when the next image arrives.
+        frames(&mut images, &ctx, 100..101, 300);
+        assert!(images.textures() <= TEXTURES);
+    }
+
+    #[test]
+    fn a_decode_still_wanted_after_a_cancel_is_queued_again() {
+        let ctx = egui::Context::default();
+        let mut images = Images::default();
+        let bytes = || Some((png(), ImageFormat::Png));
+        // Row 5's decode is queued, then row 6's under the same cancel flag.
+        images.get(&ctx, target(5), Size::Full, bytes);
+        images.get(&ctx, target(6), Size::Full, bytes);
+        images.keep_row(None, 0, 6);
+        assert_eq!(images.failures_and_pending(), (0, 0));
+        assert!(matches!(
+            settle_size(&mut images, &ctx, 6, Size::Full),
+            Shown::Ready(..)
+        ));
+    }
+
+    fn settle_size(images: &mut Images, ctx: &egui::Context, row: usize, size: Size) -> Shown {
+        for _ in 0..500 {
+            let shown = images.get(ctx, target(row), size, || Some((png(), ImageFormat::Png)));
+            if !matches!(shown, Shown::Pending) {
+                return shown;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        panic!("the image never decoded")
     }
 }

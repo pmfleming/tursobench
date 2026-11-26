@@ -130,6 +130,18 @@ pub fn sniff(head: &[u8], len: u64) -> Kind {
 /// As [`sniff`], also reading `tail`, the value's last bytes when known,
 /// for a vector's type byte.
 pub fn sniff_tail(head: &[u8], tail: &[u8], len: u64) -> Kind {
+    match signed(head, tail, len) {
+        Kind::Unknown => weak(&head[..head.len().min(HEAD)], len),
+        kind => kind,
+    }
+}
+
+/// What a value is by signatures and structure alone, leaving out the weak
+/// evidence of a two-byte zlib header, an MPEG frame header, or a length
+/// that a UUID or digest would have; `Unknown` when nothing stronger
+/// matches. Where other evidence says what a column holds, such as plain
+/// float32 vectors, it outweighs that weak evidence.
+pub fn signed(head: &[u8], tail: &[u8], len: u64) -> Kind {
     let head = &head[..head.len().min(HEAD)];
     if len == 0 {
         return Kind::Empty;
@@ -160,6 +172,11 @@ pub fn sniff_tail(head: &[u8], tail: &[u8], len: u64) -> Kind {
     if let Some((layout, dims)) = crate::vector::layout(tail, len) {
         return Kind::Vector { layout, dims };
     }
+    Kind::Unknown
+}
+
+/// Weak evidence, read only when no signature matched.
+fn weak(head: &[u8], len: u64) -> Kind {
     // Two bytes of zlib header, or an MPEG audio frame header, are weaker
     // evidence than text.
     if zlib(head) {
@@ -369,7 +386,7 @@ fn mp3_frame(head: &[u8]) -> Option<(&'static str, &'static str)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Compression, ImageFormat, Kind, sniff};
+    use super::{Compression, ImageFormat, Kind, signed, sniff};
     use crate::text::Encoding;
 
     fn png(width: u32, height: u32) -> Vec<u8> {
@@ -465,6 +482,22 @@ mod tests {
         }
         // A zlib-like pair whose check fails is not zlib.
         assert_eq!(sniff(b"\x78\x9d\0\0\0\0\0", 7), Kind::Unknown);
+    }
+
+    /// A zlib header is two bytes, so float32 values start with one about
+    /// once in 1,200; signatures alone do not count it.
+    #[test]
+    fn weak_evidence_is_left_out_of_signatures_alone() {
+        let floats = [0x78, 0x9c, 0x10, 0x3f, 0, 0, 0x80, 0x3f];
+        assert_eq!(sniff(&floats, 8), Kind::Compressed(Compression::Zlib));
+        assert_eq!(signed(&floats, &floats, 8), Kind::Unknown);
+        let digest = [0xa5; 16];
+        assert_eq!(sniff(&digest, 16), Kind::Digest);
+        assert_eq!(signed(&digest, &digest, 16), Kind::Unknown);
+        assert!(matches!(
+            signed(b"\x1f\x8b\x08\0\0\0\0\0", &[], 8),
+            Kind::Compressed(Compression::Gzip)
+        ));
     }
 
     #[test]
