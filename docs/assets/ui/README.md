@@ -2,7 +2,7 @@
 
 ## README overview
 
-The `readme/` overview and tile images were captured on 2026-11-19, with tiles
+The `readme/` overview and tile images were captured on 2026-11-27, with tiles
 in movable columns and the assistant as a tile, under
 headless Weston/Mesa, using disposable synthetic databases and isolated
 preferences. They use the application's explicit Dark mode, charcoal
@@ -12,9 +12,13 @@ tile and panel images are rectangular crops with no scaling, compositing or
 retouching. No personal database is opened.
 
 - `workspace.png`: five tiles, schema navigation, typed values and foreign keys
-  at 1800 × 1000.
-- `relationships.png`, `table-data.png`, `record.png`, `structure.png` and
-  `navigator.png`: individual tiles/panel cropped from the overview.
+  at 1800 × 1000. It is the source of the crops and is not part of the current
+  README tour, which shows one image per tile.
+- `relationships.png`, `table-data.png` and `structure.png`: individual tiles
+  cropped from the overview. `navigator.png` is cropped the same way and is not
+  part of the current README tour.
+- `record.png`: the record tile cropped from the blob viewer's image-preview
+  capture, with each blob summarised and the selected image previewed in place.
 - `sql.png`: expanded SQL tile with a real join and twelve result rows, using
   a second synthetic fixture with 120 snapshots and 120 history records.
 - `assistant.png`: the assistant tile cropped from a 1366 × 768 capture, with
@@ -24,7 +28,7 @@ retouching. No personal database is opened.
   update, original-value predicates and typed bindings at 1366 × 768. The edit
   was never committed. It is not part of the current README tour.
 
-All three capture passes verify the native Wayland backend and clean session
+All four capture passes verify the native Wayland backend and clean session
 close. Reproduce from the repository root with empty GTK theme inputs:
 
 ```sh
@@ -53,6 +57,7 @@ with sqlite3.connect(fixture) as db:
 PY
 XDG_CONFIG_HOME="$capture_config" bash scripts/capture-readme.sh \
   target/readme-refresh/session.db target/readme-refresh/sql
+XDG_CONFIG_HOME="$capture_config" bash scripts/capture-blob-viewer.sh target/readme-refresh/blob
 rm -rf "$capture_config"
 ```
 
@@ -74,13 +79,14 @@ with Image.open(out / 'workspace.png') as image:
     for name, box in {
         'relationships': (280, 8, 1216, 372),
         'table-data': (280, 380, 1216, 958),
-        'record': (1224, 8, 1774, 332),
         'structure': (1224, 340, 1774, 650),
         'navigator': (0, 0, 272, 1000),
     }.items():
         image.crop(box).save(out / f'{name}.png', optimize=True)
+with Image.open(root / 'blob/blob-image-preview.png') as image:
+    image.crop((1224, 8, 1774, 332)).save(out / 'record.png', optimize=True)
 with Image.open(root / 'sql/sql-results.png') as image:
-    image.crop((280, 8, 1774, 958)).save(out / 'sql.png', optimize=True)
+    image.crop((280, 8, 1792, 958)).save(out / 'sql.png', optimize=True)
 with Image.open(root / 'assistant/assistant-conversation.png') as image:
     image.crop((995, 8, 1358, 726)).save(out / 'assistant.png', optimize=True)
 PY
