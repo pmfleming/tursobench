@@ -97,6 +97,28 @@ pub(super) fn button(ui: &mut egui::Ui, icon: Icon, name: &str, shortcut: &str) 
     widget(ui, icon, name, shortcut, None, false, 1.0)
 }
 
+/// A framed button with an icon and a short `text`, such as a size; `name`
+/// says what it does, on hover and to assistive technology.
+pub(super) fn labelled(ui: &mut egui::Ui, icon: Icon, text: &str, name: &str) -> egui::Response {
+    let size = crate::appearance::text_size(ui.ctx(), 12.0);
+    let response = ui.add(
+        egui::Button::new(egui::RichText::new(format!("      {text}")).size(size))
+            .min_size(egui::vec2(28.0, 28.0)),
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), name));
+    let glyph = egui::Rect::from_center_size(
+        egui::pos2(response.rect.left() + 15.0, response.rect.center().y),
+        egui::Vec2::splat(16.0),
+    );
+    paint(
+        ui.painter(),
+        glyph,
+        icon,
+        ui.style().interact(&response).fg_stroke.color,
+    );
+    response.on_hover_text(name)
+}
+
 /// The same access-mode symbols, names and colours are used throughout the app.
 pub(super) struct AccessMode {
     pub icon: Icon,

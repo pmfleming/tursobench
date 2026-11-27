@@ -1,15 +1,21 @@
 //! The selected field's preview: 72 points under its line, through a lens.
 //! Hex and text use bytes already in memory; a tree comes from the decoder.
+//! A large value the lens needs whole is loaded on request.
 use super::{
-    Decoded, Lens, Summary, Target,
+    Decoded, HeldState, Lens, Summary, Target,
     job::Contents,
     job::Work,
     lens::{self, Shown, Size},
+    loadable,
 };
-use crate::app::{App, presentation};
+use crate::app::{
+    App,
+    icons::{self, Icon},
+    presentation,
+};
 use eframe::egui;
 use std::sync::Arc;
-use tursobench_blob::{Kind, formats::Format, sniff::ImageFormat, text, tree};
+use tursobench_blob::{Kind, formats::Format, text, tree};
 use tursobench_core::{LargeKind, Value};
 
 /// How much a selected field grows to show its preview.
@@ -25,6 +31,17 @@ pub(in crate::app) enum Body {
     /// A tree, a vector or inflated contents, decoded off the UI thread.
     Decoded(Decoded),
     Image(Shown),
+    /// A large value the lens needs whole, not yet in memory.
+    Load(Load),
+}
+
+/// A large value's place in being loaded for its preview.
+pub(in crate::app) enum Load {
+    /// It can be loaded: its size, as shown on the button.
+    Offer(String),
+    Loading,
+    /// It cannot be, and why.
+    Unavailable(String),
 }
 
 /// A selected field's lens, the lenses it could use, and what it shows.
@@ -51,52 +68,86 @@ impl App {
         if matches!(value, Value::Text(_)) {
             return None;
         }
+        let values = &mut document.tools.values;
+        // A deferred value its preview loaded, read whole.
+        let held = loadable(value).and_then(|handle| values.held_bytes(handle));
         let target = Target {
             result: document.result.current,
             drafts: document.draft_revision,
             row,
             col,
-            whole: false,
+            whole: held.is_some(),
         };
         let kind = offer.kind;
-        let body = match offer.lens {
-            Lens::Hex => {
+        let whole = in_memory(value).or(held);
+        let body = match (offer.lens, whole) {
+            (Lens::Hex, _) => {
                 let head = bytes(value);
                 Body::Hex(head[..head.len().min(32 * LINES)].to_vec())
             }
-            Lens::Text if !matches!(kind, Kind::Geometry { .. }) => {
+            (Lens::Text, _) if !matches!(kind, Kind::Geometry { .. }) => {
                 Body::Text(text_of(value, kind))
             }
-            Lens::Image => Body::Image(document.tools.values.images.get(
+            (Lens::Image, Some(bytes)) => Body::Image(values.images.get(
                 ctx,
                 target,
                 Size::Preview,
-                || image_bytes(value, kind),
+                || match kind {
+                    Kind::Image { format, .. } => Some((bytes, format)),
+                    _ => None,
+                },
             )),
-            lens => Body::Decoded(
-                document
-                    .tools
-                    .values
-                    .decode(ctx, target, lens, || match lens {
-                        Lens::Text => in_memory(value).map(Work::Wkt),
-                        Lens::Tree => tree_work(value, offer.format),
-                        Lens::Vector => in_memory(value).map(Work::Vector),
-                        Lens::Contents => match kind {
-                            Kind::Compressed(compression) => {
-                                in_memory(value).map(|b| Work::Contents(b, compression))
-                            }
-                            _ => None,
-                        },
-                        Lens::Hex | Lens::Image => None,
+            (lens, Some(bytes)) => Body::Decoded(
+                values
+                    .decode(ctx, target, lens, || {
+                        whole_work(lens, kind, offer.format, bytes)
                     })
-                    .unwrap_or_else(|| Decoded::Failed("Open the value to read it".into())),
+                    .unwrap_or_else(|| Decoded::Failed("no reader for this value".into())),
             ),
+            // The first bytes of a deferred JSONB value read as a tree.
+            (Lens::Tree, None) if let Some(work) = jsonb_prefix(value, offer.format) => {
+                Body::Decoded(
+                    values
+                        .decode(ctx, target, Lens::Tree, || Some(work))
+                        .unwrap_or(Decoded::Pending),
+                )
+            }
+            (_, None) => Body::Load(load_state(value, values)),
         };
         Some(Preview {
             lens: offer.lens,
             offered: offer.lenses,
             body,
         })
+    }
+}
+
+/// The decode of a whole value for `lens`.
+fn whole_work(lens: Lens, kind: Kind, format: Option<Format>, bytes: Arc<[u8]>) -> Option<Work> {
+    match lens {
+        Lens::Text => Some(Work::Wkt(bytes)),
+        Lens::Tree => format.map(|format| Work::Tree(bytes, format)),
+        Lens::Vector => Some(Work::Vector(bytes)),
+        Lens::Contents => match kind {
+            Kind::Compressed(compression) => Some(Work::Contents(bytes, compression)),
+            _ => None,
+        },
+        Lens::Hex | Lens::Image => None,
+    }
+}
+
+/// Whether a deferred value can be loaded for its preview, is loading, or cannot be.
+fn load_state(value: &Value, values: &super::Values) -> Load {
+    let Some(handle) = loadable(value) else {
+        return Load::Unavailable("Over the 16 MiB a lens reads · use hex or save to file".into());
+    };
+    match values.held_state(handle) {
+        Some(HeldState::Loading | HeldState::Ready(_)) => Load::Loading,
+        Some(HeldState::Failed(reason)) => Load::Unavailable(reason.clone()),
+        None => Load::Offer(super::summary::byte_size(match value {
+            Value::Deferred(cell) => cell.bytes,
+            _ => 0,
+        })),
     }
 }
 
@@ -121,11 +172,9 @@ impl App {
         let value = document
             .result
             .displayed_value(document.drafts.as_ref(), row, col)?;
-        let Value::Blob(_) = value else {
-            return None;
-        };
-        let kind = Summary::of(ctx, value)?.kind;
-        let Kind::Image { .. } = kind else {
+        let values = &mut document.tools.values;
+        let whole = in_memory(value).or_else(|| values.held_bytes(loadable(value)?))?;
+        let Kind::Image { format, .. } = Summary::of(ctx, value)?.kind else {
             return None;
         };
         let target = Target {
@@ -135,26 +184,13 @@ impl App {
             col,
             whole: false,
         };
-        let bytes = || image_bytes(value, kind);
-        match document
-            .tools
-            .values
+        match values
             .images
-            .get(ctx, target, Size::Thumb, bytes)
+            .get(ctx, target, Size::Thumb, || Some((whole, format)))
         {
             Shown::Ready(id, size, _) => Some((id, size)),
             _ => None,
         }
-    }
-}
-
-/// An image's bytes and format, when the whole value is in memory.
-fn image_bytes(value: &Value, kind: Kind) -> Option<(Arc<[u8]>, ImageFormat)> {
-    match (value, kind) {
-        (Value::Blob(bytes), Kind::Image { format, .. }) => {
-            Some((Arc::from(bytes.as_slice()), format))
-        }
-        _ => None,
     }
 }
 
@@ -181,16 +217,14 @@ fn text_of(value: &Value, kind: Kind) -> String {
     }
 }
 
-/// The tree decode for a value: whole when in memory; for a deferred
-/// JSONB value, its first bytes.
-fn tree_work(value: &Value, format: Option<Format>) -> Option<Work> {
+/// The tree decode of a deferred JSONB value's first bytes.
+fn jsonb_prefix(value: &Value, format: Option<Format>) -> Option<Work> {
     match (value, format?) {
         (Value::Deferred(cell), Format::Jsonb) => Some(Work::JsonbPrefix(
             Arc::from(cell.head.as_slice()),
             cell.bytes,
         )),
-        (Value::Deferred(_), _) => None,
-        (other, format) => Some(Work::Tree(Arc::from(bytes(other)), format)),
+        _ => None,
     }
 }
 
@@ -233,11 +267,42 @@ impl Preview {
                 let area = egui::Rect::from_min_size(rect.min, *size * scale);
                 lens::paint_image(ui, area, *id, *size, scale, egui::Vec2::ZERO);
             }
-            Body::Image(Shown::Pending) => {
+            Body::Image(Shown::Pending) | Body::Load(Load::Loading) => {
                 let square = egui::Rect::from_min_size(rect.min, egui::Vec2::splat(rect.height()));
                 painter.rect_filled(square, 3.0, tokens.raised);
             }
             Body::Image(Shown::Failed(reason)) => wrapped(ui, &painter, rect, reason, tokens.faint),
+            // Drawn as controls.
+            Body::Load(Load::Offer(_) | Load::Unavailable(_)) => {}
+        }
+    }
+    /// The load button, or why the value cannot be loaded, at the left of
+    /// `rect`; returns whether the button was clicked.
+    pub fn controls(&self, ui: &mut egui::Ui, rect: egui::Rect, col: usize) -> bool {
+        let Body::Load(load) = &self.body else {
+            return false;
+        };
+        let lens = self.lens.name().to_lowercase();
+        let slot = egui::Rect::from_min_size(
+            egui::pos2(rect.left(), rect.center().y - 14.0),
+            egui::vec2(rect.width(), 28.0),
+        );
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt(("preview-load", col))
+                .max_rect(slot)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        match load {
+            Load::Offer(size) => {
+                let name = format!("Load {size} to show the {lens}");
+                icons::labelled(&mut child, self.lens.icon(), size, &name).clicked()
+            }
+            Load::Unavailable(reason) => {
+                icons::hint(&mut child, Icon::Warning, 20.0, reason);
+                false
+            }
+            Load::Loading => false,
         }
     }
     /// Whether the preview shows the work of the decode thread.
@@ -273,6 +338,9 @@ impl Preview {
             Body::Image(Shown::Ready(_, _, meta)) => {
                 format!("Image, {} × {}, {}", meta.width, meta.height, meta.color)
             }
+            Body::Load(Load::Offer(size)) => format!("{size}, not loaded"),
+            Body::Load(Load::Loading) => "Loading".into(),
+            Body::Load(Load::Unavailable(reason)) => reason.clone(),
         }
     }
 }

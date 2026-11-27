@@ -125,7 +125,7 @@ impl Images {
             return shown;
         }
         let Some((bytes, format)) = bytes() else {
-            return Shown::Failed("Open the value to load the image".into());
+            return Shown::Failed("Not an image".into());
         };
         let Some(id) = self
             .decoder

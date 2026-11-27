@@ -208,6 +208,7 @@ impl Document {
         self.tools.spreadsheet = Default::default();
         self.active = None;
         self.tools.values.ticket = None;
+        self.tools.values.forget_held();
         self.tools.inspection_ticket = None;
         self.tools.context.pending = None;
         self.tools.pages.pending = None;

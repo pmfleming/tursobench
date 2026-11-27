@@ -9,6 +9,7 @@ enum Target {
     Snapshot,
     Result,
     Value,
+    Held,
     Context,
     Page,
     Inspection,
@@ -40,6 +41,7 @@ impl Document {
             ),
             (self.tools.inspection_ticket, Target::Inspection),
             (self.tools.values.ticket, Target::Value),
+            (self.tools.values.held_ticket, Target::Held),
             (self.result.current, Target::Result),
         ]
         .into_iter()
@@ -98,6 +100,7 @@ impl App {
             Target::Snapshot => self.snapshot_event(event.kind),
             Target::Transfer => self.transfer_event(event.kind),
             Target::Value => self.value_event(ctx, event.kind),
+            Target::Held => self.held_event(event.kind),
             Target::Context => self.context_event(event),
             Target::Page => self.page_event(event),
             Target::Count => self.count_event(event),

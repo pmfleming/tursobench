@@ -50,12 +50,15 @@ impl App {
     pub(in crate::app) fn open_value(&mut self, row: usize, col: usize) {
         let document = &self.database.document;
         let from = (document.result.current, document.draft_revision);
-        let Some(view) = self
+        let Some(mut view) = self
             .field_value(row, col)
             .and_then(|value| View::new(row, col, value, from))
         else {
             return;
         };
+        // A value its preview loaded is not read again.
+        let values = &self.database.document.tools.values;
+        view.loaded = view.source.handle().and_then(|h| values.held_bytes(h));
         self.open_record_window(row, col);
         // Table data opens the value in the record tile; any other result
         // keeps the detached inspector, which shows it instead.

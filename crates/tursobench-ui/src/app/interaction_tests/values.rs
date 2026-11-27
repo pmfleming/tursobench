@@ -655,3 +655,105 @@ fn the_text_lens_says_where_it_stops_copies_what_it_shows_and_find_says_why() {
     );
     app.close();
 }
+
+/// A large image's preview loads it only when asked, keeps it while its field
+/// is selected, and lets the value view open it without reading it again.
+#[test]
+fn a_large_image_loads_in_its_preview_only_when_asked() {
+    use crate::app::test_ui::{control, nodes, pointer, render};
+    use tursobench_core::DeferredCell;
+
+    // Noise does not compress, so the image is over the 64 KiB a page keeps.
+    let mut seed = 7u32;
+    let rgba: Vec<u8> = (0..160 * 160 * 4)
+        .map(|_| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 24) as u8
+        })
+        .collect();
+    let picture = tursobench_blob::image::png(&rgba, 160, 160).unwrap();
+    assert!(picture.len() > CHUNK as usize);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("pictures.db");
+    let stored = picture.clone();
+    let at = path.clone();
+    crate::test_support::run(async move {
+        let db = turso::Builder::new_local(at.to_str().unwrap())
+            .build()
+            .await?;
+        let c = db.connect()?;
+        c.execute(
+            "CREATE TABLE p(id INTEGER PRIMARY KEY, picture BLOB, n INTEGER)",
+            (),
+        )
+        .await?;
+        c.execute("INSERT INTO p VALUES(1, ?1, 2)", turso::params![stored])
+            .await?;
+        Ok::<_, turso::Error>(())
+    })
+    .unwrap();
+    let (ctx, mut app) = connected(&path, false);
+    browse_and_wait(&mut app, &ctx, "p");
+    assert!(matches!(
+        &app.database.document.result.rows[0][1],
+        Value::Deferred(_)
+    ));
+    let size = egui::vec2(550.0, 400.0);
+    let labels = |output: &egui::FullOutput| -> Vec<String> {
+        nodes(output)
+            .iter()
+            .filter_map(|(_, node)| node.label().map(str::to_owned))
+            .collect()
+    };
+    app.select_cell(0, 1, false);
+    let sequence = app.database.sequence;
+    render(&ctx, size, vec![], |ui| app.record_inspector(ui, 0));
+    let output = render(&ctx, size, vec![], |ui| app.record_inspector(ui, 0));
+    let name = format!(
+        "Load {} to show the image",
+        crate::app::value::byte_size(picture.len() as u64)
+    );
+    // Nothing is read until the button is pressed.
+    assert!(labels(&output).contains(&name), "{:?}", labels(&output));
+    assert_eq!(app.database.sequence, sequence);
+    let at = control(&output, &name).center();
+    for pressed in [true, false] {
+        render(&ctx, size, pointer(at, pressed), |ui| {
+            app.record_inspector(ui, 0)
+        });
+    }
+    assert_eq!(app.database.sequence, sequence + 1);
+    let mut shown = String::new();
+    for _ in 0..500 {
+        app.poll(&ctx);
+        render(&ctx, size, vec![], |ui| app.record_inspector(ui, 0));
+        shown = app.record_preview(&ctx, 0, 1).unwrap().describe();
+        if shown.starts_with("Image, 160 × 160") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(shown.starts_with("Image, 160 × 160"), "{shown}");
+    // The value view takes the loaded bytes rather than reading them again.
+    let sequence = app.database.sequence;
+    app.open_value(0, 1);
+    assert_eq!(view(&app).loaded.as_deref(), Some(picture.as_slice()));
+    draw(&mut app, &ctx);
+    assert_eq!(app.database.sequence, sequence);
+    app.close_value();
+    // Selecting another field lets the loaded value go.
+    app.select_cell(0, 2, false);
+    render(&ctx, size, vec![], |ui| app.record_inspector(ui, 0));
+    assert!(app.database.document.tools.values.held.is_none());
+    // A value with no backing says why it cannot be loaded.
+    app.database.document.result.rows[0][1] = Value::Deferred(Box::new(DeferredCell {
+        handle: None,
+        kind: tursobench_core::LargeKind::Blob,
+        bytes: 80 * 1024 * 1024,
+        head: picture[..64].to_vec(),
+    }));
+    app.select_cell(0, 1, false);
+    let shown = app.record_preview(&ctx, 0, 1).unwrap().describe();
+    assert!(shown.starts_with("Over the 16 MiB"), "{shown}");
+    app.close();
+}

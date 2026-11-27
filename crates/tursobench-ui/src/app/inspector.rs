@@ -18,6 +18,8 @@ enum RecordAction {
     Lens(usize, Lens),
     /// Open the field in the value view.
     Open(usize),
+    /// Load the field's large value whole for its preview.
+    Load(usize),
 }
 /// The widths every field of a record shares: its name and, when wide, its declared type.
 #[derive(Clone, Copy)]
@@ -434,6 +436,7 @@ impl App {
                     .insert(col, lens);
             }
             Some(RecordAction::Open(col)) => self.open_value(row, col),
+            Some(RecordAction::Load(col)) => self.load_field(row, col),
             None => {}
         }
         if !self.database.workspace.enabled {
@@ -495,6 +498,17 @@ impl App {
         let document = &mut self.database.document;
         let (result, drafts) = (document.result.current, document.draft_revision);
         document.tools.values.images.keep_row(result, drafts, row);
+        // The selected field's loaded value is kept; any other is dropped.
+        let held = document
+            .inspect
+            .filter(|(r, _)| *r == row)
+            .and_then(|(r, c)| {
+                document
+                    .result
+                    .displayed_value(document.drafts.as_ref(), r, c)
+            })
+            .and_then(super::value::loadable);
+        document.tools.values.keep_held(held);
         let row_spacing = ui.spacing().item_spacing.y;
         ui.spacing_mut().item_spacing.y = 0.0;
         let mut action = None;
@@ -589,6 +603,9 @@ impl App {
             area.widget_info(|| {
                 egui::WidgetInfo::labeled(egui::Role::Label, true, preview.describe())
             });
+            if preview.controls(ui, body, col) {
+                action = Some(RecordAction::Load(col));
+            }
         }
         let here = editing && (!self.database.workspace.enabled || self.record_tile_active());
         if here && let Some(inline) = self.database.document.tools.inline.as_mut() {

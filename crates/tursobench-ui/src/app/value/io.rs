@@ -218,6 +218,7 @@ impl App {
         let asked = view.pending.take();
         let ours = view.source.handle();
         let mut copy = None;
+        let mut loaded = None;
         match kind {
             EventKind::ValueChunk {
                 handle,
@@ -228,8 +229,10 @@ impl App {
                 view.chunks.insert(offset / CHUNK, Arc::from(bytes));
             }
             EventKind::ValueLoaded { handle, bytes } if ours == Some(handle) => {
-                view.loaded = Some(Arc::from(bytes));
+                let bytes: Arc<[u8]> = Arc::from(bytes);
+                view.loaded = Some(bytes.clone());
                 copy = view.copy.take();
+                loaded = Some((handle, bytes));
             }
             EventKind::ValueFound { handle, offset } if ours == Some(handle) => found(view, offset),
             EventKind::ValueSaved(path) => view.message = format!("Saved to {path}"),
@@ -237,6 +240,14 @@ impl App {
                 view.failed(asked, error.to_string());
             }
             _ => {}
+        }
+        // The fields' preview shows the value loaded here without reading it again.
+        if let Some((handle, bytes)) = loaded {
+            values.forget_held();
+            values.held = Some(super::Held {
+                handle,
+                state: super::HeldState::Ready(bytes),
+            });
         }
         if let Some((format, at, len)) = copy {
             self.copy_range(ctx, format, at, len);

@@ -22,6 +22,8 @@ pub(super) use preview::{HEIGHT as PREVIEW_HEIGHT, Preview};
 pub(super) use summary::MADE as SUMMARIES_MADE;
 pub(super) use summary::Summary;
 #[cfg(test)]
+pub(super) use summary::byte_size;
+#[cfg(test)]
 pub(super) use view::{CHUNK, View, Want};
 
 /// A way of reading a value's bytes. Choosing one never changes the value.
@@ -227,9 +229,24 @@ pub(super) struct Target {
     pub whole: bool,
 }
 
+/// A deferred value read whole so the selected field's preview can show it.
+pub(super) struct Held {
+    pub handle: u64,
+    pub state: HeldState,
+}
+pub(super) enum HeldState {
+    Loading,
+    Ready(Arc<[u8]>),
+    Failed(String),
+}
+
 /// A document's value decoding: the selected value's decode and its thread.
 #[derive(Default)]
 pub(super) struct Values {
+    /// The selected field's deferred value, loaded whole on request; at most
+    /// one is held, so at most 16 MiB.
+    pub held: Option<Held>,
+    pub held_ticket: Option<tursobench_core::Ticket>,
     decoder: job::Decoder,
     decode: Option<((Target, Lens), u64, Decoded)>,
     /// Formats found by parsing values without a signature.
@@ -308,6 +325,109 @@ impl Values {
     pub fn idle(&mut self) {
         if self.decode.take().is_some() {
             self.decoder.cancel_queued();
+        }
+    }
+    /// The held value with `handle`, once read.
+    pub fn held_bytes(&self, handle: u64) -> Option<Arc<[u8]>> {
+        match &self.held {
+            Some(Held {
+                handle: held,
+                state: HeldState::Ready(bytes),
+            }) if *held == handle => Some(bytes.clone()),
+            _ => None,
+        }
+    }
+    /// How the held value with `handle` stands, if it is the one held.
+    pub fn held_state(&self, handle: u64) -> Option<&HeldState> {
+        self.held
+            .as_ref()
+            .filter(|held| held.handle == handle)
+            .map(|held| &held.state)
+    }
+    /// Keep the held value only while it is the selected field's.
+    pub fn keep_held(&mut self, handle: Option<u64>) {
+        if self.held.as_ref().is_some_and(|h| Some(h.handle) != handle) {
+            self.forget_held();
+        }
+    }
+    pub fn forget_held(&mut self) {
+        self.held = None;
+        self.held_ticket = None;
+    }
+}
+
+/// The backing handle of a deferred value that can be loaded whole.
+pub(super) fn loadable(value: &Value) -> Option<u64> {
+    match value {
+        Value::Deferred(cell) if cell.bytes <= view::LOAD => cell.handle,
+        _ => None,
+    }
+}
+
+impl App {
+    /// Read the whole of field `col` of `row`, a deferred value, so its
+    /// preview can show it. Does nothing while it is held or on its way.
+    pub(in crate::app) fn load_field(&mut self, row: usize, col: usize) {
+        let Some(handle) = self.field_value(row, col).and_then(loadable) else {
+            return;
+        };
+        let values = &mut self.database.document.tools.values;
+        if matches!(
+            values.held_state(handle),
+            Some(HeldState::Loading | HeldState::Ready(_))
+        ) {
+            return;
+        }
+        values.held = Some(Held {
+            handle,
+            state: HeldState::Loading,
+        });
+        let outcome = self
+            .database
+            .request(tursobench_db::Operation::LoadValue { handle });
+        let values = &mut self.database.document.tools.values;
+        match outcome {
+            Some(Ok(ticket)) => values.held_ticket = Some(ticket),
+            failed => {
+                let reason = match failed {
+                    Some(Err(e)) => e.to_string(),
+                    _ => "The source session is closed".into(),
+                };
+                if let Some(held) = values.held.as_mut() {
+                    held.state = HeldState::Failed(reason);
+                }
+            }
+        }
+    }
+    /// The answer to a preview's load; an open value view of the same
+    /// value takes the bytes too.
+    pub(in crate::app) fn held_event(&mut self, kind: tursobench_core::EventKind) {
+        use tursobench_core::EventKind;
+        let values = &mut self.database.document.tools.values;
+        values.held_ticket = None;
+        let Some(held) = values.held.as_mut() else {
+            return;
+        };
+        match kind {
+            EventKind::ValueLoaded { handle, bytes } if handle == held.handle => {
+                let bytes: Arc<[u8]> = Arc::from(bytes);
+                held.state = HeldState::Ready(bytes.clone());
+                if let Some(view) = values.view.as_mut()
+                    && view.source.handle() == Some(handle)
+                    && view.loaded.is_none()
+                {
+                    view.loaded = Some(bytes);
+                }
+            }
+            EventKind::Failed(error) => {
+                let message = error.to_string();
+                held.state = HeldState::Failed(if message.contains("expired") {
+                    "The value is no longer held · refresh to read it again".into()
+                } else {
+                    message
+                });
+            }
+            _ => {}
         }
     }
 }
