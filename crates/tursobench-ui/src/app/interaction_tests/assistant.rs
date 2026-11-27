@@ -170,11 +170,8 @@ fn a_conversation_shares_results_by_default_streams_tools_and_proposes_sql_witho
     app.set_assistant_shown(true);
     let database = app.database.tools.database_scope.clone();
     frame_at(&mut app, &ctx, SIZE, vec![]);
-    assert_eq!(app.preferences.assistant.grant_for(&database), None);
-    assert_eq!(
-        app.preferences.assistant.sharing_for(&database),
-        Sharing::Rows
-    );
+    assert_eq!(app.preferences.database(&database).sharing, None);
+    assert_eq!(app.preferences.sharing_for(&database), Sharing::Limited);
 
     scripted(&mut app, &dir);
     app.database.assistant.draft = "What is in t?".into();
@@ -215,14 +212,37 @@ fn a_conversation_shares_results_by_default_streams_tools_and_proposes_sql_witho
     let still = query("SELECT count(*) FROM t");
     assert!(still.text.contains("[[2]]"), "{}", still.text);
 
-    // The ribbon switches to schema only at once for the running agent.
+    // A limited read stops at 200 rows.
+    let many = "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<5000) \
+                SELECT x FROM n";
+    let rows = |text: &str| {
+        let reply: serde_json::Value = serde_json::from_str(text).unwrap();
+        reply["rows"].as_array().unwrap().len()
+    };
+    assert_eq!(rows(&query(many).text), 200);
+    // The ribbon switches to complete results at once for the running agent,
+    // up to the database's row limit.
+    press(&mut app, &ctx, "Share the schema and complete results");
+    assert_eq!(
+        app.preferences.database(&database).sharing,
+        Some(Sharing::Complete)
+    );
+    assert_eq!(rows(&query(many).text), app.preferences.row_limit);
+    assert_eq!(
+        last_notice(&app.database.assistant),
+        Some("Now sharing the schema and complete results")
+    );
+    // A complete read follows this database's own row limit.
+    app.preferences.database_mut(&database).row_limit = Some(300);
+    app.refresh_access();
+    assert_eq!(rows(&query(many).text), 300);
+    // And schema only refuses queries.
     press(&mut app, &ctx, "Share the schema only");
     assert_eq!(
-        app.preferences.assistant.grant_for(&database),
+        app.preferences.database(&database).sharing,
         Some(Sharing::Schema)
     );
     assert!(query("SELECT 1").is_error);
-    assert!(last_notice(&app.database.assistant).is_some());
     app.close();
 }
 
@@ -294,22 +314,20 @@ fn agents_decline_their_own_edits_and_forgetting_sharing_reaches_every_conversat
     declined_then_replied(&app, "/etc/hosts", "ACP reply");
     // In the background, the conversation still hears of sharing changes.
     let id = app.database.id;
+    let key = app.database.tools.database_scope.clone();
     assert!(app.new_workspace(&ctx));
-    // The settings list the database's choice, below the privacy section, and
-    // can forget it.
-    app.settings.open = true;
-    scroll_settings_to_end(&mut app, &ctx);
-    press(&mut app, &ctx, "Forget; use the default");
-    assert!(app.preferences.assistant.grants.is_empty());
+    app.change_access(|app| app.preferences.database_mut(&key).sharing = None);
     // The conversation goes on with the default, and is told so.
     let background = &app.parked[&id].assistant;
     assert!(background.host().is_some());
     assert_eq!(
         last_notice(background),
-        Some("Now sharing the schema and query results")
+        Some("Now sharing the schema and limited results")
     );
-    // Changing the default reaches a database without its own choice.
+    // Changing the default in settings reaches a database without its own choice.
     app.select_workspace(id);
+    app.settings.open = true;
+    scroll_settings_to_end(&mut app, &ctx);
     press(&mut app, &ctx, "Default: share the schema only");
     assert_eq!(app.preferences.assistant.default_sharing, Sharing::Schema);
     assert_eq!(
@@ -437,7 +455,7 @@ fn each_agents_notice_shows_on_first_use_then_every_few_sessions_and_links_to_it
 }
 
 #[test]
-fn one_picker_changes_agent_model_and_favourites_with_each_agents_sharing() {
+fn one_picker_changes_agent_model_and_favourites_while_sharing_stays_with_the_database() {
     use crate::storage::FavouriteModel;
     let (dir, ctx, mut app) = fixture(TABLE, false);
     runtime_dir();
@@ -445,13 +463,13 @@ fn one_picker_changes_agent_model_and_favourites_with_each_agents_sharing() {
     scripted_turn(&mut app, &ctx, &dir);
     let sharing = |app: &App| {
         let database = &app.database.tools.database_scope;
-        app.preferences.assistant.sharing_for(database)
+        app.preferences.sharing_for(database)
     };
-    // Another agent starts afresh, with its own sharing.
+    // Another agent starts afresh, sharing what the database shares.
     app.select_assistant_provider(Provider::Codex);
     assert!(app.database.assistant.host().is_none());
     assert!(app.database.assistant.entries.is_empty());
-    assert_eq!(sharing(&app), Sharing::Rows);
+    assert_eq!(sharing(&app), Sharing::Schema);
     app.select_assistant_provider(Provider::Claude);
     assert_eq!(sharing(&app), Sharing::Schema);
     converse(&mut app, &ctx, "Hello");
@@ -486,12 +504,12 @@ fn one_picker_changes_agent_model_and_favourites_with_each_agents_sharing() {
     press(&mut app, &ctx, "Test model");
     assert_eq!(app.preferences.assistant.provider, Provider::Codex);
     assert_eq!(app.preferences.assistant.selected_model(), "gpt-test");
-    assert_eq!(sharing(&app), Sharing::Rows);
+    assert_eq!(sharing(&app), Sharing::Schema);
     let escape = super::key_event(egui::Key::Escape, true, egui::Modifiers::NONE);
     frame_at(&mut app, &ctx, SIZE, vec![escape]);
     let output = frame_at(&mut app, &ctx, SIZE, vec![]);
     assert!(!labelled(&output, "Favourites"));
-    assert!(labelled(&output, "Share the schema and query results"));
+    assert!(labelled(&output, "Share the schema only"));
     assert_eq!(picked(&output).as_deref(), Some("Test model"));
     app.select_assistant_provider(Provider::Claude);
     assert_eq!(app.preferences.assistant.selected_model(), "opus");
@@ -653,7 +671,7 @@ fn agent_scan_reports_status_and_missing_executables_without_starting_a_conversa
     assert_eq!(claude.version.as_deref(), Some("Claude test"));
     assert_eq!(status(&app, Provider::Codex).state, SignIn::Missing);
     assert!(app.database.assistant.host().is_none());
-    assert!(app.preferences.assistant.grants.is_empty());
+    assert!(app.preferences.databases.is_empty());
     let saved = serde_json::to_string(&app.preferences).unwrap();
     assert!(!saved.contains("private@example.com"));
     app.close();
@@ -705,18 +723,17 @@ fn a_custom_agents_command_executable_and_sign_in_method_are_set_in_settings() {
     let (dir, ctx, mut app) = fixture(TABLE, false);
     runtime_dir();
     let custom = Provider::Custom;
-    let grants = app.preferences.assistant.grants.entry("a.db".into());
-    grants.or_default().insert(custom, Sharing::Schema);
+    app.preferences.assistant.intro_skips.insert(custom, 2);
     app.accounts.configuring = Some(custom);
     assistant_settings(&mut app, &ctx);
     let typed = |app: &mut App, name: &str, text: &str| {
         press(app, &ctx, name);
         frame_at(app, &ctx, SIZE, vec![egui::Event::Text(text.into())]);
     };
-    // A new command forgets the custom agent's grants.
+    // A new command shows the custom agent's notice again.
     typed(&mut app, "Agent command", "my-agent acp");
     assert_eq!(app.preferences.assistant.custom_command, "my-agent acp");
-    assert!(app.preferences.assistant.grants.is_empty());
+    assert!(!app.preferences.assistant.intro_skips.contains_key(&custom));
     assert!(!app.agent_state(custom).2, "not on PATH");
 
     press(&mut app, &ctx, "Choose executable");
@@ -810,5 +827,34 @@ fn the_reasoning_level_changes_mid_conversation_and_follows_each_codex_model() {
     // Claude keeps its own choice.
     app.select_assistant_provider(Provider::Claude);
     assert_eq!(app.preferences.assistant.selected_effort(), "");
+    app.close();
+}
+
+#[test]
+fn the_agent_panel_sets_what_every_agent_reads_in_this_database_alone() {
+    use crate::app::test_ui::{control, pointer, render};
+    let (_dir, ctx, mut app) = fixture(TABLE, false);
+    let key = app.database_key();
+    let size = egui::vec2(300.0, 400.0);
+    let output = render(&ctx, size, vec![], |ui| app.database_agent_ui(ui));
+    let at = control(&output, "Share the schema and complete results").center();
+    for pressed in [true, false] {
+        render(&ctx, size, pointer(at, pressed), |ui| {
+            app.database_agent_ui(ui)
+        });
+    }
+    assert_eq!(
+        app.preferences.database(&key).sharing,
+        Some(Sharing::Complete)
+    );
+    // Every agent reads the same here; other databases keep the default.
+    for provider in [Provider::Codex, Provider::Claude] {
+        app.select_assistant_provider(provider);
+        assert_eq!(app.preferences.sharing_for(&key), Sharing::Complete);
+    }
+    assert_eq!(
+        app.preferences.sharing_for("/elsewhere.db"),
+        Sharing::Limited
+    );
     app.close();
 }

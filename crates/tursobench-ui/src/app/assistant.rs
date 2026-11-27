@@ -7,7 +7,7 @@ use super::{
     icons::{self, Icon},
     presentation::{self, Intent},
 };
-use crate::assistant_tools::{self as tools, Host, Proposal, Sharing};
+use crate::assistant_tools::{self as tools, AgentAccess, Host, Proposal, Sharing};
 use eframe::egui;
 use serde_json::Value as Json;
 use std::sync::{Arc, Mutex, mpsc};
@@ -109,54 +109,62 @@ impl Conversation {
     }
 }
 
-/// Apply a sharing change to a conversation's agent and tell it with the next prompt.
-fn sharing_changed(conversation: &mut Conversation, previous: Sharing, sharing: Sharing) {
+/// Apply an access change to a conversation's agent; a new sharing level is
+/// told to it with the next prompt.
+fn access_changed(conversation: &mut Conversation, previous: AgentAccess, access: AgentAccess) {
     if let Some(running) = &conversation.running {
-        running.host.set_sharing(sharing);
+        running.host.set_access(access);
     }
-    if previous == sharing || (conversation.entries.is_empty() && conversation.running.is_none()) {
+    if previous.sharing == access.sharing
+        || (conversation.entries.is_empty() && conversation.running.is_none())
+    {
         return;
     }
-    let (note, text) = match sharing {
-        Sharing::Schema => (
-            "The user now shares only the schema; run_query is refused.",
-            "Now sharing only the schema",
-        ),
-        Sharing::Rows => (
-            "The user now also shares query results; run_query is available.",
-            "Now sharing the schema and query results",
-        ),
+    let text = match access.sharing {
+        Sharing::Schema => "Now sharing only the schema",
+        Sharing::Limited => "Now sharing the schema and limited results",
+        Sharing::Complete => "Now sharing the schema and complete results",
     };
-    conversation.note = Some(note.into());
+    conversation.note = Some(format!(
+        "Changed by the user. {}",
+        tools::shared_text(access)
+    ));
     conversation.push(Entry::Notice(Intent::Neutral, text.into()));
 }
 
-/// The two sharing choices, as the ribbon and settings show them.
-fn sharing_choice(sharing: Sharing) -> (Icon, &'static str, &'static str) {
+/// The three sharing choices, as the chat panel, the Agent panel and
+/// settings show them: icon, name and what it lets the agent read.
+pub(super) fn sharing_choice(sharing: Sharing) -> (Icon, &'static str, &'static str) {
     match sharing {
         Sharing::Schema => (
             Icon::Structure,
             "Share the schema only",
             "Table and column names, keys, indexes and CREATE statements",
         ),
-        Sharing::Rows => (
+        Sharing::Limited => (
             Icon::Data,
-            "Share the schema and query results",
+            "Share the schema and limited results",
             "Also lets it run read-only SELECT queries of at most 200 rows and read the results",
+        ),
+        Sharing::Complete => (
+            Icon::Database,
+            "Share the schema and complete results",
+            "Also lets it run read-only SELECT queries of up to this database's row limit \
+             (its Limits panel) and read the results",
         ),
     }
 }
 
-/// The two default choices; returns a new one when clicked.
+/// The three default choices; returns a new one when clicked.
 fn default_sharing_ui(ui: &mut egui::Ui, current: Sharing) -> Option<Sharing> {
     let mut default = None;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 3.0;
         ui.label("Default").on_hover_text(
-            "What each database shares until you change it with the icons in the \
-             chat panel",
+            "What each database shares with every agent until you change it in its \
+             Agent panel or the chat panel",
         );
-        for sharing in [Sharing::Schema, Sharing::Rows] {
+        for sharing in Sharing::ALL {
             let (icon, name, detail) = sharing_choice(sharing);
             let name = format!("Default: {}", name.to_lowercase());
             if icons::control(ui, icon, &name, "", sharing == current, false)
@@ -172,23 +180,6 @@ fn default_sharing_ui(ui: &mut egui::Ui, current: Sharing) -> Option<Sharing> {
     default
 }
 
-/// One database's choice for one agent; true when it should be forgotten.
-fn grant_row(ui: &mut egui::Ui, path: &str, agent: &str, sharing: Sharing) -> bool {
-    ui.horizontal(|ui| {
-        let (icon, name, _) = sharing_choice(sharing);
-        let (rect, response) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
-        icons::paint(ui.painter(), rect, icon, ui.visuals().text_color());
-        response.on_hover_text(name);
-        ui.label(file_name(path)).on_hover_text(path);
-        ui.weak(format!("{agent} · {name}"));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            icons::control(ui, Icon::Trash, "Forget; use the default", "", false, false).clicked()
-        })
-        .inner
-    })
-    .inner
-}
-
 /// A database's file name, or its whole path when it has none.
 fn file_name(path: &str) -> String {
     std::path::Path::new(path)
@@ -202,69 +193,99 @@ impl App {
             && (self.database.session.is_some() || !self.database.assistant.entries.is_empty()))
         .then(|| self.database.tools.database_scope.clone())
     }
-    fn assistant_sharing(&self) -> Option<Sharing> {
+    fn assistant_access(&self) -> Option<AgentAccess> {
         let database = self.assistant_database()?;
-        Some(self.preferences.assistant.sharing_for(&database))
+        Some(self.preferences.access(&database))
     }
-    /// Remember a choice for this database and selected agent, and apply it at once.
+    /// What every agent may read in the selected database.
+    pub(super) fn database_sharing(&self) -> Sharing {
+        self.preferences.sharing_for(&self.database_key())
+    }
+    /// Remember what every agent may read in the selected database, and apply it at once.
     pub(super) fn set_assistant_sharing(&mut self, sharing: Sharing) {
-        let Some(database) = self.assistant_database() else {
+        if self.database.path.is_empty() {
             return;
-        };
-        self.change_sharing(|app| {
-            let assistant = &mut app.preferences.assistant;
-            let grants = assistant.grants.entry(database).or_default();
-            grants.insert(assistant.provider, sharing);
-        });
+        }
+        let database = self.database_key();
+        self.change_access(|app| app.preferences.database_mut(&database).sharing = Some(sharing));
     }
-    /// Change what databases share and save it. Each workspace's agent applies
-    /// what its database now shares at once, and is told with its next prompt.
-    fn change_sharing(&mut self, change: impl FnOnce(&mut Self)) {
+    /// Change what databases share, or their row limits, and save it. Each
+    /// workspace's agent applies its database's access at once, and is told
+    /// of a new sharing level with its next prompt.
+    pub(super) fn change_access(&mut self, change: impl FnOnce(&mut Self)) {
         let before: Vec<_> = std::iter::once(&self.database)
             .chain(self.parked.values())
-            .map(|d| {
-                self.preferences
-                    .assistant
-                    .sharing_for(&d.tools.database_scope)
-            })
+            .map(|d| self.preferences.access(&d.tools.database_scope))
             .collect();
         change(self);
         self.preferences.normalize();
         self.store.save(&self.preferences);
-        let assistant = &self.preferences.assistant;
+        let preferences = &self.preferences;
         let databases = std::iter::once(&mut self.database).chain(self.parked.values_mut());
         for (database, before) in databases.zip(before) {
-            let after = assistant.sharing_for(&database.tools.database_scope);
-            sharing_changed(&mut database.assistant, before, after);
+            let after = preferences.access(&database.tools.database_scope);
+            access_changed(&mut database.assistant, before, after);
         }
     }
 
-    /// The default sharing, then each database's own choice, which can be
-    /// forgotten so the database shares the default again.
-    pub(super) fn sharing_settings_ui(&mut self, ui: &mut egui::Ui) {
-        let assistant = &self.preferences.assistant;
-        if let Some(sharing) = default_sharing_ui(ui, assistant.default_sharing) {
-            self.change_sharing(|app| app.preferences.assistant.default_sharing = sharing);
-        }
-        let grants = &self.preferences.assistant.grants;
-        if !grants.is_empty() {
-            ui.add_space(4.0);
-        }
-        let mut forget = None;
-        for (path, grants) in grants {
-            for (provider, sharing) in grants {
-                if grant_row(ui, path, provider.vendor().name, *sharing) {
-                    forget = Some((path.clone(), *provider));
-                }
+    /// Give every running agent its database's access as it stands, as after
+    /// a row limit changed; the agent learns of the cap from its next result.
+    pub(super) fn refresh_access(&mut self) {
+        let preferences = &self.preferences;
+        for database in std::iter::once(&mut self.database).chain(self.parked.values_mut()) {
+            if let Some(running) = &database.assistant.running {
+                running
+                    .host
+                    .set_access(preferences.access(&database.tools.database_scope));
             }
         }
-        if let Some((path, provider)) = forget {
-            self.change_sharing(|app| {
-                if let Some(grants) = app.preferences.assistant.grants.get_mut(&path) {
-                    grants.remove(&provider);
+    }
+
+    /// The level every database shares until it chooses its own.
+    pub(super) fn sharing_settings_ui(&mut self, ui: &mut egui::Ui) {
+        let current = self.preferences.assistant.default_sharing;
+        if let Some(sharing) = default_sharing_ui(ui, current) {
+            self.change_access(|app| app.preferences.assistant.default_sharing = sharing);
+        }
+    }
+
+    /// The selected database's Agent panel: what every agent may read here.
+    pub(super) fn database_agent_ui(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.strong("Agent");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                icons::hint(
+                    ui,
+                    Icon::Assistant,
+                    16.0,
+                    "Every agent reads the same here; the agent, model and effort are in \
+                     Settings → Assistant",
+                );
+            });
+        });
+        let current = self.database_sharing();
+        let mut chosen = None;
+        for sharing in Sharing::ALL {
+            let (icon, name, detail) = sharing_choice(sharing);
+            ui.horizontal(|ui| {
+                if icons::control(ui, icon, name, "", sharing == current, false)
+                    .on_hover_text(detail)
+                    .clicked()
+                    && sharing != current
+                {
+                    chosen = Some(sharing);
+                }
+                let label = ui.add(egui::Label::new(name).sense(egui::Sense::click()));
+                if label.on_hover_text(detail).clicked() && sharing != current {
+                    chosen = Some(sharing);
                 }
             });
         }
+        if let Some(sharing) = chosen {
+            self.set_assistant_sharing(sharing);
+        }
+        ui.add_space(4.0);
+        ui.weak(sharing_choice(current).2);
     }
 
     pub(super) fn reset_assistant_conversations(&mut self) {
@@ -343,7 +364,7 @@ impl App {
         }
     }
 
-    fn start_assistant(&mut self, ctx: &egui::Context, sharing: Sharing) -> Result<(), String> {
+    fn start_assistant(&mut self, ctx: &egui::Context, access: AgentAccess) -> Result<(), String> {
         let profile = self.assistant_profile()?;
         let program = profile.program;
         #[cfg(test)]
@@ -353,7 +374,7 @@ impl App {
         let (tx, proposals) = mpsc::channel();
         let host = Arc::new(Host::new(
             self.database.assistant.session.clone(),
-            sharing,
+            access,
             tx,
             wake.clone(),
         ));
@@ -372,7 +393,7 @@ impl App {
             args: profile.args,
             cwd: relay::private_dir().map_err(|e| e.to_string())?,
             protocol: profile.vendor.protocol,
-            system_prompt: tools::system_prompt(database.as_deref(), sharing),
+            system_prompt: tools::system_prompt(database.as_deref(), access),
             model: (!model.is_empty()).then(|| model.to_owned()),
             // Every protocol applies the level in its driver, not on the command line.
             effort: self.assistant_effort(),
@@ -406,7 +427,7 @@ impl App {
         if text.is_empty() || self.database.assistant.busy || self.assistant_account_pending() {
             return;
         }
-        let Some(sharing) = self.assistant_sharing() else {
+        let Some(access) = self.assistant_access() else {
             return;
         };
         if self.database.session.is_none() {
@@ -417,7 +438,7 @@ impl App {
             return;
         }
         if self.database.assistant.running.is_none()
-            && let Err(error) = self.start_assistant(ctx, sharing)
+            && let Err(error) = self.start_assistant(ctx, access)
         {
             self.database
                 .assistant
@@ -447,7 +468,7 @@ impl App {
     pub(super) fn assistant_body(&mut self, ui: &mut egui::Ui) {
         self.poll_assistant();
         self.check_selected_assistant(ui.ctx());
-        let Some(sharing) = self.assistant_sharing() else {
+        let Some(access) = self.assistant_access() else {
             icons::empty_state(
                 ui,
                 Icon::Assistant,
@@ -462,7 +483,7 @@ impl App {
             .id_salt("assistant-conversation")
             .auto_shrink([false, false])
             .stick_to_bottom(true)
-            .show(ui, |ui| self.assistant_conversation(ui, sharing))
+            .show(ui, |ui| self.assistant_conversation(ui, access.sharing))
             .inner;
         for action in actions {
             match action {
@@ -479,7 +500,7 @@ impl App {
             self.assistant_intro(ui);
             let hint = match sharing {
                 Sharing::Schema => "Ask about tables, keys or how to write a query",
-                Sharing::Rows => "Ask about the schema or the data",
+                Sharing::Limited | Sharing::Complete => "Ask about the schema or the data",
             };
             icons::empty_state(ui, Icon::Assistant, hint);
         }
@@ -549,11 +570,11 @@ impl App {
 
     /// What the agent may read, once a database is open.
     fn header_sharing(&mut self, ui: &mut egui::Ui) {
-        let Some(current) = self.assistant_sharing() else {
+        let Some(current) = self.assistant_access().map(|a| a.sharing) else {
             return;
         };
-        // Right to left: reads schema, then schema and results.
-        for sharing in [Sharing::Rows, Sharing::Schema] {
+        // Right to left: complete results, limited results, then the schema only.
+        for sharing in Sharing::ALL.into_iter().rev() {
             let (icon, name, detail) = sharing_choice(sharing);
             if icons::control(ui, icon, name, "", sharing == current, false)
                 .on_hover_text(detail)

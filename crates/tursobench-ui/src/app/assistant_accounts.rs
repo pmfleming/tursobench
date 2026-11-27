@@ -340,7 +340,7 @@ impl App {
         }
     }
 
-    /// The command line of a custom ACP agent; a new one forgets its grants.
+    /// The command line of a custom ACP agent; a new one shows its notice again.
     fn custom_command_ui(&mut self, ui: &mut egui::Ui, grid: AgentGrid) {
         let command = &mut self.preferences.assistant.custom_command;
         let name = ("Command", "Agent command");
@@ -348,7 +348,7 @@ impl App {
             return;
         };
         if response.changed() {
-            self.preferences.assistant.clear_custom_grants();
+            self.preferences.assistant.forget_custom();
             if self.preferences.assistant.provider == Provider::Custom {
                 self.reset_assistant_conversations();
             }
@@ -485,7 +485,7 @@ impl App {
             executables.insert(provider, path);
         }
         if provider == Provider::Custom {
-            self.preferences.assistant.clear_custom_grants();
+            self.preferences.assistant.forget_custom();
         }
         if provider == self.preferences.assistant.provider {
             self.reset_assistant_conversations();

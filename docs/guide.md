@@ -114,9 +114,12 @@ shortcuts, evidence and the remaining gaps—not a claim of complete parity.
 
 ### Navigator tools
 
-Tables, History, Saved queries and Checks work on the selected database, so their
-four icons sit directly under its row in **Open databases** and appear only while
-it is open. The foot of the sidebar holds application-wide controls, which also work
+Tables, History, Saved queries, Checks, Limits and Agent work on the selected
+database, so their six icons sit directly under its row in **Open databases** and
+appear only while it is open. **Limits** sets this database's own rows, Slow ≥,
+busy wait and deadline, each with an undo icon back to the default from Settings →
+Queries, and **Load large values**, off by default. **Agent** sets what every agent
+may read in this database. The foot of the sidebar holds application-wide controls, which also work
 without an open database, as three icons: Settings (Ctrl+,), the command palette
 (Ctrl K) and the keyboard reference (F1). The reference is grouped by where each
 key or gesture applies, the palette lists common actions with their shortcuts, and
@@ -204,7 +207,8 @@ reachable in the sidebar. Their path cannot be edited or cleared by cancelling a
   for font information. Theme and font changes preview live. Settings save
   automatically: buttons and toggles immediately, drags on release, text fields
   on focus loss. Switching pages or closing the window saves pending changes.
-  Queries groups row limits, Slow ≥, busy wait, deadline, SQL recovery and the
+  Queries groups the default row limits, Slow ≥, busy wait and deadline (each
+  database can set its own in its Limits panel), SQL recovery and the
   all-databases clearing actions. Refresh marks identify values that apply after
   reopening a database: busy wait and deadline; zero deadline disables that limit.
   Slow ≥ controls history's slow filter and labels. The NULL marker changes display
@@ -246,6 +250,13 @@ plain float32 vector is read as one automatically only when the column's name or
 declared type says it holds vectors. A format without a signature (MessagePack,
 untagged CBOR, protobuf) is offered as a possible tree once it parses the whole
 value, never chosen on its own.
+
+A value over 64 KiB is held by the session, not in memory. A lens that needs it
+whole shows a button with the lens icon and the value's size; pressing it loads
+the value, up to 16 MiB, once. It is kept while its field stays selected, and
+opening the value reuses it. Turn on **Load large values** in the database's
+Limits panel to load such a value as soon as its field is selected. Over 16 MiB,
+or with no backing, a warning icon says why it cannot be loaded.
 
 **Enter**, a double-click, or the open icon fills the tile with the value. The
 header is the field's own row: back, name, summary, the lenses, find, copy as
@@ -372,12 +383,14 @@ Like any tile, the chat can expand to fill the workspace: use the icon at the ri
 of its header, and the same icon or Ctrl Alt Enter to restore. The sidebar stays.
 Opening proposed SQL, or any tile taking focus, gives the workspace back to the tiles.
 
-Each database shares **Schema and query results** by default; change the default in
-Settings → Assistant → Sharing. Two icons in the panel header switch the open
-database between **Schema only** and **Schema and query results** at any time;
-Settings lists those choices and can forget one.
-The agent can list tables, describe one, run one read-only SELECT of at most
-200 rows when results are shared, and propose SQL. Proposed SQL, and any SQL block
+Each database shares **Schema and limited results** with every agent by default;
+change the default in Settings → Assistant → Sharing. The database's Agent panel,
+or three icons in the chat panel header, switch it at any time between **Schema
+only**, **Schema and limited results** (at most 200 rows a query) and **Schema and
+complete results** (up to the database's row limit, at most 10,000 rows and 2 MiB).
+The agent, model and reasoning level stay global.
+The agent can list tables, describe one, run one read-only SELECT when results
+are shared, and propose SQL. Proposed SQL, and any SQL block
 in a reply, opens in a new SQL editor tile without running; you review and run it.
 Enter sends, Shift Enter adds a line and Stop interrupts the turn. The header's
 copy buttons put the last reply or the whole conversation on the clipboard, as

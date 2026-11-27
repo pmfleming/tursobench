@@ -88,6 +88,7 @@ impl App {
             ToolPanel::Saved => self.saved_queries_ui(ui),
             ToolPanel::History => self.query_history_ui(ui),
             ToolPanel::Limits => self.database_limits_ui(ui),
+            ToolPanel::Agent => self.database_agent_ui(ui),
         }
     }
 
@@ -347,6 +348,11 @@ impl App {
                 (Icon::Saved, "Saved queries", ToolPanel::Saved),
                 (Icon::Checks, "Database checks", ToolPanel::Diagnostics),
                 (Icon::Gauge, "Limits for this database", ToolPanel::Limits),
+                (
+                    Icon::Assistant,
+                    "What agents may read here",
+                    ToolPanel::Agent,
+                ),
             ] {
                 if icons::control(ui, icon, name, "", panel == self.database.ui.sidebar, false)
                     .clicked()

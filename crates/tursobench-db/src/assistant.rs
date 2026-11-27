@@ -21,8 +21,12 @@ use tursobench_core::{Failure, Ticket, Value, quote_identifier};
 
 /// Assistant request IDs never collide with the UI's, which count up from 1.
 static NEXT_REQUEST: AtomicU64 = AtomicU64::new(1 << 62);
+/// The rows and JSON bytes a query returns at most unless asked for more.
 pub const MAX_ROWS: usize = 200;
 pub const MAX_BYTES: usize = 256 * 1024;
+/// The most a query may be asked to return.
+pub const MOST_ROWS: usize = 10_000;
+pub const MOST_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_CELL_CHARS: usize = 2_000;
 const MAX_OBJECTS: usize = 2_000;
 const MAX_DDL: usize = 16 * 1024;
@@ -31,14 +35,27 @@ const MAX_DDL: usize = 16 * 1024;
 pub enum Tool {
     ListTables,
     Describe(String),
-    /// One SELECT, `WITH … SELECT`, or EXPLAIN [QUERY PLAN] of a SELECT.
-    Query(String),
+    /// One SELECT, `WITH … SELECT`, or EXPLAIN [QUERY PLAN] of a SELECT,
+    /// returning at most `rows` rows in `bytes` bytes of JSON.
+    Query {
+        sql: String,
+        rows: usize,
+        bytes: usize,
+    },
 }
 impl Tool {
+    /// A query with the default row and byte budgets.
+    pub fn query(sql: impl Into<String>) -> Self {
+        Self::Query {
+            sql: sql.into(),
+            rows: MAX_ROWS,
+            bytes: MAX_BYTES,
+        }
+    }
     pub(crate) fn bytes(&self) -> usize {
         match self {
             Self::ListTables => 0,
-            Self::Describe(s) | Self::Query(s) => s.len(),
+            Self::Describe(s) | Self::Query { sql: s, .. } => s.len(),
         }
     }
 }
@@ -237,10 +254,11 @@ impl Tool {
         match self {
             Tool::ListTables => list(c).await,
             Tool::Describe(name) => describe(c, &name).await,
-            Tool::Query(text) => {
-                validate(&text)?;
+            Tool::Query { sql, rows, bytes } => {
+                validate(&sql)?;
                 let _read = discard.interruptible(request, c);
-                query(c, &text, request, discard).await
+                let budget = (rows.clamp(1, MOST_ROWS), bytes.clamp(MAX_BYTES, MOST_BYTES));
+                query(c, &sql, request, discard, budget).await
             }
         }
     }
@@ -333,11 +351,12 @@ async fn query(
     text: &str,
     request: u64,
     discard: &crate::DeliveryControl,
+    budget: (usize, usize),
 ) -> Reply {
     c.execute("BEGIN", ()).await.map_err(failure)?;
     let result = async {
         validate_views(c, text).await?;
-        query_in_snapshot(c, text, request, discard).await
+        query_in_snapshot(c, text, request, discard, budget).await
     }
     .await;
     let rollback = c.execute("ROLLBACK", ()).await.map_err(failure);
@@ -345,11 +364,13 @@ async fn query(
     result
 }
 
+/// The query's rows as JSON, at most `max_rows` of them in `max_bytes`.
 async fn query_in_snapshot(
     c: &Connection,
     text: &str,
     request: u64,
     discard: &crate::DeliveryControl,
+    (max_rows, max_bytes): (usize, usize),
 ) -> Reply {
     let mut stmt = c.prepare(text).await.map_err(failure)?;
     let columns: Vec<String> = stmt.columns().iter().map(|c| c.name().into()).collect();
@@ -363,17 +384,18 @@ async fn query_in_snapshot(
     let mut bytes = json!({
         "columns": columns,
         "rows": [],
-        "row_count": MAX_ROWS,
+        "row_count": max_rows,
         "limited": false,
-        "truncated_cells": MAX_ROWS * 512,
-        "note": limited_note(MAX_ROWS),
+        "truncated_cells": max_rows * 512,
+        "note": limited_note(max_rows),
     })
     .to_string()
     .len();
-    if bytes > MAX_BYTES {
-        return Err(Failure::input(
-            "The result's column names exceed the 256 KiB budget",
-        ));
+    if bytes > max_bytes {
+        return Err(Failure::input(format!(
+            "The result's column names exceed the {} KiB budget",
+            max_bytes / 1024
+        )));
     }
     let mut limited = false;
     let mut truncated_cells = 0usize;
@@ -381,7 +403,7 @@ async fn query_in_snapshot(
         if discard.discarded(request) {
             return Err(Failure::input("The query was stopped"));
         }
-        if out.len() == MAX_ROWS {
+        if out.len() == max_rows {
             limited = true;
             break;
         }
@@ -394,7 +416,7 @@ async fn query_in_snapshot(
         }
         let row = Json::Array(cells);
         let row_bytes = row.to_string().len() + usize::from(!out.is_empty());
-        if bytes.saturating_add(row_bytes) > MAX_BYTES {
+        if bytes.saturating_add(row_bytes) > max_bytes {
             limited = true;
             break;
         }

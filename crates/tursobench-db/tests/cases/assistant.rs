@@ -1,11 +1,11 @@
 use crate::common::{self, Client};
 use std::time::Duration;
 use tursobench_core::{Access, ErrorKind};
-use tursobench_db::assistant::{Handle, MAX_BYTES, MAX_ROWS, Reply, Tool};
+use tursobench_db::assistant::{Handle, MAX_BYTES, MAX_ROWS, MOST_BYTES, MOST_ROWS, Reply, Tool};
 
 const WAIT: Duration = Duration::from_secs(30);
 fn query(tools: &Handle, sql: &str) -> Reply {
-    tools.call(Tool::Query(sql.into()), WAIT)
+    tools.call(Tool::query(sql), WAIT)
 }
 
 fn fixture() -> (tempfile::TempDir, std::path::PathBuf) {
@@ -187,4 +187,37 @@ fn results_fit_row_and_byte_budgets_and_calls_fail_cleanly_after_close() {
     assert!(tools.call(Tool::Describe("missing".into()), WAIT).is_err());
     client.close();
     assert!(tools.call(Tool::ListTables, WAIT).is_err());
+}
+
+#[test]
+fn a_query_may_be_given_more_rows_up_to_the_ceiling() {
+    let (_dir, path) = fixture();
+    let client = Client::open(&path, Access::ReadOnly);
+    let tools = client.session.assistant();
+    let sql = "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<20000) \
+               SELECT x FROM n";
+    let asked = |rows, bytes| {
+        let reply = tools
+            .call(
+                Tool::Query {
+                    sql: sql.into(),
+                    rows,
+                    bytes,
+                },
+                WAIT,
+            )
+            .unwrap();
+        assert!(reply["limited"].as_bool().unwrap());
+        reply["rows"].as_array().unwrap().len()
+    };
+    assert_eq!(asked(5000, MOST_BYTES), 5000);
+    // Asking for more than the ceiling gets the ceiling.
+    assert_eq!(asked(usize::MAX, usize::MAX), MOST_ROWS);
+    assert_eq!(
+        query(&tools, sql).unwrap()["rows"]
+            .as_array()
+            .unwrap()
+            .len(),
+        MAX_ROWS
+    );
 }

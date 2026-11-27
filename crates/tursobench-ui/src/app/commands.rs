@@ -574,6 +574,12 @@ impl App {
                 Command::Panel(ToolPanel::Limits),
             ),
             (
+                "What agents may read here",
+                "",
+                "assistant agent sharing access schema limited complete rows privacy",
+                Command::Panel(ToolPanel::Agent),
+            ),
+            (
                 "Sidebar",
                 "Ctrl B",
                 "show hide toggle navigation panel",

@@ -94,7 +94,7 @@ Use Claude Code, Codex or ACP agents to inspect schema, query shared data and pr
 One picker chooses the agent, model and reasoning level; sharing controls live in its header. The assistant is a tile: it moves, stacks, folds and expands to the workspace like the others. The screenshot uses a seeded conversation.
 
 MCP tools expose metadata, bounded reads and SQL proposals according to the selected sharing scope.
-Queries pass parser checks and run on a dedicated `query_only` connection, capped at 200 rows / 256 KiB.
+Queries pass parser checks and run on a dedicated `query_only` connection, capped at 200 rows / 256 KiB, or the database's row limit / 2 MiB when it shares complete results.
 Proposed SQL opens unexecuted in the editor for explicit review and execution.
 
 ## Run

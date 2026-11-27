@@ -648,6 +648,10 @@ impl App {
                 self.settings.dirty = true;
                 self.save_settings();
             }
+            // A complete read follows the row limit.
+            if matches!(limit, Limit::Rows) && (reset || response.changed()) {
+                self.refresh_access();
+            }
             self.setting_response(response);
         }
         ui.separator();

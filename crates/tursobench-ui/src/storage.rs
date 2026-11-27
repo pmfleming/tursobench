@@ -181,6 +181,8 @@ pub struct DatabasePreferences {
     pub slow_query_ms: Option<u64>,
     pub busy_timeout_ms: Option<u64>,
     pub query_timeout_ms: Option<u64>,
+    /// What every agent may read here; unset uses the default in Settings → Assistant.
+    pub sharing: Option<Sharing>,
 }
 impl DatabasePreferences {
     fn normalize(&mut self) {
@@ -200,7 +202,7 @@ pub struct Limits {
     pub query_timeout_ms: u64,
 }
 
-/// The agent CLI the assistant drives and what each database shares with it.
+/// The agent CLI the assistant drives, its settings, and what databases share by default.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct AssistantPreferences {
@@ -216,13 +218,8 @@ pub struct AssistantPreferences {
     /// Models starred in the chat's model picker, across agents, in the order starred.
     pub favourite_models: Vec<FavouriteModel>,
     pub executables: BTreeMap<Provider, PathBuf>,
-    /// Legacy per-database choices, migrated into `grants`.
-    #[serde(skip_serializing)]
-    pub sharing: BTreeMap<String, Sharing>,
-    /// What a database shares with an agent until it is changed for that database.
+    /// What a database shares with every agent until it is changed for that database.
     pub default_sharing: Sharing,
-    /// Choices made for one database and provider; they override the default.
-    pub grants: BTreeMap<String, BTreeMap<Provider, Sharing>>,
     /// What each agent CLI may keep or report, chosen separately per provider.
     pub privacy: Privacy,
     /// Sessions left before each agent's notice of who receives the data shows
@@ -260,33 +257,16 @@ impl AssistantPreferences {
     pub fn selected_effort(&self) -> &str {
         self.efforts.get(&self.provider).map_or("", String::as_str)
     }
-    /// This database's own choice for the selected provider, if it has one.
-    pub fn grant_for(&self, database: &str) -> Option<Sharing> {
-        self.grants.get(database)?.get(&self.provider).copied()
-    }
-    pub fn sharing_for(&self, database: &str) -> Sharing {
-        self.grant_for(database).unwrap_or(self.default_sharing)
-    }
-    pub fn clear_custom_grants(&mut self) {
+    /// Forget what a custom agent was told, when its command changes.
+    pub fn forget_custom(&mut self) {
         self.intro_skips.remove(&Provider::Custom);
-        for grants in self.grants.values_mut() {
-            grants.remove(&Provider::Custom);
-        }
-        self.grants.retain(|_, grants| !grants.is_empty());
     }
     fn normalize(&mut self) {
-        // Legacy sharing and model apply only to the previously selected vendor.
-        for (path, sharing) in std::mem::take(&mut self.sharing) {
-            let grants = self.grants.entry(path).or_default();
-            grants.entry(self.provider).or_insert(sharing);
-        }
+        // A legacy model applies only to the previously selected vendor.
         if !self.model.is_empty() {
             let model = std::mem::take(&mut self.model);
             self.models.entry(self.provider).or_insert(model);
         }
-        self.grants
-            .retain(|path, grants| !grants.is_empty() && database_key(path));
-        truncate_map(&mut self.grants, 50);
         self.models.retain(|_, model| model.len() <= 200);
         let mut seen = BTreeSet::new();
         self.favourite_models
@@ -429,6 +409,20 @@ impl Preferences {
     /// Change the settings of the database at `path`.
     pub fn database_mut(&mut self, path: &str) -> &mut DatabasePreferences {
         self.databases.entry(path.to_owned()).or_default()
+    }
+    /// What every agent may read in the database at `path`.
+    pub fn sharing_for(&self, path: &str) -> Sharing {
+        self.databases
+            .get(path)
+            .and_then(|d| d.sharing)
+            .unwrap_or(self.assistant.default_sharing)
+    }
+    /// What an agent may read in the database at `path`, and how many rows.
+    pub fn access(&self, path: &str) -> crate::assistant_tools::AgentAccess {
+        crate::assistant_tools::AgentAccess {
+            sharing: self.sharing_for(path),
+            row_limit: self.limits(path).row_limit,
+        }
     }
     /// The limits the database at `path` uses.
     pub fn limits(&self, path: &str) -> Limits {
@@ -691,33 +685,28 @@ mod tests {
             .unwrap()
     }
     #[test]
-    fn assistant_migration_scopes_legacy_consent_and_models_to_the_selected_vendor() {
-        let mut prefs = decode(r#"{"assistant":{"provider":"Codex","model":"my-model","sharing":{"/tmp/a.db":"Rows"},"privacy":{"claude":{"keep_history":true}}}}"#).unwrap();
-        let assistant = &mut prefs.assistant;
-        assert_eq!(assistant.selected_model(), "my-model");
-        assert_eq!(assistant.grant_for("/tmp/a.db"), Some(Sharing::Rows));
-        assert!(assistant.privacy.of(Provider::Claude).keep_history);
-        assistant.provider = Provider::Claude;
-        assert_eq!(assistant.grant_for("/tmp/a.db"), None);
-        assert_eq!(assistant.sharing_for("/tmp/a.db"), Sharing::Rows);
-        assistant.default_sharing = Sharing::Schema;
-        assert_eq!(assistant.sharing_for("/tmp/a.db"), Sharing::Schema);
-        assert_eq!(assistant.selected_model(), "");
+    fn one_sharing_level_per_database_serves_every_agent_and_models_stay_per_vendor() {
+        let mut prefs = decode(r#"{"assistant":{"provider":"Codex","model":"my-model","privacy":{"claude":{"keep_history":true}}}}"#).unwrap();
+        assert_eq!(prefs.assistant.selected_model(), "my-model");
+        assert!(prefs.assistant.privacy.of(Provider::Claude).keep_history);
+        prefs.database_mut("/tmp/a.db").sharing = Some(Sharing::Complete);
+        assert_eq!(prefs.sharing_for("/tmp/a.db"), Sharing::Complete);
+        assert_eq!(prefs.sharing_for("/tmp/b.db"), Sharing::Limited);
+        // Changing agent changes the model, not what the database shares.
+        prefs.assistant.provider = Provider::Claude;
+        assert_eq!(prefs.assistant.selected_model(), "");
+        assert_eq!(prefs.sharing_for("/tmp/a.db"), Sharing::Complete);
+        prefs.assistant.default_sharing = Sharing::Schema;
+        assert_eq!(prefs.sharing_for("/tmp/b.db"), Sharing::Schema);
+        assert_eq!(prefs.access("/tmp/a.db").rows(), prefs.row_limit);
         let encoded = serde_json::to_string(&prefs).unwrap();
         let restored = decode(&encoded).unwrap();
         assert_eq!(restored.assistant, prefs.assistant);
-        assert!(!encoded.contains("\"sharing\":"));
-        // Forgetting a custom agent keeps every other provider's choices.
-        let assistant = &mut prefs.assistant;
-        for database in ["/tmp/a.db", "/tmp/b.db"] {
-            let grants = assistant.grants.entry(database.into()).or_default();
-            grants.insert(Provider::Custom, Sharing::Schema);
-        }
-        assistant.intro_skips.insert(Provider::Custom, 2);
-        assistant.clear_custom_grants();
-        assert_eq!(assistant.grants.keys().collect::<Vec<_>>(), ["/tmp/a.db"]);
-        assert_eq!(assistant.grants["/tmp/a.db"].len(), 1);
-        assert!(assistant.intro_skips.is_empty());
+        assert_eq!(restored.databases, prefs.databases);
+        // Forgetting a custom agent shows its notice again.
+        prefs.assistant.intro_skips.insert(Provider::Custom, 2);
+        prefs.assistant.forget_custom();
+        assert!(prefs.assistant.intro_skips.is_empty());
     }
 
     #[test]

@@ -20,6 +20,8 @@ pub(super) enum ToolPanel {
     Diagnostics,
     /// This database's own limits and loading.
     Limits,
+    /// What every agent may read in this database.
+    Agent,
 }
 /// Presentation routes never own or duplicate the retained engine result.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]

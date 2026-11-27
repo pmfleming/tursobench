@@ -86,20 +86,23 @@ its own.
 
 ## Sharing
 
-Each database shares one of two levels with the agent. Settings → Assistant →
-Sharing sets the default, **Schema and query results** unless changed:
+Each database shares one of three levels with every agent. Settings → Assistant →
+Sharing sets the default, **Schema and limited results** unless changed:
 
 - **Schema only**: object names, columns, declared types, keys, indexes and DDL.
-- **Schema and query results**: also read-only queries and their results.
+- **Schema and limited results**: also read-only queries, at most 200 rows and
+  256 KiB of JSON each.
+- **Schema and complete results**: read-only queries up to the database's row
+  limit (never under 200, at most 10,000) and 2 MiB of JSON each.
 
-Two icons in the chat panel header switch the open database between them, per
-database (by absolute path) and provider; the choice persists in application
-preferences, at most 50 databases. Legacy choices apply only to the previously
-selected provider. Switching provider ends all workspace conversations; changing
-a custom command or executable also forgets that custom agent's choices. A change
-to a choice or to the default applies to a running agent at once, and the next
-prompt tells the agent. Settings → Assistant lists every per-database choice and
-can forget one, which returns that database to the default.
+The database's Agent panel and three icons in the chat panel header switch the
+open database between them. The choice is per database (by absolute path), the
+same for every provider, and persists with that database's other settings, at
+most 50 databases. Switching provider ends all workspace conversations; changing
+a custom command or executable shows that agent's notice again. A change to a
+choice or to the default applies to a running agent at once, and the next prompt
+tells the agent; a change to the row limit applies at once and each result says
+when it was cut.
 
 ## Privacy
 
@@ -143,7 +146,7 @@ The tool server speaks MCP (newline-delimited JSON-RPC: `initialize`, `ping`,
 | --- | --- |
 | `list_tables` | Tables and views, excluding `sqlite_*` and `__turso_internal_*`; at most 2,000 |
 | `describe_table` | Columns, primary-key order, defaults, indexes, foreign keys and DDL up to 16 KiB |
-| `run_query` | Refused unless results are shared; otherwise one read, at most 200 rows / 256 KiB; never `pragma_database_list` |
+| `run_query` | Refused unless results are shared; otherwise one read, at most 200 rows / 256 KiB, or up to the row limit / 2 MiB when complete; never `pragma_database_list` |
 | `propose_sql` | Opens the SQL, up to 256 KiB, in a new SQL editor tile without running it |
 
 Every tool is annotated `readOnlyHint`, so agents that honour it (Codex) call

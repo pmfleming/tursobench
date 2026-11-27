@@ -63,7 +63,7 @@ impl App {
         match scene {
             0 => {}
             1 => {
-                self.set_assistant_sharing(Sharing::Rows);
+                self.set_assistant_sharing(Sharing::Limited);
                 self.seed_assistant_conversation();
             }
             2 => self.preferences.panels.sidebar = false,
