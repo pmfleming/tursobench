@@ -4,6 +4,30 @@ use eframe::egui;
 use std::path::{Path, PathBuf};
 use tursobench_core::{Failure, ResultSet, SchemaObject, Ticket, TransactionState};
 use tursobench_db::{Operation, Request, Session};
+
+/// The absolute path a database's settings, history and grants are kept under.
+pub(super) fn database_key(path: &str) -> String {
+    let at = Path::new(path);
+    if at.is_absolute() {
+        path.to_owned()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(at).to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
+}
+
+impl App {
+    /// The key of the selected database's own settings.
+    pub(super) fn database_key(&self) -> String {
+        database_key(&self.database.path)
+    }
+    /// The limits the selected database uses.
+    pub(super) fn limits(&self) -> crate::storage::Limits {
+        self.preferences.limits(&self.database_key())
+    }
+}
+
 pub(super) struct DatabaseWorkspace {
     pub(super) id: u64,
     pub(super) recovery: recovery::State,
@@ -57,14 +81,7 @@ impl DatabaseWorkspace {
         self.tools.count_request = None;
         self.tools.back.clear();
         self.tools.result_return = None;
-        let path = std::path::PathBuf::from(&self.path);
-        self.tools.database_scope = if path.is_absolute() {
-            self.path.clone()
-        } else {
-            std::env::current_dir()
-                .map(|cwd| cwd.join(path).to_string_lossy().into_owned())
-                .unwrap_or_default()
-        };
+        self.tools.database_scope = database_key(&self.path);
         self.assistant
             .attach(&self.tools.database_scope, session.assistant());
         self.transaction = TransactionState::Autocommit;

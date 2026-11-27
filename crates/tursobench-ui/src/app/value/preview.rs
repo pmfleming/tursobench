@@ -276,6 +276,10 @@ impl Preview {
             Body::Load(Load::Offer(_) | Load::Unavailable(_)) => {}
         }
     }
+    /// Whether the preview waits for its value to be loaded.
+    pub fn offers_load(&self) -> bool {
+        matches!(self.body, Body::Load(Load::Offer(_)))
+    }
     /// The load button, or why the value cannot be loaded, at the left of
     /// `rect`; returns whether the button was clicked.
     pub fn controls(&self, ui: &mut egui::Ui, rect: egui::Rect, col: usize) -> bool {

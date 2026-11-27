@@ -166,9 +166,40 @@ pub struct Preferences {
     pub map_layouts: Vec<MapLayout>,
     pub(crate) workspace_layouts: Vec<crate::app::workspace::Snapshot>,
     pub inspector_visibility: BTreeMap<String, bool>,
+    /// Each database's own settings, by its absolute path.
+    pub databases: BTreeMap<String, DatabasePreferences>,
     pub panels: Panels,
     pub assistant: AssistantPreferences,
 }
+/// One database's own settings; a limit left unset uses the global one.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct DatabasePreferences {
+    /// Load a large value as soon as its field is selected, rather than on request.
+    pub auto_load: bool,
+    pub row_limit: Option<usize>,
+    pub slow_query_ms: Option<u64>,
+    pub busy_timeout_ms: Option<u64>,
+    pub query_timeout_ms: Option<u64>,
+}
+impl DatabasePreferences {
+    fn normalize(&mut self) {
+        self.row_limit = self.row_limit.map(|rows| rows.clamp(1, 10_000));
+        self.slow_query_ms = self.slow_query_ms.map(|ms| ms.clamp(1, 60_000));
+        self.busy_timeout_ms = self.busy_timeout_ms.map(|ms| ms.min(5000));
+        self.query_timeout_ms = self.query_timeout_ms.map(|ms| ms.min(3_600_000));
+    }
+}
+
+/// The limits a database uses: its own where set, otherwise the global ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    pub row_limit: usize,
+    pub slow_query_ms: u64,
+    pub busy_timeout_ms: u64,
+    pub query_timeout_ms: u64,
+}
+
 /// The agent CLI the assistant drives and what each database shares with it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -384,12 +415,37 @@ impl Default for Preferences {
             map_layouts: vec![],
             workspace_layouts: vec![],
             inspector_visibility: Default::default(),
+            databases: Default::default(),
             panels: Panels::default(),
             assistant: AssistantPreferences::default(),
         }
     }
 }
 impl Preferences {
+    /// The settings of the database at `path`; the defaults when it has none.
+    pub fn database(&self, path: &str) -> DatabasePreferences {
+        self.databases.get(path).cloned().unwrap_or_default()
+    }
+    /// Change the settings of the database at `path`.
+    pub fn database_mut(&mut self, path: &str) -> &mut DatabasePreferences {
+        self.databases.entry(path.to_owned()).or_default()
+    }
+    /// The limits the database at `path` uses.
+    pub fn limits(&self, path: &str) -> Limits {
+        let own = self.databases.get(path);
+        Limits {
+            row_limit: own.and_then(|d| d.row_limit).unwrap_or(self.row_limit),
+            slow_query_ms: own
+                .and_then(|d| d.slow_query_ms)
+                .unwrap_or(self.slow_query_ms),
+            busy_timeout_ms: own
+                .and_then(|d| d.busy_timeout_ms)
+                .unwrap_or(self.busy_timeout_ms),
+            query_timeout_ms: own
+                .and_then(|d| d.query_timeout_ms)
+                .unwrap_or(self.query_timeout_ms),
+        }
+    }
     pub fn record_query(
         &mut self,
         database: &str,
@@ -430,6 +486,13 @@ impl Preferences {
         self.inspector_visibility
             .retain(|path, _| database_key(path));
         truncate_map(&mut self.inspector_visibility, 20);
+        for database in self.databases.values_mut() {
+            database.normalize();
+        }
+        self.databases.retain(|path, database| {
+            database_key(path) && *database != DatabasePreferences::default()
+        });
+        truncate_map(&mut self.databases, 50);
         self.workspace_layouts.truncate(20);
         let mut workspace_names = HashSet::new();
         let mut workspace_bytes = 0;
@@ -679,6 +742,8 @@ mod tests {
         prefs
             .inspector_visibility
             .insert("/home/test/a.db".into(), false);
+        prefs.database_mut("/home/test/a.db").row_limit = Some(42);
+        prefs.database_mut("/home/test/a.db").auto_load = true;
         prefs.map_layouts.push(MapLayout {
             database: "/home/test/a.db".into(),
             positions: [("t".into(), [32.0, 64.0])].into(),
@@ -712,6 +777,7 @@ mod tests {
         assert_eq!(loaded.saved_queries[0].sql, "SELECT ';'");
         assert_eq!(loaded.map_layouts, prefs.map_layouts);
         assert_eq!(loaded.inspector_visibility, prefs.inspector_visibility);
+        assert_eq!(loaded.databases, prefs.databases);
         assert_eq!(loaded.memory_budget_mib, Some(12 * 1024));
         assert_eq!(loaded.database_limit, Some(17));
         drop(reader);
@@ -820,5 +886,34 @@ mod tests {
             vec![PathBuf::from("/home/test/Private")]
         );
         assert!(serde_json::to_vec(&prefs).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod database_tests {
+    use super::{Preferences, decode};
+
+    #[test]
+    fn a_database_uses_its_own_limits_and_the_defaults_for_the_rest() {
+        let mut prefs = Preferences::default();
+        let own = prefs.database_mut("/data/a.db");
+        own.row_limit = Some(50_000);
+        own.slow_query_ms = Some(20);
+        prefs.normalize();
+        let a = prefs.limits("/data/a.db");
+        // Its own values, clamped to the same bounds as the defaults.
+        assert_eq!((a.row_limit, a.slow_query_ms), (10_000, 20));
+        assert_eq!(a.busy_timeout_ms, prefs.busy_timeout_ms);
+        // Another database is not touched.
+        assert_eq!(prefs.limits("/data/b.db"), prefs.limits(""));
+        assert!(!prefs.database("/data/b.db").auto_load);
+        // Settings back at their defaults are not kept, nor are relative keys.
+        prefs.database_mut("/data/a.db").row_limit = None;
+        prefs.database_mut("/data/a.db").slow_query_ms = None;
+        prefs.database_mut("relative.db").auto_load = true;
+        prefs.normalize();
+        assert!(prefs.databases.is_empty());
+        let decoded = decode(r#"{"databases":{"/data/c.db":{"auto_load":true}}}"#).unwrap();
+        assert!(decoded.database("/data/c.db").auto_load);
     }
 }

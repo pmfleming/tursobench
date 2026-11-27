@@ -478,7 +478,7 @@ impl App {
         {
             entry
                 .window_rows
-                .min(self.preferences.row_limit.clamp(200, 10_000) - 100)
+                .min(self.limits().row_limit.clamp(200, 10_000) - 100)
         } else {
             0
         };

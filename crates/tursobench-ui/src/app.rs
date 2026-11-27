@@ -226,6 +226,7 @@ impl App {
             return;
         }
         let wake = ctx.clone();
+        let limits = self.limits();
         match Session::open_with_settings(
             self.database.path.clone().into(),
             if self.database.writable {
@@ -234,8 +235,8 @@ impl App {
                 Access::ReadOnly
             },
             ConnectionSettings {
-                busy_timeout_ms: self.preferences.busy_timeout_ms,
-                query_timeout_ms: self.preferences.query_timeout_ms,
+                busy_timeout_ms: limits.busy_timeout_ms,
+                query_timeout_ms: limits.query_timeout_ms,
             },
             move || wake.request_repaint(),
         ) {
@@ -252,7 +253,7 @@ impl App {
     fn submit(&mut self, operation: Operation, view: View) -> Option<Ticket> {
         let operation = match operation {
             Operation::Browse(mut spec) => {
-                spec.options.page_rows = paging::fetch_rows(self.preferences.row_limit);
+                spec.options.page_rows = paging::fetch_rows(self.limits().row_limit);
                 spec.options.page_bytes = paging::PAGE_BYTES;
                 Operation::Browse(spec)
             }

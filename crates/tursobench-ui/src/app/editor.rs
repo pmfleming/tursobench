@@ -213,7 +213,7 @@ impl App {
                 sql,
                 parameters,
                 budget: Budget {
-                    rows: self.preferences.row_limit,
+                    rows: self.limits().row_limit,
                     ..Default::default()
                 },
             },
@@ -307,7 +307,7 @@ impl App {
                     parameters,
                     atomic,
                     budget: Budget {
-                        rows: self.preferences.row_limit,
+                        rows: self.limits().row_limit,
                         ..Default::default()
                     },
                 };

@@ -351,66 +351,14 @@ impl App {
     fn query_settings(&mut self, ui: &mut egui::Ui) {
         ui.spacing_mut().item_spacing.y = 3.0;
         section(ui, "Limits", |ui| {
-            let columns = LimitColumns::measure(ui, &["Rows", "Slow ≥", "Busy wait", "Deadline"]);
-            let mut rows = self.preferences.row_limit as u64;
-            let response = limit_row(
-                ui,
-                &columns,
-                LimitSlider {
-                    label: "Rows",
-                    tooltip: "Maximum retained query rows",
-                    reopen: false,
-                    range: 1..=10_000,
-                    smallest: 1.0,
-                    format: |rows| rows.to_string(),
-                },
-                &mut rows,
-            );
-            self.preferences.row_limit = rows as usize;
-            self.setting_response(response);
-            let response = limit_row(
-                ui,
-                &columns,
-                LimitSlider {
-                    label: "Slow ≥",
-                    tooltip: "Slow query threshold",
-                    reopen: false,
-                    range: 1..=60_000,
-                    smallest: 1.0,
-                    format: format_ms,
-                },
-                &mut self.preferences.slow_query_ms,
-            );
-            self.setting_response(response);
-            let response = limit_row(
-                ui,
-                &columns,
-                LimitSlider {
-                    label: "Busy wait",
-                    tooltip: "Busy timeout; applies after reopening the database. Far left disables.",
-                    reopen: true,
-                    range: 0..=5000,
-                    smallest: 10.0,
-                    format: format_ms,
-                },
-                &mut self.preferences.busy_timeout_ms,
-            );
-            self.setting_response(response);
-            let response = limit_row(
-                ui,
-                &columns,
-                LimitSlider {
-                    label: "Deadline",
-                    tooltip: "Statement deadline after reopen; far left disables. Prior committed work is not rolled back.",
-                    reopen: true,
-                    range: 0..=3_600_000,
-                    smallest: 100.0,
-                    format: format_ms,
-                },
-                &mut self.preferences.query_timeout_ms,
-            );
-            self.setting_response(response);
-            ui.small("Applies after reopening the database.");
+            let columns = LimitColumns::measure(ui, &Limit::ALL.map(|l| l.slider().label));
+            for limit in Limit::ALL {
+                let mut value = limit.get(&self.preferences.limits(""));
+                let (response, _) = limit_row(ui, &columns, limit.slider(), &mut value, None);
+                limit.set_default(&mut self.preferences, value);
+                self.setting_response(response);
+            }
+            ui.small("Defaults for every database; each can set its own in its Limits panel.");
         });
         section(ui, "SQL recovery", |ui| self.recovery_settings(ui));
         section(ui, "All databases", |ui| {
@@ -584,51 +532,206 @@ struct LimitSlider {
     format: fn(u64) -> String,
 }
 
-/// Label, logarithmic slider and current value on one line.
+/// One of the query limits, set by default for every database and by any one for itself.
+#[derive(Clone, Copy)]
+enum Limit {
+    Rows,
+    Slow,
+    Busy,
+    Deadline,
+}
+impl Limit {
+    const ALL: [Self; 4] = [Self::Rows, Self::Slow, Self::Busy, Self::Deadline];
+    fn slider(self) -> LimitSlider {
+        match self {
+            Self::Rows => LimitSlider {
+                label: "Rows",
+                tooltip: "Maximum retained query rows",
+                reopen: false,
+                range: 1..=10_000,
+                smallest: 1.0,
+                format: |rows| rows.to_string(),
+            },
+            Self::Slow => LimitSlider {
+                label: "Slow ≥",
+                tooltip: "Slow query threshold",
+                reopen: false,
+                range: 1..=60_000,
+                smallest: 1.0,
+                format: format_ms,
+            },
+            Self::Busy => LimitSlider {
+                label: "Busy wait",
+                tooltip: "Busy timeout; applies after reopening the database. Far left disables.",
+                reopen: true,
+                range: 0..=5000,
+                smallest: 10.0,
+                format: format_ms,
+            },
+            Self::Deadline => LimitSlider {
+                label: "Deadline",
+                tooltip: "Statement deadline after reopen; far left disables. Prior committed work is not rolled back.",
+                reopen: true,
+                range: 0..=3_600_000,
+                smallest: 100.0,
+                format: format_ms,
+            },
+        }
+    }
+    fn get(self, limits: &crate::storage::Limits) -> u64 {
+        match self {
+            Self::Rows => limits.row_limit as u64,
+            Self::Slow => limits.slow_query_ms,
+            Self::Busy => limits.busy_timeout_ms,
+            Self::Deadline => limits.query_timeout_ms,
+        }
+    }
+    fn set_default(self, preferences: &mut crate::storage::Preferences, value: u64) {
+        match self {
+            Self::Rows => preferences.row_limit = value as usize,
+            Self::Slow => preferences.slow_query_ms = value,
+            Self::Busy => preferences.busy_timeout_ms = value,
+            Self::Deadline => preferences.query_timeout_ms = value,
+        }
+    }
+    /// The database's own value, if it set one.
+    fn own(self, database: &crate::storage::DatabasePreferences) -> Option<u64> {
+        match self {
+            Self::Rows => database.row_limit.map(|rows| rows as u64),
+            Self::Slow => database.slow_query_ms,
+            Self::Busy => database.busy_timeout_ms,
+            Self::Deadline => database.query_timeout_ms,
+        }
+    }
+    fn set_own(self, database: &mut crate::storage::DatabasePreferences, value: Option<u64>) {
+        match self {
+            Self::Rows => database.row_limit = value.map(|rows| rows as usize),
+            Self::Slow => database.slow_query_ms = value,
+            Self::Busy => database.busy_timeout_ms = value,
+            Self::Deadline => database.query_timeout_ms = value,
+        }
+    }
+}
+
+impl App {
+    /// The selected database's own limits, each with a reset to the
+    /// default, and whether its large values load without asking.
+    pub(super) fn database_limits_ui(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.strong("Limits");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                icons::hint(
+                    ui,
+                    Icon::Database,
+                    16.0,
+                    "This database only; the defaults are in Settings → Queries",
+                );
+            });
+        });
+        let key = self.database_key();
+        let limits = self.limits();
+        let defaults = self.preferences.limits("");
+        let own = self.preferences.database(&key);
+        let columns = LimitColumns::measure(ui, &Limit::ALL.map(|l| l.slider().label));
+        for limit in Limit::ALL {
+            let slider = limit.slider();
+            let reset = format!("Use the default: {}", (slider.format)(limit.get(&defaults)));
+            let mut value = limit.get(&limits);
+            let set = limit.own(&own).is_some();
+            let (response, reset) =
+                limit_row(ui, &columns, slider, &mut value, Some((set, &reset)));
+            if response.changed() {
+                limit.set_own(self.preferences.database_mut(&key), Some(value));
+            }
+            if reset {
+                limit.set_own(self.preferences.database_mut(&key), None);
+                self.settings.dirty = true;
+                self.save_settings();
+            }
+            self.setting_response(response);
+        }
+        ui.separator();
+        let mut auto_load = own.auto_load;
+        let response = ui
+            .checkbox(&mut auto_load, "Load large values")
+            .on_hover_text(
+                "Load a value over 64 KiB, up to 16 MiB, as soon as its field is selected. \
+             Off, its preview offers a button.",
+            );
+        if response.changed() {
+            self.preferences.database_mut(&key).auto_load = auto_load;
+            self.settings.dirty = true;
+            self.save_settings();
+        }
+    }
+}
+
+/// Label, logarithmic slider and current value on one line; with `reset`,
+/// an undo button, enabled while it is true and named by its text, which
+/// returns true when clicked.
 fn limit_row(
     ui: &mut egui::Ui,
     columns: &LimitColumns,
     limit: LimitSlider,
     value: &mut u64,
-) -> egui::Response {
-    ui.horizontal(|ui| {
-        let height = ui.spacing().interact_size.y;
-        let label = ui
-            .allocate_ui_with_layout(
-                egui::vec2(columns.label, height),
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    ui.set_min_width(columns.label);
-                    let label = ui.label(limit.label).on_hover_text(limit.tooltip);
-                    if limit.reopen {
-                        icons::hint(ui, Icon::Refresh, 13.0, limit.tooltip);
-                    }
-                    label
-                },
-            )
-            .inner;
-        let width = (ui.available_width() - columns.value - ui.spacing().item_spacing.x).max(40.0);
-        let (low, high) = (*limit.range.start(), *limit.range.end());
-        let response = themed_slider(
-            ui,
-            width,
-            egui::Slider::new(value, limit.range)
-                .logarithmic(true)
-                .smallest_positive(limit.smallest)
-                .show_value(false)
-                .trailing_fill(true),
-        );
-        if response.changed() {
-            *value = round_limit(*value).clamp(low, high);
-        }
-        ui.allocate_ui_with_layout(
-            egui::vec2(columns.value, height),
-            egui::Layout::right_to_left(egui::Align::Center),
-            |ui| ui.label((limit.format)(*value)),
-        );
-        response.labelled_by(label.id).on_hover_text(limit.tooltip)
-    })
-    .inner
+    reset: Option<(bool, &str)>,
+) -> (egui::Response, bool) {
+    let reset_width = if reset.is_some() {
+        24.0 + ui.spacing().item_spacing.x
+    } else {
+        0.0
+    };
+    let mut reset_clicked = false;
+    let response = ui
+        .horizontal(|ui| {
+            let height = ui.spacing().interact_size.y;
+            let label = ui
+                .allocate_ui_with_layout(
+                    egui::vec2(columns.label, height),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.set_min_width(columns.label);
+                        let label = ui.label(limit.label).on_hover_text(limit.tooltip);
+                        if limit.reopen {
+                            icons::hint(ui, Icon::Refresh, 13.0, limit.tooltip);
+                        }
+                        label
+                    },
+                )
+                .inner;
+            let width =
+                (ui.available_width() - columns.value - ui.spacing().item_spacing.x - reset_width)
+                    .max(40.0);
+            let (low, high) = (*limit.range.start(), *limit.range.end());
+            let response = themed_slider(
+                ui,
+                width,
+                egui::Slider::new(value, limit.range)
+                    .logarithmic(true)
+                    .smallest_positive(limit.smallest)
+                    .show_value(false)
+                    .trailing_fill(true),
+            );
+            if response.changed() {
+                *value = round_limit(*value).clamp(low, high);
+            }
+            ui.allocate_ui_with_layout(
+                egui::vec2(columns.value, height),
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| ui.label((limit.format)(*value)),
+            );
+            if let Some((enabled, name)) = reset {
+                reset_clicked = ui
+                    .add_enabled_ui(enabled, |ui| {
+                        icons::line_control(ui, Icon::Undo, name, "", None)
+                    })
+                    .inner
+                    .clicked();
+            }
+            response.labelled_by(label.id).on_hover_text(limit.tooltip)
+        })
+        .inner;
+    (response, reset_clicked)
 }
 
 /// Two significant figures, so a logarithmic drag lands on readable values.

@@ -135,7 +135,7 @@ impl App {
         let Some(mut spec) = document.browse.clone() else {
             return;
         };
-        let fetch_rows = fetch_rows(self.preferences.row_limit);
+        let fetch_rows = fetch_rows(self.limits().row_limit);
         let start = spec.offset;
         let rows = &document.result.rows;
         // A keyed table continues from its boundary row, once that row is fully loaded.
@@ -208,7 +208,7 @@ impl App {
         if !self.page_available(false) {
             return false;
         }
-        let limit = self.preferences.row_limit;
+        let limit = self.limits().row_limit;
         let result = &self.database.document.result;
         let rows_needed = (result.rows.len() + fetch_rows(limit)).saturating_sub(keep_rows(limit));
         if start < rows_needed {
@@ -272,7 +272,7 @@ impl App {
         {
             page.offset = browse.offset.saturating_sub(page.result.rows.len());
         }
-        let keep = keep_rows(self.preferences.row_limit);
+        let keep = keep_rows(self.limits().row_limit);
         self.database.document.append_page(page, keep);
         self.restore_browse_selection();
     }

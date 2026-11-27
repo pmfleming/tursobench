@@ -639,6 +639,12 @@ impl App {
         if preview.as_ref().is_none_or(|p| !p.decodes()) {
             self.database.document.tools.values.idle();
         }
+        // A database set to load large values reads one its lens needs at once.
+        if preview.as_ref().is_some_and(Preview::offers_load)
+            && self.preferences.database(&self.database_key()).auto_load
+        {
+            self.load_field(row, col);
+        }
         preview
     }
     pub(super) fn inspection_surfaces(&mut self, ctx: &egui::Context) {

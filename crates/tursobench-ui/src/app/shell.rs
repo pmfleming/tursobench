@@ -18,6 +18,8 @@ pub(super) enum ToolPanel {
     History,
     Saved,
     Diagnostics,
+    /// This database's own limits and loading.
+    Limits,
 }
 /// Presentation routes never own or duplicate the retained engine result.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]

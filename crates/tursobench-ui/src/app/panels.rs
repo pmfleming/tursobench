@@ -105,7 +105,7 @@ impl App {
         ) {
             self.store.save(&self.preferences);
         }
-        let threshold = self.preferences.slow_query_ms;
+        let threshold = self.limits().slow_query_ms;
         ui.horizontal(|ui| {
             let toggles = 2.0 * (28.0 + ui.spacing().item_spacing.x);
             ui.add_sized(

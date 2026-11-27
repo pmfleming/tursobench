@@ -656,14 +656,10 @@ fn the_text_lens_says_where_it_stops_copies_what_it_shows_and_find_says_why() {
     app.close();
 }
 
-/// A large image's preview loads it only when asked, keeps it while its field
-/// is selected, and lets the value view open it without reading it again.
-#[test]
-fn a_large_image_loads_in_its_preview_only_when_asked() {
-    use crate::app::test_ui::{control, nodes, pointer, render};
-    use tursobench_core::DeferredCell;
-
-    // Noise does not compress, so the image is over the 64 KiB a page keeps.
+/// A table whose `picture` is a PNG over the 64 KiB a page keeps in memory,
+/// beside a number; returns the picture's bytes.
+fn large_image() -> (tempfile::TempDir, egui::Context, App, Vec<u8>) {
+    // Noise does not compress, so the image stays large.
     let mut seed = 7u32;
     let rgba: Vec<u8> = (0..160 * 160 * 4)
         .map(|_| {
@@ -698,6 +694,34 @@ fn a_large_image_loads_in_its_preview_only_when_asked() {
         &app.database.document.result.rows[0][1],
         Value::Deferred(_)
     ));
+    (dir, ctx, app, picture)
+}
+
+/// Draw the record tile and poll until the picture's preview shows it.
+fn preview_shows_image(app: &mut App, ctx: &egui::Context) {
+    let mut shown = String::new();
+    for _ in 0..500 {
+        app.poll(ctx);
+        crate::app::test_ui::render(ctx, egui::vec2(550.0, 400.0), vec![], |ui| {
+            app.record_inspector(ui, 0)
+        });
+        shown = app.record_preview(ctx, 0, 1).unwrap().describe();
+        if shown.starts_with("Image, 160 × 160") {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("the preview never showed the image: {shown}");
+}
+
+/// A large image's preview loads it only when asked, keeps it while its field
+/// is selected, and lets the value view open it without reading it again.
+#[test]
+fn a_large_image_loads_in_its_preview_only_when_asked() {
+    use crate::app::test_ui::{control, nodes, pointer, render};
+    use tursobench_core::DeferredCell;
+
+    let (_dir, ctx, mut app, picture) = large_image();
     let size = egui::vec2(550.0, 400.0);
     let labels = |output: &egui::FullOutput| -> Vec<String> {
         nodes(output)
@@ -723,17 +747,7 @@ fn a_large_image_loads_in_its_preview_only_when_asked() {
         });
     }
     assert_eq!(app.database.sequence, sequence + 1);
-    let mut shown = String::new();
-    for _ in 0..500 {
-        app.poll(&ctx);
-        render(&ctx, size, vec![], |ui| app.record_inspector(ui, 0));
-        shown = app.record_preview(&ctx, 0, 1).unwrap().describe();
-        if shown.starts_with("Image, 160 × 160") {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    assert!(shown.starts_with("Image, 160 × 160"), "{shown}");
+    preview_shows_image(&mut app, &ctx);
     // The value view takes the loaded bytes rather than reading them again.
     let sequence = app.database.sequence;
     app.open_value(0, 1);
@@ -755,5 +769,54 @@ fn a_large_image_loads_in_its_preview_only_when_asked() {
     app.select_cell(0, 1, false);
     let shown = app.record_preview(&ctx, 0, 1).unwrap().describe();
     assert!(shown.starts_with("Over the 16 MiB"), "{shown}");
+    app.close();
+}
+
+/// A database set to load large values reads one when its field is
+/// selected; its Limits panel sets that and its own limits, each of which
+/// resets to the default, and another database keeps the defaults.
+#[test]
+fn the_limits_panel_sets_this_database_alone_and_can_load_without_asking() {
+    use crate::app::test_ui::{control, nodes, pointer, render};
+
+    let (_dir, ctx, mut app, _) = large_image();
+    let size = egui::vec2(300.0, 400.0);
+    let key = app.database_key();
+    let enabled = |output: &egui::FullOutput, name: &str| {
+        nodes(output)
+            .iter()
+            .find(|(_, node)| node.label() == Some(name))
+            .map(|(_, node)| !node.is_disabled())
+    };
+    let panel = |app: &mut App, events| render(&ctx, size, events, |ui| app.database_limits_ui(ui));
+    let output = panel(&mut app, vec![]);
+    let reset = format!("Use the default: {}", app.preferences.row_limit);
+    // At the defaults, nothing can be reset.
+    assert_eq!(enabled(&output, &reset), Some(false));
+    app.preferences.database_mut(&key).row_limit = Some(250);
+    assert_eq!(app.limits().row_limit, 250);
+    assert_eq!(app.preferences.limits("/elsewhere.db").row_limit, 1000);
+    let output = panel(&mut app, vec![]);
+    assert_eq!(enabled(&output, &reset), Some(true));
+    let at = control(&output, &reset).center();
+    for pressed in [true, false] {
+        panel(&mut app, pointer(at, pressed));
+    }
+    assert_eq!(app.preferences.database(&key).row_limit, None);
+    assert_eq!(app.limits().row_limit, app.preferences.row_limit);
+    // The checkbox turns on loading without asking.
+    let output = panel(&mut app, vec![]);
+    let at = control(&output, "Load large values").center();
+    for pressed in [true, false] {
+        panel(&mut app, pointer(at, pressed));
+    }
+    assert!(app.preferences.database(&key).auto_load);
+    let sequence = app.database.sequence;
+    app.select_cell(0, 1, false);
+    render(&ctx, egui::vec2(550.0, 400.0), vec![], |ui| {
+        app.record_inspector(ui, 0)
+    });
+    assert_eq!(app.database.sequence, sequence + 1);
+    preview_shows_image(&mut app, &ctx);
     app.close();
 }

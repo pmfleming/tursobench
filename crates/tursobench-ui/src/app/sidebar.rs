@@ -87,6 +87,7 @@ impl App {
             ToolPanel::Diagnostics => self.diagnostics_ui(ui),
             ToolPanel::Saved => self.saved_queries_ui(ui),
             ToolPanel::History => self.query_history_ui(ui),
+            ToolPanel::Limits => self.database_limits_ui(ui),
         }
     }
 
@@ -345,6 +346,7 @@ impl App {
                 (Icon::History, "History", ToolPanel::History),
                 (Icon::Saved, "Saved queries", ToolPanel::Saved),
                 (Icon::Checks, "Database checks", ToolPanel::Diagnostics),
+                (Icon::Gauge, "Limits for this database", ToolPanel::Limits),
             ] {
                 if icons::control(ui, icon, name, "", panel == self.database.ui.sidebar, false)
                     .clicked()

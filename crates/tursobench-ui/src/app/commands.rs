@@ -568,6 +568,12 @@ impl App {
                 Command::Panel(ToolPanel::Diagnostics),
             ),
             (
+                "Limits for this database",
+                "",
+                "rows slow busy timeout deadline load large values preview",
+                Command::Panel(ToolPanel::Limits),
+            ),
+            (
                 "Sidebar",
                 "Ctrl B",
                 "show hide toggle navigation panel",
