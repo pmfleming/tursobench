@@ -251,6 +251,11 @@ impl App {
 
     /// The selected database's Agent panel: what every agent may read here.
     pub(super) fn database_agent_ui(&mut self, ui: &mut egui::Ui) {
+        let key = self.database_key();
+        let own = self.preferences.database(&key).sharing.is_some();
+        let default = sharing_choice(self.preferences.assistant.default_sharing).1;
+        let reset = format!("Use the default: {}", default.to_lowercase());
+        let mut use_default = false;
         ui.horizontal(|ui| {
             ui.strong("Agent");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -261,8 +266,18 @@ impl App {
                     "Every agent reads the same here; the agent, model and effort are in \
                      Settings → Assistant",
                 );
+                // Back to the level set in Settings → Assistant → Sharing.
+                use_default = ui
+                    .add_enabled_ui(own, |ui| {
+                        icons::line_control(ui, Icon::Undo, &reset, "", None)
+                    })
+                    .inner
+                    .clicked();
             });
         });
+        if use_default {
+            self.change_access(|app| app.preferences.database_mut(&key).sharing = None);
+        }
         let current = self.database_sharing();
         let mut chosen = None;
         for sharing in Sharing::ALL {

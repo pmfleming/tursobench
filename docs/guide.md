@@ -119,7 +119,7 @@ database, so their six icons sit directly under its row in **Open databases** an
 appear only while it is open. **Limits** sets this database's own rows, Slow ≥,
 busy wait and deadline, each with an undo icon back to the default from Settings →
 Queries, and **Load large values**, off by default. **Agent** sets what every agent
-may read in this database. The foot of the sidebar holds application-wide controls, which also work
+may read in this database, with an undo icon back to the default. The foot of the sidebar holds application-wide controls, which also work
 without an open database, as three icons: Settings (Ctrl+,), the command palette
 (Ctrl K) and the keyboard reference (F1). The reference is grouped by where each
 key or gesture applies, the palette lists common actions with their shortcuts, and

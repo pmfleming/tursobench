@@ -96,7 +96,7 @@ Sharing sets the default, **Schema and limited results** unless changed:
   limit (never under 200, at most 10,000) and 2 MiB of JSON each.
 
 The database's Agent panel and three icons in the chat panel header switch the
-open database between them. The choice is per database (by absolute path), the
+open database between them; the panel's undo icon returns it to the default. The choice is per database (by absolute path), the
 same for every provider, and persists with that database's other settings, at
 most 50 databases. Switching provider ends all workspace conversations; changing
 a custom command or executable shows that agent's notice again. A change to a

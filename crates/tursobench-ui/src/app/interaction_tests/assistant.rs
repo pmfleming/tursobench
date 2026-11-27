@@ -836,7 +836,16 @@ fn the_agent_panel_sets_what_every_agent_reads_in_this_database_alone() {
     let (_dir, ctx, mut app) = fixture(TABLE, false);
     let key = app.database_key();
     let size = egui::vec2(300.0, 400.0);
+    let reset = "Use the default: share the schema and limited results";
+    let enabled = |output: &egui::FullOutput| {
+        crate::app::test_ui::nodes(output)
+            .iter()
+            .find(|(_, node)| node.label() == Some(reset))
+            .map(|(_, node)| !node.is_disabled())
+    };
     let output = render(&ctx, size, vec![], |ui| app.database_agent_ui(ui));
+    // At the default, there is nothing to go back to.
+    assert_eq!(enabled(&output), Some(false));
     let at = control(&output, "Share the schema and complete results").center();
     for pressed in [true, false] {
         render(&ctx, size, pointer(at, pressed), |ui| {
@@ -856,5 +865,16 @@ fn the_agent_panel_sets_what_every_agent_reads_in_this_database_alone() {
         app.preferences.sharing_for("/elsewhere.db"),
         Sharing::Limited
     );
+    // Its own choice can be dropped, back to the default.
+    let output = render(&ctx, size, vec![], |ui| app.database_agent_ui(ui));
+    assert_eq!(enabled(&output), Some(true));
+    let at = control(&output, reset).center();
+    for pressed in [true, false] {
+        render(&ctx, size, pointer(at, pressed), |ui| {
+            app.database_agent_ui(ui)
+        });
+    }
+    assert_eq!(app.preferences.database(&key).sharing, None);
+    assert_eq!(app.preferences.sharing_for(&key), Sharing::Limited);
     app.close();
 }
