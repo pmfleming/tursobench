@@ -57,33 +57,23 @@ fn json(rng: &mut Rng, depth: u32) -> String {
     }
 }
 
-fn engine() -> turso::Connection {
-    tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap()
-        .block_on(async {
-            let db = turso::Builder::new_local(":memory:").build().await.unwrap();
-            db.connect().unwrap()
-        })
+async fn engine() -> turso::Connection {
+    let db = turso::Builder::new_local(":memory:").build().await.unwrap();
+    db.connect().unwrap()
 }
 
 /// One row of one query, with a text parameter.
-fn query(c: &turso::Connection, sql: &str, text: &str) -> Vec<turso::Value> {
-    tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap()
-        .block_on(async {
-            let mut rows = c.query(sql, [text]).await.unwrap();
-            let row = rows.next().await.unwrap().unwrap();
-            (0..row.column_count())
-                .map(|i| row.get_value(i).unwrap())
-                .collect()
-        })
+async fn query(c: &turso::Connection, sql: &str, text: &str) -> Vec<turso::Value> {
+    let mut rows = c.query(sql, [text]).await.unwrap();
+    let row = rows.next().await.unwrap().unwrap();
+    (0..row.column_count())
+        .map(|i| row.get_value(i).unwrap())
+        .collect()
 }
 
-#[test]
-fn jsonb_reads_back_as_the_engines_json() {
-    let c = engine();
+#[tokio::test]
+async fn jsonb_agrees_with_the_engine_and_bounds_corrupt_values() {
+    let c = engine().await;
     let mut rng = Rng(0x5eed_1234_abcd);
     let cancel = AtomicBool::new(false);
     let mut inputs: Vec<String> = (0..400).map(|_| json(&mut rng, 4)).collect();
@@ -96,7 +86,7 @@ fn jsonb_reads_back_as_the_engines_json() {
         .map(String::from),
     );
     for input in inputs {
-        let values = query(&c, "SELECT jsonb(?1), json(jsonb(?1))", &input);
+        let values = query(&c, "SELECT jsonb(?1), json(jsonb(?1))", &input).await;
         let (turso::Value::Blob(blob), turso::Value::Text(expected)) = (&values[0], &values[1])
         else {
             panic!("{input}: {values:?}");
@@ -106,16 +96,12 @@ fn jsonb_reads_back_as_the_engines_json() {
         assert!(tree.complete);
         assert_eq!(&tree.json(), expected, "{input}");
     }
-}
 
-#[test]
-fn mutated_jsonb_never_panics_and_valid_trees_stay_bounded() {
-    let c = engine();
+    // Corrupt a larger value written by the engine.
     let mut rng = Rng(0xfeed_beef);
-    let cancel = AtomicBool::new(false);
     let items: Vec<String> = (0..20).map(|_| json(&mut rng, 4)).collect();
     let input = format!("[{}]", items.join(","));
-    let values = query(&c, "SELECT jsonb(?1)", &input);
+    let values = query(&c, "SELECT jsonb(?1)", &input).await;
     let turso::Value::Blob(blob) = &values[0] else {
         panic!("{values:?}")
     };
@@ -132,10 +118,10 @@ fn mutated_jsonb_never_panics_and_valid_trees_stay_bounded() {
     }
 }
 
-#[test]
-fn vectors_read_back_as_the_engines_vector_extract() {
+#[tokio::test]
+async fn vectors_read_back_as_the_engines_vector_extract() {
     use tursobench_blob::vector::{self, Layout};
-    let c = engine();
+    let c = engine().await;
     let mut rng = Rng(0xabcd_0042);
     for dims in [1usize, 3, 8, 9, 17, 64] {
         let numbers: Vec<String> = (0..dims)
@@ -150,7 +136,7 @@ fn vectors_read_back_as_the_engines_vector_extract() {
             ("vector32_sparse", Layout::Sparse),
         ] {
             let sql = format!("SELECT {function}(?1), vector_extract({function}(?1))");
-            let values = query(&c, &sql, &text);
+            let values = query(&c, &sql, &text).await;
             let (turso::Value::Blob(blob), turso::Value::Text(extracted)) =
                 (&values[0], &values[1])
             else {

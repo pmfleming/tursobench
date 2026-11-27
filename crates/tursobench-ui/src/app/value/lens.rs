@@ -78,7 +78,6 @@ enum State {
 }
 
 /// An image as it can be shown now.
-#[derive(Clone)]
 pub(in crate::app) enum Shown {
     Pending,
     Ready(egui::TextureId, egui::Vec2, Meta),
@@ -128,16 +127,23 @@ impl Images {
         let Some((bytes, format)) = bytes() else {
             return Shown::Failed("Open the value to load the image".into());
         };
-        let id = self
+        let Some(id) = self
             .decoder
-            .queue(ctx, Work::Image(bytes, format, size.fit(ctx)));
+            .queue(ctx, Work::Image(bytes, format, size.fit(ctx)))
+        else {
+            let reason = "Could not start the image decoder".to_owned();
+            if size == Size::Copy {
+                self.copied = Some(Err(reason.clone()));
+            }
+            return Shown::Failed(reason);
+        };
         self.states.push((key, State::Pending(id)));
         Shown::Pending
     }
 
     /// Upload each decoded image that is still wanted; drop the rest.
     pub fn poll(&mut self, ctx: &egui::Context) {
-        for (id, output) in self.decoder.poll_all() {
+        while let Some((id, output)) = self.decoder.next() {
             let Some(index) = self
                 .states
                 .iter()

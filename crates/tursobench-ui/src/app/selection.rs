@@ -212,17 +212,7 @@ impl App {
             self.open_cell(row, column);
             return;
         }
-        let Some(original) = self.database.document.result.rows.get(row) else {
-            return;
-        };
-        let Some(value) = self
-            .database
-            .document
-            .drafts
-            .as_ref()
-            .and_then(|d| d.displayed(original, column))
-            .or_else(|| original.get(column))
-        else {
+        let Some(value) = self.field_value(row, column) else {
             return;
         };
         let Some(editor) = CellEditor::inline(value) else {

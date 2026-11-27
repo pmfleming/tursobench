@@ -1,22 +1,22 @@
 //! The record tile's second level: one field filling the tile body, read
 //! through a lens, under a header that is the field's own row.
 use super::{
-    Decoded, Lens, Summary, Target, hex, inspect,
+    Decoded, Lens, Offer, Summary, Target, hex, inspect,
     job::Work,
     lens::{self, Shown, Size},
-    offer::Offer,
-    view::{CHUNK, CLIPBOARD, LOAD, Source, View, Want},
+    view::{CHUNK, CLIPBOARD, LOAD, Source, View},
 };
 use crate::app::{
-    App, files,
+    App,
     icons::{self, Icon},
     presentation,
 };
 use eframe::egui;
 use std::sync::Arc;
-use tursobench_blob::{Kind, Order, encode::Format as CopyFormat, formats::Format, tree::Part};
-use tursobench_core::{EventKind, Value};
-use tursobench_db::Operation;
+use tursobench_blob::{
+    Kind, Order, encode::Format as CopyFormat, formats::Format, inspect::real, tree::Part,
+};
+use tursobench_core::Value;
 
 /// The tile width from which the hex lens adds its inspector list.
 const EXPANDED: f32 = 820.0;
@@ -30,7 +30,7 @@ enum Header {
     Find,
     Copy(CopyFormat),
     CopyImage,
-    Save,
+    Save(&'static str),
     Load,
 }
 
@@ -42,19 +42,6 @@ enum Edit {
 }
 
 impl App {
-    /// The value field `col` of `row` shows: its draft, else the stored value.
-    fn shown_value(&self, row: usize, col: usize) -> Option<&Value> {
-        let document = &self.database.document;
-        let values = document.result.rows.get(row)?;
-        document
-            .drafts
-            .as_ref()
-            .and_then(|d| d.displayed(values, col))
-            .or_else(|| values.get(col))
-    }
-    fn value_view(&mut self) -> Option<&mut View> {
-        self.database.document.tools.values.view.as_mut()
-    }
     pub(in crate::app) fn value_open(&self) -> bool {
         self.database.document.tools.values.view.is_some()
     }
@@ -64,7 +51,7 @@ impl App {
         let document = &self.database.document;
         let from = (document.result.current, document.draft_revision);
         let Some(view) = self
-            .shown_value(row, col)
+            .field_value(row, col)
             .and_then(|value| View::new(row, col, value, from))
         else {
             return;
@@ -110,7 +97,7 @@ impl App {
             (view.per, view.lines),
         );
         let next = row
-            .and_then(|row| Some((row, self.shown_value(row, col)?)))
+            .and_then(|row| Some((row, self.field_value(row, col)?)))
             .and_then(|(row, value)| View::new(row, col, value, from));
         let values = &mut self.database.document.tools.values;
         values.ticket = None;
@@ -197,7 +184,7 @@ impl App {
     }
 
     /// The field's own row as the header: back, name, summary and tools.
-    fn value_header(&mut self, ui: &mut egui::Ui, offer: &Offer, editable: bool) -> Option<Header> {
+    fn value_header(&self, ui: &mut egui::Ui, offer: &Offer, editable: bool) -> Option<Header> {
         let lens = offer.lens;
         let view = self.database.document.tools.values.view.as_ref()?;
         let name = self
@@ -207,11 +194,11 @@ impl App {
             .columns
             .get(view.col)?
             .name
-            .clone();
+            .as_str();
         let header = self.database.document.column_header(view.col);
         let vector = super::vector_hint(&header.column.name, header.declared_type());
         let summary = self
-            .shown_value(view.row, view.col)
+            .field_value(view.row, view.col)
             .and_then(|value| Summary::for_column(ui.ctx(), value, vector));
         let (rect, _) =
             ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), egui::Sense::hover());
@@ -226,10 +213,10 @@ impl App {
         if line_button(ui, back, Icon::Back, "Back to fields", "Esc", None) {
             action = Some(Header::Back);
         }
-        let width = presentation::text_width(ui, name.as_str(), 12.5) + 8.0;
+        let width = presentation::text_width(ui, name, 12.5) + 8.0;
         let label =
             egui::Rect::from_min_size(rect.min + egui::vec2(22.0, 0.0), egui::vec2(width, 24.0));
-        presentation::text_at(ui, label, &name, ui.visuals().text_color(), 12.5);
+        presentation::text_at(ui, label, name, ui.visuals().text_color(), 12.5);
         // Tools from the right: save, copy as, find, then the lenses.
         let mut right = rect.right();
         let mut slot = |gap: f32| {
@@ -240,11 +227,9 @@ impl App {
             action = Some(Header::Load);
         }
         if line_button(ui, slot(0.0), Icon::Export, "Save to file…", "", None) {
-            action = Some(Header::Save);
+            action = Some(Header::Save(offer.kind.extension()));
         }
-        action = self
-            .copy_menu(ui, slot(0.0), lens == Lens::Image)
-            .or(action);
+        action = Self::copy_menu(ui, slot(0.0), lens == Lens::Image).or(action);
         if lens == Lens::Hex && line_button(ui, slot(0.0), Icon::Search, "Find", "Ctrl F", None) {
             action = Some(Header::Find);
         }
@@ -281,7 +266,7 @@ impl App {
 
     /// The copy-as icon and its menu of formats, with the image itself for
     /// the image lens; returns what was chosen.
-    fn copy_menu(&mut self, ui: &mut egui::Ui, rect: egui::Rect, image: bool) -> Option<Header> {
+    fn copy_menu(ui: &mut egui::Ui, rect: egui::Rect, image: bool) -> Option<Header> {
         let mut child = ui.new_child(egui::UiBuilder::new().id_salt("value-copy").max_rect(rect));
         let response = icons::line_control(&mut child, Icon::Copy, "Copy as…", "", None);
         let mut chosen = None;
@@ -321,8 +306,10 @@ impl App {
                 }
             }
             Header::Copy(format) => self.copy_value(ctx, format, false),
-            Header::CopyImage => self.copy_image(ctx),
-            Header::Save => self.save_value(ctx),
+            Header::CopyImage => {
+                self.value_image(ctx, Size::Copy);
+            }
+            Header::Save(extension) => self.save_value(ctx, extension),
             Header::Load => self.replace_value_from_file(ctx),
         }
     }
@@ -446,7 +433,6 @@ impl App {
             });
     }
 
-    /// The tree lens: the whole value decoded off the UI thread, printed as JSON.
     /// The decode of the open value for `lens`, from the whole value once in memory.
     fn decode_open(
         &mut self,
@@ -469,20 +455,12 @@ impl App {
             col,
             whole: true,
         };
-        let Some(work) = work(bytes) else {
-            icons::empty_state(
-                ui,
-                lens.icon(),
-                &format!("Not readable through {}", lens.name()),
-            );
-            return None;
-        };
-        match values.decode(ui.ctx(), target, lens, || work) {
-            Decoded::Pending => {
+        match values.decode(ui.ctx(), target, lens, || work(bytes)) {
+            Some(Decoded::Pending) => {
                 icons::empty_state(ui, lens.icon(), "Reading");
                 None
             }
-            Decoded::Failed(reason) => {
+            Some(Decoded::Failed(reason)) => {
                 icons::empty_state(
                     ui,
                     lens.icon(),
@@ -490,7 +468,15 @@ impl App {
                 );
                 None
             }
-            decoded => Some(decoded),
+            None => {
+                icons::empty_state(
+                    ui,
+                    lens.icon(),
+                    &format!("Not readable through {}", lens.name()),
+                );
+                None
+            }
+            decoded => decoded,
         }
     }
 
@@ -622,34 +608,18 @@ impl App {
     /// The value's image, decoded off the UI thread: fitted, or at the
     /// footer's zoom, and moved by dragging.
     fn image_body(&mut self, ui: &mut egui::Ui) {
-        let ctx = ui.ctx().clone();
-        let document = &mut self.database.document;
-        let (result, drafts) = (document.result.current, document.draft_revision);
-        let values = &mut document.tools.values;
-        let Some(view) = values.view.as_mut() else {
-            return;
+        let (id, size, meta) = match self.value_image(ui.ctx(), Size::Full) {
+            Some(Shown::Ready(id, size, meta)) => (id, size, meta),
+            Some(Shown::Pending) => return icons::empty_state(ui, Icon::Image, "Reading"),
+            Some(Shown::Failed(reason)) => return icons::empty_state(ui, Icon::Image, &reason),
+            None => {
+                if let Some(view) = self.value_view() {
+                    loading(ui, view);
+                }
+                return;
+            }
         };
-        let (row, col) = (view.row, view.col);
-        let Some(bytes) = view.whole() else {
-            return loading(ui, view);
-        };
-        let target = Target {
-            result,
-            drafts,
-            row,
-            col,
-            whole: true,
-        };
-        let image = || match tursobench_blob::sniff(&bytes, bytes.len() as u64) {
-            Kind::Image { format, .. } => Some((bytes.clone(), format)),
-            _ => None,
-        };
-        let (id, size, meta) = match values.images.get(&ctx, target, Size::Full, image) {
-            Shown::Ready(id, size, meta) => (id, size, meta),
-            Shown::Pending => return icons::empty_state(ui, Icon::Image, "Reading"),
-            Shown::Failed(reason) => return icons::empty_state(ui, Icon::Image, &reason),
-        };
-        let Some(view) = values.view.as_mut() else {
+        let Some(view) = self.value_view() else {
             return;
         };
         let rect = ui.available_rect_before_wrap();
@@ -667,31 +637,28 @@ impl App {
         ui.allocate_rect(rect, egui::Sense::hover());
     }
 
-    /// Decode the whole image again and put it on the clipboard.
-    fn copy_image(&mut self, ctx: &egui::Context) {
+    /// Request the image for display or for the clipboard.
+    fn value_image(&mut self, ctx: &egui::Context, size: Size) -> Option<Shown> {
         let document = &mut self.database.document;
-        let (result, drafts) = (document.result.current, document.draft_revision);
         let values = &mut document.tools.values;
-        let Some(view) = values.view.as_mut() else {
-            return;
-        };
-        let (row, col) = (view.row, view.col);
-        let Some(bytes) = view.whole() else {
-            return;
-        };
-        view.message = "Reading the image to copy".into();
+        let view = values.view.as_mut()?;
+        let bytes = view.whole()?;
+        if size == Size::Copy {
+            view.message = "Reading the image to copy".into();
+        }
         let target = Target {
-            result,
-            drafts,
-            row,
-            col,
+            result: document.result.current,
+            drafts: document.draft_revision,
+            row: view.row,
+            col: view.col,
             whole: true,
         };
-        let image = || match tursobench_blob::sniff(&bytes, bytes.len() as u64) {
-            Kind::Image { format, .. } => Some((bytes.clone(), format)),
-            _ => None,
-        };
-        values.images.get(ctx, target, Size::Copy, image);
+        Some(values.images.get(ctx, target, size, || {
+            match tursobench_blob::sniff(&bytes, bytes.len() as u64) {
+                Kind::Image { format, .. } => Some((bytes, format)),
+                _ => None,
+            }
+        }))
     }
 
     /// The footer: offset, selection and readings, or the find or go-to input.
@@ -745,44 +712,48 @@ impl App {
         if egui::Popup::is_any_open(ctx) || self.database.ui.palette_open {
             return;
         }
-        let command = egui::Modifiers::COMMAND;
-        let pressed = |key, modifiers| ctx.input_mut(|i| i.consume_key(modifiers, key));
-        if pressed(egui::Key::Enter, egui::Modifiers::NONE) {
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
             return self.submit_value_input(ctx);
         }
         if ctx.egui_wants_keyboard_input() {
             return;
         }
-        if lens != Lens::Hex {
-            let copy = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy)));
-            // The text lens copies the text it shows, decoded as shown.
-            if copy
-                && lens == Lens::Text
-                && let Some(view) = self.value_view()
-                && let Some(text) = view.shown.clone()
-            {
-                if text.len() > CLIPBOARD {
-                    view.message = "Over the 2 MiB clipboard budget · save to file instead".into();
-                } else {
-                    ctx.copy_text(text.to_string());
-                    view.message = "Copied the text shown".into();
-                }
-            }
-            return;
+        let copy = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy)));
+        if lens == Lens::Hex {
+            self.hex_keys(ctx, copy);
+        } else if lens == Lens::Text && copy {
+            self.copy_shown_text(ctx);
         }
-        if pressed(egui::Key::F, command) {
+    }
+    fn copy_shown_text(&mut self, ctx: &egui::Context) {
+        let Some(view) = self.value_view() else {
+            return;
+        };
+        let Some(text) = &view.shown else {
+            return;
+        };
+        if text.len() > CLIPBOARD {
+            view.message = "Over the 2 MiB clipboard budget · save to file instead".into();
+        } else {
+            ctx.copy_text(text.to_string());
+            view.message = "Copied the text shown".into();
+        }
+    }
+    fn hex_keys(&mut self, ctx: &egui::Context, copy: bool) {
+        let pressed = |key| ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, key));
+        if pressed(egui::Key::F) {
             return self.header_action(ctx, Header::Find);
         }
         if self.value_edit_keys(ctx) {
             return;
         }
-        if pressed(egui::Key::G, command) {
+        if pressed(egui::Key::G) {
             if let Some(view) = self.value_view() {
                 view.goto = Some(String::new());
             }
             return;
         }
-        if ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy))) {
+        if copy {
             let characters = self.value_view().is_some_and(|v| v.characters);
             let format = if characters {
                 CopyFormat::Text
@@ -813,6 +784,18 @@ impl App {
         }
     }
 
+    /// Say whether the image was copied, once its decode is done.
+    fn poll_value_copy(&mut self) {
+        let values = &mut self.database.document.tools.values;
+        if let Some(outcome) = values.images.copied.take()
+            && let Some(view) = values.view.as_mut()
+        {
+            view.message = match outcome {
+                Ok(()) => "Copied the image".into(),
+                Err(reason) => format!("Could not copy the image: {reason}"),
+            };
+        }
+    }
     /// Esc closes the find or go-to input first, then the value.
     pub(in crate::app) fn escape_value(&mut self, ctx: &egui::Context) {
         let Some(view) = self.value_view() else {
@@ -843,256 +826,6 @@ impl App {
             }
         } else if view.find.is_some() {
             self.find_value();
-        }
-    }
-
-    /// Search for the typed bytes or text after the cursor: in memory when
-    /// the whole value is held, otherwise in the backing.
-    pub(in crate::app) fn find_value(&mut self) {
-        let Some(view) = self.value_view() else {
-            return;
-        };
-        let query = view.find.clone().unwrap_or_default();
-        let needle = needle(&query, view.characters);
-        if needle.is_empty() || needle.len() > 1024 {
-            view.message = "Find 1–1,024 bytes".into();
-            return;
-        }
-        // Searching again from a match finds the next one.
-        let start = *view.selection().start();
-        view.find_from = match view.found {
-            Some(at) if at == start => at + 1,
-            _ => view.cursor,
-        };
-        view.needle = needle;
-        match view.whole() {
-            Some(bytes) => {
-                let start = (view.find_from as usize).min(bytes.len());
-                let needle = view.needle.as_slice();
-                let hit = bytes[start..]
-                    .windows(needle.len())
-                    .position(|w| w == needle);
-                found(view, hit.map(|i| (start + i) as u64));
-            }
-            None => view.want = Some(Want::Find),
-        }
-    }
-
-    /// Copy the selection, or with `selection` false and one byte selected the
-    /// whole value, as `format`; a deferred value is loaded first.
-    pub(in crate::app) fn copy_value(
-        &mut self,
-        ctx: &egui::Context,
-        format: CopyFormat,
-        selection: bool,
-    ) {
-        let Some(view) = self.value_view() else {
-            return;
-        };
-        let (at, len) = if selection || view.selected() > 1 {
-            (*view.selection().start(), view.selected())
-        } else {
-            (0, view.source.len())
-        };
-        self.copy_range(ctx, format, at, len);
-    }
-    /// Copy `len` bytes from `at` as `format`, loading a deferred value first.
-    fn copy_range(&mut self, ctx: &egui::Context, format: CopyFormat, at: u64, len: u64) {
-        let Some(view) = self.value_view() else {
-            return;
-        };
-        if format.length(len as usize) > CLIPBOARD {
-            view.message = "Over the 2 MiB clipboard budget · save to file instead".into();
-            return;
-        }
-        if let Some(bytes) = view.bytes(at, len as usize) {
-            ctx.copy_text(format.write(&bytes));
-            view.message = format!("Copied {len} bytes as {}", format.name());
-            return;
-        }
-        if view.source.handle().is_some() && view.source.len() <= LOAD {
-            view.copy = Some((format, at, len));
-            view.want = Some(Want::Load);
-        } else {
-            view.message = "The value is not held · save to file instead".into();
-        }
-    }
-
-    /// Ask where to save the value; bytes in memory are written on the
-    /// dialog's thread, a deferred value by the session.
-    fn save_value(&mut self, ctx: &egui::Context) {
-        let ctx = ctx.clone();
-        let extension = self
-            .value_lens(&ctx)
-            .map_or("bin", |offer| offer.kind.extension());
-        let Some(view) = self.database.document.tools.values.view.as_ref() else {
-            return;
-        };
-        let column = self
-            .database
-            .document
-            .result
-            .columns
-            .get(view.col)
-            .map_or("value", |c| c.name.as_str());
-        let name = format!("{column}.{extension}");
-        let bytes = match &view.source {
-            Source::Bytes(bytes) => Some(bytes.clone()),
-            Source::Deferred {
-                handle: Some(_), ..
-            } => None,
-            Source::Deferred { handle: None, .. } => {
-                return self.value_message("The value is too large to keep, so it cannot be saved");
-            }
-        };
-        let task = files::start_task(ctx, "value-save-dialog", move || {
-            files::save_value_dialog(&name, bytes)
-        });
-        match task {
-            Ok(rx) => {
-                if let Some(view) = self.value_view() {
-                    view.save = Some(rx);
-                }
-            }
-            Err(e) => self.value_message(&format!("Could not open the save dialog: {e}")),
-        }
-    }
-    /// Say whether the image was copied, once its decode is done.
-    fn poll_value_copy(&mut self) {
-        let values = &mut self.database.document.tools.values;
-        if let Some(outcome) = values.images.copied.take()
-            && let Some(view) = values.view.as_mut()
-        {
-            view.message = match outcome {
-                Ok(()) => "Copied the image".into(),
-                Err(reason) => format!("Could not copy the image: {reason}"),
-            };
-        }
-    }
-    fn value_message(&mut self, message: &str) {
-        if let Some(view) = self.value_view() {
-            view.message = message.into();
-        }
-    }
-    fn poll_value_save(&mut self) {
-        let Some(view) = self.value_view() else {
-            return;
-        };
-        let Some(rx) = &view.save else {
-            return;
-        };
-        let result = match rx.try_recv() {
-            Ok(result) => result.and_then(|saved| saved),
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                Err("The save dialog stopped".into())
-            }
-        };
-        view.save = None;
-        match result {
-            Ok(Some(path)) => self.value_saved_to(path),
-            Ok(None) => {}
-            Err(e) => view.message = e,
-        }
-    }
-    /// The dialog chose `path`: a value in memory is already written there;
-    /// the session writes a deferred one.
-    pub(in crate::app) fn value_saved_to(&mut self, path: std::path::PathBuf) {
-        let Some(view) = self.value_view() else {
-            return;
-        };
-        if view.source.handle().is_some() {
-            view.save_path = Some(path);
-            view.want = Some(Want::Save);
-        } else {
-            view.message = format!("Saved to {}", path.display());
-        }
-    }
-
-    /// Send the request the view needs next, one at a time.
-    pub(in crate::app) fn drive_value(&mut self) {
-        let values = &mut self.database.document.tools.values;
-        if values.ticket.is_some() {
-            return;
-        }
-        let Some(view) = values.view.as_mut() else {
-            return;
-        };
-        let Some(handle) = view.source.handle().filter(|_| !view.expired) else {
-            return;
-        };
-        let Some(want) = view
-            .want
-            .take()
-            .or_else(|| view.missing_chunk().map(Want::Chunk))
-        else {
-            return;
-        };
-        let operation = match want {
-            Want::Chunk(index) => Operation::ReadValue {
-                handle,
-                offset: index * CHUNK,
-                bytes: CHUNK as usize,
-            },
-            Want::Load => Operation::LoadValue { handle },
-            Want::Find => Operation::FindValue {
-                handle,
-                needle: view.needle.clone(),
-                from: view.find_from,
-            },
-            Want::Save => match view.save_path.take() {
-                Some(path) => Operation::SaveValue { handle, path },
-                None => return,
-            },
-        };
-        view.pending = Some(want);
-        let outcome = self.database.request(operation);
-        let message = match outcome {
-            Some(Ok(ticket)) => {
-                self.database.document.tools.values.ticket = Some(ticket);
-                return;
-            }
-            Some(Err(e)) => e.to_string(),
-            None => "The source session is closed".into(),
-        };
-        if let Some(view) = self.value_view() {
-            view.pending = None;
-            view.failed(Some(want), message);
-        }
-    }
-
-    /// The answer to the view's request.
-    pub(in crate::app) fn value_event(&mut self, ctx: &egui::Context, kind: EventKind) {
-        let values = &mut self.database.document.tools.values;
-        values.ticket = None;
-        let Some(view) = values.view.as_mut() else {
-            return;
-        };
-        let asked = view.pending.take();
-        let ours = view.source.handle();
-        let mut copy = None;
-        match kind {
-            EventKind::ValueChunk {
-                handle,
-                offset,
-                bytes,
-                ..
-            } if ours == Some(handle) => {
-                view.chunks.insert(offset / CHUNK, Arc::from(bytes));
-            }
-            EventKind::ValueLoaded { handle, bytes } if ours == Some(handle) => {
-                view.loaded = Some(Arc::from(bytes));
-                copy = view.copy.take();
-            }
-            EventKind::ValueFound { handle, offset } if ours == Some(handle) => found(view, offset),
-            EventKind::ValueSaved(path) => view.message = format!("Saved to {path}"),
-            EventKind::Failed(error) => {
-                view.failed(asked, error.to_string());
-            }
-            _ => {}
-        }
-        if let Some((format, at, len)) = copy {
-            self.copy_range(ctx, format, at, len);
         }
     }
 }
@@ -1165,31 +898,6 @@ fn find_input(ui: &mut egui::Ui, view: &mut View) {
         view.message.clear();
     } else if !message.is_empty() {
         ui.label(egui::RichText::new(message).size(11.5).color(tokens.faint));
-    }
-}
-
-/// What to search for: text from the characters column or in quotes,
-/// otherwise bytes when the query is hex pairs, else text.
-fn needle(query: &str, characters: bool) -> Vec<u8> {
-    let quoted = query.len() >= 2 && query.starts_with('"') && query.ends_with('"');
-    if quoted {
-        return query.as_bytes()[1..query.len() - 1].to_vec();
-    }
-    if characters {
-        return query.as_bytes().to_vec();
-    }
-    tursobench_blob::encode::parse_hex(query).unwrap_or_else(|| query.as_bytes().to_vec())
-}
-
-/// Select a match, or say there is none after the cursor.
-fn found(view: &mut View, offset: Option<u64>) {
-    match offset {
-        Some(at) => {
-            view.found = Some(at);
-            view.select(at, view.needle.len() as u64);
-            view.message.clear();
-        }
-        None => view.message = "No match after the cursor".into(),
     }
 }
 
@@ -1349,11 +1057,6 @@ fn text_row(ui: &mut egui::Ui, mut job: egui::text::LayoutJob) {
     ui.painter().galley(at, galley, ui.visuals().text_color());
 }
 
-/// A number as the inspector writes reals.
-fn real(n: f64) -> String {
-    tursobench_blob::inspect::real(n)
-}
-
 /// A tree's printed lines, in the SQL editor's colours, only those in view
 /// drawn; `complete` is false when the tree stopped at its limits.
 fn tree_rows(ui: &mut egui::Ui, lines: &[tursobench_blob::tree::Line], complete: bool) {
@@ -1391,21 +1094,5 @@ fn tree_rows(ui: &mut egui::Ui, lines: &[tursobench_blob::tree::Line], complete:
                 .size(11.5)
                 .color(tokens.faint),
         );
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::needle;
-
-    #[test]
-    fn find_reads_hex_pairs_as_bytes_unless_asked_for_text() {
-        assert_eq!(needle("00 ff", false), [0x00, 0xff]);
-        assert_eq!(needle("123456", false), [0x12, 0x34, 0x56]);
-        // From the characters column, or in quotes, the same digits are text.
-        assert_eq!(needle("123456", true), *b"123456");
-        assert_eq!(needle("\"cafe\"", false), *b"cafe");
-        assert_eq!(needle("seam", false), *b"seam");
-        assert_eq!(needle("+f", false), *b"+f");
     }
 }

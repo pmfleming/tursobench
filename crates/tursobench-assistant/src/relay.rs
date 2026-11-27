@@ -211,9 +211,10 @@ pub fn private_dir() -> io::Result<PathBuf> {
             .filter(|d| !d.is_empty())
             .map(PathBuf::from)
     });
+    let uid = rustix::process::getuid().as_raw();
     private(match root {
         Some(root) => root.join("tursobench"),
-        None => std::env::temp_dir().join(format!("tursobench-{}", uid())),
+        None => std::env::temp_dir().join(format!("tursobench-{uid}")),
     })
 }
 
@@ -225,20 +226,16 @@ fn private(dir: PathBuf) -> io::Result<PathBuf> {
         Err(e) => return Err(e),
     }
     let meta = std::fs::symlink_metadata(&dir)?;
-    if !meta.is_dir() || meta.uid() != uid() || meta.mode() & 0o077 != 0 {
+    if !meta.is_dir()
+        || meta.uid() != rustix::process::getuid().as_raw()
+        || meta.mode() & 0o077 != 0
+    {
         return Err(io::Error::other(format!(
             "{} must be a private directory owned by this user",
             dir.display()
         )));
     }
     Ok(dir)
-}
-
-/// The real user id. (`/proc/self` is owned by the effective user, or by root
-/// when the process is not dumpable, and may not be mounted; it is no substitute.)
-fn uid() -> u32 {
-    // SAFETY: getuid(2) takes no arguments, cannot fail and touches no memory.
-    unsafe { libc::getuid() }
 }
 
 /// The `--mcp-relay` process: stdin to the socket, the socket to stdout.

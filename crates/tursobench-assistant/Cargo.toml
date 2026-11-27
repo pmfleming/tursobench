@@ -9,7 +9,7 @@ license.workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
-libc = "0.2"
+rustix = { version = "1", features = ["process"] }
 
 [dev-dependencies]
 tempfile.workspace = true

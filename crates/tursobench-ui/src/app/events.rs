@@ -229,9 +229,12 @@ impl App {
         self.database.ready = false;
         self.database.document.active = None;
         self.database.closing = false;
-        if let Some(path) = self.database.pending_database.take().filter(|_| {
-            self.database.transaction != TransactionState::Unknown && !self.database.uncertain_edit
-        }) {
+        if let Some(path) = self
+            .database
+            .pending_database
+            .take()
+            .filter(|_| !self.database.outcome_unknown())
+        {
             self.set_database_path(path.to_string_lossy().into_owned());
             self.database.document.ui.nav = shell::Nav::Databases;
         }

@@ -1,5 +1,5 @@
 use super::presentation::{self, Intent};
-use super::{App, View, shell};
+use super::{App, View};
 use crate::export::Format;
 use eframe::egui;
 use std::sync::mpsc::TryRecvError;
@@ -27,13 +27,6 @@ impl App {
             self.request_close();
         } else if self.quit {
             self.continue_quit(ctx);
-        }
-    }
-    pub(super) fn history_controls(&mut self, ui: &mut egui::Ui) {
-        match self.database.ui.sidebar {
-            shell::ToolPanel::Saved => self.saved_queries_ui(ui),
-            shell::ToolPanel::History => self.query_history_ui(ui),
-            _ => {}
         }
     }
     pub(super) fn load_sql_window(&mut self, sql: String) {
@@ -67,7 +60,21 @@ impl App {
             None => "unfinished",
         }
     }
-    pub(super) fn usability_controls(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn retained_export_dialog(&mut self, ctx: &egui::Context) {
+        if !self.database.ui.export_open {
+            return;
+        }
+        let mut open = true;
+        presentation::dialog(ctx, "Export retained result", &mut open)
+            .default_width(600.0)
+            .default_height(200.0)
+            .max_width((ctx.content_rect().width() - 40.0).max(240.0))
+            .max_height(ctx.content_rect().height() * 0.8)
+            .vscroll(true)
+            .show(ctx, |ui| self.usability_controls(ui));
+        self.database.ui.export_open = open;
+    }
+    fn usability_controls(&mut self, ui: &mut egui::Ui) {
         if ui
             .add_enabled(
                 self.database.ready,

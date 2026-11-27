@@ -595,6 +595,19 @@ pub struct ResultSet {
     pub completion: Option<Completion>,
 }
 impl ResultSet {
+    /// The cell's staged value when present, otherwise the retained engine value.
+    pub fn displayed_value<'a>(
+        &'a self,
+        drafts: Option<&'a DraftBatch>,
+        row: usize,
+        col: usize,
+    ) -> Option<&'a Value> {
+        let values = self.rows.get(row)?;
+        drafts
+            .and_then(|draft| draft.displayed(values, col))
+            .or_else(|| values.get(col))
+    }
+
     pub fn start(&mut self, ticket: Ticket) {
         *self = Self {
             current: Some(ticket),

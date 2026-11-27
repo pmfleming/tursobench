@@ -147,7 +147,10 @@ fn spawn(command: &mut Command) -> std::io::Result<Child> {
     let mut attempts = 0;
     loop {
         match command.spawn() {
-            Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) && attempts < 5 => {
+            Err(error)
+                if error.raw_os_error() == Some(rustix::io::Errno::TXTBSY.raw_os_error())
+                    && attempts < 5 =>
+            {
                 attempts += 1;
                 std::thread::sleep(Duration::from_millis(20));
             }
@@ -159,11 +162,8 @@ fn spawn(command: &mut Command) -> std::io::Result<Child> {
 /// Kill the process group `child` leads (it was started with `process_group(0)`)
 /// and reap it, so no helper it started keeps running.
 fn kill_group(child: &mut Child) {
-    // SAFETY: kill(2) takes plain integers and touches no memory of this
-    // process. The child is not reaped yet, so its pid still names its group.
-    unsafe {
-        libc::kill(-(child.id() as i32), libc::SIGKILL);
-    }
+    use rustix::process::{Pid, Signal, kill_process_group};
+    let _ = kill_process_group(Pid::from_child(child), Signal::KILL);
     let _ = child.wait();
 }
 

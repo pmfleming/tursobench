@@ -258,74 +258,88 @@ fn a_value_without_backing_or_session_says_so() {
 }
 
 #[test]
-fn vectors_trees_without_a_signature_and_compressed_contents_find_their_lenses() {
-    use crate::app::value::Lens;
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("lenses.db");
+fn value_lenses_show_their_data_and_respect_column_hints() {
+    use crate::app::value::{Lens, Summary};
+    use tursobench_blob::{encode::hex, image::png};
+
     let floats: Vec<u8> = (0..16)
         .flat_map(|i| (i as f32 / 10.0).to_le_bytes())
         .collect();
-    let mut gzip = vec![0x1f, 0x8b, 0x08, 0, 0, 0, 0, 0, 0, 0xff];
-    // A stored (uncompressed) deflate block holding "hello", then its CRC and size.
-    gzip.extend([0x01, 0x05, 0x00, 0xfa, 0xff]);
-    gzip.extend(b"hello");
-    gzip.extend(0x3610_a686_u32.to_le_bytes());
-    gzip.extend(5u32.to_le_bytes());
-    // MessagePack {"a":1}: no signature, so a tree is only offered.
-    let msgpack = vec![0x81, 0xa1, b'a', 0x01];
-    let blobs = (floats.clone(), floats, gzip, msgpack);
-    crate::test_support::run(async move {
-        let db = turso::Builder::new_local(path.to_str().unwrap()).build().await?;
-        let c = db.connect()?;
-        c.execute("CREATE TABLE l(id INTEGER PRIMARY KEY, embedding BLOB, raw BLOB, payload BLOB, session BLOB)", ())
-            .await?;
-        let params = turso::params![blobs.0, blobs.1, blobs.2, blobs.3];
-        c.execute("INSERT INTO l VALUES(1, ?1, ?2, ?3, ?4)", params).await?;
-        Ok::<_, turso::Error>(())
-    })
-    .unwrap();
-    let (ctx, mut app) = connected(&dir.path().join("lenses.db"), true);
-    browse_and_wait(&mut app, &ctx, "l");
-    let offer = |app: &mut App, col| {
-        let mut found = None;
-        for _ in 0..500 {
-            let offer = app.value_offer(&ctx, 0, col).unwrap();
-            found = Some((offer.lens, offer.lenses.clone()));
-            if col != 4 || offer.lenses.contains(&Lens::Tree) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-        found.unwrap()
-    };
-    // The same float32 bytes lead with the vector lens only where the column says so.
-    assert_eq!(
-        offer(&mut app, 1),
-        (Lens::Vector, vec![Lens::Vector, Lens::Hex])
+    // The first float's bytes also look like a zlib header.
+    let weak = "789ca03f0000003f0000803f0000803f";
+    let gzip = "1f8b08000000000000ff010500faff68656c6c6f86a6103605000000";
+    let floats = hex(&floats, "");
+    let picture = hex(&png(&[1, 2, 3, 255].repeat(12), 4, 3).unwrap(), "");
+    let (_dir, ctx, mut app) = super::browsing(
+        "lenses",
+        "id INTEGER PRIMARY KEY, embedding BLOB, raw BLOB, payload BLOB, session BLOB,         embedding_weak F32_BLOB(4), weak BLOB, picture BLOB",
+        &format!(
+            "(1, X'{floats}', X'{floats}', X'{gzip}', X'81a16101', X'{weak}', X'{weak}', X'{picture}')"
+        ),
+        false,
     );
-    assert_eq!(
-        offer(&mut app, 2),
-        (Lens::Hex, vec![Lens::Hex, Lens::Vector])
-    );
-    assert_eq!(
-        offer(&mut app, 3),
-        (Lens::Contents, vec![Lens::Contents, Lens::Hex])
-    );
-    assert_eq!(offer(&mut app, 4), (Lens::Hex, vec![Lens::Hex, Lens::Tree]));
-    // The contents lens inflates and reads the text inside.
-    app.open_value(0, 3);
-    let mut shown = Vec::new();
-    for _ in 0..500 {
-        let output = draw(&mut app, &ctx);
-        shown = super::texts(&output)
-            .map(|t| t.galley.job.text.clone())
-            .collect();
-        if shown.iter().any(|t| t == "hello") {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if app
+            .value_offer(&ctx, 0, 4)
+            .unwrap()
+            .lenses
+            .contains(&Lens::Tree)
+        {
             break;
         }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "MessagePack tree lens never offered"
+        );
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
-    assert!(shown.iter().any(|t| t == "hello"), "{shown:?}");
+    for (col, expected) in [
+        (1, &[Lens::Vector, Lens::Hex][..]),
+        (2, &[Lens::Hex, Lens::Vector]),
+        (3, &[Lens::Contents, Lens::Hex]),
+        (4, &[Lens::Hex, Lens::Tree]),
+        (5, &[Lens::Vector, Lens::Hex]),
+        (6, &[Lens::Contents, Lens::Hex]),
+        (7, &[Lens::Image, Lens::Hex]),
+    ] {
+        let offer = app.value_offer(&ctx, 0, col).unwrap();
+        assert_eq!(
+            (offer.lens, offer.lenses.as_slice()),
+            (expected[0], expected),
+            "column {col}"
+        );
+    }
+    let value = app.field_value(0, 5).unwrap();
+    assert!(
+        Summary::for_column(&ctx, value, true)
+            .unwrap()
+            .text()
+            .starts_with("f32 × 4")
+    );
+
+    for (col, lens, expected) in [
+        (1, Lens::Vector, "‖v‖"),
+        (3, Lens::Contents, "hello"),
+        (4, Lens::Tree, r#""a": 1"#),
+        (7, Lens::Image, "4 × 3  "),
+    ] {
+        app.open_value(0, col);
+        view_mut(&mut app).lens = Some(lens);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let frame = super::frame_at(&mut app, &ctx, super::WIDE, vec![]);
+            if super::texts(&frame).any(|text| text.galley.job.text.contains(expected)) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{lens:?} never displayed {expected:?}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        app.close_value();
+    }
     app.close();
 }
 
@@ -639,44 +653,5 @@ fn the_text_lens_says_where_it_stops_copies_what_it_shows_and_find_says_why() {
         super::texts(&output).any(|t| t.galley.job.text == "No match after the cursor"),
         "the reason shows while the input is open"
     );
-    app.close();
-}
-
-#[test]
-fn plain_float32_outweighs_a_weak_signature_in_a_vector_column() {
-    use crate::app::value::Lens;
-    // 1.25, 0.5, 1.0, 1.0 as float32: the first two bytes read as a zlib header.
-    let floats: String = [
-        0x78, 0x9c, 0xa0, 0x3f, 0, 0, 0, 0x3f, 0, 0, 0x80, 0x3f, 0, 0, 0x80, 0x3f,
-    ]
-    .iter()
-    .map(|b| format!("{b:02X}"))
-    .collect();
-    let (_dir, ctx, mut app) = super::fixture(
-        &[
-            "CREATE TABLE v(id INTEGER PRIMARY KEY, embedding F32_BLOB(4), other BLOB)",
-            &format!("INSERT INTO v VALUES(1, X'{floats}', X'{floats}')"),
-        ],
-        false,
-    );
-    browse_and_wait(&mut app, &ctx, "v");
-    let offer = app.value_offer(&ctx, 0, 1).unwrap();
-    assert_eq!(
-        (offer.lens, offer.lenses),
-        (Lens::Vector, vec![Lens::Vector, Lens::Hex])
-    );
-    let summary = |app: &App, col| {
-        let header = app.database.document.column_header(col);
-        let hint = crate::app::value::vector_hint(&header.column.name, header.declared_type());
-        let value = app.field_value(0, col).unwrap();
-        crate::app::value::Summary::for_column(&ctx, value, hint).unwrap()
-    };
-    assert!(
-        summary(&app, 1).text().starts_with("f32 × 4"),
-        "{}",
-        summary(&app, 1).text()
-    );
-    // Without the column's word for it, the weak signature still names it.
-    assert_eq!(app.value_offer(&ctx, 0, 2).unwrap().lens, Lens::Contents);
     app.close();
 }

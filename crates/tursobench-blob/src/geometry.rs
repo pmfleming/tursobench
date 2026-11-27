@@ -1,5 +1,6 @@
 //! Geometry stored as GeoPackage, SpatiaLite or plain WKB blobs, written out
 //! as WKT. Only two-dimensional coordinates are read; Z and M are named.
+use crate::bytes::little_endian;
 
 /// How a geometry blob is wrapped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,12 +42,7 @@ fn type_name(code: u32) -> Option<&'static str> {
         .copied()
 }
 fn u32_at(bytes: &[u8], at: usize, little: bool) -> Option<u32> {
-    let raw: [u8; 4] = bytes.get(at..at + 4)?.try_into().ok()?;
-    Some(if little {
-        u32::from_le_bytes(raw)
-    } else {
-        u32::from_be_bytes(raw)
-    })
+    little_endian(bytes, at, little).map(u32::from_le_bytes)
 }
 
 /// The container and geometry type of a value from its first bytes, its
@@ -118,46 +114,27 @@ struct Reader<'a> {
     spatialite: bool,
 }
 impl Reader<'_> {
-    fn take(&mut self, n: usize) -> Result<&[u8], String> {
-        let slice = self
-            .bytes
-            .get(self.at..self.at + n)
-            .ok_or("The geometry ends early")?;
-        self.at += n;
-        Ok(slice)
+    fn take<const N: usize>(&mut self, little: bool) -> Result<[u8; N], String> {
+        let bytes = little_endian(self.bytes, self.at, little).ok_or("The geometry ends early")?;
+        self.at += N;
+        Ok(bytes)
     }
     fn u32(&mut self, little: bool) -> Result<u32, String> {
-        let raw: [u8; 4] = self
-            .take(4)?
-            .try_into()
-            .map_err(|_| "The geometry ends early")?;
-        Ok(if little {
-            u32::from_le_bytes(raw)
-        } else {
-            u32::from_be_bytes(raw)
-        })
+        self.take(little).map(u32::from_le_bytes)
     }
     fn f64(&mut self, little: bool) -> Result<f64, String> {
-        let raw: [u8; 8] = self
-            .take(8)?
-            .try_into()
-            .map_err(|_| "The geometry ends early")?;
-        Ok(if little {
-            f64::from_le_bytes(raw)
-        } else {
-            f64::from_be_bytes(raw)
-        })
+        self.take(little).map(f64::from_le_bytes)
     }
     /// One geometry: its byte order (or SpatiaLite's marker), type and body.
     fn geometry(&mut self, out: &mut String, depth: usize) -> Result<(), String> {
         if depth > DEPTH {
             return Err("Geometry nested too deeply".into());
         }
+        let [marker] = self.take(true)?;
         let little = if self.spatialite {
-            self.take(1)?;
             self.bytes.get(1) == Some(&1)
         } else {
-            match self.take(1)?[0] {
+            match marker {
                 0 => false,
                 1 => true,
                 _ => return Err("Invalid WKB byte order".into()),

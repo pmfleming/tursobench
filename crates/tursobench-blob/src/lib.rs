@@ -4,6 +4,7 @@
 //! touches the UI or the engine, allocates without a cap, or trusts a length
 //! read from the bytes themselves.
 #![forbid(unsafe_code)]
+mod bytes;
 pub mod encode;
 pub mod formats;
 pub mod geometry;

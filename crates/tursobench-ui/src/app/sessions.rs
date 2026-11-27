@@ -73,11 +73,13 @@ impl DatabaseWorkspace {
         self.status = "Opening…".into();
         self.closing = false;
     }
+    pub(super) fn outcome_unknown(&self) -> bool {
+        self.uncertain_edit || self.transaction == TransactionState::Unknown
+    }
     pub(super) fn retained(&self) -> bool {
         self.session.is_some()
             || self.export_job.is_some()
-            || self.uncertain_edit
-            || self.transaction == TransactionState::Unknown
+            || self.outcome_unknown()
             || self
                 .documents
                 .values()
@@ -206,12 +208,7 @@ impl App {
             self.database.status = self.database_limit_message();
             return false;
         }
-        if self.database.session.is_none()
-            && !self.has_drafts()
-            && self.database.export_job.is_none()
-            && !self.database.uncertain_edit
-            && self.database.transaction != tursobench_core::TransactionState::Unknown
-        {
+        if !self.database.retained() {
             self.database.document.ui.nav = shell::Nav::Databases;
             return true;
         }
@@ -386,9 +383,7 @@ impl App {
             return;
         }
         self.save_settings();
-        if self.database.transaction == tursobench_core::TransactionState::Unknown
-            || self.database.uncertain_edit
-        {
+        if self.database.outcome_unknown() {
             self.quit = false;
             self.database.status =
                 "Exit paused: inspect the uncertain outcome before closing".into();

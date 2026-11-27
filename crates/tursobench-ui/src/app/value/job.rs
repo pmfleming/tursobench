@@ -1,7 +1,7 @@
 //! Decoding off the UI thread: one job at a time on one thread, each bounded,
 //! caught if it panics, and cancelled when the next is submitted.
 use std::{
-    panic::{AssertUnwindSafe, catch_unwind},
+    panic::catch_unwind,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -119,7 +119,6 @@ fn contents(
 }
 
 /// What a job produced.
-#[derive(Clone)]
 pub(in crate::app) enum Output {
     Tree(Result<Arc<Tree>, String>),
     Image(Result<Arc<Picture>, String>),
@@ -147,67 +146,47 @@ pub(in crate::app) struct Decoder {
 }
 impl Decoder {
     /// Start `work`, cancelling the job before it; returns the new job's id.
-    pub fn submit(&mut self, ctx: &eframe::egui::Context, work: Work) -> u64 {
-        self.cancel();
-        self.current += 1;
-        self.cancel = Arc::new(AtomicBool::new(false));
-        let job = Job {
-            id: self.current,
-            work,
-            cancel: self.cancel.clone(),
-        };
-        let (jobs, _) = self.channel.get_or_insert_with(|| spawn(ctx.clone()));
-        if let Err(mpsc::SendError(job)) = jobs.send(job) {
-            // The thread is gone: start another for this job.
-            self.channel = None;
-            let (jobs, _) = self.channel.get_or_insert_with(|| spawn(ctx.clone()));
-            let _ = jobs.send(job);
-        }
-        self.current
+    pub fn submit(&mut self, ctx: &eframe::egui::Context, work: Work) -> Option<u64> {
+        self.cancel_queued();
+        self.queue(ctx, work)
     }
     /// Add `work` behind the jobs already waiting; returns its id. Jobs
     /// queued together are cancelled together.
-    pub fn queue(&mut self, ctx: &eframe::egui::Context, work: Work) -> u64 {
+    pub fn queue(&mut self, ctx: &eframe::egui::Context, work: Work) -> Option<u64> {
+        if self.channel.is_none() {
+            self.channel = spawn(ctx.clone()).ok();
+        }
+        let (jobs, _) = self.channel.as_ref()?;
         self.current += 1;
         let job = Job {
             id: self.current,
             work,
             cancel: self.cancel.clone(),
         };
-        let (jobs, _) = self.channel.get_or_insert_with(|| spawn(ctx.clone()));
-        let _ = jobs.send(job);
-        self.current
+        if let Err(mpsc::SendError(job)) = jobs.send(job) {
+            self.channel = spawn(ctx.clone()).ok();
+            self.channel.as_ref()?.0.send(job).ok()?;
+        }
+        Some(self.current)
     }
     /// Every result delivered since the last poll.
-    pub fn poll_all(&mut self) -> Vec<(u64, Output)> {
-        let Some((_, results)) = self.channel.as_ref() else {
-            return Vec::new();
-        };
-        results.try_iter().collect()
+    pub fn next(&self) -> Option<(u64, Output)> {
+        self.channel.as_ref()?.1.try_recv().ok()
     }
     /// Cancel every queued job; later jobs are not affected.
     pub fn cancel_queued(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
         self.cancel = Arc::new(AtomicBool::new(false));
     }
-    /// Stop the job under way, if any; its result is never delivered.
-    pub fn cancel(&mut self) {
-        self.cancel.store(true, Ordering::Relaxed);
-    }
     /// The result of the latest job, once it is ready.
-    pub fn poll(&mut self, id: u64) -> Option<Output> {
-        let (_, results) = self.channel.as_ref()?;
-        let mut latest = None;
-        while let Ok((done, output)) = results.try_recv() {
-            if done == id {
-                latest = Some(output);
-            }
-        }
-        latest
+    pub fn poll(&self, id: u64) -> Option<Output> {
+        std::iter::from_fn(|| self.next())
+            .filter_map(|(done, output)| (done == id).then_some(output))
+            .last()
     }
 }
 
-fn spawn(ctx: eframe::egui::Context) -> Channel {
+fn spawn(ctx: eframe::egui::Context) -> std::io::Result<Channel> {
     let (jobs, inbox) = mpsc::channel::<Job>();
     let (outbox, results) = mpsc::channel();
     std::thread::Builder::new()
@@ -217,7 +196,7 @@ fn spawn(ctx: eframe::egui::Context) -> Channel {
                 if job.cancel.load(Ordering::Relaxed) {
                     continue;
                 }
-                let output = catch_unwind(AssertUnwindSafe(|| job.work.run(&job.cancel)))
+                let output = catch_unwind(|| job.work.run(&job.cancel))
                     .unwrap_or_else(|_| failed(&job.work));
                 if job.cancel.load(Ordering::Relaxed) {
                     continue;
@@ -227,12 +206,8 @@ fn spawn(ctx: eframe::egui::Context) -> Channel {
                 }
                 ctx.request_repaint();
             }
-        })
-        .map_or_else(
-            // Without a thread, jobs are never answered; the views say so.
-            |_| (mpsc::channel().0, mpsc::channel().1),
-            |_| (jobs, results),
-        )
+        })?;
+    Ok((jobs, results))
 }
 
 /// The answer for a job whose decoder panicked.
@@ -253,7 +228,8 @@ mod tests {
     use super::{Decoder, Format, Output, Work};
     use std::sync::Arc;
 
-    fn wait(decoder: &mut Decoder, id: u64) -> Output {
+    fn wait(decoder: &Decoder, id: Option<u64>) -> Output {
+        let id = id.expect("decoder thread started");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             if let Some(output) = decoder.poll(id) {
@@ -275,18 +251,18 @@ mod tests {
         let stale = decoder.submit(&ctx, Work::Tree(Arc::from(&b"\x00"[..]), Format::Jsonb));
         let id = decoder.submit(&ctx, Work::Tree(object, Format::Jsonb));
         assert!(stale < id);
-        let Output::Tree(Ok(tree)) = wait(&mut decoder, id) else {
+        let Output::Tree(Ok(tree)) = wait(&decoder, id) else {
             panic!("expected a tree")
         };
         assert_eq!(tree.json(), r#"{"a":1}"#);
-        assert!(decoder.poll(stale).is_none());
+        assert!(decoder.poll(stale.unwrap()).is_none());
         let id = decoder.submit(&ctx, Work::Tree(Arc::from(&b"\x1f"[..]), Format::Jsonb));
-        assert!(matches!(wait(&mut decoder, id), Output::Tree(Err(_))));
+        assert!(matches!(wait(&decoder, id), Output::Tree(Err(_))));
         let id = decoder.submit(
             &ctx,
             Work::JsonbPrefix(Arc::from(&b"\xcc\x40\x17a"[..]), 66),
         );
-        let Output::Tree(Ok(tree)) = wait(&mut decoder, id) else {
+        let Output::Tree(Ok(tree)) = wait(&decoder, id) else {
             panic!("expected a partial tree")
         };
         assert!(!tree.complete);

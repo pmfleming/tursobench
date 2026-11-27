@@ -2,6 +2,7 @@
 //!
 //! An even-length blob is float32 with no type byte. An odd-length blob ends
 //! in its type: 1 float32, 2 float64, 3 one-bit, 4 eight-bit, 9 sparse.
+use crate::bytes::array_at;
 
 /// How a vector's numbers are stored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,7 +41,7 @@ pub fn layout(tail: &[u8], len: u64) -> Option<(Layout, usize)> {
         1 if n.is_multiple_of(4) && n > 0 => Some((Layout::F32, n / 4)),
         2 if n.is_multiple_of(8) && n > 0 => Some((Layout::F64, n / 8)),
         3 if n > 0 && n.is_multiple_of(2) => {
-            let dims = (n * 8).checked_sub(usize::from(byte(2)?))?;
+            let dims = n.checked_mul(8)?.checked_sub(usize::from(byte(2)?))?;
             (dims > 0 && dims.div_ceil(8) < n).then_some((Layout::OneBit, dims))
         }
         4 if n >= 10 && n.is_multiple_of(2) => {
@@ -48,11 +49,7 @@ pub fn layout(tail: &[u8], len: u64) -> Option<(Layout, usize)> {
             (dims > 0 && align4(dims) + 8 == n - 2).then_some((Layout::EightBit, dims))
         }
         9 if n.is_multiple_of(4) && n >= 4 && (n - 4).is_multiple_of(8) => {
-            let dims = u32::from_le_bytes(
-                tail.get(tail.len().checked_sub(5)?..tail.len() - 1)?
-                    .try_into()
-                    .ok()?,
-            );
+            let dims = u32::from_le_bytes(array_at(tail, tail.len().checked_sub(5)?)?);
             Some((Layout::Sparse, dims as usize))
         }
         _ => None,
@@ -80,8 +77,11 @@ pub enum Values {
 
 fn f32s(bytes: &[u8]) -> Vec<f32> {
     bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks()
+        .0
+        .iter()
+        .copied()
+        .map(f32::from_le_bytes)
         .collect()
 }
 
@@ -106,8 +106,11 @@ pub fn read(bytes: &[u8], plain: bool) -> Result<Vector, String> {
     let values = match layout {
         Layout::F32 => Values::F32(f32s(data)),
         Layout::F64 => Values::F64(
-            data.chunks_exact(8)
-                .map(|c| f64::from_le_bytes(c.try_into().unwrap_or([0; 8])))
+            data.as_chunks()
+                .0
+                .iter()
+                .copied()
+                .map(f64::from_le_bytes)
                 .collect(),
         ),
         Layout::OneBit => Values::Bits(
@@ -123,8 +126,12 @@ pub fn read(bytes: &[u8], plain: bool) -> Result<Vector, String> {
         ),
         Layout::EightBit => {
             let at = align4(dims);
-            let number = |i: usize| f32::from_le_bytes(data[i..i + 4].try_into().unwrap_or([0; 4]));
-            let (alpha, shift) = (number(at), number(at + 4));
+            let number = |i| {
+                array_at(data, i)
+                    .map(f32::from_le_bytes)
+                    .ok_or("Missing quantization coefficients")
+            };
+            let (alpha, shift) = (number(at)?, number(at + 4)?);
             Values::F32(
                 data[..dims]
                     .iter()
@@ -136,8 +143,13 @@ pub fn read(bytes: &[u8], plain: bool) -> Result<Vector, String> {
             let entries = (data.len() - 4) / 8;
             let values = f32s(&data[..entries * 4]);
             let mut dense = vec![0f32; dims];
-            for (entry, value) in data[entries * 4..entries * 8].chunks_exact(4).zip(values) {
-                let index = u32::from_le_bytes([entry[0], entry[1], entry[2], entry[3]]) as usize;
+            for (&entry, value) in data[entries * 4..entries * 8]
+                .as_chunks()
+                .0
+                .iter()
+                .zip(values)
+            {
+                let index = u32::from_le_bytes(entry) as usize;
                 *dense
                     .get_mut(index)
                     .ok_or("A sparse index is past the dimensions")? = value;
@@ -238,6 +250,7 @@ mod tests {
         assert_eq!(vector.buckets(1), vec![1.0]);
         // A type byte the length does not fit is not a vector.
         assert_eq!(layout(&[0, 0, 2], 3), None);
+        assert_eq!(layout(&[0, 3], u64::MAX), None);
         assert_eq!(layout(&[7], 5), None);
         assert!(read(&[1, 2, 3, 4, 5, 6, 7, 8, 9], false).is_err());
         assert!(read(&[], true).is_err());

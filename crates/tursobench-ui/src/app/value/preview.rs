@@ -45,12 +45,9 @@ impl App {
     ) -> Option<Preview> {
         let offer = self.value_offer(ctx, row, col)?;
         let document = &mut self.database.document;
-        let values = document.result.rows.get(row)?;
         let value = document
-            .drafts
-            .as_ref()
-            .and_then(|d| d.displayed(values, col))
-            .unwrap_or(values.get(col)?);
+            .result
+            .displayed_value(document.drafts.as_ref(), row, col)?;
         if matches!(value, Value::Text(_)) {
             return None;
         }
@@ -62,32 +59,38 @@ impl App {
             whole: false,
         };
         let kind = offer.kind;
-        let mut decode = |work: Option<Work>| match work {
-            Some(work) => document
-                .tools
-                .values
-                .decode(ctx, target, offer.lens, || work),
-            None => Decoded::Failed("Open the value to read it".into()),
-        };
         let body = match offer.lens {
-            Lens::Hex => Body::Hex(bytes(value).iter().copied().take(32 * LINES).collect()),
-            Lens::Text if matches!(kind, Kind::Geometry { .. }) => {
-                Body::Decoded(decode(in_memory(value).map(Work::Wkt)))
+            Lens::Hex => {
+                let head = bytes(value);
+                Body::Hex(head[..head.len().min(32 * LINES)].to_vec())
             }
-            Lens::Text => Body::Text(text_of(value, kind)),
-            Lens::Tree => Body::Decoded(decode(tree_work(value, offer.format))),
-            Lens::Vector => Body::Decoded(decode(in_memory(value).map(Work::Vector))),
-            Lens::Contents => Body::Decoded(decode(contents_work(value, kind))),
-            Lens::Image => {
-                let bytes = || image_bytes(value, kind);
-                Body::Image(
-                    document
-                        .tools
-                        .values
-                        .images
-                        .get(ctx, target, Size::Preview, bytes),
-                )
+            Lens::Text if !matches!(kind, Kind::Geometry { .. }) => {
+                Body::Text(text_of(value, kind))
             }
+            Lens::Image => Body::Image(document.tools.values.images.get(
+                ctx,
+                target,
+                Size::Preview,
+                || image_bytes(value, kind),
+            )),
+            lens => Body::Decoded(
+                document
+                    .tools
+                    .values
+                    .decode(ctx, target, lens, || match lens {
+                        Lens::Text => in_memory(value).map(Work::Wkt),
+                        Lens::Tree => tree_work(value, offer.format),
+                        Lens::Vector => in_memory(value).map(Work::Vector),
+                        Lens::Contents => match kind {
+                            Kind::Compressed(compression) => {
+                                in_memory(value).map(|b| Work::Contents(b, compression))
+                            }
+                            _ => None,
+                        },
+                        Lens::Hex | Lens::Image => None,
+                    })
+                    .unwrap_or_else(|| Decoded::Failed("Open the value to read it".into())),
+            ),
         };
         Some(Preview {
             lens: offer.lens,
@@ -104,12 +107,6 @@ fn in_memory(value: &Value) -> Option<Arc<[u8]>> {
         _ => None,
     }
 }
-fn contents_work(value: &Value, kind: Kind) -> Option<Work> {
-    match kind {
-        Kind::Compressed(compression) => in_memory(value).map(|b| Work::Contents(b, compression)),
-        _ => None,
-    }
-}
 
 impl App {
     /// The thumbnail of field `col` of `row` when it holds an image in
@@ -121,12 +118,9 @@ impl App {
         col: usize,
     ) -> Option<(egui::TextureId, egui::Vec2)> {
         let document = &mut self.database.document;
-        let values = document.result.rows.get(row)?;
         let value = document
-            .drafts
-            .as_ref()
-            .and_then(|d| d.displayed(values, col))
-            .unwrap_or(values.get(col)?);
+            .result
+            .displayed_value(document.drafts.as_ref(), row, col)?;
         let Value::Blob(_) = value else {
             return None;
         };
@@ -155,7 +149,7 @@ impl App {
 }
 
 /// An image's bytes and format, when the whole value is in memory.
-pub(in crate::app) fn image_bytes(value: &Value, kind: Kind) -> Option<(Arc<[u8]>, ImageFormat)> {
+fn image_bytes(value: &Value, kind: Kind) -> Option<(Arc<[u8]>, ImageFormat)> {
     match (value, kind) {
         (Value::Blob(bytes), Kind::Image { format, .. }) => {
             Some((Arc::from(bytes.as_slice()), format))
@@ -176,7 +170,8 @@ fn bytes(value: &Value) -> &[u8] {
 
 /// Text from the first 4 KiB of a value, in the encoding it was detected in.
 fn text_of(value: &Value, kind: Kind) -> String {
-    let head = &bytes(value)[..bytes(value).len().min(4096)];
+    let head = bytes(value);
+    let head = &head[..head.len().min(4096)];
     match (value, kind) {
         (Value::Deferred(cell), _) if cell.kind == LargeKind::Text => {
             String::from_utf8_lossy(head).into_owned()

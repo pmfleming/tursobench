@@ -171,7 +171,7 @@ impl App {
             10 => {
                 self.database.document.ui.table_view = shell::TableView::Data;
                 self.database.document.ui.nav = shell::Nav::Overview;
-                self.show_structure();
+                self.open_structure_window();
                 self.load_diagram();
                 smoke.stage = 7;
             }

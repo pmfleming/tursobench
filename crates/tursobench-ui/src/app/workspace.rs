@@ -116,6 +116,39 @@ impl App {
             _ => self.database.workspace.visible.get(&kind).copied(),
         }
     }
+    pub(super) fn workspace_shortcuts(&mut self, ctx: &egui::Context) {
+        let workspace = &self.database.workspace;
+        if !workspace.enabled {
+            return;
+        }
+        let focused = workspace.focused;
+        self.switch_document(focused);
+        if ctx.input_mut(|i| {
+            i.consume_key(
+                egui::Modifiers::CTRL | egui::Modifiers::ALT,
+                egui::Key::Enter,
+            )
+        }) {
+            self.expand_window(focused);
+        }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Tab)) {
+            self.focus_next_pane();
+        }
+    }
+    fn focus_next_pane(&mut self) {
+        // Left to right, top to bottom. A hidden assistant stays hidden.
+        let workspace = &self.database.workspace;
+        let mut panes = workspace.layout.order();
+        panes.retain(|kind| *kind != Kind::Chat || !workspace.minimized.contains(kind));
+        let next = panes
+            .iter()
+            .position(|kind| *kind == workspace.active)
+            .and_then(|index| panes.get(index + 1))
+            .or(panes.first());
+        if let Some(&kind) = next {
+            self.focus_pane(kind);
+        }
+    }
     pub(super) fn focus_pane(&mut self, kind: Kind) {
         self.activate_pane(kind);
         if let Some(id) = self.pane_document(kind) {

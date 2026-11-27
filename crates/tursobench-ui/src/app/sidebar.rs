@@ -82,18 +82,65 @@ impl App {
     }
 
     pub(super) fn active_database_tree_ui(&mut self, ui: &mut egui::Ui) {
-        if self.database.ui.sidebar != ToolPanel::Schema {
-            if self.database.ui.sidebar == ToolPanel::Diagnostics {
-                self.diagnostics_ui(ui);
-            } else {
-                self.history_controls(ui);
-            }
-            return;
+        match self.database.ui.sidebar {
+            ToolPanel::Schema => self.schema_tree_ui(ui),
+            ToolPanel::Diagnostics => self.diagnostics_ui(ui),
+            ToolPanel::Saved => self.saved_queries_ui(ui),
+            ToolPanel::History => self.query_history_ui(ui),
         }
-        self.schema_tree_ui(ui);
     }
 
     pub(super) fn schema_tree_ui(&mut self, ui: &mut egui::Ui) {
+        self.catalog_status(ui);
+        let filter = if self.sidebar_search.filters_tree() {
+            self.sidebar_search.query.trim().to_lowercase()
+        } else {
+            String::new()
+        };
+        let related = self
+            .database
+            .ui
+            .hover_table
+            .as_deref()
+            .map(|name| self.related_tables(name))
+            .unwrap_or_default();
+        let mut hovered = None;
+        for (kind, title, icon) in [
+            ("table", "Tables", Icon::Data),
+            ("view", "Views", Icon::Data),
+            ("system", "System", Icon::System),
+            ("index", "Indexes", Icon::Columns),
+            ("trigger", "Triggers", Icon::System),
+        ] {
+            let objects = self.tree_objects(kind, &filter);
+            if !filter.is_empty() && objects.is_empty() {
+                continue;
+            }
+            let row_kind = if kind == "system" { "table" } else { kind };
+            let group = egui::CollapsingHeader::new(
+                egui::RichText::new(format!("{} · {}", title.to_uppercase(), objects.len()))
+                    .size(crate::appearance::text_size(ui.ctx(), 10.5))
+                    .strong()
+                    .color(crate::appearance::Tokens::of(ui.ctx()).muted),
+            )
+            .id_salt(("nav-group", kind))
+            .open((!filter.is_empty()).then_some(true))
+            .default_open(kind == "table" || kind == "view")
+            .show(ui, |ui| {
+                // Render every row and keep the last hovered one.
+                objects
+                    .into_iter()
+                    .filter(|name| {
+                        self.sidebar_object(ui, name, row_kind, icon, related.contains(name))
+                    })
+                    .last()
+            });
+            hovered = group.body_returned.flatten().or(hovered);
+        }
+        self.database.ui.hover_table = hovered;
+    }
+
+    fn catalog_status(&self, ui: &mut egui::Ui) {
         if self.database.catalog_ticket.is_some() {
             ui.spinner();
         }
@@ -109,54 +156,6 @@ impl App {
         {
             ui.colored_label(ui.visuals().warn_fg_color,"Catalog incomplete").on_hover_text("Retained metadata budget reached or catalog failed. Use SQL to inspect omitted objects.");
         }
-        let filter = if self.sidebar_search.filters_tree() {
-            self.sidebar_search.query.trim().to_lowercase()
-        } else {
-            String::new()
-        };
-        let related = self
-            .database
-            .ui
-            .hover_table
-            .as_deref()
-            .map(|t| self.related_tables(t))
-            .unwrap_or_default();
-        let mut hovered = None;
-        for (kind, title, icon) in [
-            ("table", "Tables", Icon::Data),
-            ("view", "Views", Icon::Data),
-            ("system", "System", Icon::System),
-            ("index", "Indexes", Icon::Columns),
-            ("trigger", "Triggers", Icon::System),
-        ] {
-            let objects = self.tree_objects(kind, &filter);
-            if !filter.is_empty() && objects.is_empty() {
-                continue;
-            }
-            egui::CollapsingHeader::new(
-                egui::RichText::new(format!("{} · {}", title.to_uppercase(), objects.len()))
-                    .size(crate::appearance::text_size(ui.ctx(), 10.5))
-                    .strong()
-                    .color(crate::appearance::Tokens::of(ui.ctx()).muted),
-            )
-            .id_salt(("nav-group", kind))
-            .open((!filter.is_empty()).then_some(true))
-            .default_open(kind == "table" || kind == "view" || !filter.is_empty())
-            .show(ui, |ui| {
-                for name in objects {
-                    if self.sidebar_object(
-                        ui,
-                        &name,
-                        if kind == "system" { "table" } else { kind },
-                        icon,
-                        related.contains(&name),
-                    ) {
-                        hovered = Some(name);
-                    }
-                }
-            });
-        }
-        self.database.ui.hover_table = hovered;
     }
 
     /// The names in one tree group whose name, or a loaded column, matches `filter`.

@@ -1,6 +1,9 @@
 //! BSON, binary property lists, CBOR, MessagePack and protobuf read into the
 //! same bounded tree as JSONB. Each must consume the value exactly.
-use crate::tree::{Error, Item, Limits, Node, Tree, escape};
+use crate::{
+    bytes,
+    tree::{Error, Item, Limits, Node, Tree, escape},
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// A structured format the tree lens reads.
@@ -85,7 +88,7 @@ pub fn signature(head: &[u8], len: u64) -> Option<Format> {
 const NESTING: usize = 128;
 
 /// Builds a tree within the limits.
-pub(crate) struct Builder<'a> {
+struct Builder<'a> {
     limits: &'a Limits,
     cancel: &'a AtomicBool,
     nodes: Vec<Node>,
@@ -195,12 +198,53 @@ impl<'a> Builder<'a> {
     }
 }
 
+const TRUNCATED: Error = Error::Invalid("The value ends inside an element");
+
 /// `n` bytes at `at`, or invalid.
 fn take(bytes: &[u8], at: usize, n: usize) -> Result<&[u8], Error> {
-    at.checked_add(n)
-        .and_then(|end| bytes.get(at..end))
-        .ok_or(Error::Invalid("The value ends inside an element"))
+    bytes::slice_at(bytes, at, n).ok_or(TRUNCATED)
 }
+fn array_at<const N: usize>(bytes: &[u8], at: usize) -> Result<[u8; N], Error> {
+    bytes::array_at(bytes, at).ok_or(TRUNCATED)
+}
+fn uint_be(bytes: &[u8], at: usize, n: usize) -> Result<u64, Error> {
+    bytes::uint_be(bytes, at, n).ok_or(TRUNCATED)
+}
+
+type ReadItem = fn(&mut Builder<'_>, &[u8], usize, usize, Option<String>) -> Result<usize, Error>;
+
+/// Read the entries shared by MessagePack and CBOR arrays and maps.
+/// A CBOR collection without a length ends at the next break marker.
+fn packed_collection(
+    b: &mut Builder,
+    bytes: &[u8],
+    mut at: usize,
+    len: Option<usize>,
+    (depth, key): (usize, Option<String>),
+    map: bool,
+    item: ReadItem,
+) -> Result<usize, Error> {
+    let index = b.open(depth, key, map)?;
+    let mut count = 0;
+    while len != Some(count) {
+        if len.is_none() && bytes.get(at) == Some(&0xff) {
+            at += 1;
+            break;
+        }
+        let name = if map {
+            let mut keys = b.key(depth);
+            at = item(&mut keys, bytes, at, 0, None)?;
+            Some(key_text(keys.finish()))
+        } else {
+            None
+        };
+        at = item(b, bytes, at, depth + 1, name)?;
+        count += 1;
+    }
+    b.close(index, count);
+    Ok(at)
+}
+
 fn number(n: impl std::fmt::Display) -> Item {
     Item::Number(n.to_string())
 }
@@ -224,12 +268,10 @@ fn bytes_item(bytes: &[u8]) -> Item {
 }
 
 mod bson {
-    use super::{Builder, Error, Item, bytes_item, number, real, take};
+    use super::{Builder, Error, Item, array_at, bytes_item, number, real, take};
 
     fn i32_at(bytes: &[u8], at: usize) -> Result<i32, Error> {
-        Ok(i32::from_le_bytes(
-            take(bytes, at, 4)?.try_into().unwrap_or_default(),
-        ))
+        Ok(i32::from_le_bytes(array_at(bytes, at)?))
     }
     fn cstring(bytes: &[u8], at: usize) -> Result<(&str, usize), Error> {
         let len = bytes
@@ -282,32 +324,24 @@ mod bson {
         depth: usize,
         key: Option<String>,
     ) -> Result<usize, Error> {
-        let string = |at| -> Result<(String, usize), Error> {
+        let string = |at| -> Result<(&str, usize), Error> {
             let len = usize::try_from(i32_at(bytes, at)?)
                 .map_err(|_| Error::Invalid("Negative BSON length"))?;
             let raw = take(bytes, at + 4, len)?;
-            let (text, nul) = raw
+            let (&terminator, raw) = raw
                 .split_last()
                 .ok_or(Error::Invalid("Empty BSON string"))?;
-            let text = std::str::from_utf8(nul.to_owned().as_slice())
-                .map(str::to_owned)
-                .ok()
-                .filter(|_| *text == 0);
+            let text = std::str::from_utf8(raw).ok().filter(|_| terminator == 0);
             Ok((
                 text.ok_or(Error::Invalid("Invalid BSON string"))?,
                 at + 4 + len,
             ))
         };
         let (item, next) = match kind {
-            0x01 => (
-                real(f64::from_le_bytes(
-                    take(bytes, at, 8)?.try_into().unwrap_or_default(),
-                )),
-                at + 8,
-            ),
+            0x01 => (real(f64::from_le_bytes(array_at(bytes, at)?)), at + 8),
             0x02 | 0x0d | 0x0e => {
                 let (text, next) = string(at)?;
-                (Item::Text(b.text(&text)), next)
+                (Item::Text(b.text(text)), next)
             }
             0x03 | 0x04 => return document(b, bytes, at, depth, key, kind == 0x04),
             0x05 => {
@@ -318,12 +352,7 @@ mod bson {
             0x06 | 0x0a | 0x7f | 0xff => (Item::Null, at),
             0x07 => (bytes_item(take(bytes, at, 12)?), at + 12),
             0x08 => (Item::Bool(take(bytes, at, 1)?[0] != 0), at + 1),
-            0x09 | 0x11 | 0x12 => (
-                number(i64::from_le_bytes(
-                    take(bytes, at, 8)?.try_into().unwrap_or_default(),
-                )),
-                at + 8,
-            ),
+            0x09 | 0x11 | 0x12 => (number(i64::from_le_bytes(array_at(bytes, at)?)), at + 8),
             0x0b => {
                 let (pattern, next) = cstring(bytes, at)?;
                 let (_, next) = cstring(bytes, next)?;
@@ -339,13 +368,9 @@ mod bson {
 }
 
 mod msgpack {
-    use super::{Builder, Error, Item, bytes_item, number, real, take};
-
-    fn uint(bytes: &[u8], at: usize, n: usize) -> Result<u64, Error> {
-        Ok(take(bytes, at, n)?
-            .iter()
-            .fold(0u64, |v, &b| v << 8 | u64::from(b)))
-    }
+    use super::{
+        Builder, Error, Item, array_at, bytes_item, number, packed_collection, real, take, uint_be,
+    };
     /// The item at `at`; returns where it ends.
     pub(super) fn item(
         b: &mut Builder,
@@ -359,19 +384,21 @@ mod msgpack {
             .get(at)
             .ok_or(Error::Invalid("The value ends inside an element"))?;
         let at = at + 1;
-        let sized = |n: usize| uint(bytes, at, n).map(|len| (len as usize, at + n));
+        let sized = |n| uint_be(bytes, at, n).map(|len| (len as usize, at + n));
         let (item, next) = match first {
             0x00..=0x7f => (number(first), at),
             0xe0..=0xff => (number(first as i8), at),
-            0x80..=0x8f => {
-                return container(b, bytes, at, usize::from(first & 0x0f), depth, key, true);
-            }
-            0x90..=0x9f => {
-                return container(b, bytes, at, usize::from(first & 0x0f), depth, key, false);
-            }
-            0xdc..=0xdf => {
-                let (len, at) = sized(if first & 1 == 0 { 2 } else { 4 })?;
-                return container(b, bytes, at, len, depth, key, first >= 0xde);
+            0x80..=0x9f | 0xdc..=0xdf => {
+                let (len, at, map) = if first < 0xa0 {
+                    (usize::from(first & 0x0f), at, first < 0x90)
+                } else {
+                    let (len, at) = sized(if first & 1 == 0 { 2 } else { 4 })?;
+                    (len, at, first >= 0xde)
+                };
+                if len > bytes.len() {
+                    return Err(Error::Invalid("MessagePack length overruns the value"));
+                }
+                return packed_collection(b, bytes, at, Some(len), (depth, key), map, item);
             }
             0xa0..=0xbf => return text(b, bytes, at, usize::from(first & 0x1f), depth, key),
             0xd9..=0xdb => {
@@ -393,24 +420,17 @@ mod msgpack {
             0xc0 => (Item::Null, at),
             0xc2 | 0xc3 => (Item::Bool(first == 0xc3), at),
             0xca => (
-                real(f64::from(f32::from_be_bytes(
-                    take(bytes, at, 4)?.try_into().unwrap_or_default(),
-                ))),
+                real(f64::from(f32::from_be_bytes(array_at(bytes, at)?))),
                 at + 4,
             ),
-            0xcb => (
-                real(f64::from_be_bytes(
-                    take(bytes, at, 8)?.try_into().unwrap_or_default(),
-                )),
-                at + 8,
-            ),
+            0xcb => (real(f64::from_be_bytes(array_at(bytes, at)?)), at + 8),
             0xcc..=0xcf => {
                 let n = 1 << (first - 0xcc);
-                (number(uint(bytes, at, n)?), at + n)
+                (number(uint_be(bytes, at, n)?), at + n)
             }
             0xd0..=0xd3 => {
                 let n = 1 << (first - 0xd0);
-                let raw = uint(bytes, at, n)?;
+                let raw = uint_be(bytes, at, n)?;
                 let shift = 64 - 8 * n as u32;
                 (number(((raw << shift) as i64) >> shift), at + n)
             }
@@ -433,36 +453,10 @@ mod msgpack {
         b.scalar(depth, key, Item::Text(text))?;
         Ok(at + len)
     }
-    fn container(
-        b: &mut Builder,
-        bytes: &[u8],
-        mut at: usize,
-        len: usize,
-        depth: usize,
-        key: Option<String>,
-        map: bool,
-    ) -> Result<usize, Error> {
-        if len > bytes.len() {
-            return Err(Error::Invalid("MessagePack length overruns the value"));
-        }
-        let index = b.open(depth, key, map)?;
-        for _ in 0..len {
-            let name = if map {
-                let mut keys = b.key(depth);
-                at = item(&mut keys, bytes, at, 0, None)?;
-                Some(super::key_text(&keys.finish()))
-            } else {
-                None
-            };
-            at = item(b, bytes, at, depth + 1, name)?;
-        }
-        b.close(index, len);
-        Ok(at)
-    }
 }
 
 mod cbor {
-    use super::{Builder, Error, Item, bytes_item, number, real, take};
+    use super::{Builder, Error, Item, bytes_item, number, packed_collection, real, take, uint_be};
 
     /// Where the item starts, after a self-describe tag.
     pub(super) fn start(bytes: &[u8]) -> usize {
@@ -480,10 +474,7 @@ mod cbor {
             31 => return Ok((None, at)),
             _ => return Err(Error::Invalid("Reserved CBOR argument")),
         };
-        let value = take(bytes, at, n)?
-            .iter()
-            .fold(0u64, |v, &b| v << 8 | u64::from(b));
-        Ok((Some(value), at + n))
+        Ok((Some(uint_be(bytes, at, n)?), at + n))
     }
     pub(super) fn item(
         b: &mut Builder,
@@ -530,7 +521,13 @@ mod cbor {
                 };
                 (item, at + raw.len())
             }
-            (4 | 5, _) => return container(b, bytes, at, arg, depth, key, major == 5),
+            (4 | 5, len) => {
+                if len.is_some_and(|len| len > bytes.len() as u64) {
+                    return Err(Error::Invalid("CBOR length overruns the value"));
+                }
+                let len = len.map(|len| len as usize);
+                return packed_collection(b, bytes, at, len, (depth, key), major == 5, item);
+            }
             (7, _) => (simple(info, arg)?, at),
             _ => return Err(Error::Invalid("Indefinite CBOR strings are not read")),
         };
@@ -563,49 +560,15 @@ mod cbor {
         };
         if sign == 1 { -magnitude } else { magnitude }
     }
-    fn container(
-        b: &mut Builder,
-        bytes: &[u8],
-        mut at: usize,
-        len: Option<u64>,
-        depth: usize,
-        key: Option<String>,
-        map: bool,
-    ) -> Result<usize, Error> {
-        if len.is_some_and(|len| len > bytes.len() as u64) {
-            return Err(Error::Invalid("CBOR length overruns the value"));
-        }
-        let index = b.open(depth, key, map)?;
-        let mut count = 0;
-        loop {
-            match len {
-                Some(len) if count as u64 == len => break,
-                None if bytes.get(at) == Some(&0xff) => {
-                    at += 1;
-                    break;
-                }
-                _ => {}
-            }
-            let name = if map {
-                let mut keys = b.key(depth);
-                at = item(&mut keys, bytes, at, 0, None)?;
-                Some(super::key_text(&keys.finish()))
-            } else {
-                None
-            };
-            at = item(b, bytes, at, depth + 1, name)?;
-            count += 1;
-        }
-        b.close(index, count);
-        Ok(at)
-    }
 }
 
 mod protobuf {
-    use super::{Builder, Error, Item, bytes_item, number, take};
+    use super::{Builder, Error, Item, array_at, bytes_item, number, take};
 
     fn varint(bytes: &[u8], at: usize) -> Result<(u64, usize), Error> {
-        let (value, len) = crate::inspect::leb128(bytes.get(at..).unwrap_or_default())
+        let (value, len) = bytes
+            .get(at..)
+            .and_then(crate::bytes::leb128)
             .ok_or(Error::Invalid("Invalid protobuf varint"))?;
         Ok((value, at + len))
     }
@@ -668,18 +631,8 @@ mod protobuf {
                 let (value, next) = varint(bytes, at)?;
                 (number(value), next)
             }
-            1 => (
-                number(u64::from_le_bytes(
-                    take(bytes, at, 8)?.try_into().unwrap_or_default(),
-                )),
-                at + 8,
-            ),
-            5 => (
-                number(u32::from_le_bytes(
-                    take(bytes, at, 4)?.try_into().unwrap_or_default(),
-                )),
-                at + 4,
-            ),
+            1 => (number(u64::from_le_bytes(array_at(bytes, at)?)), at + 8),
+            5 => (number(u32::from_le_bytes(array_at(bytes, at)?)), at + 4),
             _ => {
                 let (len, at) = varint(bytes, at)?;
                 let raw = take(bytes, at, len as usize)?;
@@ -701,7 +654,7 @@ mod protobuf {
 }
 
 mod plist {
-    use super::{Builder, Error, Item, bytes_item, number, real, take};
+    use super::{Builder, Error, Item, array_at, bytes_item, number, real, take, uint_be};
 
     /// A binary plist: its bytes and the trailer's sizes and positions.
     struct Plist<'a> {
@@ -709,7 +662,7 @@ mod plist {
         offset_size: usize,
         ref_size: usize,
         objects: usize,
-        table: usize,
+        table: &'a [u8],
     }
     /// Where an object goes in the tree.
     struct Place {
@@ -717,31 +670,35 @@ mod plist {
         key: Option<String>,
     }
     fn uint(bytes: &[u8], at: usize, n: usize) -> Result<usize, Error> {
-        let value = take(bytes, at, n)?
-            .iter()
-            .fold(0u64, |v, &b| v << 8 | u64::from(b));
-        usize::try_from(value).map_err(|_| Error::Invalid("plist number too large"))
+        usize::try_from(uint_be(bytes, at, n)?)
+            .map_err(|_| Error::Invalid("plist number too large"))
     }
     pub(super) fn read(b: &mut Builder, bytes: &[u8]) -> Result<usize, Error> {
         if !bytes.starts_with(b"bplist00") || bytes.len() < 40 {
             return Err(Error::Invalid("Not a binary plist"));
         }
-        let t = bytes.len() - 32;
-        let plist = Plist {
-            bytes,
-            offset_size: usize::from(bytes[t + 6]),
-            ref_size: usize::from(bytes[t + 7]),
-            objects: uint(bytes, t + 8, 8)?,
-            table: uint(bytes, t + 24, 8)?,
-        };
-        let top = uint(bytes, t + 16, 8)?;
+        let (body, trailer) = bytes.split_at(bytes.len() - 32);
+        let offset_size = usize::from(trailer[6]);
+        let ref_size = usize::from(trailer[7]);
+        let objects = uint(trailer, 8, 8)?;
+        let top = uint(trailer, 16, 8)?;
         let sizes = 1..=8;
-        if !sizes.contains(&plist.offset_size)
-            || !sizes.contains(&plist.ref_size)
-            || top >= plist.objects
-        {
+        if !sizes.contains(&offset_size) || !sizes.contains(&ref_size) || top >= objects {
             return Err(Error::Invalid("Invalid plist trailer"));
         }
+        let (data, table) = body
+            .split_at_checked(uint(trailer, 24, 8)?)
+            .ok_or(Error::Invalid("Invalid plist offset table"))?;
+        if table.len() / offset_size < objects {
+            return Err(Error::Invalid("Truncated plist offset table"));
+        }
+        let plist = Plist {
+            bytes: data,
+            offset_size,
+            ref_size,
+            objects,
+            table,
+        };
         plist.object(
             b,
             top,
@@ -757,11 +714,7 @@ mod plist {
             if index >= self.objects {
                 return Err(Error::Invalid("plist reference out of range"));
             }
-            uint(
-                self.bytes,
-                self.table + index * self.offset_size,
-                self.offset_size,
-            )
+            uint(self.table, index * self.offset_size, self.offset_size)
         }
         /// The length in a marker's low bits, or the integer object after it.
         fn length(&self, at: usize, low: u8) -> Result<(usize, usize), Error> {
@@ -788,12 +741,8 @@ mod plist {
                     _ => Item::Null,
                 },
                 0x1 => number(uint(bytes, at + 1, (1usize << low).min(8))? as i64),
-                0x2 if low == 2 => real(f64::from(f32::from_be_bytes(
-                    take(bytes, at + 1, 4)?.try_into().unwrap_or_default(),
-                ))),
-                0x2 | 0x3 => real(f64::from_be_bytes(
-                    take(bytes, at + 1, 8)?.try_into().unwrap_or_default(),
-                )),
+                0x2 if low == 2 => real(f64::from(f32::from_be_bytes(array_at(bytes, at + 1)?))),
+                0x2 | 0x3 => real(f64::from_be_bytes(array_at(bytes, at + 1)?)),
                 0x4 => {
                     let (len, start) = self.length(at, low)?;
                     bytes_item(take(bytes, start, len)?)
@@ -877,9 +826,9 @@ mod plist {
 }
 
 /// A map key read as its own small tree, as the body of a JSON string.
-fn key_text(tree: &Tree) -> String {
-    match tree.nodes.first().map(|n| &n.item) {
-        Some(Item::Text(text)) => text.clone(),
+fn key_text(mut tree: Tree) -> String {
+    match tree.nodes.first_mut().map(|n| &mut n.item) {
+        Some(Item::Text(text)) => std::mem::take(text),
         _ => escape(&tree.json()),
     }
 }
@@ -890,41 +839,52 @@ mod tests {
     use crate::tree::Limits;
     use std::sync::atomic::AtomicBool;
 
-    /// `{"job":"export-812","rows":48213,"ok":true,"tags":["a",null]}` in each format,
-    /// built by hand.
-    fn samples() -> Vec<(Format, Vec<u8>)> {
-        let mut msgpack = vec![0x84, 0xa3];
-        msgpack.extend(b"job\xaaexport-812\xa4rows\xcd\xbc\x55\xa2ok\xc3\xa4tags\x92\xa1a\xc0");
-        let mut cbor = vec![0xd9, 0xd9, 0xf7, 0xa4, 0x63];
-        cbor.extend(b"job\x6aexport-812\x64rows\x19\xbc\x55\x62ok\xf5\x64tags\x82\x61a\xf6");
-        let mut bson_body = Vec::new();
-        bson_body.extend(b"\x02job\0\x0b\0\0\0export-812\0");
-        bson_body.extend(b"\x10rows\0");
-        bson_body.extend(48213i32.to_le_bytes());
-        bson_body.extend(b"\x08ok\0\x01");
-        bson_body.extend(b"\x04tags\0\x11\0\0\0\x020\0\x02\0\0\0a\0\x0a1\0\0");
-        bson_body.push(0);
-        let mut bson = ((bson_body.len() + 4) as i32).to_le_bytes().to_vec();
-        bson.extend(bson_body);
-        vec![
-            (Format::MessagePack, msgpack),
-            (Format::Cbor, cbor),
-            (Format::Bson, bson),
-        ]
-    }
+    // The same value in each format. The binary plist was encoded with Python's plistlib.
+    const SAMPLES: [(Format, &[u8]); 4] = [
+        (
+            Format::MessagePack,
+            b"\x84\xa3job\xaaexport-812\xa4rows\xcd\xbcU\xa2ok\xc3\xa4tags\x92\xa1\
+          a\xc0",
+        ),
+        (
+            Format::Cbor,
+            b"\xd9\xd9\xf7\xa4cjobjexport-812drows\x19\xbcUbok\xf5dtags\x82aa\xf6",
+        ),
+        (
+            Format::Bson,
+            b"?\x00\x00\x00\x02job\x00\x0b\x00\x00\x00export-812\x00\x10rows\x00U\
+          \xbc\x00\x00\x08ok\x00\x01\x04tags\x00\x11\x00\x00\x00\x020\x00\x02\
+          \x00\x00\x00a\x00\x0a1\x00\x00\x00",
+        ),
+        (
+            Format::Plist,
+            b"bplist00\xd4\x01\x02\x03\x04\x05\x06\x07\x08SjobTrowsRokTtagsZexport\
+          -812\x11\xbcU\x09\xa2\x09\x0aQa\x00\x08\x11\x15\x1a\x1d\x22-0146\x00\
+          \x00\x00\x00\x00\x00\x01\x01\x00\x00\x00\x00\x00\x00\x00\x0b\x00\x00\
+          \x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x007",
+        ),
+    ];
+    const WIDE_PLIST: &[u8] = b"bplist00\xd3\x01\x02\x03\x04\x05\x06a\x03\xbbUfloatTdatao\x10\x1f\
+          \x00a\x00 \x00l\x00o\x00n\x00g\x00 \x00s\x00t\x00r\x00i\x00n\x00g\
+          \x00 \x00w\x00i\x00t\x00h\x00 \x001\x006\x00b\x00i\x00t\x00 \x03\xbb\
+          \x00 \x00t\x00e\x00x\x00t#?\xf8\x00\x00\x00\x00\x00\x00Dblob\x08\x0f\
+          \x12\x18\x1d^g\x00\x00\x00\x00\x00\x00\x01\x01\x00\x00\x00\x00\x00\
+          \x00\x00\x07\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
+          \x00l";
+    const PROTO: &[u8] = b"\x08\x96\x01\x12\x07testing";
 
     #[test]
     fn each_format_reads_into_the_same_tree() {
         let cancel = AtomicBool::new(false);
-        for (format, bytes) in samples() {
-            let tree = decode(format, &bytes, &Limits::default(), &cancel)
+        for (format, bytes) in SAMPLES {
+            let tree = decode(format, bytes, &Limits::default(), &cancel)
                 .unwrap_or_else(|e| panic!("{format:?}: {e:?}"));
             assert_eq!(
                 tree.json(),
                 r#"{"job":"export-812","rows":48213,"ok":true,"tags":["a",null]}"#,
                 "{format:?}"
             );
-            let mut trailing = bytes.clone();
+            let mut trailing = bytes.to_vec();
             trailing.push(0);
             assert!(
                 decode(format, &trailing, &Limits::default(), &cancel).is_err(),
@@ -941,16 +901,40 @@ mod tests {
                 "{format:?}"
             );
         }
-        let (bson, cbor) = (&samples()[2].1, &samples()[1].1);
-        assert_eq!(signature(bson, bson.len() as u64), Some(Format::Bson));
-        assert_eq!(signature(cbor, cbor.len() as u64), Some(Format::Cbor));
+        for (format, bytes) in &SAMPLES[1..] {
+            assert_eq!(signature(bytes, bytes.len() as u64), Some(*format));
+        }
         assert_eq!(signature(b"plain text here", 15), None);
-        // protobuf: field 1 = 150, field 2 = "testing".
-        let proto = b"\x08\x96\x01\x12\x07testing";
-        let tree = decode(Format::Protobuf, proto, &Limits::default(), &cancel).unwrap();
-        assert_eq!(tree.json(), r#"{"1":150,"2":"testing"}"#);
-        assert_eq!(probe(proto, &cancel), Some(Format::Protobuf));
-        assert_eq!(probe(&samples()[0].1, &cancel), Some(Format::MessagePack));
+
+        let limits = Limits::default();
+        let read = |format, bytes| decode(format, bytes, &limits, &cancel).unwrap();
+        assert_eq!(
+            read(Format::Protobuf, PROTO).json(),
+            r#"{"1":150,"2":"testing"}"#
+        );
+        // An indefinite CBOR map and array, with a numeric key.
+        assert_eq!(
+            read(Format::Cbor, b"\xbf\x01\x9f\x02\x03\xff\xff").json(),
+            r#"{"1":[2,3]}"#
+        );
+        assert_eq!(
+            read(Format::MessagePack, b"\xde\x00\x01\xa1a\xdc\x00\x01\x01").json(),
+            r#"{"a":[1]}"#
+        );
+        let plist = read(Format::Plist, WIDE_PLIST);
+        assert!(plist.complete);
+        assert!(
+            plist
+                .json()
+                .contains(r#""λ":"a long string with 16bit λ text","float":1.5"#)
+        );
+        assert_eq!(
+            plist.nodes.last().unwrap().item,
+            super::Item::Bytes("626c6f62".into(), 4)
+        );
+
+        assert_eq!(probe(PROTO, &cancel), Some(Format::Protobuf));
+        assert_eq!(probe(SAMPLES[0].1, &cancel), Some(Format::MessagePack));
         assert_eq!(probe(b"\x01", &cancel), None);
     }
 
@@ -983,17 +967,14 @@ mod tests {
         let tree = decode(Format::Cbor, &tags, &limits, &cancel).unwrap();
         assert_eq!(tree.json(), "1");
         // BSON documents nested in documents.
-        let mut nested = vec![0u8; 5];
-        nested[..4].copy_from_slice(&5i32.to_le_bytes());
-        for _ in 0..20_000 {
-            let mut outer = (0i32).to_le_bytes().to_vec();
-            outer.extend(b"\x03a\0");
-            outer.extend(&nested);
-            outer.push(0);
-            let len = outer.len() as i32;
-            outer[..4].copy_from_slice(&len.to_le_bytes());
-            nested = outer;
+        let mut nested = Vec::new();
+        let levels = 20_000i32;
+        for level in (1..=levels).rev() {
+            nested.extend((5 + level * 8).to_le_bytes());
+            nested.extend(b"\x03a\0");
         }
+        nested.extend(b"\x05\0\0\0\0");
+        nested.resize(nested.len() + levels as usize, 0);
         assert!(decode(Format::Bson, &nested, &limits, &cancel).is_err());
         // Nesting within the limit still reads.
         let mut shallow = vec![0x91; 100];
@@ -1016,12 +997,12 @@ mod tests {
             state ^= state << 17;
             state
         };
-        for (format, sample) in samples().into_iter().chain([
-            (Format::Protobuf, b"\x08\x96\x01\x12\x07testing".to_vec()),
-            (Format::Plist, b"bplist00".to_vec()),
-        ]) {
+        for (format, sample) in SAMPLES
+            .into_iter()
+            .chain([(Format::Protobuf, PROTO), (Format::Plist, WIDE_PLIST)])
+        {
             for _ in 0..3000 {
-                let mut bytes = sample.clone();
+                let mut bytes = sample.to_vec();
                 for _ in 0..=next() % 4 {
                     let at = (next() as usize) % bytes.len();
                     bytes[at] = next() as u8;

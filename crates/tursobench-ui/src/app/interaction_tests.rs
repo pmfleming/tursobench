@@ -828,7 +828,7 @@ fn diagram_preserves_drafts_and_result_ownership_and_chrome_fits_both_themes() {
     let data = app.database.document.id;
     let before = held(visible_result(&app));
     app.stage_cell(0, 0, text("pending diagram edit"));
-    app.show_structure();
+    app.open_structure_window();
     wait(&mut app, &ctx);
     assert_eq!(app.database.workspace.active, tiling::Kind::Structure);
     assert_eq!(held(&app.document_ref(data).unwrap().result), before);
@@ -1156,7 +1156,7 @@ fn selection_named_history_metadata_reference_back_and_tools_render() {
     wait(&mut app, &ctx);
     assert_eq!(selected(&app), Some("parent"));
     app.database.document.tools.detail = Some(0);
-    app.show_structure();
+    app.open_structure_window();
     app.database.tools.help = true;
     let parent = app.database.schema.iter().find(|o| o.name == "parent");
     app.database.document.tools.ddl = parent.cloned();

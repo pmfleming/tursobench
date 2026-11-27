@@ -3,6 +3,7 @@
 //!
 //! Text is kept as the body of a JSON string, escapes included, so the tree
 //! prints back as the JSON the engine's `json()` would return.
+use crate::bytes::uint_be;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// How much of a value a decoder may read into a tree.
@@ -138,10 +139,7 @@ fn header(bytes: &[u8], at: usize) -> Option<(u8, usize, u64)> {
         14 => 4,
         _ => 8,
     };
-    let size = bytes
-        .get(at + 1..at + 1 + extra)?
-        .iter()
-        .fold(0u64, |n, &b| n << 8 | u64::from(b));
+    let size = uint_be(bytes, at + 1, extra)?;
     Some((first & 0x0F, 1 + extra, size))
 }
 

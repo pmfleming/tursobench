@@ -1,5 +1,7 @@
 //! The data inspector: the bytes at a cursor read as each common number type.
-use crate::Order;
+use crate::{Order, bytes::little_endian};
+
+pub use crate::bytes::leb128;
 
 /// One reading of the bytes at the cursor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,11 +92,7 @@ impl Field {
 
 /// The first `N` bytes in little-endian order, reversed from big-endian.
 fn take<const N: usize>(bytes: &[u8], order: Order) -> Option<[u8; N]> {
-    let mut out: [u8; N] = bytes.get(..N)?.try_into().ok()?;
-    if order == Order::Big {
-        out.reverse();
-    }
-    Some(out)
+    little_endian(bytes, 0, order == Order::Little)
 }
 
 /// Digits in groups of three separated by spaces: `1 936 352 768`.
@@ -129,22 +127,6 @@ pub fn real(n: f64) -> String {
     } else {
         format!("{n:.3e}")
     }
-}
-
-/// An unsigned LEB128 number and its length in bytes; at most ten bytes are read.
-pub fn leb128(bytes: &[u8]) -> Option<(u64, usize)> {
-    let mut value = 0u64;
-    for (i, byte) in bytes.iter().take(10).enumerate() {
-        let part = u64::from(byte & 0x7F);
-        if i == 9 && part > 1 {
-            return None;
-        }
-        value |= part << (7 * i);
-        if byte & 0x80 == 0 {
-            return Some((value, i + 1));
-        }
-    }
-    None
 }
 
 /// The character starting at the cursor, `NUL` for zero, or `None` when the

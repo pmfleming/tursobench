@@ -3,17 +3,19 @@
 mod edit;
 mod hex;
 mod inspect;
+mod io;
 mod job;
 mod lens;
-mod offer;
 mod preview;
 mod summary;
 mod tile;
 mod view;
 
-use super::icons::Icon;
+use super::{App, icons::Icon};
+use eframe::egui;
 use std::sync::Arc;
-use tursobench_blob::{Kind, tree::Tree};
+use tursobench_blob::{Kind, formats::Format, text::Encoding, tree::Tree};
+use tursobench_core::Value;
 
 pub(super) use preview::{HEIGHT as PREVIEW_HEIGHT, Preview};
 #[cfg(test)]
@@ -98,7 +100,7 @@ pub(super) struct Weak {
     /// The column's name or type says it holds vectors.
     pub hint: bool,
     /// A format with no signature reads the whole value.
-    pub possible: Option<tursobench_blob::formats::Format>,
+    pub possible: Option<Format>,
 }
 
 /// Whether a column's name or declared type says it holds vectors.
@@ -111,6 +113,95 @@ pub(super) fn vector_hint(name: &str, declared: Option<&str>) -> bool {
         || ["VECTOR", "F32_BLOB", "F64_BLOB", "F8_BLOB", "F1BIT_BLOB"]
             .iter()
             .any(|t| declared.contains(t))
+}
+
+/// A field's value, its kind, the lenses offered and the one in use.
+pub(in crate::app) struct Offer {
+    pub kind: Kind,
+    pub lenses: Vec<Lens>,
+    pub lens: Lens,
+    /// The structured format the tree lens reads, if any.
+    pub format: Option<Format>,
+}
+
+impl App {
+    fn value_view(&mut self) -> Option<&mut view::View> {
+        self.database.document.tools.values.view.as_mut()
+    }
+
+    /// The value field `col` of `row` shows: its draft, else the stored value.
+    pub(in crate::app) fn field_value(&self, row: usize, col: usize) -> Option<&Value> {
+        let document = &self.database.document;
+        document
+            .result
+            .displayed_value(document.drafts.as_ref(), row, col)
+    }
+
+    /// The lenses for field `col` of `row`; a blob with no signature is
+    /// parsed off the UI thread to learn whether a tree reads it.
+    pub(in crate::app) fn value_offer(
+        &mut self,
+        ctx: &egui::Context,
+        row: usize,
+        col: usize,
+    ) -> Option<Offer> {
+        let document = &mut self.database.document;
+        let header = document.column_header(col);
+        let hint = vector_hint(&header.column.name, header.declared_type());
+        let value = document
+            .result
+            .displayed_value(document.drafts.as_ref(), row, col)?;
+        let mut kind = match value {
+            Value::Text(_) => Kind::Text(Encoding::Utf8),
+            other => Summary::of(ctx, other)?.kind,
+        };
+        // In a vector column, plain float32 outweighs weak signatures.
+        let hinted = hint && matches!(value, Value::Blob(b) if summary::plain_vector(b));
+        if hinted {
+            kind = Kind::Unknown;
+        }
+        let unnamed = matches!(kind, Kind::Unknown | Kind::Digest);
+        let bytes = match value {
+            Value::Blob(bytes) if unnamed => Some(bytes.as_slice()),
+            _ => None,
+        };
+        let plain_vector =
+            hinted || bytes.is_some_and(|b| b.len() >= 8 && b.len().is_multiple_of(4));
+        let target = Target {
+            result: document.result.current,
+            drafts: document.draft_revision,
+            row,
+            col,
+            whole: false,
+        };
+        let chosen = document.tools.columns.lens(col);
+        let possible = bytes.and_then(|bytes| {
+            document
+                .tools
+                .values
+                .probe(ctx, target, || Arc::from(bytes))
+        });
+        let format = match kind {
+            Kind::Jsonb => Some(Format::Jsonb),
+            Kind::Structured(format) => Some(format),
+            _ => possible,
+        };
+        let lenses = Lens::offered(
+            kind,
+            Weak {
+                plain_vector,
+                hint,
+                possible,
+            },
+        );
+        let lens = Lens::resolve(&lenses, chosen);
+        Some(Offer {
+            kind,
+            lenses,
+            lens,
+            format,
+        })
+    }
 }
 
 /// What a decode has produced for the value it was asked about.
@@ -143,11 +234,7 @@ pub(super) struct Values {
     decode: Option<((Target, Lens), u64, Decoded)>,
     /// Formats found by parsing values without a signature.
     prober: job::Decoder,
-    probes: Vec<(
-        Target,
-        u64,
-        Option<Option<tursobench_blob::formats::Format>>,
-    )>,
+    probes: Vec<(Target, u64, Option<Option<Format>>)>,
     /// Images decoded for rows, previews and the value view.
     pub images: lens::Images,
     /// The field open in the value view, and its request in flight.
@@ -162,9 +249,9 @@ impl Values {
         ctx: &eframe::egui::Context,
         target: Target,
         lens: Lens,
-        work: impl FnOnce() -> job::Work,
-    ) -> Decoded {
-        match &mut self.decode {
+        work: impl FnOnce() -> Option<job::Work>,
+    ) -> Option<Decoded> {
+        Some(match &mut self.decode {
             Some((current, id, decoded)) if *current == (target, lens) => {
                 if let Some(output) = self.decoder.poll(*id) {
                     *decoded = match output {
@@ -172,8 +259,8 @@ impl Values {
                         job::Output::Vector(Ok(vector)) => Decoded::Vector(vector),
                         job::Output::Contents(Ok(contents)) => Decoded::Contents(contents),
                         job::Output::Text(Ok(text)) => Decoded::Text(text),
-                        job::Output::Text(Err(e)) => Decoded::Failed(e),
-                        job::Output::Tree(Err(e))
+                        job::Output::Text(Err(e))
+                        | job::Output::Tree(Err(e))
                         | job::Output::Vector(Err(e))
                         | job::Output::Contents(Err(e)) => Decoded::Failed(e),
                         job::Output::Image(_) | job::Output::Probe(_) => {
@@ -184,11 +271,13 @@ impl Values {
                 decoded.clone()
             }
             _ => {
-                let id = self.decoder.submit(ctx, work());
+                let Some(id) = self.decoder.submit(ctx, work()?) else {
+                    return Some(Decoded::Failed("Could not start the value decoder".into()));
+                };
                 self.decode = Some(((target, lens), id, Decoded::Pending));
                 Decoded::Pending
             }
-        }
+        })
     }
     /// A format with no signature that reads the whole value at `target`,
     /// found off the UI thread; `None` until known, or when there is none.
@@ -197,8 +286,8 @@ impl Values {
         ctx: &eframe::egui::Context,
         target: Target,
         bytes: impl FnOnce() -> Arc<[u8]>,
-    ) -> Option<tursobench_blob::formats::Format> {
-        for (id, output) in self.prober.poll_all() {
+    ) -> Option<Format> {
+        while let Some((id, output)) = self.prober.next() {
             if let (Some(entry), job::Output::Probe(found)) =
                 (self.probes.iter_mut().find(|e| e.1 == id), output)
             {
@@ -211,14 +300,14 @@ impl Values {
         if self.probes.len() >= 64 {
             self.probes.remove(0);
         }
-        let id = self.prober.queue(ctx, job::Work::Probe(bytes()));
+        let id = self.prober.queue(ctx, job::Work::Probe(bytes()))?;
         self.probes.push((target, id, None));
         None
     }
     /// Stop decoding: nothing is selected that needs it.
     pub fn idle(&mut self) {
         if self.decode.take().is_some() {
-            self.decoder.cancel();
+            self.decoder.cancel_queued();
         }
     }
 }

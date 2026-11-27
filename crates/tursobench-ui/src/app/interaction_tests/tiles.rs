@@ -139,6 +139,16 @@ fn the_assistant_is_a_tile_that_minimizes_folds_and_stacks_like_the_others() {
     frame(&mut app, &ctx, vec![]);
     assert!(!app.assistant_shown());
     assert_eq!(app.database.workspace.pane_rects.len(), 5);
+    app.focus_pane(Sql);
+    press_key(&mut app, &ctx, egui::Key::Tab, egui::Modifiers::CTRL);
+    assert_eq!(app.database.workspace.active, Map);
+    assert!(!app.assistant_shown());
+    let expand = egui::Modifiers::CTRL | egui::Modifiers::ALT;
+    press_key(&mut app, &ctx, egui::Key::Enter, expand);
+    assert_eq!(app.database.workspace.expanded, Some(Map));
+    press_key(&mut app, &ctx, egui::Key::Enter, expand);
+    assert_eq!(app.database.workspace.expanded, None);
+    frame(&mut app, &ctx, vec![]);
     // Its line drags left or right; the column moves whole and stays a line.
     let lanes = app.workspace_frame().columns;
     let (line, middle) = (lanes[2].rect.center(), lanes[1].rect.left() + 10.0);

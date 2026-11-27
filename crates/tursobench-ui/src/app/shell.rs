@@ -118,35 +118,9 @@ impl App {
         }
     }
 
-    pub(super) fn show_structure(&mut self) {
-        self.open_structure_window();
-    }
     pub(super) fn shell(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        if self.database.workspace.enabled {
-            self.switch_document(self.database.workspace.focused);
-            if ctx.input_mut(|i| {
-                i.consume_key(
-                    egui::Modifiers::CTRL | egui::Modifiers::ALT,
-                    egui::Key::Enter,
-                )
-            }) {
-                self.expand_window(self.database.workspace.focused);
-            }
-            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Tab)) {
-                // Left to right, top to bottom. A hidden assistant stays hidden.
-                let workspace = &self.database.workspace;
-                let mut panes = workspace.layout.order();
-                panes.retain(|kind| {
-                    *kind != super::tiling::Kind::Chat || !workspace.minimized.contains(kind)
-                });
-                let index = panes
-                    .iter()
-                    .position(|kind| *kind == workspace.active)
-                    .map_or(0, |index| index + 1);
-                self.focus_pane(panes[index % panes.len()]);
-            }
-        }
+        self.workspace_shortcuts(&ctx);
         self.shortcuts(&ctx);
         #[cfg(test)]
         {
@@ -156,18 +130,32 @@ impl App {
             self.database.ui.assistant_rect = egui::Rect::NOTHING;
             self.database.ui.visible_rows = 0;
         }
-        let sidebar_width = if ui.available_width() < 900.0 {
-            190.0
-        } else {
-            272.0
-        };
+        self.sidebar_panel(ui);
+        self.docked_assistant(ui);
+        self.status_bar(ui);
+        egui::CentralPanel::default().show(ui, |ui| self.workspace_ui(ui));
+        self.edit_windows(&ctx);
+        self.inspection_surfaces(&ctx);
+        self.command_palette(&ctx);
+        self.access_dialog(&ctx);
+        self.settings_window(&ctx);
+        self.outcomes_dialog(&ctx);
+        self.retained_export_dialog(&ctx);
+    }
+
+    fn sidebar_panel(&mut self, ui: &mut egui::Ui) {
         // A close confirmation lives in the sidebar, so it must stay reachable.
         let sidebar = self.preferences.panels.sidebar || self.database.confirm_close;
         // Reserve full-height navigation before the workspace ribbon and status bar.
         if sidebar {
-            let panel = egui::Panel::left("workspace-sidebar")
+            let width = if ui.available_width() < 900.0 {
+                190.0
+            } else {
+                272.0
+            };
+            let _panel = egui::Panel::left("workspace-sidebar")
                 .resizable(true)
-                .default_size(sidebar_width)
+                .default_size(width)
                 .size_range(180.0..=(ui.available_width() - 360.0).clamp(180.0, 600.0))
                 .show(ui, |ui| {
                     egui::Panel::bottom("navigator-utilities")
@@ -179,10 +167,8 @@ impl App {
                 });
             #[cfg(test)]
             {
-                self.database.ui.sidebar_rect = panel.response.rect;
+                self.database.ui.sidebar_rect = _panel.response.rect;
             }
-            #[cfg(not(test))]
-            let _ = panel;
         } else if self.fold_panel(
             ui,
             egui::Panel::left("workspace-sidebar-line"),
@@ -190,78 +176,54 @@ impl App {
         ) {
             self.toggle_sidebar();
         }
-        // With a database open the assistant is a tile among the others. Until
-        // then it keeps the right edge, beside the database chooser.
+    }
+
+    // The assistant docks beside the chooser until the workspace tiles are on screen.
+    fn docked_assistant(&mut self, ui: &mut egui::Ui) {
         if self.workspace_tiled() {
-            // Drawn with the tiles in the central panel below.
-        } else if !self.preferences.panels.assistant {
-            if self.fold_panel(
-                ui,
-                egui::Panel::right("assistant-panel-line"),
-                "Show Assistant",
-            ) {
-                self.toggle_assistant();
-            }
-        } else {
+            return;
+        }
+        if self.preferences.panels.assistant {
             let max = (ui.available_width() - 360.0).clamp(260.0, 720.0);
-            let panel = egui::Panel::right("assistant-panel")
+            let _panel = egui::Panel::right("assistant-panel")
                 .resizable(true)
                 .default_size(372.0_f32.min(max))
                 .size_range(260.0..=max)
                 .show(ui, |ui| self.assistant_ui(ui));
             #[cfg(test)]
             {
-                self.database.ui.assistant_rect = panel.response.rect;
+                self.database.ui.assistant_rect = _panel.response.rect;
             }
-            #[cfg(not(test))]
-            let _ = panel;
+        } else if self.fold_panel(
+            ui,
+            egui::Panel::right("assistant-panel-line"),
+            "Show Assistant",
+        ) {
+            self.toggle_assistant();
         }
-        self.status_bar(ui);
-        egui::CentralPanel::default().show(ui, |ui| self.workspace_ui(ui));
-        self.edit_windows(&ctx);
-        self.inspection_surfaces(&ctx);
-        self.command_palette(&ctx);
-        self.access_dialog(&ctx);
-        self.settings_window(&ctx);
+    }
 
-        if self.database.ui.outcomes {
-            let mut open = true;
-            presentation::dialog(&ctx, "Execution outcomes", &mut open)
-                .default_width(580.0)
-                .max_width((ctx.content_rect().width() - 40.0).max(240.0))
-                .max_height(ctx.content_rect().height() * 0.65)
-                .vscroll(true)
-                .show(&ctx, |ui| {
-                    presentation::notice(
-                        ui,
-                        Icon::History,
-                        if self.database.uncertain_edit
-                            || self.database.transaction == TransactionState::Unknown
-                        {
-                            Intent::Danger
-                        } else {
-                            Intent::Neutral
-                        },
-                        &self.database.status,
-                    );
-                    for message in self.database.activity.iter().rev() {
-                        ui.separator();
-                        ui.label(message);
-                    }
-                });
-            self.database.ui.outcomes = open;
+    fn outcomes_dialog(&mut self, ctx: &egui::Context) {
+        if !self.database.ui.outcomes {
+            return;
         }
-        if self.database.ui.export_open {
-            let mut open = true;
-            presentation::dialog(&ctx, "Export retained result", &mut open)
-                .default_width(600.0)
-                .default_height(200.0)
-                .max_width((ctx.content_rect().width() - 40.0).max(240.0))
-                .max_height(ctx.content_rect().height() * 0.8)
-                .vscroll(true)
-                .show(&ctx, |ui| self.usability_controls(ui));
-            self.database.ui.export_open = open;
-        }
+        let intent = if self.database.outcome_unknown() {
+            Intent::Danger
+        } else {
+            Intent::Neutral
+        };
+        presentation::dialog(ctx, "Execution outcomes", &mut self.database.ui.outcomes)
+            .default_width(580.0)
+            .max_width((ctx.content_rect().width() - 40.0).max(240.0))
+            .max_height(ctx.content_rect().height() * 0.65)
+            .vscroll(true)
+            .show(ctx, |ui| {
+                presentation::notice(ui, Icon::History, intent, &self.database.status);
+                for message in self.database.activity.iter().rev() {
+                    ui.separator();
+                    ui.label(message);
+                }
+            });
     }
     fn connection_status(&self, visuals: &egui::Visuals) -> (&'static str, egui::Color32) {
         let warn = visuals.warn_fg_color;
@@ -269,12 +231,7 @@ impl App {
         let muted = visuals.weak_text_color();
         // First active condition wins: execution state precedes retained-result state.
         if let Some((_, label, color)) = [
-            (
-                self.database.uncertain_edit
-                    || self.database.transaction == TransactionState::Unknown,
-                "UNKNOWN",
-                error,
-            ),
+            (self.database.outcome_unknown(), "UNKNOWN", error),
             (self.database.closing, "Closing", warn),
             (self.database.commit_ticket.is_some(), "Committing", warn),
             (
@@ -310,9 +267,7 @@ impl App {
     }
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         let tokens = crate::appearance::Tokens::of(ui.ctx());
-        let fill = if self.database.uncertain_edit
-            || self.database.transaction == TransactionState::Unknown
-        {
+        let fill = if self.database.outcome_unknown() {
             crate::appearance::mix(ui.visuals().panel_fill, ui.visuals().error_fg_color, 0.13)
         } else {
             ui.visuals().panel_fill
@@ -338,14 +293,7 @@ impl App {
                     self.connection_controls(ui);
                     self.transaction_controls(ui);
                     if self.has_drafts() {
-                        let count: usize = self
-                            .database
-                            .documents
-                            .values()
-                            .chain(std::iter::once(&self.database.document))
-                            .filter_map(|d| d.drafts.as_ref())
-                            .map(|d| d.edits.len())
-                            .sum();
+                        let count = self.database.draft_count();
                         if presentation::chip(ui, &format!("Review {count}"), tokens.pending)
                             .clicked()
                         {
@@ -520,9 +468,7 @@ impl App {
         if self.database.transaction == TransactionState::Autocommit {
             return;
         }
-        let color = if self.database.uncertain_edit
-            || self.database.transaction == TransactionState::Unknown
-        {
+        let color = if self.database.outcome_unknown() {
             ui.visuals().error_fg_color
         } else {
             crate::appearance::Tokens::of(ui.ctx()).pending
