@@ -55,6 +55,11 @@ approval requests are declined.
 The ACP client advertises no file-system or terminal capability and answers such
 requests with "method not found". It approves permission requests only for
 TursoBench's own tools and declines every other request with a visible notice.
+A tool call is labelled by TursoBench's tool name only when its title names one
+of the four tools; any other call shows the agent's whole title. ACP has no
+system prompt, so the instructions open the first prompt in a
+`<host-instructions from="TursoBench">` block that says the user did not write
+them and cannot see or change them, followed by the user's message.
 Antigravity explicitly selects its default permission mode before the first
 prompt; model changes are acknowledged before prompts are sent. It starts with
 `--disable-telemetry` when requested; history follows its own settings. Some
@@ -175,6 +180,15 @@ session is closing.
 The agent starts `tursobench --mcp-relay <socket>` as its MCP server. The relay
 copies bytes between its stdio and a Unix socket owned by the running app, so
 tools reach the app's existing session and no second process opens the database.
+On Linux the command is `/proc/<app pid>/exe`, the very binary the app runs, so it
+still starts after the file is rebuilt or upgraded in place (when the executable's
+own path names a deleted file). Elsewhere it is the executable's path, and a
+conversation does not start if that file is gone.
+
+The instructions tell every agent to use only TursoBench's tools and, if they are
+missing, to say so instead of guessing. When a turn ends and no relay has
+presented the endpoint's token, the chat says once per conversation that the agent
+did not start TursoBench's tools; a turn the user stopped does not count.
 The socket (mode 0600) and a Claude `--mcp-config` file (0600) live in
 `$XDG_RUNTIME_DIR/tursobench`, or a per-user temporary directory, which must be a
 0700 directory owned by the user. Each conversation's endpoint has a random

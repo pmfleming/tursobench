@@ -1,4 +1,5 @@
-//! The agent starts `tursobench --mcp-relay <socket>` as its MCP server. That
+//! The agent starts `tursobench --mcp-relay <socket>` (this running binary,
+//! see [`relay_program`]) as its MCP server. That
 //! relay only copies bytes to a private Unix socket owned by the running app,
 //! so tools reach the app's own database session; no second process opens it.
 use crate::mcp::{self, ToolHost};
@@ -36,6 +37,7 @@ pub struct Endpoint {
     socket: PathBuf,
     config: PathBuf,
     stop: Arc<AtomicBool>,
+    connected: Arc<AtomicBool>,
     open: Arc<std::sync::Mutex<std::collections::HashMap<u64, UnixStream>>>,
     launch: Launch,
 }
@@ -58,6 +60,7 @@ impl Endpoint {
         std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
         let token = random_token()?;
         let stop = Arc::new(AtomicBool::new(false));
+        let connected = Arc::new(AtomicBool::new(false));
         let launch = Launch {
             command: relay,
             args: vec![RELAY_FLAG.into(), socket.to_string_lossy().into_owned()],
@@ -68,6 +71,7 @@ impl Endpoint {
             socket,
             config,
             stop: stop.clone(),
+            connected: connected.clone(),
             open: open.clone(),
             launch,
         };
@@ -88,10 +92,11 @@ impl Endpoint {
                     let host = host.clone();
                     let token = token.clone();
                     let stop = stop.clone();
+                    let connected = connected.clone();
                     let _ = std::thread::Builder::new()
                         .name("assistant-tool-session".into())
                         .spawn(move || {
-                            session(stream, &token, &*host, &stop);
+                            session(stream, &token, &*host, &stop, &connected);
                             open.lock().unwrap().remove(&id);
                         });
                 }
@@ -100,6 +105,11 @@ impl Endpoint {
     }
     pub fn launch(&self) -> &Launch {
         &self.launch
+    }
+    /// Whether an agent's relay has presented the token. An agent that never
+    /// started the relay has no TursoBench tools at all.
+    pub fn connected(&self) -> bool {
+        self.connected.load(Ordering::Acquire)
     }
     /// A Claude Code `--mcp-config` file, readable only by this user.
     pub fn config_path(&self) -> &Path {
@@ -143,7 +153,13 @@ impl Drop for Endpoint {
     }
 }
 
-fn session(stream: UnixStream, token: &str, host: &dyn ToolHost, stop: &AtomicBool) {
+fn session(
+    stream: UnixStream,
+    token: &str,
+    host: &dyn ToolHost,
+    stop: &AtomicBool,
+    connected: &AtomicBool,
+) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
     let Ok(writer) = stream.try_clone() else {
         return;
@@ -156,6 +172,7 @@ fn session(stream: UnixStream, token: &str, host: &dyn ToolHost, stop: &AtomicBo
     {
         return;
     }
+    connected.store(true, Ordering::Release);
     let _ = reader.get_ref().set_read_timeout(None);
     mcp::serve(StopReader { reader, stop }, writer, host);
 }
@@ -193,6 +210,34 @@ fn random_token() -> io::Result<String> {
     let mut bytes = [0u8; 24];
     std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// The program an agent starts as the relay: this process's own binary.
+///
+/// On Linux that is `/proc/<pid>/exe`, which runs exactly the binary the app
+/// is running even after its file is rebuilt or upgraded in place. (Then
+/// `current_exe` names a path ending in " (deleted)" that no agent can start,
+/// and the agent silently runs without TursoBench's tools.)
+pub fn relay_program() -> io::Result<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        let exe = PathBuf::from(format!("/proc/{}/exe", std::process::id()));
+        if exe.exists() {
+            return Ok(exe);
+        }
+    }
+    let exe = std::env::current_exe()?;
+    if exe.exists() {
+        Ok(exe)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "{} was replaced while TursoBench was running; restart TursoBench",
+                exe.display()
+            ),
+        ))
+    }
 }
 
 /// Test seam: keep this process's private files under `root` instead of
@@ -302,10 +347,13 @@ mod tests {
             Endpoint::start_in(&dir, Arc::new(Echo), "/usr/bin/tursobench".into()).unwrap();
         let call = r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"echo","arguments":{"text":"ok"}}}"#;
         let token = endpoint.launch().env[0].1.clone();
+        assert_eq!(exchange(&endpoint, "wrong", call), "");
+        // A wrong token is not an agent connecting.
+        assert!(!endpoint.connected());
         let reply: serde_json::Value =
             serde_json::from_str(&exchange(&endpoint, &token, call)).unwrap();
         assert_eq!(reply["result"]["content"][0]["text"], "ok");
-        assert_eq!(exchange(&endpoint, "wrong", call), "");
+        assert!(endpoint.connected());
 
         let mode = |p: &Path| std::fs::metadata(p).unwrap().mode() & 0o777;
         assert_eq!(mode(endpoint.socket.parent().unwrap()), 0o700);
@@ -324,5 +372,17 @@ mod tests {
         // A directory other users can read is refused.
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(private(dir).is_err());
+    }
+
+    #[test]
+    fn the_relay_is_this_running_binary_even_once_its_file_is_replaced() {
+        let program = super::relay_program().unwrap();
+        // `/proc/<pid>/exe` opens the running image, never a " (deleted)" name.
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            program,
+            Path::new(&format!("/proc/{}/exe", std::process::id()))
+        );
+        assert!(program.exists());
     }
 }

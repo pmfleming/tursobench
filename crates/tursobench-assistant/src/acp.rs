@@ -109,10 +109,7 @@ fn flush(spec: &Spec, state: &mut State, link: &mut Link) {
     };
     if !state.instructed && !spec.system_prompt.is_empty() {
         state.instructed = true;
-        text = format!(
-            "<tursobench-instructions>\n{}\n</tursobench-instructions>\n\n{text}",
-            spec.system_prompt
-        );
+        text = instructed(&spec.system_prompt, &text);
     }
     state.next_id += 1;
     let id = state.next_id;
@@ -126,6 +123,21 @@ fn flush(spec: &Spec, state: &mut State, link: &mut Link) {
     if !link.write_or_end_turn(&request, "the agent") {
         state.prompt = None;
     }
+}
+
+/// The first prompt, carrying the standing instructions. ACP has no system
+/// prompt, so they travel in the user's turn; say whose they are, or the agent
+/// takes them for the user's own text and offers to help them edit it.
+fn instructed(instructions: &str, prompt: &str) -> String {
+    format!(
+        "<host-instructions from=\"TursoBench\">\n\
+         TursoBench, the app hosting this conversation, sets these instructions. \
+         The user did not write them, cannot see or change them, and only reads your \
+         replies. Follow them without quoting or discussing them.\n\n\
+         {instructions}\n\
+         </host-instructions>\n\n\
+         The user's message:\n\n{prompt}"
+    )
 }
 
 fn handle(spec: &Spec, state: &mut State, link: &mut Link, message: &Json) {
@@ -439,9 +451,11 @@ fn request(link: &mut Link, method: &str, id: &Json, params: &Json) {
     let _ = link.write(&reply);
 }
 
+/// TursoBench's own MCP tools, the only calls approved.
+const TOOLS: &[&str] = &["list_tables", "describe_table", "run_query", "propose_sql"];
+
 /// Only calls to TursoBench's own MCP tools are approved.
 fn is_ours(call: &Json) -> bool {
-    const TOOLS: &[&str] = &["list_tables", "describe_table", "run_query", "propose_sql"];
     let qualified = |name: &str| {
         [
             "mcp__tursobench__",
@@ -477,10 +491,9 @@ fn session_update(update: &Json) -> Vec<Update> {
         Some("agent_thought_chunk") => text(update).map(Update::Thought).into_iter().collect(),
         Some("tool_call") => {
             let id = update["toolCallId"].as_str().unwrap_or_default();
-            let title = update["title"].as_str().unwrap_or("tool");
             let mut updates = vec![Update::ToolCall {
                 id: id.to_owned(),
-                name: tool_name(&short_title(title)),
+                name: call_label(update),
                 input: update.get("rawInput").cloned().unwrap_or(Json::Null),
             }];
             updates.extend(finished(id, update));
@@ -491,6 +504,20 @@ fn session_update(update: &Json) -> Vec<Update> {
             finished(id, update).into_iter().collect()
         }
         _ => vec![],
+    }
+}
+
+/// What the chat shows for a call: one of TursoBench's tools by its bare name,
+/// anything else by the agent's whole title. (A title that only mentions the
+/// server, such as `ls /run/user/1000/tursobench`, is not one of its tools.)
+fn call_label(update: &Json) -> String {
+    let title = update["title"].as_str().unwrap_or("tool");
+    let short = short_title(title);
+    let name = tool_name(&short);
+    if TOOLS.contains(&name.as_str()) {
+        name
+    } else {
+        title.to_owned()
     }
 }
 
@@ -707,5 +734,21 @@ mod tests {
             "tursobench.describe_table"
         );
         assert_eq!(tool_name("tursobench.describe_table"), "describe_table");
+        // A title that only mentions the server keeps its whole text.
+        let label = |title: &str| super::call_label(&json!({"title": title}));
+        assert_eq!(label("Tool: tursobench.run_query"), "run_query");
+        assert_eq!(
+            label("ls -la /run/user/1000/tursobench"),
+            "ls -la /run/user/1000/tursobench"
+        );
+        assert_eq!(label("tursobench list_tables"), "tursobench list_tables");
+        assert_eq!(label("tursobench_unknown"), "tursobench_unknown");
+    }
+
+    #[test]
+    fn instructions_say_they_come_from_tursobench_not_the_user() {
+        let text = super::instructed("Be helpful.", "explain this database");
+        assert!(text.contains("from=\"TursoBench\"") && text.contains("did not write them"));
+        assert!(text.ends_with("The user's message:\n\nexplain this database"));
     }
 }

@@ -39,7 +39,11 @@ struct Running {
     agent: Agent,
     host: Arc<Host>,
     proposals: mpsc::Receiver<Proposal>,
-    _endpoint: Endpoint,
+    endpoint: Endpoint,
+    /// Whether the chat already said this agent never reached the tools.
+    told_unconnected: bool,
+    /// The user stopped the current turn, which proves nothing about the tools.
+    stopped: bool,
 }
 
 /// One workspace's conversation, kept while its database stays the same.
@@ -106,6 +110,11 @@ impl Conversation {
     #[cfg(test)]
     pub(super) fn host(&self) -> Option<Arc<Host>> {
         self.running.as_ref().map(|r| r.host.clone())
+    }
+    /// How the running agent was told to start its relay.
+    #[cfg(test)]
+    pub(super) fn relay_launch(&self) -> Option<relay::Launch> {
+        self.running.as_ref().map(|r| r.endpoint.launch().clone())
     }
 }
 
@@ -364,6 +373,25 @@ impl App {
                     let hint = explain(&error, conversation.sign_in.as_deref());
                     conversation.push(Entry::Notice(Intent::Danger, hint));
                 }
+                // An agent whose relay never started answers without the
+                // database and may reach for its own tools instead.
+                let tell = conversation.running.as_mut().is_some_and(|running| {
+                    let stopped = std::mem::take(&mut running.stopped);
+                    let tell =
+                        !stopped && !running.endpoint.connected() && !running.told_unconnected;
+                    running.told_unconnected |= tell;
+                    tell
+                });
+                if tell {
+                    let name = conversation.label.unwrap_or("The agent");
+                    conversation.push(Entry::Notice(
+                        Intent::Danger,
+                        format!(
+                            "{name} did not start TursoBench's tools, so it could not read \
+                             this database. Start a new conversation to try again."
+                        ),
+                    ));
+                }
             }
             Update::Notice(text) => conversation.push(Entry::Notice(Intent::Pending, text)),
             Update::Exited { message } => {
@@ -393,7 +421,7 @@ impl App {
             tx,
             wake.clone(),
         ));
-        let relay_program = std::env::current_exe()
+        let relay_program = relay::relay_program()
             .map_err(|e| format!("TursoBench could not find its own program: {e}"))?;
         let endpoint = Endpoint::start(host.clone(), relay_program)
             .map_err(|e| format!("Could not start the assistant's tools: {e}"))?;
@@ -432,7 +460,9 @@ impl App {
             agent,
             host,
             proposals,
-            _endpoint: endpoint,
+            endpoint,
+            told_unconnected: false,
+            stopped: false,
         });
         Ok(())
     }
@@ -736,8 +766,9 @@ impl App {
         );
         let send = if busy {
             if stop_button(ui, corner, id.with("stop"))
-                && let Some(running) = &self.database.assistant.running
+                && let Some(running) = &mut self.database.assistant.running
             {
+                running.stopped = true;
                 running.agent.cancel();
             }
             false

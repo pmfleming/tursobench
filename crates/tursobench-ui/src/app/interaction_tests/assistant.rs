@@ -268,6 +268,51 @@ fn a_missing_agent_is_explained_and_stop_ends_a_running_turn() {
     app.close();
 }
 
+const UNCONNECTED: &str = "did not start TursoBench's tools";
+
+#[test]
+fn an_agent_that_never_reaches_the_tools_is_reported_once() {
+    let (dir, ctx, mut app) = fixture(TABLE, false);
+    runtime_dir();
+    // The scripted agent never starts its relay, like an agent given a
+    // command it cannot run.
+    scripted_turn(&mut app, &ctx, &dir);
+    let launch = app.database.assistant.relay_launch().unwrap();
+    // The relay is this running binary, which survives a rebuild in place.
+    assert!(launch.command.exists());
+    assert!(!launch.command.to_string_lossy().ends_with("(deleted)"));
+    assert!(last_notice(&app.database.assistant).is_some_and(|t| t.contains(UNCONNECTED)));
+    converse(&mut app, &ctx, "Again");
+    let told = |app: &App| {
+        app.database
+            .assistant
+            .entries
+            .iter()
+            .filter(|e| matches!(e, Entry::Notice(_, text) if text.contains(UNCONNECTED)))
+            .count()
+    };
+    assert_eq!(told(&app), 1);
+
+    // An agent whose relay connects hears nothing of it.
+    app.reset_assistant_conversations();
+    app.database.assistant.draft = "Hello".into();
+    app.send_assistant(&ctx);
+    let launch = app.database.assistant.relay_launch().unwrap();
+    let mut relay = std::os::unix::net::UnixStream::connect(&launch.args[1]).unwrap();
+    let ping = r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
+    std::io::Write::write_all(
+        &mut relay,
+        format!("{}\n{ping}\n", launch.env[0].1).as_bytes(),
+    )
+    .unwrap();
+    let mut reply = String::new();
+    std::io::BufRead::read_line(&mut std::io::BufReader::new(&relay), &mut reply).unwrap();
+    assert!(reply.contains(r#""id":1"#), "{reply}");
+    wait_until(&mut app, &ctx, |a| !a.database.assistant.busy);
+    assert_eq!(told(&app), 0);
+    app.close();
+}
+
 /// A stand-in ACP agent that calls back for one tool permission.
 const ACP_SCRIPT: &str = r#"#!/usr/bin/env bash
 while read -r line; do

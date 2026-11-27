@@ -75,7 +75,7 @@ while read -r line; do
       case "$line" in *'"modelId":"fake-large"'*) ;; *) exit 9;; esac
       echo '{"jsonrpc":"2.0","id":'"$id"',"result":{}}';;
     *'"method":"session/prompt"'*)
-      case "$line" in *tursobench-instructions*'Be helpful'*) ;; *) echo "no instructions" >&2; exit 10;; esac
+      case "$line" in *host-instructions*'Be helpful'*) ;; *) echo "no instructions" >&2; exit 10;; esac
       echo '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hi"}}}}'
       echo '{"jsonrpc":"2.0","id":900,"method":"session/request_permission","params":{"sessionId":"s1","toolCall":{"toolCallId":"x","title":"Run shell: touch /tmp/tursobench-probe"},"options":[{"optionId":"yes","name":"Allow","kind":"allow_once"},{"optionId":"no","name":"Reject","kind":"reject_once"}]}}'
       read -r answer

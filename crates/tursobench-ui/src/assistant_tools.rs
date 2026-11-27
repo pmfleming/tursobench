@@ -236,7 +236,11 @@ pub fn system_prompt(database: Option<&str>, access: AgentAccess) -> String {
          `CREATE INDEX … USING fts(...)` and `fts_match(...)`.\n\
          {open}\n\
          Use the tursobench tools to look before answering: list_tables, describe_table, \
-         run_query and propose_sql. You cannot write to the database. For any change, \
+         run_query and propose_sql. Use only these tools: TursoBench declines shell, \
+         file, web and every other tool, and you cannot reach the database another way. \
+         If the tursobench tools are not available to you, tell the user that \
+         TursoBench's tools did not start and stop; do not guess at the database. \
+         You cannot write to the database. For any change, \
          or a query the user should keep, call propose_sql; it opens the SQL in their \
          editor without running it, and they decide.\n\
          {shared}\n\
@@ -283,6 +287,10 @@ mod tests {
         let unnamed = system_prompt(None, access(Sharing::Limited, 1000));
         assert!(!unnamed.contains(".db") && unnamed.contains("a database open"));
         assert!(unnamed.contains("at most 200 rows"));
+        // An agent keeping its own tools is told not to reach for them, and
+        // what to say when TursoBench's are missing.
+        assert!(unnamed.contains("Use only these tools"));
+        assert!(unnamed.contains("tools did not start"));
     }
     #[test]
     fn each_level_reads_as_many_rows_as_it_shares() {

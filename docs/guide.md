@@ -390,7 +390,9 @@ only**, **Schema and limited results** (at most 200 rows a query) and **Schema a
 complete results** (up to the database's row limit, at most 10,000 rows and 2 MiB).
 The agent, model and reasoning level stay global.
 The agent can list tables, describe one, run one read-only SELECT when results
-are shared, and propose SQL. Proposed SQL, and any SQL block
+are shared, and propose SQL. Any other tool it asks for is declined with a notice.
+If an agent never starts these tools, the chat says so after its first reply;
+start a new conversation to try again. Proposed SQL, and any SQL block
 in a reply, opens in a new SQL editor tile without running; you review and run it.
 Enter sends, Shift Enter adds a line and Stop interrupts the turn. The header's
 copy buttons put the last reply or the whole conversation on the clipboard, as
